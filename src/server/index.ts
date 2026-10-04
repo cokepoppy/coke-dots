@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { extname, join } from 'node:path';
 import { Store } from './store.ts';
 import { Worker, modelConfig } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
@@ -18,8 +20,8 @@ const watchRunner = new WatchRunner(store, publish);
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-store');
-  if (!req.url?.startsWith('/api/')) return reply(res, 404, { error: 'Not found' });
   if (!isLocalRequest(req)) return reply(res, 403, { error: 'Local access only' });
+  if (!req.url?.startsWith('/api/')) return serveStatic(req, res);
   const path = new URL(req.url, `http://${host}:${port}`).pathname;
   if (path === '/api/health' && req.method === 'GET') return reply(res, 200, { ok: true });
   if (path === '/api/state' && req.method === 'GET') return reply(res, 200, store.snapshot(Boolean(modelConfig())));
@@ -121,6 +123,20 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 function reply(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(value));
+}
+
+async function serveStatic(req: IncomingMessage, res: ServerResponse) {
+  if (req.method !== 'GET') return reply(res, 405, { error: 'Method not allowed' });
+  const pathname = new URL(req.url || '/', `http://${host}:${port}`).pathname;
+  if (pathname.includes('..')) return reply(res, 404, { error: 'Not found' });
+  const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
+  const file = join(resolve('./dist'), relative);
+  try {
+    const bytes = await readFile(file);
+    const type = extname(file) === '.html' ? 'text/html; charset=utf-8' : extname(file) === '.js' ? 'text/javascript; charset=utf-8' : extname(file) === '.css' ? 'text/css; charset=utf-8' : 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': type });
+    res.end(bytes);
+  } catch { reply(res, 404, { error: 'Not found' }); }
 }
 
 server.listen(port, host, () => {
