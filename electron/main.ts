@@ -41,7 +41,15 @@ async function createWindow() {
   });
   const url = devUrl || 'http://127.0.0.1:4317';
   await win.loadURL(url);
-  win.webContents.setWindowOpenHandler(({ url: target }) => { if (target.startsWith('https://')) void shell.openExternal(target); return { action: 'deny' }; });
+  win.webContents.setWindowOpenHandler(({ url: target }) => {
+    try {
+      const parsed = new URL(target);
+      const googleAuth = parsed.protocol === 'https:' && parsed.hostname === 'accounts.google.com';
+      const desktopAuthStart = parsed.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(parsed.hostname) && ['4317', '5173'].includes(parsed.port) && parsed.pathname === '/api/auth/desktop/start';
+      if (googleAuth || desktopAuthStart) void shell.openExternal(target);
+    } catch { /* Block malformed or unexpected targets. */ }
+    return { action: 'deny' };
+  });
   win.webContents.on('will-navigate', (event, target) => { if (target !== url) event.preventDefault(); });
 }
 

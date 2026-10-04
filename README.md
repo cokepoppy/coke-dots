@@ -4,9 +4,11 @@ An evidence-led, local-first personal agent project. Features are developed on s
 
 ## Run locally
 
-Requires Node.js 24 or newer. Run `npm install` and `npm run dev`, then open `http://127.0.0.1:5173`. Configure an OpenAI-compatible `/chat/completions` model from the dot profile; the API key goes to macOS Keychain. Environment variables `DOTS_MODEL`, `DOTS_MODEL_API_KEY`, and `DOTS_MODEL_BASE_URL` are also accepted and take precedence for development.
+Requires Node.js 24 or newer. Copy `.env.example` to a local environment file (do not commit OAuth credentials), register a Google OAuth web client, and set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and the exact callback URI `http://127.0.0.1:4317/auth/google/callback`. Then run `npm install` and `npm run dev`, and open `http://127.0.0.1:5173`. Google sign-in requests only OpenID Connect identity, email, and profile scopes.
 
-The background worker and web UI are separate processes. Closing the browser window leaves the worker running. `DOTS_DATA_DIR` defaults to `./data`; the SQLite database is never committed. Starting the server again recovers any task left in `working` state. `npm test` and `npm run build` verify the core. Without a configured model, tasks explicitly fail and can be retried after configuration.
+The model API is configured from a workspace's dot profile. Its API key is stored under that workspace's account in macOS Keychain; model endpoint and name are stored in tenant-scoped SQLite settings. The optional `DOTS_MODEL*` environment settings are retained only for the original local bootstrap workspace.
+
+The background worker and web UI are separate processes. Closing the browser window leaves the worker running. `DOTS_DATA_DIR` defaults to `./data`; the SQLite database is never committed. Starting the server again recovers any task left in `working` state. Without a configured model, tasks explicitly fail and can be retried after configuration.
 
 For the Mac shell, run `npm run desktop`. It builds the web UI, server and Electron wrapper, starts a detached local server if needed, and opens the app. Closing the window leaves that server running. `npm run dev:desktop` runs the UI with Vite. The current shell requires Node.js 24 on the Mac and is a local development build, not a signed installer.
 
@@ -22,5 +24,13 @@ Each task records its selected engine and its own workspace. The adapter contrac
 - **DeepSeek Harness:** Install the optional SDK/runtime and set `DOTS_DSH_BIN` plus `DOTS_DSH_READ_ONLY_CONFIG` to a separately verified, read-only profile. The SDK preserves a native session ID. This adapter is opt-in because the chosen runtime profile determines its tools and credentials.
 
 All engines must return the same structured task decision. A missing engine, invalid output or failed call is surfaced as a failed task; Coke Dots does not fabricate success. External write and send permissions are not yet connected to these engines.
+
+## Accounts and tenant isolation
+
+Google's immutable OpenID Connect `sub` identifies a user; email is used only for display and to add an account that has already signed in. The first Google account claims the pre-authentication local workspace, preserving any existing local data. Later accounts get separate personal workspaces. Users can create additional workspaces, switch among memberships, and add or remove members from workspaces where they are an owner or admin.
+
+Every task, activity entry, scheduled check, profile, model setting, workspace directory, and computer browser profile is scoped by tenant ID. API requests require an opaque server-side session in an HttpOnly cookie and the session's selected workspace membership is checked on every request. Google ID tokens are signature/audience/expiry verified; OAuth state, PKCE, and nonce are validated. The server still binds to loopback, so multi-user access currently means separate Google users and workspaces on this Mac. Remote Cloudflare access is a later phase and must add HTTPS, secure cookies, and external request policy before exposing the service.
+
+The local server owns optional CLI/runtime credentials for Claude Code, Pi, and DeepSeek Harness; those host-level engine identities are shared by workspaces in this first cut. Workspace data, model API keys, and browser sessions are isolated. Per-member engine credentials remain follow-up work before exposing shared workspaces over a network.
 
 The project is independent and is not affiliated with OpenAI.

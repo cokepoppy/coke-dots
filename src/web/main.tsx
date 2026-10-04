@@ -6,6 +6,8 @@ import './watch.css';
 import { ComputerView } from './ComputerView.tsx';
 
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
+interface TenantMember { id: string; email: string; name: string; role: string }
 const statusText: Record<TaskStatus, string> = {
   queued: '排队中', working: '工作中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停',
 };
@@ -22,6 +24,9 @@ function Avatar({ shape, color, small = false }: { shape: string; color: string;
 }
 
 function App() {
+  const [authContext, setAuthContext] = useState<AuthContext | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [googleConfigured, setGoogleConfigured] = useState(false);
   const [state, setState] = useState<Snapshot>(initial);
   const [view, setView] = useState<'chat' | 'activity' | 'scheduled' | 'computer' | 'profile'>('chat');
   const [selected, setSelected] = useState<string | null>(null);
@@ -35,11 +40,21 @@ function App() {
   const [error, setError] = useState('');
 
   useEffect(() => {
+    void fetch('/api/auth/me').then(async response => response.ok ? await response.json() as AuthContext : null)
+      .then(setAuthContext).catch(() => setAuthContext(null)).finally(() => setAuthChecked(true));
+    void fetch('/api/auth/config').then(response => response.json()).then(data => setGoogleConfigured(Boolean(data.googleConfigured))).catch(() => setGoogleConfigured(false));
+  }, []);
+
+  useEffect(() => {
+    if (!authContext) return;
     const stream = new EventSource('/api/events');
     stream.onmessage = event => setState(JSON.parse(event.data));
-    stream.onerror = () => setError('与本机服务的连接已断开，正在重连。');
+    stream.onerror = () => {
+      setError('与本机服务的连接已断开，正在重连。');
+      void fetch('/api/auth/me').then(response => response.ok ? response.json() as Promise<AuthContext> : null).then(next => { if (!next) setAuthContext(null); }).catch(() => setAuthContext(null));
+    };
     return () => stream.close();
-  }, []);
+  }, [authContext?.tenant.id]);
 
   const selectedTask = state.tasks.find(t => t.id === selected) || null;
   const entries = useMemo(() => selected ? state.entries.filter(e => e.taskId === selected) : state.entries, [state.entries, selected]);
@@ -69,6 +84,32 @@ function App() {
     catch (e) { setError(String(e)); }
   }
 
+  async function switchTenant(tenantId: string) {
+    try {
+      const response = await fetch('/api/auth/tenant', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setAuthContext(data as AuthContext); setState(initial); setSelected(null); setError('');
+    } catch (e) { setError(String(e)); }
+  }
+
+  async function createTenant(name: string) {
+    const response = await fetch('/api/tenants', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    const refreshed = await fetch('/api/auth/me');
+    if (refreshed.ok) setAuthContext(await refreshed.json() as AuthContext);
+    setState(initial); setSelected(null);
+  }
+
+  async function logout() {
+    try { await fetch('/api/auth/logout', { method: 'POST' }); }
+    finally { setAuthContext(null); setState(initial); }
+  }
+
+  if (!authChecked) return <div className="auth-loading">Coke Dots</div>;
+  if (!authContext) return <LoginScreen googleConfigured={googleConfigured} />;
+
   return <div className="shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">●</span> Coke Dots</div>
@@ -78,10 +119,10 @@ function App() {
       <button className={`nav ${view === 'computer' ? 'selected' : ''}`} onClick={() => setView('computer')}>▣ <span>电脑</span></button>
       <div className="side-caption">正在负责</div>
       <div className="task-links">{state.tasks.slice(0, 12).map(task => <button key={task.id} className={selected === task.id ? 'on' : ''} onClick={() => { setView('chat'); setSelected(task.id); }}><span className={`status-dot ${task.status}`} />{task.title}</button>)}</div>
-      <button className="profile-link" onClick={() => setView('profile')}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>个人代理</small></span><span>⌄</span></button>
+      <button className="profile-link" onClick={() => setView('profile')}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
-      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'scheduled' ? 'Scheduled' : view === 'computer' ? '电脑' : '你的 dot'}</span><span className="top-status"><span className="online" />本机运行中</span></header>
+      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'scheduled' ? 'Scheduled' : view === 'computer' ? '电脑' : '你的 dot'}</span><div className="top-actions"><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {view === 'chat' && <section className="chat-panel">
         {!selectedTask && entries.length === 0 ? <div className="welcome"><Avatar {...state.profile} /><h1>认识你的 {state.profile.name}</h1><p>交给它一项持续的责任。工作和进度会保存在本机，离开这个窗口后仍可继续。</p><div className="suggestions"><button onClick={() => setDraft('帮我整理这个项目的待办，并告诉我下一步需要什么信息。')}>整理一个项目 →</button><button onClick={() => { setSchedule(true); setDraft('每小时检查这项工作的进度，有变化时提醒我。'); }}>安排定期检查 →</button></div></div> : <div className="timeline">
@@ -93,10 +134,48 @@ function App() {
       </section>}
       {view === 'activity' && <section className="content"><div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div><div className="cards">{state.tasks.length ? state.tasks.map(task => <div className="task-card" key={task.id}><div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div><h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><TaskControls task={task} act={act} compact /></div></div>) : <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div>}</div></section>}
       {view === 'scheduled' && <section className="content"><div className="section-heading"><h1>Scheduled</h1><p>查看和停止定期工作。网址检查只读取页面内容，有变化时在对话中提醒你。</p></div><div className="watch-form"><input aria-label="HTTPS 网址" placeholder="https://example.com/page" value={watchUrl} onChange={e => setWatchUrl(e.target.value)} /><label>每 <input type="number" min="5" max="10080" value={watchMinutes} onChange={e => setWatchMinutes(Number(e.target.value))} /> 分钟</label><button disabled={!watchUrl.trim()} onClick={() => void addWatch()}>添加检查</button></div><div className="cards">{state.watches.map(watch => <div className="task-card" key={watch.id}><span className={`pill ${watch.status === 'active' ? 'scheduled' : 'paused'}`}>{watch.status === 'active' ? '检查中' : '已暂停'}</span><h2>{watch.url}</h2><p>每 {watch.intervalMinutes} 分钟 · {watch.lastStatus || '尚未检查'}{watch.error ? ` · ${watch.error}` : ''}</p><div className="card-actions"><button onClick={() => void actWatch(watch.id, watch.status === 'active' ? 'pause' : 'resume')}>{watch.status === 'active' ? '暂停' : '继续'}</button></div></div>)}{state.tasks.filter(t => t.scheduleMinutes !== null).map(task => <div className="task-card" key={task.id}><span className={`pill ${task.status}`}>{statusText[task.status]}</span><h2>{task.title}</h2><p>每 {task.scheduleMinutes} 分钟 · 下次运行：{task.nextRunAt ? new Date(task.nextRunAt).toLocaleString('zh-CN') : '待定'}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><button onClick={() => void act(task, 'cancelSchedule')}>取消安排</button></div></div>)}{state.watches.length === 0 && !state.tasks.some(t => t.scheduleMinutes !== null) && <div className="empty">还没有定期工作。</div>}</div></section>}
-      {view === 'profile' && <Profile state={state} onError={setError} />}
+      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} />}
       {view === 'computer' && <ComputerView onError={setError} />}
     </main>
   </div>;
+}
+
+function LoginScreen({ googleConfigured }: { googleConfigured: boolean }) {
+  const [desktopPending, setDesktopPending] = useState(false);
+  const [desktopError, setDesktopError] = useState('');
+  const isElectron = /Electron/i.test(navigator.userAgent);
+  const authError = new URLSearchParams(window.location.search).get('authError');
+  const authErrors: Record<string, string> = { cancelled: '你取消了登录。', expired: '登录请求已过期，请重试。', invalid: '登录返回信息无效。', invalid_identity: 'Google 身份验证未通过。', missing_identity: 'Google 没有返回身份令牌。', sign_in_failed: 'Google 登录失败，请检查配置后重试。' };
+  async function beginDesktopLogin() {
+    setDesktopError(''); setDesktopPending(true);
+    const random = new Uint8Array(32); crypto.getRandomValues(random);
+    const handoffToken = Array.from(random, byte => byte.toString(16).padStart(2, '0')).join('');
+    const authorization = new URL('/api/auth/desktop/start', window.location.href);
+    authorization.searchParams.set('handoffToken', handoffToken);
+    const popup = window.open(authorization.toString(), '_blank');
+    if (!popup && !isElectron) { setDesktopPending(false); setDesktopError('浏览器阻止了登录窗口，请允许弹出窗口后重试。'); return; }
+    try {
+      const deadline = Date.now() + 10 * 60_000;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const response = await fetch('/api/auth/desktop/poll', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ handoffToken }) });
+        const data = await response.json();
+        if (response.status === 202) continue;
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        window.location.reload();
+        return;
+      }
+      throw new Error('登录等待超时，请重试。');
+    } catch (error) { setDesktopError(error instanceof Error ? error.message : String(error)); }
+    finally { setDesktopPending(false); }
+  }
+  return <main className="auth-page"><div className="auth-card"><div className="brand"><span className="brand-mark">●</span> Coke Dots</div><h1>让你的个人代理持续推进工作</h1><p>使用 Google 账号登录。每个工作区的任务、记录、模型密钥和浏览器会话相互隔离。</p>{authError && <div className="auth-error">{authErrors[authError] || '登录失败，请重试。'}</div>}{desktopError && <div className="auth-error">{desktopError}</div>}{googleConfigured ? isElectron ? <button className="google-login" disabled={desktopPending} onClick={() => void beginDesktopLogin()}><span>G</span>{desktopPending ? '等待浏览器完成登录…' : '使用 Google 登录'}</button> : <a className="google-login" href="/api/auth/google/start"><span>G</span>使用 Google 登录</a> : <div className="auth-setup"><strong>需要配置 Google OAuth</strong><span>在本机服务环境中设置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET，然后重启服务。</span></div>}<small>仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。</small></div></main>;
+}
+
+function WorkspaceSwitcher({ auth, onSwitch, onCreate, onError }: { auth: AuthContext; onSwitch: (id: string) => Promise<void>; onCreate: (name: string) => Promise<void>; onError: (message: string) => void }) {
+  const [name, setName] = useState('');
+  const [creating, setCreating] = useState(false);
+  return <div className="workspace-switcher"><label><span>工作区</span><select value={auth.tenant.id} onChange={event => void onSwitch(event.target.value)}>{auth.tenants.map(tenant => <option key={tenant.id} value={tenant.id}>{tenant.name} · {tenant.role}</option>)}</select></label>{creating ? <form onSubmit={event => { event.preventDefault(); void onCreate(name.trim()).then(() => { setName(''); setCreating(false); }).catch(error => onError(String(error))); }}><input aria-label="新工作区名称" autoFocus maxLength={60} value={name} onChange={event => setName(event.target.value)} placeholder="工作区名称" /><button disabled={!name.trim()}>创建</button><button type="button" onClick={() => setCreating(false)}>取消</button></form> : <button className="new-workspace" onClick={() => setCreating(true)}>＋ 新建工作区</button>}</div>;
 }
 
 function TaskControls({ task, act, compact = false }: { task: Task; act: (task: Task, action: string, extra?: object) => Promise<void>; compact?: boolean }) {
@@ -109,16 +188,25 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
   </div>;
 }
 
-function Profile({ state, onError }: { state: Snapshot; onError: (s: string) => void }) {
+function Profile({ state, auth, onError }: { state: Snapshot; auth: AuthContext; onError: (s: string) => void }) {
   const [name, setName] = useState(state.profile.name);
   const [shape, setShape] = useState(state.profile.shape);
   const [color, setColor] = useState(state.profile.color);
   const [baseUrl, setBaseUrl] = useState(state.modelSettings.baseUrl || 'https://api.openai.com/v1');
   const [model, setModel] = useState(state.modelSettings.model);
   const [apiKey, setApiKey] = useState('');
+  const [memberEmail, setMemberEmail] = useState('');
+  const [members, setMembers] = useState<TenantMember[]>([]);
+  const [membersError, setMembersError] = useState('');
+  const refreshMembers = async () => {
+    const response = await fetch(`/api/tenants/${auth.tenant.id}/members`);
+    if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
+    setMembers(await response.json() as TenantMember[]);
+  };
   useEffect(() => { setName(state.profile.name); setShape(state.profile.shape); setColor(state.profile.color); }, [state.profile.name, state.profile.shape, state.profile.color]);
   useEffect(() => { if (state.modelSettings.baseUrl) setBaseUrl(state.modelSettings.baseUrl); if (state.modelSettings.model) setModel(state.modelSettings.model); }, [state.modelSettings.baseUrl, state.modelSettings.model]);
-  return <section className="content profile-content"><div className="section-heading"><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div><div className="profile-card"><Avatar shape={shape} color={color} /><label>名字<input maxLength={40} value={name} onChange={e => setName(e.target.value)} /></label><div className="field-label">形状</div><div className="choices">{['circle', 'square', 'triangle'].map(item => <button key={item} className={shape === item ? 'chosen' : ''} onClick={() => setShape(item)}>{item === 'circle' ? '圆形' : item === 'square' ? '方形' : '三角形'}</button>)}</div><label>颜色<input type="color" value={color} onChange={e => setColor(e.target.value)} /></label><button className="primary" onClick={async () => { try { await request('/profile', 'PATCH', { name, shape, color }); } catch (e) { onError(String(e)); } }}>保存更改</button></div><div className="section-heading model-heading"><h2>模型 API</h2><p>密钥保存在 macOS 钥匙串，不写入项目或 SQLite。</p></div><div className="profile-card model-card"><label>API 地址<input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} /></label><label>模型名称<input value={model} onChange={e => setModel(e.target.value)} /></label><label>API 密钥<input type="password" autoComplete="off" placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label><button className="primary" onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存模型设置</button></div></section>;
+  useEffect(() => { void refreshMembers().catch(error => setMembersError(String(error))); }, [auth.tenant.id]);
+  return <section className="content profile-content"><div className="section-heading"><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div><div className="profile-card"><Avatar shape={shape} color={color} /><label>名字<input maxLength={40} value={name} onChange={e => setName(e.target.value)} /></label><div className="field-label">形状</div><div className="choices">{['circle', 'square', 'triangle'].map(item => <button key={item} className={shape === item ? 'chosen' : ''} onClick={() => setShape(item)}>{item === 'circle' ? '圆形' : item === 'square' ? '方形' : '三角形'}</button>)}</div><label>颜色<input type="color" value={color} onChange={e => setColor(e.target.value)} /></label><button className="primary" onClick={async () => { try { await request('/profile', 'PATCH', { name, shape, color }); } catch (e) { onError(String(e)); } }}>保存更改</button></div><div className="section-heading model-heading"><h2>工作区成员</h2><p>添加已登录 Coke Dots 的 Google 账号。当前角色：{auth.tenant.role}。</p></div><div className="profile-card model-card"><div className="member-list">{members.map(member => <div className="member-row" key={member.id}><span><strong>{member.name}</strong><small>{member.email}</small></span><span className="member-role">{member.role === 'owner' ? '所有者' : member.role === 'admin' ? '管理员' : '成员'}</span>{['owner', 'admin'].includes(auth.tenant.role) && member.role !== 'owner' && <button onClick={async () => { try { const response = await fetch(`/api/tenants/${auth.tenant.id}/members/${member.id}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>移除</button>}</div>)}</div><label>Google 账号邮箱<input type="email" value={memberEmail} onChange={event => setMemberEmail(event.target.value)} placeholder="teammate@example.com" /></label><button className="primary" disabled={!['owner', 'admin'].includes(auth.tenant.role) || !memberEmail.trim()} onClick={async () => { try { await request(`/tenants/${auth.tenant.id}/members`, 'POST', { email: memberEmail, role: 'member' }); setMemberEmail(''); setMembersError(''); await refreshMembers(); } catch (e) { setMembersError(String(e)); } }}>添加工作区成员</button>{membersError && <small className="member-error">{membersError}</small>}{!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以添加成员。</small>}</div><div className="section-heading model-heading"><h2>模型 API</h2><p>此 API 密钥只用于当前工作区，并保存在 macOS 钥匙串。</p></div><div className="profile-card model-card"><label>API 地址<input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} /></label><label>模型名称<input value={model} onChange={e => setModel(e.target.value)} /></label><label>API 密钥<input type="password" autoComplete="off" placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label><button className="primary" onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存模型设置</button></div></section>;
 }
 
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);

@@ -28,7 +28,7 @@ export class WatchRunner {
   private async check(watch: Watch) {
     const nextCheckAt = new Date(Date.now() + watch.intervalMinutes * 60_000).toISOString();
     // Reserve the next check before network I/O, so a restart cannot send duplicate checks.
-    this.store.updateWatch(watch.id, { nextCheckAt });
+    this.store.updateWatch(watch.id, { nextCheckAt }, watch.tenantId);
     this.onChange();
     try {
       const response = await this.fetcher(watch.url, { redirect: 'manual', signal: AbortSignal.timeout(20_000), headers: { accept: 'text/html,text/plain;q=0.9' } });
@@ -49,16 +49,16 @@ export class WatchRunner {
         }
       } finally { reader.releaseLock(); }
       const digest = hash.digest('hex');
-      const previous = this.store.watchHash(watch.id);
-      if (previous && previous !== digest) this.store.addEntry('dot', `检测到页面内容变化：${watch.url}`);
-      const current = this.store.getWatch(watch.id);
-      if (current?.status === 'active') this.store.updateWatch(watch.id, { lastHash: digest, lastCheckedAt: new Date().toISOString(), lastStatus: previous && previous !== digest ? '内容有变化' : previous ? '没有变化' : '已建立基线', error: null });
+      const previous = this.store.watchHash(watch.id, watch.tenantId);
+      if (previous && previous !== digest) this.store.addEntry('dot', `检测到页面内容变化：${watch.url}`, null, watch.tenantId);
+      const current = this.store.getWatch(watch.id, watch.tenantId);
+      if (current?.status === 'active') this.store.updateWatch(watch.id, { lastHash: digest, lastCheckedAt: new Date().toISOString(), lastStatus: previous && previous !== digest ? '内容有变化' : previous ? '没有变化' : '已建立基线', error: null }, watch.tenantId);
       this.onChange();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const current = this.store.getWatch(watch.id);
-      if (current?.status === 'active') this.store.updateWatch(watch.id, { lastCheckedAt: new Date().toISOString(), lastStatus: '检查失败', error: message.slice(0, 300) });
-      this.store.addEntry('system', `页面检查失败：${watch.url}（${message.slice(0, 150)}）`);
+      const current = this.store.getWatch(watch.id, watch.tenantId);
+      if (current?.status === 'active') this.store.updateWatch(watch.id, { lastCheckedAt: new Date().toISOString(), lastStatus: '检查失败', error: message.slice(0, 300) }, watch.tenantId);
+      this.store.addEntry('system', `页面检查失败：${watch.url}（${message.slice(0, 150)}）`, null, watch.tenantId);
       this.onChange();
     }
   }

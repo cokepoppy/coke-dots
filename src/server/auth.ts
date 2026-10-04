@@ -1,0 +1,181 @@
+import { createHash, randomBytes } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
+import { Store, type AuthSession } from './store.ts';
+
+const cookieName = 'coke_dots_session';
+const oauthCookieName = 'coke_dots_oauth_state';
+const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1000;
+
+export class AuthService {
+  private clientId = process.env.GOOGLE_CLIENT_ID?.trim() || '';
+  private clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() || '';
+
+  constructor(private store: Store, private port: number) {}
+
+  configured() { return Boolean(this.clientId && this.clientSecret); }
+
+  async begin(req: IncomingMessage, res: ServerResponse) {
+    if (!this.configured()) return json(res, 503, { error: '请先配置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET。' });
+    const authorizationUrl = await this.createAuthorizationUrl(req, res);
+    res.writeHead(302, { Location: authorizationUrl, 'Cache-Control': 'no-store' });
+    res.end();
+  }
+
+  async beginDesktop(req: IncomingMessage, res: ServerResponse, url: URL) {
+    if (!this.configured()) return json(res, 503, { error: '请先配置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET。' });
+    const handoffToken = url.searchParams.get('handoffToken') || '';
+    if (!/^[A-Za-z0-9_-]{40,80}$/.test(handoffToken)) return json(res, 400, { error: '登录接力码无效' });
+    const handoffHash = hash(handoffToken);
+    const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+    this.store.createDesktopHandoff(handoffHash, expiresAt);
+    const authorizationUrl = await this.createAuthorizationUrl(req, res, handoffHash);
+    res.writeHead(302, { Location: authorizationUrl, 'Cache-Control': 'no-store' });
+    res.end();
+  }
+
+  async pollDesktop(res: ServerResponse, handoffToken: string) {
+    if (!handoffToken || handoffToken.length > 200) return json(res, 400, { error: '登录接力码无效' });
+    const handoff = this.store.claimDesktopHandoff(hash(handoffToken));
+    if (!handoff) return json(res, 410, { error: '登录请求已过期，请重试' });
+    if (handoff === 'pending') {
+      res.writeHead(202, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ pending: true }));
+      return;
+    }
+    const token = randomToken();
+    const expiresAt = new Date(Date.now() + sessionLifetimeMs).toISOString();
+    const tokenHash = hash(token);
+    this.store.createSession(tokenHash, handoff.userId, handoff.tenantId, expiresAt);
+    setSessionCookie(res, token, sessionLifetimeMs, false);
+    const session = this.store.getSession(tokenHash)!;
+    return json(res, 200, { user: session.user, tenant: session.tenant, tenants: this.store.tenantsForUser(session.user.id) });
+  }
+
+  async finish(req: IncomingMessage, res: ServerResponse, url: URL) {
+    const state = url.searchParams.get('state') || '';
+    const code = url.searchParams.get('code') || '';
+    const flow = state && state.length <= 1024 ? this.store.consumeOAuthFlow(hash(state)) : null;
+    const returnTo = flow?.returnTo || appOrigin(req);
+    const cookieState = cookieValue(req.headers.cookie || '', oauthCookieName);
+    clearOAuthCookie(res);
+    if (url.searchParams.has('error')) {
+      if (flow?.handoffHash) this.store.cancelDesktopHandoff(flow.handoffHash);
+      return redirect(res, `${returnTo}/?authError=cancelled`);
+    }
+    if (!state || !code || code.length > 4096) return redirect(res, `${returnTo}/?authError=invalid`);
+    if (!flow || cookieState !== hash(state)) {
+      if (flow?.handoffHash) this.store.cancelDesktopHandoff(flow.handoffHash);
+      return redirect(res, `${returnTo}/?authError=expired`);
+    }
+    try {
+      const redirectUri = this.redirectUri(req);
+      const client = this.oauthClient();
+      const { tokens } = await client.getToken({ code, codeVerifier: flow.codeVerifier, redirect_uri: redirectUri });
+      if (!tokens.id_token) return redirect(res, `${returnTo}/?authError=missing_identity`);
+      const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: this.clientId });
+      const identity = ticket.getPayload();
+      if (!identity || identity.nonce !== flow.nonce || !identity.sub || !identity.email || identity.email_verified !== true) {
+        return redirect(res, `${returnTo}/?authError=invalid_identity`);
+      }
+      const account = this.store.signInGoogle({ subject: identity.sub, email: identity.email, name: identity.name || identity.email });
+      const token = randomToken();
+      const expiresAt = new Date(Date.now() + sessionLifetimeMs).toISOString();
+      this.store.createSession(hash(token), account.user.id, account.tenant.id, expiresAt);
+      if (flow.handoffHash) this.store.completeDesktopHandoff(flow.handoffHash, account.user.id, account.tenant.id);
+      setSessionCookie(res, token, sessionLifetimeMs, redirectUri.startsWith('https://'));
+      redirect(res, `${returnTo}/`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('Google sign-in failed:', message.slice(0, 300));
+      redirect(res, `${returnTo}/?authError=sign_in_failed`);
+    }
+  }
+
+  session(req: IncomingMessage): AuthSession | null {
+    const token = cookieValue(req.headers.cookie || '', cookieName);
+    if (!token || token.length > 200) return null;
+    return this.store.getSession(hash(token));
+  }
+
+  logout(req: IncomingMessage, res: ServerResponse) {
+    const token = cookieValue(req.headers.cookie || '', cookieName);
+    if (token) this.store.removeSession(hash(token));
+    setSessionCookie(res, '', 0, false);
+  }
+
+  private redirectUri(req: IncomingMessage) {
+    const configured = process.env.GOOGLE_REDIRECT_URI?.trim();
+    if (configured) return configured;
+    const hostname = req.headers.host?.split(':')[0] === 'localhost' ? 'localhost' : '127.0.0.1';
+    return `http://${hostname}:${this.port}/auth/google/callback`;
+  }
+
+  private oauthClient() {
+    return new OAuth2Client(this.clientId, this.clientSecret, process.env.GOOGLE_REDIRECT_URI?.trim() || `http://127.0.0.1:${this.port}/auth/google/callback`);
+  }
+
+  private async createAuthorizationUrl(req: IncomingMessage, res: ServerResponse, handoffHash?: string) {
+    const state = randomToken();
+    const nonce = randomToken();
+    const client = this.oauthClient();
+    const { codeVerifier, codeChallenge } = await client.generateCodeVerifierAsync();
+    const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+    this.store.createOAuthFlow({ stateHash: hash(state), nonce, codeVerifier, expiresAt, handoffHash, returnTo: appOrigin(req) });
+    setOAuthCookie(res, hash(state));
+    const authorizationUrl = new URL(client.generateAuthUrl({
+      response_type: 'code', access_type: 'online', scope: ['openid', 'email', 'profile'],
+      state, prompt: 'select_account', code_challenge: codeChallenge,
+      code_challenge_method: CodeChallengeMethod.S256,
+    }));
+    authorizationUrl.searchParams.set('nonce', nonce);
+    return authorizationUrl.toString();
+  }
+}
+
+export function hash(value: string) { return createHash('sha256').update(value).digest('hex'); }
+function randomToken() { return randomBytes(32).toString('base64url'); }
+function cookieValue(header: string, name: string) {
+  const prefix = `${name}=`;
+  const item = header.split(';').map(part => part.trim()).find(part => part.startsWith(prefix));
+  return item ? decodeURIComponent(item.slice(prefix.length)) : '';
+}
+function setSessionCookie(res: ServerResponse, token: string, maxAgeMs: number, secure: boolean) {
+  const securePart = secure ? '; Secure' : '';
+  appendCookie(res, `${cookieName}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}${securePart}`);
+}
+function setOAuthCookie(res: ServerResponse, stateHash: string) {
+  appendCookie(res, `${oauthCookieName}=${stateHash}; HttpOnly; SameSite=Lax; Path=/auth/google/callback; Max-Age=600${(process.env.GOOGLE_REDIRECT_URI || '').startsWith('https://') ? '; Secure' : ''}`);
+}
+function clearOAuthCookie(res: ServerResponse) {
+  appendCookie(res, `${oauthCookieName}=; HttpOnly; SameSite=Lax; Path=/auth/google/callback; Max-Age=0`);
+}
+function appendCookie(res: ServerResponse, value: string) {
+  const old = res.getHeader('Set-Cookie');
+  const current = Array.isArray(old) ? old.map(String) : typeof old === 'string' ? [old] : [];
+  res.setHeader('Set-Cookie', [...current, value]);
+}
+function redirect(res: ServerResponse, location: string) {
+  res.writeHead(302, { Location: location, 'Cache-Control': 'no-store' });
+  res.end();
+}
+function appOrigin(req: IncomingMessage) {
+  const configured = process.env.DOTS_APP_URL?.trim();
+  if (configured) {
+    try { const url = new URL(configured); if (['http:', 'https:'].includes(url.protocol)) return url.origin; } catch { /* Use the local request origin. */ }
+  }
+  const referer = req.headers.referer;
+  if (referer) {
+    try {
+      const origin = new URL(referer).origin;
+      if (/^http:\/\/(127\.0\.0\.1|localhost):(5173|4317)$/.test(origin)) return origin;
+    } catch { /* Ignore malformed referrers. */ }
+  }
+  const host = req.headers.host || '';
+  const match = host.match(/^(127\.0\.0\.1|localhost):(5173|4317)$/);
+  return match ? `http://${match[1]}:${match[2]}` : 'http://127.0.0.1:4317';
+}
+function json(res: ServerResponse, status: number, value: unknown) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(value));
+}

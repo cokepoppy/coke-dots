@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url);
 
 export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
 export interface AgentRequest {
+  tenantId?: string;
   prompt: string;
   priorResult: string | null;
   sessionId: string | null;
@@ -16,7 +17,7 @@ export interface AgentRequest {
   onEvent: (message: string) => void;
 }
 export interface AgentDecision { status: 'done' | 'waiting' | 'scheduled'; message: string; nextMinutes?: number; sessionId?: string }
-export interface AgentAdapter { id: Engine; available(): boolean; run(input: AgentRequest): Promise<AgentDecision> }
+export interface AgentAdapter { id: Engine; available(tenantId?: string): boolean; run(input: AgentRequest): Promise<AgentDecision> }
 
 const instruction = 'You are a personal agent. Finish with one JSON object only: {"status":"done|waiting|scheduled","message":"...","nextMinutes":15}. Do not claim external actions you did not perform. Do not send messages, change external accounts, or edit files. If an action would require that access, choose waiting and explain the needed permission. For an ongoing check, choose scheduled. Use the user language.';
 const formatPrompt = (input: AgentRequest) => `${instruction}\n\nTask: ${input.prompt}\nPrior result: ${input.priorResult || '(none)'}\nCurrent time: ${new Date().toISOString()}`;
@@ -32,9 +33,9 @@ export function parseDecision(raw: string, sessionId?: string): AgentDecision {
 export const adapters: Record<Engine, AgentAdapter> = {
   model: {
     id: 'model',
-    available: () => Boolean(effectiveModelConfig()),
+    available: tenantId => Boolean(effectiveModelConfig(tenantId || 'legacy')),
     async run(input) {
-      const config = effectiveModelConfig();
+      const config = effectiveModelConfig(input.tenantId || 'legacy');
       if (!config) throw new Error('模型尚未配置');
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 90_000);

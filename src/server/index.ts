@@ -1,7 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { resolve } from 'node:path';
+import { resolve, join, extname } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { extname, join } from 'node:path';
 import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
@@ -9,38 +8,141 @@ import { adapters } from './adapters.ts';
 import type { Engine } from '../shared/types.ts';
 import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 import { ComputerManager } from './computer.ts';
+import { AuthService } from './auth.ts';
+import { existsSync } from 'node:fs';
+
+const envFile = resolve(process.env.DOTS_ENV_FILE || '.env');
+if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const port = Number(process.env.DOTS_PORT || 4317);
 const host = '127.0.0.1';
-const store = new Store(resolve(process.env.DOTS_DATA_DIR || './data'));
-const computer = new ComputerManager(resolve(process.env.DOTS_DATA_DIR || './data'));
-loadModelSettings(store.getSetting('modelBaseUrl'), store.getSetting('modelName'));
-const clients = new Set<ServerResponse>();
-const availableEngines = () => (Object.keys(adapters) as Engine[]).filter(id => adapters[id].available());
-const snapshot = () => store.snapshot(availableEngines().length > 0, availableEngines(), publicModelSettings());
-const publish = () => {
-  const payload = `data: ${JSON.stringify(snapshot())}\n\n`;
-  for (const client of clients) client.write(payload);
-};
-const worker = new Worker(store, publish, resolve(process.env.DOTS_DATA_DIR || './data', 'workspaces'));
+const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
+const store = new Store(dataDirectory);
+const auth = new AuthService(store, port);
+const computers = new Map<string, ComputerManager>();
+const clients = new Map<ServerResponse, string>();
+const availableFor = (tenantId: string) => (Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId));
+
+function snapshot(tenantId: string) {
+  loadModelSettings(store.getSetting('modelBaseUrl', tenantId), store.getSetting('modelName', tenantId), tenantId);
+  const available = availableFor(tenantId);
+  return store.snapshot(available.includes('model'), available, publicModelSettings(tenantId), tenantId);
+}
+
+function computerFor(tenantId: string) {
+  let computer = computers.get(tenantId);
+  if (!computer) {
+    computer = new ComputerManager(join(dataDirectory, 'tenants', tenantId, 'computer'));
+    computers.set(tenantId, computer);
+  }
+  return computer;
+}
+
+function publish() {
+  for (const [client, tokenHash] of clients) {
+    const session = store.getSession(tokenHash);
+    if (!session) { client.end(); clients.delete(client); continue; }
+    try { client.write(`data: ${JSON.stringify(snapshot(session.tenant.id))}\n\n`); }
+    catch { client.end(); clients.delete(client); }
+  }
+}
+
+const sessionHeartbeat = setInterval(() => {
+  for (const [client, tokenHash] of clients) {
+    if (!store.getSession(tokenHash)) { client.end(); clients.delete(client); }
+    else client.write(': keep-alive\n\n');
+  }
+}, 30_000);
+
+const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'));
 const watchRunner = new WatchRunner(store, publish);
 
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-store');
   if (!isLocalRequest(req)) return reply(res, 403, { error: 'Local access only' });
-  if (!req.url?.startsWith('/api/')) return serveStatic(req, res);
-  const path = new URL(req.url, `http://${host}:${port}`).pathname;
+  const url = new URL(req.url || '/', `http://${host}:${port}`);
+  const path = url.pathname;
+
+  if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
+  if (!path.startsWith('/api/')) return serveStatic(req, res);
   if (path === '/api/health' && req.method === 'GET') return reply(res, 200, { ok: true });
-  if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot());
-  if (path === '/api/events' && req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'Cache-Control': 'no-store' });
-    clients.add(res);
-    res.write(`data: ${JSON.stringify(snapshot())}\n\n`);
-    req.on('close', () => clients.delete(res));
-    return;
+  if (path === '/api/auth/config' && req.method === 'GET') return reply(res, 200, { googleConfigured: auth.configured() });
+  if (path === '/api/auth/google/start' && req.method === 'GET') return auth.begin(req, res);
+  if (path === '/api/auth/desktop/poll' && req.method === 'POST') {
+    if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+    const body = await readJson(req);
+    return auth.pollDesktop(res, String(body.handoffToken || ''));
   }
+
+  if (path === '/api/auth/me' && req.method === 'GET') {
+    const session = auth.session(req);
+    if (!session) return reply(res, 401, { error: '请先登录' });
+    return reply(res, 200, { user: session.user, tenant: session.tenant, tenants: store.tenantsForUser(session.user.id) });
+  }
+  if (path === '/api/auth/desktop/start' && req.method === 'GET') return auth.beginDesktop(req, res, url);
+  if (path === '/api/auth/logout' && req.method === 'POST') {
+    if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+    auth.logout(req, res);
+    publish();
+    return reply(res, 200, { ok: true });
+  }
+
+  const session = auth.session(req);
+  if (!session) return reply(res, 401, { error: '请先使用 Google 登录' });
+  if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+
   try {
+    if (path === '/api/events' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'Cache-Control': 'no-store' });
+      clients.set(res, session.tokenHash);
+      res.write(`data: ${JSON.stringify(snapshot(session.tenant.id))}\n\n`);
+      req.on('close', () => clients.delete(res));
+      return;
+    }
+    if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot(session.tenant.id));
+
+    const body = req.method === 'POST' || req.method === 'PATCH' ? await readJson(req) : {};
+    if (path === '/api/auth/tenant' && req.method === 'POST') {
+      const tenantId = String(body.tenantId || '');
+      if (!store.selectSessionTenant(session.tokenHash, session.user.id, tenantId)) return reply(res, 403, { error: '你不是该工作区成员' });
+      publish();
+      const updated = auth.session(req)!;
+      return reply(res, 200, { user: updated.user, tenant: updated.tenant, tenants: store.tenantsForUser(updated.user.id) });
+    }
+    if (path === '/api/tenants' && req.method === 'POST') {
+      const name = String(body.name || '').trim();
+      if (!name || name.length > 60) return reply(res, 400, { error: '工作区名称需为 1–60 个字符' });
+      const tenant = store.createWorkspace(session.user.id, name);
+      store.selectSessionTenant(session.tokenHash, session.user.id, tenant.id);
+      publish();
+      return reply(res, 201, tenant);
+    }
+    const memberMatch = path.match(/^\/api\/tenants\/([a-z0-9-]+)\/members$/);
+    if (memberMatch && req.method === 'GET') {
+      if (memberMatch[1] !== session.tenant.id) return reply(res, 403, { error: '请先切换到目标工作区' });
+      return reply(res, 200, store.workspaceMembers(session.tenant.id));
+    }
+    if (memberMatch && req.method === 'POST') {
+      if (memberMatch[1] !== session.tenant.id) return reply(res, 403, { error: '请先切换到目标工作区' });
+      const email = String(body.email || '').trim().toLowerCase();
+      const role = body.role === 'admin' ? 'admin' : 'member';
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return reply(res, 400, { error: '邮箱地址无效' });
+      const result = store.addWorkspaceMember(session.tenant.id, session.user.id, email, role);
+      if (!result.ok) return reply(res, 404, { error: result.error });
+      publish();
+      return reply(res, 201, { user: result.user, role });
+    }
+    const removeMemberMatch = path.match(/^\/api\/tenants\/([a-z0-9-]+)\/members\/([a-f0-9-]+)$/);
+    if (removeMemberMatch && req.method === 'DELETE') {
+      if (removeMemberMatch[1] !== session.tenant.id) return reply(res, 403, { error: '请先切换到目标工作区' });
+      const result = store.removeWorkspaceMember(session.tenant.id, session.user.id, removeMemberMatch[2]);
+      if (!result.ok) return reply(res, 403, { error: result.error });
+      publish();
+      return reply(res, 200, { ok: true });
+    }
+
+    const computer = computerFor(session.tenant.id);
     if (path === '/api/computer' && req.method === 'GET') return reply(res, 200, await computer.state());
     if (path === '/api/computer/screenshot' && req.method === 'GET') {
       const bytes = await computer.screenshot();
@@ -48,13 +150,13 @@ const server = createServer(async (req, res) => {
       res.end(bytes);
       return;
     }
-    const body = req.method === 'POST' || req.method === 'PATCH' ? await readJson(req) : {};
     if (path === '/api/computer/open' && req.method === 'POST') return reply(res, 200, await computer.open());
     if (path === '/api/computer/take-over' && req.method === 'POST') { computer.takeOver(); return reply(res, 200, await computer.state()); }
     if (path === '/api/computer/return-control' && req.method === 'POST') { computer.returnControl(); return reply(res, 200, await computer.state()); }
     if (path === '/api/computer/navigate' && req.method === 'POST') return reply(res, 200, await computer.navigate(String(body.url || '')));
     if (path === '/api/computer/click' && req.method === 'POST') return reply(res, 200, await computer.click(Number(body.x), Number(body.y)));
     if (path === '/api/computer/type' && req.method === 'POST') return reply(res, 200, await computer.type(String(body.text || '')));
+
     if (path === '/api/tasks' && req.method === 'POST') {
       const instruction = String(body.instruction || '').trim();
       if (!instruction || instruction.length > 10000) return reply(res, 400, { error: 'Instruction must contain 1–10000 characters' });
@@ -62,39 +164,36 @@ const server = createServer(async (req, res) => {
       if (minutes !== null && (!Number.isInteger(minutes) || minutes < 1 || minutes > 10080)) return reply(res, 400, { error: 'Invalid schedule' });
       const engine = String(body.engine || 'model') as Engine;
       if (!(engine in adapters)) return reply(res, 400, { error: 'Invalid engine' });
-      const task = store.createTask(instruction, minutes, engine);
-      publish();
-      void worker.tick();
+      const task = store.createTask(instruction, minutes, engine, session.tenant.id);
+      publish(); void worker.tick();
       return reply(res, 201, task);
     }
     if (path === '/api/watches' && req.method === 'POST') {
       const intervalMinutes = Number(body.intervalMinutes);
       if (!Number.isInteger(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 10080) return reply(res, 400, { error: '检查间隔需为 5–10080 分钟' });
       const url = validateWatchUrl(String(body.url || ''));
-      const watch = store.createWatch(url, intervalMinutes);
-      publish();
-      void watchRunner.tick();
+      const watch = store.createWatch(url, intervalMinutes, session.tenant.id);
+      publish(); void watchRunner.tick();
       return reply(res, 201, watch);
     }
     const watchMatch = path.match(/^\/api\/watches\/([a-f0-9-]+)$/);
     if (watchMatch && req.method === 'PATCH') {
-      const watch = store.getWatch(watchMatch[1]);
+      const watch = store.getWatch(watchMatch[1], session.tenant.id);
       if (!watch) return reply(res, 404, { error: 'Watch not found' });
-      if (body.action === 'pause') store.updateWatch(watch.id, { status: 'paused', nextCheckAt: null });
-      else if (body.action === 'resume') store.updateWatch(watch.id, { status: 'active', nextCheckAt: new Date().toISOString(), error: null });
+      if (body.action === 'pause') store.updateWatch(watch.id, { status: 'paused', nextCheckAt: null }, session.tenant.id);
+      else if (body.action === 'resume') store.updateWatch(watch.id, { status: 'active', nextCheckAt: new Date().toISOString(), error: null }, session.tenant.id);
       else return reply(res, 400, { error: 'Invalid action' });
-      publish();
-      void watchRunner.tick();
-      return reply(res, 200, store.getWatch(watch.id));
+      publish(); void watchRunner.tick();
+      return reply(res, 200, store.getWatch(watch.id, session.tenant.id));
     }
     if (path === '/api/profile' && req.method === 'PATCH') {
       const name = String(body.name || '').trim().slice(0, 40);
       const shape = String(body.shape || 'circle');
       const color = String(body.color || '#ba9af7');
       if (!name || !['circle', 'square', 'triangle'].includes(shape) || !/^#[0-9a-fA-F]{6}$/.test(color)) return reply(res, 400, { error: 'Invalid profile' });
-      store.setProfile(name, shape, color);
+      store.setProfile(name, shape, color, session.tenant.id);
       publish();
-      return reply(res, 200, snapshot().profile);
+      return reply(res, 200, snapshot(session.tenant.id).profile);
     }
     if (path === '/api/model-settings' && req.method === 'PATCH') {
       const baseUrl = String(body.baseUrl || '').trim().replace(/\/$/, '');
@@ -104,35 +203,34 @@ const server = createServer(async (req, res) => {
       try { parsed = new URL(baseUrl); } catch { return reply(res, 400, { error: '模型地址无效' }); }
       const localHttp = parsed.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(parsed.hostname);
       if ((!localHttp && parsed.protocol !== 'https:') || parsed.username || parsed.password || !model || model.length > 120 || apiKey.length > 5000) return reply(res, 400, { error: '模型配置无效' });
-      if (apiKey) saveModelKey(apiKey);
-      store.setSetting('modelBaseUrl', baseUrl);
-      store.setSetting('modelName', model);
-      setModelMetadata(baseUrl, model);
+      if (apiKey) saveModelKey(apiKey, session.tenant.id);
+      store.setSetting('modelBaseUrl', baseUrl, session.tenant.id);
+      store.setSetting('modelName', model, session.tenant.id);
+      setModelMetadata(baseUrl, model, session.tenant.id);
       publish();
-      return reply(res, 200, publicModelSettings());
+      return reply(res, 200, publicModelSettings(session.tenant.id));
     }
-    const match = path.match(/^\/api\/tasks\/([a-f0-9-]+)$/);
-    if (match && req.method === 'PATCH') {
-      const old = store.getTask(match[1]);
+    const taskMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)$/);
+    if (taskMatch && req.method === 'PATCH') {
+      const old = store.getTask(taskMatch[1], session.tenant.id);
       if (!old) return reply(res, 404, { error: 'Task not found' });
       const action = String(body.action || '');
-      if (action === 'pause') store.updateTask(old.id, { status: 'paused', nextRunAt: null });
-      else if (action === 'resume' || action === 'retry') store.updateTask(old.id, { status: 'queued', nextRunAt: new Date().toISOString(), error: null });
-      else if (action === 'cancelSchedule') store.updateTask(old.id, { scheduleMinutes: null, status: 'paused', nextRunAt: null });
+      if (action === 'pause') store.updateTask(old.id, { status: 'paused', nextRunAt: null }, session.tenant.id);
+      else if (action === 'resume' || action === 'retry') store.updateTask(old.id, { status: 'queued', nextRunAt: new Date().toISOString(), error: null }, session.tenant.id);
+      else if (action === 'cancelSchedule') store.updateTask(old.id, { scheduleMinutes: null, status: 'paused', nextRunAt: null }, session.tenant.id);
       else if (action === 'redirect') {
         const instruction = String(body.instruction || '').trim();
         if (!instruction || instruction.length > 10000) return reply(res, 400, { error: 'Invalid instruction' });
-        store.updateTask(old.id, { instruction, status: 'queued', nextRunAt: new Date().toISOString() });
-        store.addEntry('user', instruction, old.id);
+        store.updateTask(old.id, { instruction, status: 'queued', nextRunAt: new Date().toISOString() }, session.tenant.id);
+        store.addEntry('user', instruction, old.id, session.tenant.id);
       } else if (action === 'priority') {
         const priority = Number(body.priority);
         if (!Number.isInteger(priority) || priority < -10 || priority > 10) return reply(res, 400, { error: 'Invalid priority' });
-        store.updateTask(old.id, { priority });
+        store.updateTask(old.id, { priority }, session.tenant.id);
       } else return reply(res, 400, { error: 'Invalid action' });
-      store.addEntry('system', `任务操作：${action}`, old.id);
-      publish();
-      void worker.tick();
-      return reply(res, 200, store.getTask(old.id));
+      store.addEntry('system', `任务操作：${action}`, old.id, session.tenant.id);
+      publish(); void worker.tick();
+      return reply(res, 200, store.getTask(old.id, session.tenant.id));
     }
     return reply(res, 404, { error: 'Not found' });
   } catch (error) {
@@ -144,9 +242,17 @@ function isLocalRequest(req: IncomingMessage) {
   const remote = req.socket.remoteAddress;
   const hostname = req.headers.host?.split(':')[0];
   const origin = req.headers.origin;
-  return (remote === '127.0.0.1' || remote === '::1') &&
+  const oauthCallback = req.method === 'GET' && req.url?.split('?')[0] === '/auth/google/callback' && origin === 'https://accounts.google.com';
+  const allowedOrigin = !origin || /^http:\/\/(127\.0\.0\.1|localhost):(5173|4317)$/.test(origin) || oauthCallback;
+  return (remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1') &&
     (hostname === '127.0.0.1' || hostname === 'localhost') &&
-    (!origin || /^http:\/\/(127\.0\.0\.1|localhost):(5173|4317)$/.test(origin));
+    allowedOrigin;
+}
+
+function validMutationOrigin(req: IncomingMessage) {
+  if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method || '')) return true;
+  if (!req.headers.origin) return false;
+  return /^http:\/\/(127\.0\.0\.1|localhost):(5173|4317)$/.test(req.headers.origin);
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -184,10 +290,11 @@ server.listen(port, host, () => {
 });
 
 const shutdown = () => {
+  clearInterval(sessionHeartbeat);
   worker.stop();
   watchRunner.stop();
   server.close();
-  void computer.close();
+  for (const computer of computers.values()) void computer.close();
   store.close();
 };
 process.on('SIGINT', shutdown);

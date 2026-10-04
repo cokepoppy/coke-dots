@@ -3,6 +3,7 @@ export type TaskStatus = 'queued' | 'working' | 'waiting' | 'scheduled' | 'done'
 
 export interface Task {
   id: string;
+  tenantId: string;
   engine: Engine;
   agentSessionId: string | null;
   title: string;
@@ -19,6 +20,7 @@ export interface Task {
 
 export interface Entry {
   id: number;
+  tenantId: string;
   taskId: string | null;
   kind: 'user' | 'dot' | 'system';
   body: string;
@@ -37,6 +39,7 @@ export interface Snapshot {
 
 export interface Watch {
   id: string;
+  tenantId: string;
   url: string;
   intervalMinutes: number;
   status: 'active' | 'paused' | 'failed';

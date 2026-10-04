@@ -14,8 +14,18 @@ Research date: 2026-10-05. This ledger separates product documentation, hands-on
 | V1 | https://www.youtube.com/watch?v=V_1Vn2WfpEY | Hands-on video; frames pending | Setup, conversation, delegation, scheduled tasks |
 | V2 | https://www.youtube.com/watch?v=Q9tF0R8d_Co | Hands-on video; frames pending | Avatar, rename, cloud computer, call, parallel work |
 | V3 | https://www.youtube.com/watch?v=uXspbC2srEQ | Scripted official film; frames pending | Visual leads only; do not infer runtime behavior |
+| G1 | https://developers.google.com/identity/openid-connect/openid-connect | Google identity protocol | Stable `sub` identity and ID-token claims |
+| G2 | https://developers.google.com/identity/protocols/oauth2/web-server | Google OAuth implementation guide | Authorization-code flow and state validation |
+| G3 | https://developers.google.com/identity/protocols/oauth2/resources/best-practices | Google OAuth security guidance | PKCE for desktop clients and state checks |
 
 The video chapter leads are from https://www.postcutoff.com/v/futurepedia-i-tested-openai-s-new-personal-assistant-agent-dots/ and https://madewithdots.com/projects/youtube-Q9tF0R8d_Co. They must be checked against the original videos before implementation claims depend on them.
+
+## Coke Dots infrastructure decisions (not Dots feature evidence)
+
+- Google accounts are keyed by the verified immutable `sub` claim; profile email remains mutable display/contact information (G1).
+- Login uses an authorization-code exchange, one-time state bound to a browser cookie, PKCE, nonce validation, and verified ID-token claims (G1–G3).
+- Each account gets a personal tenant. Workspace membership controls which tenant a session can select. Application data, Keychain model keys, task working directories, and computer browser profiles are tenant-scoped.
+- This app remains loopback-only. The initial local deployment supports multiple Google accounts and workspaces on the same Mac; remote access needs its own HTTPS and network access review before enabling it.
 
 ## Interaction and state matrix
 
