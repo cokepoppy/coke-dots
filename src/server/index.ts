@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { resolve } from 'node:path';
 import { Store } from './store.ts';
 import { Worker, modelConfig } from './worker.ts';
+import { WatchRunner, validateWatchUrl } from './watch.ts';
 
 const port = Number(process.env.DOTS_PORT || 4317);
 const host = '127.0.0.1';
@@ -12,6 +13,7 @@ const publish = () => {
   for (const client of clients) client.write(payload);
 };
 const worker = new Worker(store, publish);
+const watchRunner = new WatchRunner(store, publish);
 
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -39,6 +41,26 @@ const server = createServer(async (req, res) => {
       publish();
       void worker.tick();
       return reply(res, 201, task);
+    }
+    if (path === '/api/watches' && req.method === 'POST') {
+      const intervalMinutes = Number(body.intervalMinutes);
+      if (!Number.isInteger(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 10080) return reply(res, 400, { error: '检查间隔需为 5–10080 分钟' });
+      const url = validateWatchUrl(String(body.url || ''));
+      const watch = store.createWatch(url, intervalMinutes);
+      publish();
+      void watchRunner.tick();
+      return reply(res, 201, watch);
+    }
+    const watchMatch = path.match(/^\/api\/watches\/([a-f0-9-]+)$/);
+    if (watchMatch && req.method === 'PATCH') {
+      const watch = store.getWatch(watchMatch[1]);
+      if (!watch) return reply(res, 404, { error: 'Watch not found' });
+      if (body.action === 'pause') store.updateWatch(watch.id, { status: 'paused', nextCheckAt: null });
+      else if (body.action === 'resume') store.updateWatch(watch.id, { status: 'active', nextCheckAt: new Date().toISOString(), error: null });
+      else return reply(res, 400, { error: 'Invalid action' });
+      publish();
+      void watchRunner.tick();
+      return reply(res, 200, store.getWatch(watch.id));
     }
     if (path === '/api/profile' && req.method === 'PATCH') {
       const name = String(body.name || '').trim().slice(0, 40);
@@ -104,10 +126,12 @@ function reply(res: ServerResponse, status: number, value: unknown) {
 server.listen(port, host, () => {
   console.log(`Coke Dots service listening on http://${host}:${port}`);
   worker.start();
+  watchRunner.start();
 });
 
 const shutdown = () => {
   worker.stop();
+  watchRunner.stop();
   server.close();
   store.close();
 };

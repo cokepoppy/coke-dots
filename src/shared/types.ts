@@ -25,6 +25,18 @@ export interface Entry {
 export interface Snapshot {
   profile: { name: string; shape: string; color: string };
   tasks: Task[];
+  watches: Watch[];
   entries: Entry[];
   configured: boolean;
+}
+
+export interface Watch {
+  id: string;
+  url: string;
+  intervalMinutes: number;
+  status: 'active' | 'paused' | 'failed';
+  nextCheckAt: string | null;
+  lastCheckedAt: string | null;
+  lastStatus: string | null;
+  error: string | null;
 }

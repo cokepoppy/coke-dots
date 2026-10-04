@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Entry, Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import type { Entry, Snapshot, Task, TaskStatus, Watch } from '../shared/types.ts';
 
 export class Store {
   readonly db: DatabaseSync;
@@ -26,6 +26,12 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS tasks_due ON tasks(status, next_run_at, priority);
       CREATE INDEX IF NOT EXISTS entries_task ON entries(task_id, id);
+      CREATE TABLE IF NOT EXISTS watches (
+        id TEXT PRIMARY KEY, url TEXT NOT NULL, interval_minutes INTEGER NOT NULL,
+        status TEXT NOT NULL, next_check_at TEXT, last_checked_at TEXT,
+        last_hash TEXT, last_status TEXT, error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS watches_due ON watches(status, next_check_at);
     `);
     // A process crash may leave a task in working state. Make it runnable again.
     this.db.prepare("UPDATE tasks SET status='queued', next_run_at=?, updated_at=? WHERE status='working'").run(new Date().toISOString(), new Date().toISOString());
@@ -38,6 +44,7 @@ export class Store {
     return {
       profile: p,
       tasks: (this.db.prepare('SELECT * FROM tasks ORDER BY priority DESC, created_at DESC').all() as Record<string, unknown>[]).map(toTask),
+      watches: (this.db.prepare('SELECT * FROM watches ORDER BY rowid DESC').all() as Record<string, unknown>[]).map(toWatch),
       entries: (this.db.prepare('SELECT id, task_id, kind, body, created_at FROM entries ORDER BY id DESC LIMIT 150').all() as Record<string, unknown>[]).map(toEntry).reverse(),
       configured,
     };
@@ -81,6 +88,38 @@ export class Store {
   setProfile(name: string, shape: string, color: string) {
     this.db.prepare('UPDATE profile SET name=?, shape=?, color=? WHERE id=1').run(name, shape, color);
   }
+
+  createWatch(url: string, intervalMinutes: number): Watch {
+    const id = randomUUID();
+    this.db.prepare('INSERT INTO watches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, url, intervalMinutes, 'active', new Date().toISOString(), null, null, null, null);
+    this.addEntry('system', `开始只读检查：${url}`);
+    return this.getWatch(id)!;
+  }
+
+  getWatch(id: string): Watch | null {
+    const row = this.db.prepare('SELECT * FROM watches WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    return row ? toWatch(row) : null;
+  }
+
+  dueWatches(now = new Date().toISOString()): Watch[] {
+    return (this.db.prepare("SELECT * FROM watches WHERE status='active' AND next_check_at <= ? LIMIT 10").all(now) as Record<string, unknown>[]).map(toWatch);
+  }
+
+  updateWatch(id: string, change: Partial<Watch> & { lastHash?: string | null }) {
+    const old = this.getWatch(id);
+    if (!old) return null;
+    const next = { ...old, ...change };
+    const oldHash = (this.db.prepare('SELECT last_hash FROM watches WHERE id=?').get(id) as { last_hash: string | null }).last_hash;
+    this.db.prepare('UPDATE watches SET status=?,next_check_at=?,last_checked_at=?,last_hash=?,last_status=?,error=? WHERE id=?')
+      .run(next.status, next.nextCheckAt, next.lastCheckedAt, change.lastHash === undefined ? oldHash : change.lastHash, next.lastStatus, next.error, id);
+    return this.getWatch(id);
+  }
+
+  watchHash(id: string): string | null {
+    const row = this.db.prepare('SELECT last_hash FROM watches WHERE id=?').get(id) as { last_hash: string | null } | undefined;
+    return row?.last_hash || null;
+  }
 }
 
 function toTask(r: Record<string, unknown>): Task {
@@ -97,4 +136,15 @@ function toTask(r: Record<string, unknown>): Task {
 
 function toEntry(r: Record<string, unknown>): Entry {
   return { id: Number(r.id), taskId: r.task_id == null ? null : String(r.task_id), kind: r.kind as Entry['kind'], body: String(r.body), createdAt: String(r.created_at) };
+}
+
+function toWatch(r: Record<string, unknown>): Watch {
+  return {
+    id: String(r.id), url: String(r.url), intervalMinutes: Number(r.interval_minutes),
+    status: r.status as Watch['status'],
+    nextCheckAt: r.next_check_at == null ? null : String(r.next_check_at),
+    lastCheckedAt: r.last_checked_at == null ? null : String(r.last_checked_at),
+    lastStatus: r.last_status == null ? null : String(r.last_status),
+    error: r.error == null ? null : String(r.error),
+  };
 }
