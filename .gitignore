@@ -1,0 +1,13 @@
+node_modules/
+dist/
+electron-dist/
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-*
+.DS_Store
+coverage/
+research/frames/
+research/videos/
