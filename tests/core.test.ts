@@ -1,0 +1,67 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { Store } from '../src/server/store.ts';
+import { Worker } from '../src/server/worker.ts';
+
+test('tasks, redirects and profile survive database reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
+  try {
+    let store = new Store(directory);
+    const task = store.createTask('Track the design review');
+    store.setProfile('Alfred', 'triangle', '#aabbcc');
+    store.updateTask(task.id, { instruction: 'Track the updated design review', priority: 2, status: 'working' });
+    store.close();
+    store = new Store(directory);
+    assert.equal(store.getTask(task.id)?.status, 'queued');
+    assert.equal(store.getTask(task.id)?.priority, 2);
+    assert.equal(store.getTask(task.id)?.instruction, 'Track the updated design review');
+    assert.equal(store.snapshot(false).profile.name, 'Alfred');
+    assert.equal(store.snapshot(false).entries.filter(e => e.taskId === task.id).length, 2);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('background worker stores real model result and schedules a future run', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
+  const modelServer = createServer(async (req, res) => {
+    assert.equal(req.url, '/chat/completions');
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'Checked the supplied information.' }) } }] }));
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'test-model';
+  process.env.DOTS_MODEL_API_KEY = 'test-key';
+  const store = new Store(directory);
+  const task = store.createTask('Check supplied information', 60);
+  const worker = new Worker(store, () => {});
+  try {
+    worker.start();
+    await waitFor(() => store.getTask(task.id)?.status === 'scheduled');
+    const completed = store.getTask(task.id)!;
+    assert.equal(completed.result, 'Checked the supplied information.');
+    assert.ok(completed.nextRunAt && completed.nextRunAt > new Date().toISOString());
+    assert.ok(store.snapshot(true).entries.some(e => e.taskId === task.id && e.kind === 'dot'));
+  } finally {
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    delete process.env.DOTS_MODEL_BASE_URL;
+    delete process.env.DOTS_MODEL;
+    delete process.env.DOTS_MODEL_API_KEY;
+  }
+});
+
+async function waitFor(predicate: () => boolean, timeout = 3000) {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeout) throw new Error('Timed out waiting for worker');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}

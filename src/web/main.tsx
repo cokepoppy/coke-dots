@@ -1,0 +1,102 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import './style.css';
+
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, tasks: [], entries: [], configured: false };
+const statusText: Record<TaskStatus, string> = {
+  queued: '排队中', working: '工作中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停',
+};
+
+async function request(path: string, method: 'POST' | 'PATCH', body: object) {
+  const response = await fetch(`/api${path}`, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function Avatar({ shape, color, small = false }: { shape: string; color: string; small?: boolean }) {
+  return <div className={`avatar ${shape} ${small ? 'small' : ''}`} style={{ backgroundColor: color }}><span className="eyes"><i /><i /></span></div>;
+}
+
+function App() {
+  const [state, setState] = useState<Snapshot>(initial);
+  const [view, setView] = useState<'chat' | 'activity' | 'scheduled' | 'profile'>('chat');
+  const [selected, setSelected] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [schedule, setSchedule] = useState(false);
+  const [minutes, setMinutes] = useState(60);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const stream = new EventSource('/api/events');
+    stream.onmessage = event => setState(JSON.parse(event.data));
+    stream.onerror = () => setError('与本机服务的连接已断开，正在重连。');
+    return () => stream.close();
+  }, []);
+
+  const selectedTask = state.tasks.find(t => t.id === selected) || null;
+  const entries = useMemo(() => selected ? state.entries.filter(e => e.taskId === selected) : state.entries, [state.entries, selected]);
+  const active = state.tasks.filter(t => ['queued', 'working', 'waiting', 'scheduled'].includes(t.status));
+
+  async function submit() {
+    if (!draft.trim() || busy) return;
+    setBusy(true); setError('');
+    try {
+      const task = await request('/tasks', 'POST', { instruction: draft, scheduleMinutes: schedule ? minutes : null }) as Task;
+      setDraft(''); setSelected(task.id); setView('chat');
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
+
+  async function act(task: Task, action: string, extra: object = {}) {
+    try { setError(''); await request(`/tasks/${task.id}`, 'PATCH', { action, ...extra }); }
+    catch (e) { setError(String(e)); }
+  }
+
+  return <div className="shell">
+    <aside className="sidebar">
+      <div className="brand"><span className="brand-mark">●</span> Coke Dots</div>
+      <button className={`nav ${view === 'chat' ? 'selected' : ''}`} onClick={() => { setView('chat'); setSelected(null); }}>✦ <span>你的 dot</span></button>
+      <button className={`nav ${view === 'activity' ? 'selected' : ''}`} onClick={() => setView('activity')}>▤ <span>Activity</span><em>{active.length || ''}</em></button>
+      <button className={`nav ${view === 'scheduled' ? 'selected' : ''}`} onClick={() => setView('scheduled')}>◷ <span>Scheduled</span></button>
+      <div className="side-caption">正在负责</div>
+      <div className="task-links">{state.tasks.slice(0, 12).map(task => <button key={task.id} className={selected === task.id ? 'on' : ''} onClick={() => { setView('chat'); setSelected(task.id); }}><span className={`status-dot ${task.status}`} />{task.title}</button>)}</div>
+      <button className="profile-link" onClick={() => setView('profile')}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>个人代理</small></span><span>⌄</span></button>
+    </aside>
+    <main className="main">
+      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'scheduled' ? 'Scheduled' : '你的 dot'}</span><span className="top-status"><span className="online" />本机运行中</span></header>
+      {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
+      {view === 'chat' && <section className="chat-panel">
+        {!selectedTask && entries.length === 0 ? <div className="welcome"><Avatar {...state.profile} /><h1>认识你的 {state.profile.name}</h1><p>交给它一项持续的责任。工作和进度会保存在本机，离开这个窗口后仍可继续。</p><div className="suggestions"><button onClick={() => setDraft('帮我整理这个项目的待办，并告诉我下一步需要什么信息。')}>整理一个项目 →</button><button onClick={() => { setSchedule(true); setDraft('每小时检查这项工作的进度，有变化时提醒我。'); }}>安排定期检查 →</button></div></div> : <div className="timeline">
+          {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
+          {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <Avatar {...state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><p>{entry.body}</p></div></article>)}
+          {selectedTask && <TaskControls task={selectedTask} act={act} />}
+        </div>}
+        <div className="composer-wrap"><div className="composer"><textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label>{schedule && <label>每 <input className="minutes" type="number" min="1" max="10080" value={minutes} onChange={e => setMinutes(Number(e.target.value))} /> 分钟</label>}<button className="send" disabled={busy || !draft.trim()} onClick={() => void submit()}>↑</button></div></div><small className="hint">{state.configured ? '任务由本机后台处理。' : '尚未配置模型；新任务会显示失败并可在配置后重试。'}</small></div>
+      </section>}
+      {view === 'activity' && <section className="content"><div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div><div className="cards">{state.tasks.length ? state.tasks.map(task => <div className="task-card" key={task.id}><div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div><h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><TaskControls task={task} act={act} compact /></div></div>) : <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div>}</div></section>}
+      {view === 'scheduled' && <section className="content"><div className="section-heading"><h1>Scheduled</h1><p>查看和停止定期工作。</p></div><div className="cards">{state.tasks.filter(t => t.scheduleMinutes !== null).map(task => <div className="task-card" key={task.id}><span className={`pill ${task.status}`}>{statusText[task.status]}</span><h2>{task.title}</h2><p>每 {task.scheduleMinutes} 分钟 · 下次运行：{task.nextRunAt ? new Date(task.nextRunAt).toLocaleString('zh-CN') : '待定'}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><button onClick={() => void act(task, 'cancelSchedule')}>取消安排</button></div></div>)}{!state.tasks.some(t => t.scheduleMinutes !== null) && <div className="empty">还没有定期工作。</div>}</div></section>}
+      {view === 'profile' && <Profile state={state} onError={setError} />}
+    </main>
+  </div>;
+}
+
+function TaskControls({ task, act, compact = false }: { task: Task; act: (task: Task, action: string, extra?: object) => Promise<void>; compact?: boolean }) {
+  const [redirect, setRedirect] = useState('');
+  return <div className={`task-controls ${compact ? 'compact' : ''}`}>
+    {!compact && <span className={`pill ${task.status}`}>{statusText[task.status]}</span>}
+    {['working', 'queued', 'scheduled'].includes(task.status) && <button onClick={() => void act(task, 'pause')}>暂停</button>}
+    {['paused', 'waiting', 'failed'].includes(task.status) && <button onClick={() => void act(task, task.status === 'failed' ? 'retry' : 'resume')}>{task.status === 'failed' ? '重试' : '继续'}</button>}
+    {!compact && <><button onClick={() => void act(task, 'priority', { priority: task.priority + 1 })}>提高优先级</button><div className="redirect"><input value={redirect} onChange={e => setRedirect(e.target.value)} placeholder="调整这项工作的要求" /><button disabled={!redirect.trim()} onClick={() => { void act(task, 'redirect', { instruction: redirect }); setRedirect(''); }}>更新</button></div></>}
+  </div>;
+}
+
+function Profile({ state, onError }: { state: Snapshot; onError: (s: string) => void }) {
+  const [name, setName] = useState(state.profile.name);
+  const [shape, setShape] = useState(state.profile.shape);
+  const [color, setColor] = useState(state.profile.color);
+  return <section className="content profile-content"><div className="section-heading"><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div><div className="profile-card"><Avatar shape={shape} color={color} /><label>名字<input maxLength={40} value={name} onChange={e => setName(e.target.value)} /></label><div className="field-label">形状</div><div className="choices">{['circle', 'square', 'triangle'].map(item => <button key={item} className={shape === item ? 'chosen' : ''} onClick={() => setShape(item)}>{item === 'circle' ? '圆形' : item === 'square' ? '方形' : '三角形'}</button>)}</div><label>颜色<input type="color" value={color} onChange={e => setColor(e.target.value)} /></label><button className="primary" onClick={async () => { try { await request('/profile', 'PATCH', { name, shape, color }); } catch (e) { onError(String(e)); } }}>保存更改</button></div></section>;
+}
+
+createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
