@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import type { Engine, Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import './style.css';
 import './watch.css';
+import { ComputerView } from './ComputerView.tsx';
 
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 const statusText: Record<TaskStatus, string> = {
@@ -22,7 +23,7 @@ function Avatar({ shape, color, small = false }: { shape: string; color: string;
 
 function App() {
   const [state, setState] = useState<Snapshot>(initial);
-  const [view, setView] = useState<'chat' | 'activity' | 'scheduled' | 'profile'>('chat');
+  const [view, setView] = useState<'chat' | 'activity' | 'scheduled' | 'computer' | 'profile'>('chat');
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [schedule, setSchedule] = useState(false);
@@ -74,12 +75,13 @@ function App() {
       <button className={`nav ${view === 'chat' ? 'selected' : ''}`} onClick={() => { setView('chat'); setSelected(null); }}>✦ <span>你的 dot</span></button>
       <button className={`nav ${view === 'activity' ? 'selected' : ''}`} onClick={() => setView('activity')}>▤ <span>Activity</span><em>{active.length || ''}</em></button>
       <button className={`nav ${view === 'scheduled' ? 'selected' : ''}`} onClick={() => setView('scheduled')}>◷ <span>Scheduled</span></button>
+      <button className={`nav ${view === 'computer' ? 'selected' : ''}`} onClick={() => setView('computer')}>▣ <span>电脑</span></button>
       <div className="side-caption">正在负责</div>
       <div className="task-links">{state.tasks.slice(0, 12).map(task => <button key={task.id} className={selected === task.id ? 'on' : ''} onClick={() => { setView('chat'); setSelected(task.id); }}><span className={`status-dot ${task.status}`} />{task.title}</button>)}</div>
       <button className="profile-link" onClick={() => setView('profile')}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>个人代理</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
-      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'scheduled' ? 'Scheduled' : '你的 dot'}</span><span className="top-status"><span className="online" />本机运行中</span></header>
+      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'scheduled' ? 'Scheduled' : view === 'computer' ? '电脑' : '你的 dot'}</span><span className="top-status"><span className="online" />本机运行中</span></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {view === 'chat' && <section className="chat-panel">
         {!selectedTask && entries.length === 0 ? <div className="welcome"><Avatar {...state.profile} /><h1>认识你的 {state.profile.name}</h1><p>交给它一项持续的责任。工作和进度会保存在本机，离开这个窗口后仍可继续。</p><div className="suggestions"><button onClick={() => setDraft('帮我整理这个项目的待办，并告诉我下一步需要什么信息。')}>整理一个项目 →</button><button onClick={() => { setSchedule(true); setDraft('每小时检查这项工作的进度，有变化时提醒我。'); }}>安排定期检查 →</button></div></div> : <div className="timeline">
@@ -92,6 +94,7 @@ function App() {
       {view === 'activity' && <section className="content"><div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div><div className="cards">{state.tasks.length ? state.tasks.map(task => <div className="task-card" key={task.id}><div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div><h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><TaskControls task={task} act={act} compact /></div></div>) : <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div>}</div></section>}
       {view === 'scheduled' && <section className="content"><div className="section-heading"><h1>Scheduled</h1><p>查看和停止定期工作。网址检查只读取页面内容，有变化时在对话中提醒你。</p></div><div className="watch-form"><input aria-label="HTTPS 网址" placeholder="https://example.com/page" value={watchUrl} onChange={e => setWatchUrl(e.target.value)} /><label>每 <input type="number" min="5" max="10080" value={watchMinutes} onChange={e => setWatchMinutes(Number(e.target.value))} /> 分钟</label><button disabled={!watchUrl.trim()} onClick={() => void addWatch()}>添加检查</button></div><div className="cards">{state.watches.map(watch => <div className="task-card" key={watch.id}><span className={`pill ${watch.status === 'active' ? 'scheduled' : 'paused'}`}>{watch.status === 'active' ? '检查中' : '已暂停'}</span><h2>{watch.url}</h2><p>每 {watch.intervalMinutes} 分钟 · {watch.lastStatus || '尚未检查'}{watch.error ? ` · ${watch.error}` : ''}</p><div className="card-actions"><button onClick={() => void actWatch(watch.id, watch.status === 'active' ? 'pause' : 'resume')}>{watch.status === 'active' ? '暂停' : '继续'}</button></div></div>)}{state.tasks.filter(t => t.scheduleMinutes !== null).map(task => <div className="task-card" key={task.id}><span className={`pill ${task.status}`}>{statusText[task.status]}</span><h2>{task.title}</h2><p>每 {task.scheduleMinutes} 分钟 · 下次运行：{task.nextRunAt ? new Date(task.nextRunAt).toLocaleString('zh-CN') : '待定'}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><button onClick={() => void act(task, 'cancelSchedule')}>取消安排</button></div></div>)}{state.watches.length === 0 && !state.tasks.some(t => t.scheduleMinutes !== null) && <div className="empty">还没有定期工作。</div>}</div></section>}
       {view === 'profile' && <Profile state={state} onError={setError} />}
+      {view === 'computer' && <ComputerView onError={setError} />}
     </main>
   </div>;
 }

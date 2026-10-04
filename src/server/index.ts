@@ -8,10 +8,12 @@ import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
 import type { Engine } from '../shared/types.ts';
 import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
+import { ComputerManager } from './computer.ts';
 
 const port = Number(process.env.DOTS_PORT || 4317);
 const host = '127.0.0.1';
 const store = new Store(resolve(process.env.DOTS_DATA_DIR || './data'));
+const computer = new ComputerManager(resolve(process.env.DOTS_DATA_DIR || './data'));
 loadModelSettings(store.getSetting('modelBaseUrl'), store.getSetting('modelName'));
 const clients = new Set<ServerResponse>();
 const availableEngines = () => (Object.keys(adapters) as Engine[]).filter(id => adapters[id].available());
@@ -39,7 +41,20 @@ const server = createServer(async (req, res) => {
     return;
   }
   try {
+    if (path === '/api/computer' && req.method === 'GET') return reply(res, 200, await computer.state());
+    if (path === '/api/computer/screenshot' && req.method === 'GET') {
+      const bytes = await computer.screenshot();
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+      res.end(bytes);
+      return;
+    }
     const body = req.method === 'POST' || req.method === 'PATCH' ? await readJson(req) : {};
+    if (path === '/api/computer/open' && req.method === 'POST') return reply(res, 200, await computer.open());
+    if (path === '/api/computer/take-over' && req.method === 'POST') { computer.takeOver(); return reply(res, 200, await computer.state()); }
+    if (path === '/api/computer/return-control' && req.method === 'POST') { computer.returnControl(); return reply(res, 200, await computer.state()); }
+    if (path === '/api/computer/navigate' && req.method === 'POST') return reply(res, 200, await computer.navigate(String(body.url || '')));
+    if (path === '/api/computer/click' && req.method === 'POST') return reply(res, 200, await computer.click(Number(body.x), Number(body.y)));
+    if (path === '/api/computer/type' && req.method === 'POST') return reply(res, 200, await computer.type(String(body.text || '')));
     if (path === '/api/tasks' && req.method === 'POST') {
       const instruction = String(body.instruction || '').trim();
       if (!instruction || instruction.length > 10000) return reply(res, 400, { error: 'Instruction must contain 1–10000 characters' });
@@ -172,6 +187,7 @@ const shutdown = () => {
   worker.stop();
   watchRunner.stop();
   server.close();
+  void computer.close();
   store.close();
 };
 process.on('SIGINT', shutdown);
