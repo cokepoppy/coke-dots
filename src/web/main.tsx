@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import type { Engine, Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import './style.css';
 import './watch.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, tasks: [], watches: [], entries: [], configured: false };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [] };
 const statusText: Record<TaskStatus, string> = {
   queued: '排队中', working: '工作中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停',
 };
@@ -29,6 +29,7 @@ function App() {
   const [minutes, setMinutes] = useState(60);
   const [watchUrl, setWatchUrl] = useState('');
   const [watchMinutes, setWatchMinutes] = useState(60);
+  const [engine, setEngine] = useState<Engine>('model');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -47,7 +48,7 @@ function App() {
     if (!draft.trim() || busy) return;
     setBusy(true); setError('');
     try {
-      const task = await request('/tasks', 'POST', { instruction: draft, scheduleMinutes: schedule ? minutes : null }) as Task;
+      const task = await request('/tasks', 'POST', { instruction: draft, scheduleMinutes: schedule ? minutes : null, engine }) as Task;
       setDraft(''); setSelected(task.id); setView('chat');
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
@@ -86,7 +87,7 @@ function App() {
           {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <Avatar {...state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><p>{entry.body}</p></div></article>)}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
         </div>}
-        <div className="composer-wrap"><div className="composer"><textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label>{schedule && <label>每 <input className="minutes" type="number" min="1" max="10080" value={minutes} onChange={e => setMinutes(Number(e.target.value))} /> 分钟</label>}<button className="send" disabled={busy || !draft.trim()} onClick={() => void submit()}>↑</button></div></div><small className="hint">{state.configured ? '任务由本机后台处理。' : '尚未配置模型；新任务会显示失败并可在配置后重试。'}</small></div>
+        <div className="composer-wrap"><div className="composer"><textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label>{schedule && <label>每 <input className="minutes" type="number" min="1" max="10080" value={minutes} onChange={e => setMinutes(Number(e.target.value))} /> 分钟</label>}<button className="send" disabled={busy || !draft.trim()} onClick={() => void submit()}>↑</button></div></div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
       </section>}
       {view === 'activity' && <section className="content"><div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div><div className="cards">{state.tasks.length ? state.tasks.map(task => <div className="task-card" key={task.id}><div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div><h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><TaskControls task={task} act={act} compact /></div></div>) : <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div>}</div></section>}
       {view === 'scheduled' && <section className="content"><div className="section-heading"><h1>Scheduled</h1><p>查看和停止定期工作。网址检查只读取页面内容，有变化时在对话中提醒你。</p></div><div className="watch-form"><input aria-label="HTTPS 网址" placeholder="https://example.com/page" value={watchUrl} onChange={e => setWatchUrl(e.target.value)} /><label>每 <input type="number" min="5" max="10080" value={watchMinutes} onChange={e => setWatchMinutes(Number(e.target.value))} /> 分钟</label><button disabled={!watchUrl.trim()} onClick={() => void addWatch()}>添加检查</button></div><div className="cards">{state.watches.map(watch => <div className="task-card" key={watch.id}><span className={`pill ${watch.status === 'active' ? 'scheduled' : 'paused'}`}>{watch.status === 'active' ? '检查中' : '已暂停'}</span><h2>{watch.url}</h2><p>每 {watch.intervalMinutes} 分钟 · {watch.lastStatus || '尚未检查'}{watch.error ? ` · ${watch.error}` : ''}</p><div className="card-actions"><button onClick={() => void actWatch(watch.id, watch.status === 'active' ? 'pause' : 'resume')}>{watch.status === 'active' ? '暂停' : '继续'}</button></div></div>)}{state.tasks.filter(t => t.scheduleMinutes !== null).map(task => <div className="task-card" key={task.id}><span className={`pill ${task.status}`}>{statusText[task.status]}</span><h2>{task.title}</h2><p>每 {task.scheduleMinutes} 分钟 · 下次运行：{task.nextRunAt ? new Date(task.nextRunAt).toLocaleString('zh-CN') : '待定'}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><button onClick={() => void act(task, 'cancelSchedule')}>取消安排</button></div></div>)}{state.watches.length === 0 && !state.tasks.some(t => t.scheduleMinutes !== null) && <div className="empty">还没有定期工作。</div>}</div></section>}

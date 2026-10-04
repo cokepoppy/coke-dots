@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Entry, Snapshot, Task, TaskStatus, Watch } from '../shared/types.ts';
+import type { Engine, Entry, Snapshot, Task, TaskStatus, Watch } from '../shared/types.ts';
 
 export class Store {
   readonly db: DatabaseSync;
@@ -18,7 +18,8 @@ export class Store {
         id TEXT PRIMARY KEY, title TEXT NOT NULL, instruction TEXT NOT NULL,
         status TEXT NOT NULL, priority INTEGER NOT NULL, next_run_at TEXT,
         schedule_minutes INTEGER, result TEXT, error TEXT,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT
       );
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
@@ -33,13 +34,16 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS watches_due ON watches(status, next_check_at);
     `);
+    const columns = this.db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
+    if (!columns.some(column => column.name === 'engine')) this.db.exec("ALTER TABLE tasks ADD COLUMN engine TEXT NOT NULL DEFAULT 'model'");
+    if (!columns.some(column => column.name === 'agent_session_id')) this.db.exec('ALTER TABLE tasks ADD COLUMN agent_session_id TEXT');
     // A process crash may leave a task in working state. Make it runnable again.
     this.db.prepare("UPDATE tasks SET status='queued', next_run_at=?, updated_at=? WHERE status='working'").run(new Date().toISOString(), new Date().toISOString());
   }
 
   close() { this.db.close(); }
 
-  snapshot(configured: boolean): Snapshot {
+  snapshot(configured: boolean, availableEngines: Engine[] = []): Snapshot {
     const p = this.db.prepare('SELECT name, shape, color FROM profile WHERE id=1').get() as Snapshot['profile'];
     return {
       profile: p,
@@ -47,15 +51,16 @@ export class Store {
       watches: (this.db.prepare('SELECT * FROM watches ORDER BY rowid DESC').all() as Record<string, unknown>[]).map(toWatch),
       entries: (this.db.prepare('SELECT id, task_id, kind, body, created_at FROM entries ORDER BY id DESC LIMIT 150').all() as Record<string, unknown>[]).map(toEntry).reverse(),
       configured,
+      availableEngines,
     };
   }
 
-  createTask(instruction: string, scheduleMinutes: number | null = null): Task {
+  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model'): Task {
     const now = new Date().toISOString();
     const id = randomUUID();
     const title = instruction.trim().split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
-    this.db.prepare('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, title, instruction.trim(), 'queued', 0, now, scheduleMinutes, null, null, now, now);
+    this.db.prepare('INSERT INTO tasks (id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, title, instruction.trim(), 'queued', 0, now, scheduleMinutes, null, null, now, now, engine, null);
     this.addEntry('user', instruction.trim(), id);
     this.addEntry('system', scheduleMinutes ? `已安排每 ${scheduleMinutes} 分钟检查一次。` : '已加入工作队列。', id);
     return this.getTask(id)!;
@@ -70,12 +75,12 @@ export class Store {
     return (this.db.prepare("SELECT * FROM tasks WHERE status IN ('queued','scheduled') AND next_run_at <= ? ORDER BY priority DESC, next_run_at ASC LIMIT 10").all(now) as Record<string, unknown>[]).map(toTask);
   }
 
-  updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes'>>): Task | null {
+  updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes' | 'agentSessionId'>>): Task | null {
     const old = this.getTask(id);
     if (!old) return null;
     const next = { ...old, ...change, updatedAt: new Date().toISOString() };
-    this.db.prepare('UPDATE tasks SET instruction=?,status=?,priority=?,next_run_at=?,schedule_minutes=?,result=?,error=?,updated_at=? WHERE id=?')
-      .run(next.instruction, next.status, next.priority, next.nextRunAt, next.scheduleMinutes, next.result, next.error, next.updatedAt, id);
+    this.db.prepare('UPDATE tasks SET instruction=?,status=?,priority=?,next_run_at=?,schedule_minutes=?,result=?,error=?,updated_at=?,agent_session_id=? WHERE id=?')
+      .run(next.instruction, next.status, next.priority, next.nextRunAt, next.scheduleMinutes, next.result, next.error, next.updatedAt, next.agentSessionId, id);
     return this.getTask(id);
   }
 
@@ -125,6 +130,7 @@ export class Store {
 function toTask(r: Record<string, unknown>): Task {
   return {
     id: String(r.id), title: String(r.title), instruction: String(r.instruction),
+    engine: r.engine as Engine, agentSessionId: r.agent_session_id == null ? null : String(r.agent_session_id),
     status: r.status as TaskStatus, priority: Number(r.priority),
     nextRunAt: r.next_run_at == null ? null : String(r.next_run_at),
     scheduleMinutes: r.schedule_minutes == null ? null : Number(r.schedule_minutes),

@@ -1,7 +1,10 @@
+export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
 export type TaskStatus = 'queued' | 'working' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused';
 
 export interface Task {
   id: string;
+  engine: Engine;
+  agentSessionId: string | null;
   title: string;
   instruction: string;
   status: TaskStatus;
@@ -28,6 +31,7 @@ export interface Snapshot {
   watches: Watch[];
   entries: Entry[];
   configured: boolean;
+  availableEngines: Engine[];
 }
 
 export interface Watch {

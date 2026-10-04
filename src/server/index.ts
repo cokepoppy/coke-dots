@@ -3,18 +3,22 @@ import { resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { Store } from './store.ts';
-import { Worker, modelConfig } from './worker.ts';
+import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
+import { adapters } from './adapters.ts';
+import type { Engine } from '../shared/types.ts';
 
 const port = Number(process.env.DOTS_PORT || 4317);
 const host = '127.0.0.1';
 const store = new Store(resolve(process.env.DOTS_DATA_DIR || './data'));
 const clients = new Set<ServerResponse>();
+const availableEngines = () => (Object.keys(adapters) as Engine[]).filter(id => adapters[id].available());
+const snapshot = () => store.snapshot(availableEngines().length > 0, availableEngines());
 const publish = () => {
-  const payload = `data: ${JSON.stringify(store.snapshot(Boolean(modelConfig())))}\n\n`;
+  const payload = `data: ${JSON.stringify(snapshot())}\n\n`;
   for (const client of clients) client.write(payload);
 };
-const worker = new Worker(store, publish);
+const worker = new Worker(store, publish, resolve(process.env.DOTS_DATA_DIR || './data', 'workspaces'));
 const watchRunner = new WatchRunner(store, publish);
 
 const server = createServer(async (req, res) => {
@@ -24,11 +28,11 @@ const server = createServer(async (req, res) => {
   if (!req.url?.startsWith('/api/')) return serveStatic(req, res);
   const path = new URL(req.url, `http://${host}:${port}`).pathname;
   if (path === '/api/health' && req.method === 'GET') return reply(res, 200, { ok: true });
-  if (path === '/api/state' && req.method === 'GET') return reply(res, 200, store.snapshot(Boolean(modelConfig())));
+  if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot());
   if (path === '/api/events' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'Cache-Control': 'no-store' });
     clients.add(res);
-    res.write(`data: ${JSON.stringify(store.snapshot(Boolean(modelConfig())))}\n\n`);
+    res.write(`data: ${JSON.stringify(snapshot())}\n\n`);
     req.on('close', () => clients.delete(res));
     return;
   }
@@ -39,7 +43,9 @@ const server = createServer(async (req, res) => {
       if (!instruction || instruction.length > 10000) return reply(res, 400, { error: 'Instruction must contain 1–10000 characters' });
       const minutes = body.scheduleMinutes == null ? null : Number(body.scheduleMinutes);
       if (minutes !== null && (!Number.isInteger(minutes) || minutes < 1 || minutes > 10080)) return reply(res, 400, { error: 'Invalid schedule' });
-      const task = store.createTask(instruction, minutes);
+      const engine = String(body.engine || 'model') as Engine;
+      if (!(engine in adapters)) return reply(res, 400, { error: 'Invalid engine' });
+      const task = store.createTask(instruction, minutes, engine);
       publish();
       void worker.tick();
       return reply(res, 201, task);
@@ -71,7 +77,7 @@ const server = createServer(async (req, res) => {
       if (!name || !['circle', 'square', 'triangle'].includes(shape) || !/^#[0-9a-fA-F]{6}$/.test(color)) return reply(res, 400, { error: 'Invalid profile' });
       store.setProfile(name, shape, color);
       publish();
-      return reply(res, 200, store.snapshot(Boolean(modelConfig())).profile);
+      return reply(res, 200, snapshot().profile);
     }
     const match = path.match(/^\/api\/tasks\/([a-f0-9-]+)$/);
     if (match && req.method === 'PATCH') {
