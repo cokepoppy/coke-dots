@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { accessSync, constants } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
+import { effectiveModelConfig } from './model-settings.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -31,16 +32,17 @@ export function parseDecision(raw: string, sessionId?: string): AgentDecision {
 export const adapters: Record<Engine, AgentAdapter> = {
   model: {
     id: 'model',
-    available: () => Boolean(process.env.DOTS_MODEL_API_KEY?.trim() && process.env.DOTS_MODEL?.trim()),
+    available: () => Boolean(effectiveModelConfig()),
     async run(input) {
+      const config = effectiveModelConfig();
+      if (!config) throw new Error('模型尚未配置');
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 90_000);
       try {
-        const base = (process.env.DOTS_MODEL_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-        const response = await fetch(`${base}/chat/completions`, {
+        const response = await fetch(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.DOTS_MODEL_API_KEY}` },
-          body: JSON.stringify({ model: process.env.DOTS_MODEL, temperature: 0.2, messages: [{ role: 'system', content: instruction }, { role: 'user', content: formatPrompt(input) }] }),
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` },
+          body: JSON.stringify({ model: config.model, temperature: 0.2, messages: [{ role: 'system', content: instruction }, { role: 'user', content: formatPrompt(input) }] }),
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(`模型服务返回 HTTP ${response.status}`);

@@ -4,7 +4,7 @@ import type { Engine, Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import './style.css';
 import './watch.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [] };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 const statusText: Record<TaskStatus, string> = {
   queued: '排队中', working: '工作中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停',
 };
@@ -110,7 +110,12 @@ function Profile({ state, onError }: { state: Snapshot; onError: (s: string) => 
   const [name, setName] = useState(state.profile.name);
   const [shape, setShape] = useState(state.profile.shape);
   const [color, setColor] = useState(state.profile.color);
-  return <section className="content profile-content"><div className="section-heading"><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div><div className="profile-card"><Avatar shape={shape} color={color} /><label>名字<input maxLength={40} value={name} onChange={e => setName(e.target.value)} /></label><div className="field-label">形状</div><div className="choices">{['circle', 'square', 'triangle'].map(item => <button key={item} className={shape === item ? 'chosen' : ''} onClick={() => setShape(item)}>{item === 'circle' ? '圆形' : item === 'square' ? '方形' : '三角形'}</button>)}</div><label>颜色<input type="color" value={color} onChange={e => setColor(e.target.value)} /></label><button className="primary" onClick={async () => { try { await request('/profile', 'PATCH', { name, shape, color }); } catch (e) { onError(String(e)); } }}>保存更改</button></div></section>;
+  const [baseUrl, setBaseUrl] = useState(state.modelSettings.baseUrl || 'https://api.openai.com/v1');
+  const [model, setModel] = useState(state.modelSettings.model);
+  const [apiKey, setApiKey] = useState('');
+  useEffect(() => { setName(state.profile.name); setShape(state.profile.shape); setColor(state.profile.color); }, [state.profile.name, state.profile.shape, state.profile.color]);
+  useEffect(() => { if (state.modelSettings.baseUrl) setBaseUrl(state.modelSettings.baseUrl); if (state.modelSettings.model) setModel(state.modelSettings.model); }, [state.modelSettings.baseUrl, state.modelSettings.model]);
+  return <section className="content profile-content"><div className="section-heading"><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div><div className="profile-card"><Avatar shape={shape} color={color} /><label>名字<input maxLength={40} value={name} onChange={e => setName(e.target.value)} /></label><div className="field-label">形状</div><div className="choices">{['circle', 'square', 'triangle'].map(item => <button key={item} className={shape === item ? 'chosen' : ''} onClick={() => setShape(item)}>{item === 'circle' ? '圆形' : item === 'square' ? '方形' : '三角形'}</button>)}</div><label>颜色<input type="color" value={color} onChange={e => setColor(e.target.value)} /></label><button className="primary" onClick={async () => { try { await request('/profile', 'PATCH', { name, shape, color }); } catch (e) { onError(String(e)); } }}>保存更改</button></div><div className="section-heading model-heading"><h2>模型 API</h2><p>密钥保存在 macOS 钥匙串，不写入项目或 SQLite。</p></div><div className="profile-card model-card"><label>API 地址<input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} /></label><label>模型名称<input value={model} onChange={e => setModel(e.target.value)} /></label><label>API 密钥<input type="password" autoComplete="off" placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label><button className="primary" onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存模型设置</button></div></section>;
 }
 
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);

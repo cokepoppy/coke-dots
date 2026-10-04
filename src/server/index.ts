@@ -7,13 +7,15 @@ import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
 import type { Engine } from '../shared/types.ts';
+import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 
 const port = Number(process.env.DOTS_PORT || 4317);
 const host = '127.0.0.1';
 const store = new Store(resolve(process.env.DOTS_DATA_DIR || './data'));
+loadModelSettings(store.getSetting('modelBaseUrl'), store.getSetting('modelName'));
 const clients = new Set<ServerResponse>();
 const availableEngines = () => (Object.keys(adapters) as Engine[]).filter(id => adapters[id].available());
-const snapshot = () => store.snapshot(availableEngines().length > 0, availableEngines());
+const snapshot = () => store.snapshot(availableEngines().length > 0, availableEngines(), publicModelSettings());
 const publish = () => {
   const payload = `data: ${JSON.stringify(snapshot())}\n\n`;
   for (const client of clients) client.write(payload);
@@ -78,6 +80,21 @@ const server = createServer(async (req, res) => {
       store.setProfile(name, shape, color);
       publish();
       return reply(res, 200, snapshot().profile);
+    }
+    if (path === '/api/model-settings' && req.method === 'PATCH') {
+      const baseUrl = String(body.baseUrl || '').trim().replace(/\/$/, '');
+      const model = String(body.model || '').trim();
+      const apiKey = String(body.apiKey || '').trim();
+      let parsed: URL;
+      try { parsed = new URL(baseUrl); } catch { return reply(res, 400, { error: '模型地址无效' }); }
+      const localHttp = parsed.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(parsed.hostname);
+      if ((!localHttp && parsed.protocol !== 'https:') || parsed.username || parsed.password || !model || model.length > 120 || apiKey.length > 5000) return reply(res, 400, { error: '模型配置无效' });
+      if (apiKey) saveModelKey(apiKey);
+      store.setSetting('modelBaseUrl', baseUrl);
+      store.setSetting('modelName', model);
+      setModelMetadata(baseUrl, model);
+      publish();
+      return reply(res, 200, publicModelSettings());
     }
     const match = path.match(/^\/api\/tasks\/([a-f0-9-]+)$/);
     if (match && req.method === 'PATCH') {

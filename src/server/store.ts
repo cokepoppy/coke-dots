@@ -33,6 +33,7 @@ export class Store {
         last_hash TEXT, last_status TEXT, error TEXT
       );
       CREATE INDEX IF NOT EXISTS watches_due ON watches(status, next_check_at);
+      CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     const columns = this.db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
     if (!columns.some(column => column.name === 'engine')) this.db.exec("ALTER TABLE tasks ADD COLUMN engine TEXT NOT NULL DEFAULT 'model'");
@@ -43,7 +44,7 @@ export class Store {
 
   close() { this.db.close(); }
 
-  snapshot(configured: boolean, availableEngines: Engine[] = []): Snapshot {
+  snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false }): Snapshot {
     const p = this.db.prepare('SELECT name, shape, color FROM profile WHERE id=1').get() as Snapshot['profile'];
     return {
       profile: p,
@@ -52,6 +53,7 @@ export class Store {
       entries: (this.db.prepare('SELECT id, task_id, kind, body, created_at FROM entries ORDER BY id DESC LIMIT 150').all() as Record<string, unknown>[]).map(toEntry).reverse(),
       configured,
       availableEngines,
+      modelSettings,
     };
   }
 
@@ -92,6 +94,15 @@ export class Store {
 
   setProfile(name: string, shape: string, color: string) {
     this.db.prepare('UPDATE profile SET name=?, shape=?, color=? WHERE id=1').run(name, shape, color);
+  }
+
+  getSetting(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as { value: string } | undefined;
+    return row?.value || null;
+  }
+
+  setSetting(key: string, value: string) {
+    this.db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value);
   }
 
   createWatch(url: string, intervalMinutes: number): Watch {

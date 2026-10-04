@@ -32,6 +32,7 @@ export interface Snapshot {
   entries: Entry[];
   configured: boolean;
   availableEngines: Engine[];
+  modelSettings: { baseUrl: string; model: string; hasKey: boolean };
 }
 
 export interface Watch {
