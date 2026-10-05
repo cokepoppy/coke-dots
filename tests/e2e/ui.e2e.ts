@@ -355,12 +355,15 @@ try {
 
   await recordStep('Computer view opens a separate browser and gates control behind takeover', async () => {
     await clickNav(alphaPage!, '电脑');
+    await alphaPage!.getByRole('heading', { name: 'Shared Dot 的电脑' }).waitFor({ state: 'visible' });
     await alphaPage!.getByRole('button', { name: '打开电脑' }).click();
     await alphaPage!.getByRole('button', { name: '接管' }).waitFor({ state: 'visible', timeout: 20_000 });
+    await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot 正在控制' }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '14-computer-dot-control');
     const addressBar = alphaPage!.locator('.browser-toolbar input');
     assert.equal(await addressBar.isDisabled(), true, 'Browser navigation is enabled before takeover');
     await alphaPage!.getByRole('button', { name: '接管' }).click();
-    await alphaPage!.getByText('你正在控制', { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('status').filter({ hasText: '你正在控制' }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, '14-computer-takeover');
   });
 
@@ -386,7 +389,7 @@ try {
     await alphaPage!.getByText('Dot E2E Typed: typed by takeover', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 });
     await screenshot(alphaPage!, '15-computer-typed');
     await alphaPage!.getByRole('button', { name: '交还控制' }).click();
-    await alphaPage!.getByText('代理控制权', { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot 正在控制' }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.browser-toolbar input').isDisabled(), true, 'Navigation remained enabled after control was returned');
     await screenshot(alphaPage!, '16-computer-returned');
   });
