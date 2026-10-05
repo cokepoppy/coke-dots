@@ -622,10 +622,11 @@ export class Store {
     return this.getTask(id, tenantId)!;
   }
 
-  createDelegatedTasks(parentId: string, tenantId: string, delegations: { title: string; instruction: string }[], summaryMessage: string, sessionId?: string): Task[] {
+  createDelegatedTasks(parentId: string, tenantId: string, delegations: { title: string; instruction: string; engine?: Engine }[], summaryMessage: string, sessionId?: string): Task[] {
     if (!Array.isArray(delegations) || delegations.length < 1 || delegations.length > 3) throw new Error('代理子任务数量无效');
     for (const child of delegations) {
       if (!child.title.trim() || child.title.trim().length > 120 || !child.instruction.trim() || child.instruction.trim().length > 5000) throw new Error('代理子任务内容无效');
+      if (child.engine !== undefined && !['model', 'claude', 'pi', 'dsh'].includes(child.engine)) throw new Error('代理子任务内核无效');
     }
     const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');
@@ -639,7 +640,7 @@ export class Store {
         const title = delegated.title.trim();
         const instruction = delegated.instruction.trim();
         this.db.prepare('INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-          .run(id, tenantId, title, instruction, 'queued', parent.priority, now, null, null, null, now, now, parent.engine, null, null, parentId);
+          .run(id, tenantId, title, instruction, 'queued', parent.priority, now, null, null, null, now, now, delegated.engine || parent.engine, null, null, parentId);
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
           .run(tenantId, id, 'system', `由「${parent.title}」委派；结果将返回给主任务。`, now);
         children.push(this.getTask(id, tenantId)!);

@@ -31,9 +31,12 @@ test('agent can create at most three bounded delegated tasks and children cannot
   ] }));
   assert.equal(decision.status, 'delegating');
   assert.equal(decision.delegations?.length, 2);
+  const routed = parseDecision(JSON.stringify({ status: 'delegating', message: 'Route code review to Claude.', delegations: [{ title: 'Code review', instruction: 'Review the local changes.', engine: 'claude' }] }), undefined, { availableEngines: ['model', 'claude'] });
+  assert.equal(routed.delegations?.[0].engine, 'claude');
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Route to Pi.', delegations: [{ title: 'Review', instruction: 'Review the task.', engine: 'pi' }] }), undefined, { availableEngines: ['model'] }), /不可用的内核/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Too many', delegations: Array.from({ length: 4 }, (_, index) => ({ title: `Child ${index}`, instruction: 'Work independently.' })) })), /数量无效/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Invalid child', delegations: [{ title: 'Child', instruction: 'x'.repeat(5001) }] })), /内容无效/);
-  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Recursive', delegations: [{ title: 'Child', instruction: 'Run recursively.' }] }), undefined, false), /不能继续委派/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Recursive', delegations: [{ title: 'Child', instruction: 'Run recursively.' }] }), undefined, { allowDelegation: false }), /不能继续委派/);
 });
 
 test('selected engine is durable per task', () => {

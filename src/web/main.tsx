@@ -24,6 +24,7 @@ interface TenantMemory { id: string; tenantId: string; note: string; createdBy: 
 const statusText: Record<TaskStatus, string> = {
   queued: '排队中', working: '工作中', delegating: '并行处理中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停', stopped: '已停止',
 };
+const engineText: Record<Engine, string> = { model: '模型 API', claude: 'Claude Code', pi: 'Pi', dsh: 'DeepSeek Harness' };
 
 async function request(path: string, method: 'POST' | 'PATCH', body: object) {
   const response = await fetch(`/api${path}`, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -333,7 +334,7 @@ function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask,
           : task.error || task.result || task.instruction;
       return <div className={`task-card ${task.parentTaskId ? 'delegated-child' : ''}`} data-testid={`task-card-${task.id}`} key={task.id}>
       <div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div>
-      {parent && <small className="delegated-from">委派自：{parent.title}</small>}
+      {parent && <small className="delegated-from">委派自：{parent.title} · 内核：{engineText[task.engine]}</small>}
       <h2>{task.title}</h2><p>{description}</p>
       <div className="card-actions"><button onClick={() => onSelectTask(task.id)}>查看详情 →</button><TaskControls task={task} act={async (item, action, extra) => { try { await request(`/tasks/${item.id}`, 'PATCH', { action, ...extra }); } catch (reason) { setError(String(reason)); } }} compact /></div>
     </div>})}</div>

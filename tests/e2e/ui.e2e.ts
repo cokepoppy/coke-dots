@@ -17,6 +17,8 @@ const videoDir = join(artifactRoot, 'video');
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-e2e-'));
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
+const e2eClaudeBin = join(tempRoot, 'claude-e2e.js');
+const e2eClaudeRelease = join(tempRoot, 'release-claude-child');
 const fixtureSource = join(projectRoot, 'tests', 'e2e', 'fixtures', 'computer.html');
 const fixtureDestination = join(projectRoot, 'dist', 'e2e-computer-fixture.html');
 const chromePath = findChromePath();
@@ -53,6 +55,13 @@ let e2ePort = 0;
 await mkdir(screenshotsDir, { recursive: true });
 await mkdir(videoDir, { recursive: true });
 await writeFile(emptyEnvFile, '');
+await writeFile(e2eClaudeBin, `const { existsSync } = require('node:fs');
+const release = ${JSON.stringify(e2eClaudeRelease)};
+const prompt = process.argv.at(-1) || '';
+if (!prompt.includes('E2E delegated child — launch risks')) { process.stderr.write('Unexpected delegated child prompt'); process.exit(2); }
+const finish = () => { if (existsSync(release)) process.stdout.write(JSON.stringify({status:'done',message:'Claude Code completed the risks review.'})); else setTimeout(finish, 25); };
+finish();
+`, { mode: 0o600 });
 await copyFile(fixtureSource, fixtureDestination);
 
 function findChromePath() {
@@ -119,9 +128,9 @@ async function startMockModel() {
         const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
-          { title: 'Market scan', instruction: 'E2E delegated child — market scan' },
+          { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
-          { title: 'Launch risks', instruction: 'E2E delegated child — launch risks' },
+          { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'claude' },
         ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
@@ -163,7 +172,7 @@ async function startServer(port: number) {
       DOTS_MODEL_BASE_URL: testModelBaseUrl,
       DOTS_MODEL_API_KEY: testModelApiKey,
       DOTS_MODEL: testModelName,
-      DOTS_CLAUDE_BIN: '',
+      DOTS_CLAUDE_BIN: e2eClaudeBin,
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
     },
@@ -957,9 +966,13 @@ try {
     await clickNav(alphaPage!, 'Activity');
     const parentCard = alphaPage!.locator('.task-card').filter({ has: alphaPage!.getByRole('heading', { name: parentInstruction, exact: true }) });
     await parentCard.locator('.pill.delegating').waitFor({ state: 'visible', timeout: 15_000 });
-    await waitFor(() => delegatedModelPrompts.length === 3, 15_000);
+    await waitFor(() => delegatedModelPrompts.length === 2, 15_000);
+    const delegationPlanPrompt = mockModelPrompts.find(prompt => prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:'));
+    assert.match(delegationPlanPrompt || '', /Available child engines for this tenant: model, claude/, 'Parent prompt did not receive the tenant’s currently available engines');
     const childCards = ['Market scan', 'Competitor scan', 'Launch risks'].map(title => alphaPage!.locator('.task-card').filter({ hasText: title }));
     for (const card of childCards) await card.locator('.pill.working').waitFor({ state: 'visible', timeout: 10_000 });
+    await childCards[0].locator('.delegated-from').getByText('内核：模型 API').waitFor({ state: 'visible' });
+    await childCards[2].locator('.delegated-from').getByText('内核：Claude Code').waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'delegated-three-children-working');
 
     await childCards[0].getByRole('button', { name: '停止工作' }).click();
@@ -972,7 +985,8 @@ try {
     await parentCard.locator('.pill.paused').waitFor({ state: 'visible' });
     await childCards[1].locator('.pill.working').waitFor({ state: 'visible' });
     await childCards[2].locator('.pill.working').waitFor({ state: 'visible' });
-    for (const title of ['Competitor scan', 'Launch risks']) delegatedModelReleases.get(title)?.();
+    delegatedModelReleases.get('Competitor scan')?.();
+    await writeFile(e2eClaudeRelease, 'release');
     await childCards[1].locator('.pill.done').waitFor({ state: 'visible', timeout: 10_000 });
     await childCards[2].locator('.pill.done').waitFor({ state: 'visible', timeout: 10_000 });
     await parentCard.locator('.pill.paused').waitFor({ state: 'visible' });
@@ -985,6 +999,7 @@ try {
     assert.match(aggregatePrompt, /Competitor scan \[done\]/, 'Parent did not receive a successful child result');
     assert.match(aggregatePrompt, /Launch risks \[done\]/, 'Parent did not receive the second successful child result');
     assert.match(aggregatePrompt, /verified findings/, 'Child result text was not returned to the parent');
+    assert.match(aggregatePrompt, /Claude Code completed the risks review/, 'The selected Claude adapter result was not returned to the parent');
     await screenshot(alphaPage!, 'delegated-parent-aggregate-completed');
 
     await selectTenant(betaPage!, 'Beta workspace');

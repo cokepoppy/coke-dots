@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { Task } from '../shared/types.ts';
 import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts';
 import { Store } from './store.ts';
-import { adapters } from './adapters.ts';
+import { adapters, type Engine } from './adapters.ts';
 import { loadModelSettings } from './model-settings.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
@@ -56,6 +56,7 @@ export class Worker {
       this.onChange();
       return;
     }
+    const availableEngines = (Object.keys(adapters) as Engine[]).filter(engine => adapters[engine].available(task.tenantId));
     this.store.updateTask(task.id, { status: 'working', error: null }, task.tenantId);
     this.store.addEntry('system', `使用 ${task.engine} 开始处理。`, task.id, task.tenantId);
     this.onChange();
@@ -68,6 +69,7 @@ export class Worker {
         pages: this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
         actionRule: this.store.tenantActionRule(task.tenantId),
         allowDelegation: !task.parentTaskId && children.length === 0,
+        availableEngines,
         delegatedResults: children.map(child => ({ title: child.title, status: child.status, result: child.result, error: child.error })),
         priorResult: task.result, sessionId: task.agentSessionId,
         workspace,
