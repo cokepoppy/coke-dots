@@ -18,6 +18,7 @@ export class Worker {
 
   start() { this.stopped = false; this.timer = setInterval(() => void this.tick(), 2000); void this.tick(); }
   stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null; }
+  pauseTask(taskId: string) { this.abortControllers.get(taskId)?.abort(new Error('Task paused by user')); }
   stopTask(taskId: string) { this.abortControllers.get(taskId)?.abort(new Error('Task stopped by user')); }
 
   async tick() {

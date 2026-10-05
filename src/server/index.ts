@@ -351,7 +351,10 @@ const server = createServer(async (req, res) => {
       if (!old) return reply(res, 404, { error: 'Task not found' });
       const action = String(body.action || '');
       if (old.status === 'stopped') return reply(res, 409, { error: '这项工作已停止，不能继续或修改' });
-      if (action === 'pause') store.updateTask(old.id, { status: 'paused', nextRunAt: null }, session.tenant.id);
+      if (action === 'pause') {
+        worker.pauseTask(old.id);
+        store.updateTask(old.id, { status: 'paused', nextRunAt: null }, session.tenant.id);
+      }
       else if (action === 'resume' || action === 'retry') store.updateTask(old.id, { status: 'queued', nextRunAt: new Date().toISOString(), error: null }, session.tenant.id);
       else if (action === 'cancelSchedule') store.updateTask(old.id, { scheduleMinutes: null, scheduleSpec: null, status: 'paused', nextRunAt: null }, session.tenant.id);
       else if (action === 'stop') {
