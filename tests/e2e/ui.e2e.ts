@@ -315,12 +315,32 @@ try {
     await clickNav(alphaPage!, '你的 dot');
     await createTask(alphaPage!, scheduledTask, true);
     await clickNav(alphaPage!, 'Scheduled');
-    const card = alphaPage!.locator('.task-card').filter({ hasText: scheduledTask });
-    await card.waitFor({ state: 'visible', timeout: 10_000 });
-    assert.match(await card.innerText(), /每 60 分钟/);
+    await alphaPage!.getByTestId('scheduled-hub').waitFor({ state: 'visible' });
+    const item = alphaPage!.locator('.scheduled-item').filter({ hasText: scheduledTask });
+    await item.waitFor({ state: 'visible', timeout: 10_000 });
+    const detail = alphaPage!.getByTestId('scheduled-detail');
+    await detail.getByText('Every 60 minutes', { exact: true }).waitFor({ state: 'visible' });
+    assert.ok((await detail.innerText()).includes(scheduledTask));
+    await detail.getByText('Failed', { exact: true }).waitFor({ state: 'visible' });
+    assert.match(await detail.innerText(), /内核尚未配置或安装/);
+    assert.match(await detail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
+    const search = alphaPage!.getByLabel('Search scheduled tasks');
+    await search.fill('no matching schedule');
+    await alphaPage!.getByText('No matching tasks').first().waitFor({ state: 'visible' });
+    await search.fill(scheduledTask);
+    await item.click();
     await screenshot(alphaPage!, '07-scheduled');
-    await card.getByRole('button', { name: '取消安排' }).click();
-    await alphaPage!.getByText('还没有定期工作。', { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.locator('.scheduled-add-watch').click();
+    assert.equal(await alphaPage!.locator('.scheduled-add-watch').getAttribute('aria-expanded'), 'true');
+    await alphaPage!.getByLabel('HTTPS URL').waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('button', { name: 'Close monitor form' }).click();
+    await detail.getByRole('button', { name: 'Open conversation' }).click();
+    await alphaPage!.locator('.topbar > span').filter({ hasText: scheduledTask }).waitFor({ state: 'visible' });
+    await clickNav(alphaPage!, 'Scheduled');
+    await alphaPage!.getByTestId('scheduled-detail').getByRole('button', { name: 'Cancel schedule' }).click();
+    await alphaPage!.getByText('No scheduled tasks yet').first().waitFor({ state: 'visible' });
+    await alphaPage!.getByTestId('scheduled-new-task').click();
+    assert.equal(await alphaPage!.getByLabel('定期检查').isChecked(), true, 'New task from Scheduled did not enable the recurring-work option');
   });
 
   await recordStep('Dot appearance changes persist within Alpha personal workspace', async () => {

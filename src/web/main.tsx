@@ -6,8 +6,10 @@ import './watch.css';
 import './dark-theme.css';
 import './onboarding.css';
 import './notification.css';
+import './scheduled.css';
 import { ComputerView } from './ComputerView.tsx';
 import { DotContextPanel } from './DotContextPanel.tsx';
+import { ScheduledView } from './ScheduledView.tsx';
 
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
@@ -40,8 +42,6 @@ function App() {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const [schedule, setSchedule] = useState(false);
   const [minutes, setMinutes] = useState(60);
-  const [watchUrl, setWatchUrl] = useState('');
-  const [watchMinutes, setWatchMinutes] = useState(60);
   const [engine, setEngine] = useState<Engine>('model');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -82,9 +82,9 @@ function App() {
     catch (e) { setError(String(e)); }
   }
 
-  async function addWatch() {
-    try { setError(''); await request('/watches', 'POST', { url: watchUrl, intervalMinutes: watchMinutes }); setWatchUrl(''); }
-    catch (e) { setError(String(e)); }
+  async function addScheduledWatch(url: string, intervalMinutes: number) {
+    try { setError(''); await request('/watches', 'POST', { url, intervalMinutes }); }
+    catch (e) { setError(String(e)); throw e; }
   }
 
   async function actWatch(id: string, action: 'pause' | 'resume') {
@@ -119,7 +119,7 @@ function App() {
   if (!authChecked) return <div className="auth-loading">Coke Dots</div>;
   if (!authContext) return <LoginScreen googleConfigured={googleConfigured} e2eAuthAvailable={e2eAuthAvailable} />;
 
-  return <div className="shell dots-dark" data-testid="app-shell" data-theme="dark" data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
+  return <div className={`shell dots-dark ${view === 'scheduled' ? 'scheduled-mode' : ''}`} data-testid="app-shell" data-theme="dark" data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">●</span> Coke Dots</div>
       <button className={`nav ${view === 'chat' ? 'selected' : ''}`} onClick={() => { setView('chat'); setSelected(null); }}>✦ <span>你的 dot</span></button>
@@ -131,7 +131,7 @@ function App() {
       <button className="profile-link" onClick={() => setView('profile')}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
-      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'scheduled' ? 'Scheduled' : view === 'computer' ? '电脑' : '你的 dot'}</span><div className="top-actions"><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
+      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : ''}</span><div className="top-actions"><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {view === 'chat' && <div className="chat-layout"><section className="chat-panel">
         {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : !selectedTask && entries.length === 0 ? <div className="welcome onboarding-welcome" data-testid="dot-onboarding"><Avatar {...state.profile} /><h1>Hey! I’m your dot</h1><p className="onboarding-promise">Message or call me anytime. I’ll keep things moving, even when we’re not talking, and check in with updates or questions.</p><p className="onboarding-name-prompt">Want to give me a name?</p><button className="onboarding-customize" data-testid="onboarding-customize" onClick={() => setView('profile')}>Customize your dot <span aria-hidden="true">→</span></button><p className="onboarding-start-prompt">Start looking for ways to help. Anything top of mind?</p><div className="suggestions onboarding-actions"><button data-testid="onboarding-start" onClick={() => { composerRef.current?.focus(); }}>Start looking for ways to help <span aria-hidden="true">→</span></button></div><p className="onboarding-footer">A few things I could take off your plate.</p></div> : <div className="timeline">
@@ -142,7 +142,12 @@ function App() {
         <div className="composer-wrap"><div className="composer"><textarea ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label>{schedule && <label>每 <input className="minutes" type="number" min="1" max="10080" value={minutes} onChange={e => setMinutes(Number(e.target.value))} /> 分钟</label>}<button className="send" disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div></div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
       </section>{(selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
       {view === 'activity' && <section className="content"><div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div><div className="cards">{!stateLoaded ? <div className="empty workspace-loading" role="status">正在加载工作区…</div> : state.tasks.length ? state.tasks.map(task => <div className="task-card" key={task.id}><div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div><h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><TaskControls task={task} act={act} compact /></div></div>) : <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div>}</div></section>}
-      {view === 'scheduled' && <section className="content"><div className="section-heading"><h1>Scheduled</h1><p>查看和停止定期工作。网址检查只读取页面内容，有变化时在对话中提醒你。</p></div><div className="watch-form"><input aria-label="HTTPS 网址" placeholder="https://example.com/page" value={watchUrl} onChange={e => setWatchUrl(e.target.value)} /><label>每 <input type="number" min="5" max="10080" value={watchMinutes} onChange={e => setWatchMinutes(Number(e.target.value))} /> 分钟</label><button disabled={!watchUrl.trim()} onClick={() => void addWatch()}>添加检查</button></div><div className="cards">{state.watches.map(watch => <div className="task-card" key={watch.id}><span className={`pill ${watch.status === 'active' ? 'scheduled' : 'paused'}`}>{watch.status === 'active' ? '检查中' : '已暂停'}</span><h2>{watch.url}</h2><p>每 {watch.intervalMinutes} 分钟 · {watch.lastStatus || '尚未检查'}{watch.error ? ` · ${watch.error}` : ''}</p><div className="card-actions"><button onClick={() => void actWatch(watch.id, watch.status === 'active' ? 'pause' : 'resume')}>{watch.status === 'active' ? '暂停' : '继续'}</button></div></div>)}{state.tasks.filter(t => t.scheduleMinutes !== null).map(task => <div className="task-card" key={task.id}><span className={`pill ${task.status}`}>{statusText[task.status]}</span><h2>{task.title}</h2><p>每 {task.scheduleMinutes} 分钟 · 下次运行：{task.nextRunAt ? new Date(task.nextRunAt).toLocaleString('zh-CN') : '待定'}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><button onClick={() => void act(task, 'cancelSchedule')}>取消安排</button></div></div>)}{!stateLoaded ? <div className="empty workspace-loading" role="status">正在加载工作区…</div> : state.watches.length === 0 && !state.tasks.some(t => t.scheduleMinutes !== null) && <div className="empty">还没有定期工作。</div>}</div></section>}
+      {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
+        onCancelTask={task => void act(task, 'cancelSchedule')}
+        onWatchAction={(watch, action) => void actWatch(watch.id, action)}
+        onOpenTask={task => { setSelected(task.id); setView('chat'); }}
+        onNewTask={() => { setSchedule(true); setView('chat'); requestAnimationFrame(() => composerRef.current?.focus()); }}
+        onAddWatch={addScheduledWatch} />}
       {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} />}
       {view === 'computer' && <ComputerView dotName={state.profile.name} onError={setError} />}
     </main>
