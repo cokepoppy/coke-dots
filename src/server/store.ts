@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Engine, Entry, ScheduleSpec, Snapshot, Task, TaskStatus, Watch } from '../shared/types.ts';
+import type { Engine, Entry, ScheduleSpec, Snapshot, Task, TaskStatus, Watch, WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -82,6 +82,14 @@ export class Store {
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS tenant_memories_scope ON tenant_memories(tenant_id,created_at DESC);
+      CREATE TABLE IF NOT EXISTS workspace_pages (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        title TEXT NOT NULL, content TEXT NOT NULL,
+        created_by TEXT REFERENCES users(id), source_task_id TEXT REFERENCES tasks(id),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS workspace_pages_scope ON workspace_pages(tenant_id,updated_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS workspace_pages_source_task ON workspace_pages(tenant_id,source_task_id) WHERE source_task_id IS NOT NULL;
     `);
 
     // Migrate the pre-auth single-user database into a reserved workspace. Its records
@@ -395,6 +403,56 @@ export class Store {
   private canManageTenantMemory(tenantId: string, actorUserId: string, createdBy: string) {
     if (createdBy === actorUserId) return true;
     return Boolean(this.db.prepare("SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=? AND role IN ('owner','admin')").get(tenantId, actorUserId));
+  }
+
+  tenantPages(tenantId: string): WorkspacePage[] {
+    return this.db.prepare(`SELECT p.id,p.tenant_id AS tenantId,p.title,p.content,p.created_by AS createdBy,
+      u.name AS createdByName,p.source_task_id AS sourceTaskId,p.created_at AS createdAt,p.updated_at AS updatedAt
+      FROM workspace_pages p LEFT JOIN users u ON u.id=p.created_by WHERE p.tenant_id=? ORDER BY p.updated_at DESC,p.id DESC`)
+      .all(tenantId) as unknown as WorkspacePage[];
+  }
+
+  tenantPage(tenantId: string, id: string): WorkspacePage | null {
+    const row = this.db.prepare(`SELECT p.id,p.tenant_id AS tenantId,p.title,p.content,p.created_by AS createdBy,
+      u.name AS createdByName,p.source_task_id AS sourceTaskId,p.created_at AS createdAt,p.updated_at AS updatedAt
+      FROM workspace_pages p LEFT JOIN users u ON u.id=p.created_by WHERE p.tenant_id=? AND p.id=?`).get(tenantId, id) as WorkspacePage | undefined;
+    return row || null;
+  }
+
+  createTenantPage(tenantId: string, title: string, content: string, createdBy: string | null = null, sourceTaskId: string | null = null): WorkspacePage {
+    const normalizedTitle = title.trim();
+    const normalizedContent = content.trim();
+    if (!normalizedTitle || normalizedTitle.length > 120 || !normalizedContent || normalizedContent.length > 24000) throw new Error('页面标题需为 1–120 个字符，正文需为 1–24000 个字符');
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (sourceTaskId) {
+        const existing = this.db.prepare('SELECT id FROM workspace_pages WHERE tenant_id=? AND source_task_id=?').get(tenantId, sourceTaskId) as { id: string } | undefined;
+        if (existing) {
+          this.db.prepare('UPDATE workspace_pages SET title=?,content=?,updated_at=? WHERE tenant_id=? AND id=?')
+            .run(normalizedTitle, normalizedContent, now, tenantId, existing.id);
+          this.db.exec('COMMIT');
+          return this.tenantPage(tenantId, existing.id)!;
+        }
+      }
+      const count = this.db.prepare('SELECT COUNT(*) AS count FROM workspace_pages WHERE tenant_id=?').get(tenantId) as { count: number };
+      if (count.count >= 50) throw new Error('工作区最多保存 50 个 Scratchpad 页面');
+      const id = randomUUID();
+      this.db.prepare('INSERT INTO workspace_pages(id,tenant_id,title,content,created_by,source_task_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)')
+        .run(id, tenantId, normalizedTitle, normalizedContent, createdBy, sourceTaskId, now, now);
+      this.db.exec('COMMIT');
+      return this.tenantPage(tenantId, id)!;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  updateTenantPage(tenantId: string, id: string, title: string, content: string): WorkspacePage | null {
+    const normalizedTitle = title.trim();
+    const normalizedContent = content.trim();
+    if (!normalizedTitle || normalizedTitle.length > 120 || !normalizedContent || normalizedContent.length > 24000) throw new Error('页面标题需为 1–120 个字符，正文需为 1–24000 个字符');
+    const updatedAt = new Date().toISOString();
+    const result = this.db.prepare('UPDATE workspace_pages SET title=?,content=?,updated_at=? WHERE tenant_id=? AND id=?')
+      .run(normalizedTitle, normalizedContent, updatedAt, tenantId, id);
+    return Number(result.changes) ? this.tenantPage(tenantId, id) : null;
   }
 
   createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null): Task {

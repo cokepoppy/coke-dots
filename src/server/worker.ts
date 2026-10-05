@@ -53,12 +53,24 @@ export class Worker {
       const workspace = join(this.workspaceRoot, task.tenantId, task.id);
       mkdirSync(workspace, { recursive: true });
       const decision = await adapter.run({
-        tenantId: task.tenantId, prompt: task.instruction, memories: this.store.tenantMemories(task.tenantId).map(memory => memory.note), priorResult: task.result, sessionId: task.agentSessionId,
+        tenantId: task.tenantId, prompt: task.instruction, memories: this.store.tenantMemories(task.tenantId).map(memory => memory.note),
+        pages: this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
+        priorResult: task.result, sessionId: task.agentSessionId,
         workspace,
         onEvent: message => { this.store.addEntry('system', message, task.id, task.tenantId); this.onChange(); },
       });
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
+      let outputMessage = decision.message;
+      if (decision.pageAction) {
+        const page = decision.pageAction.action === 'create'
+          ? this.store.createTenantPage(task.tenantId, decision.pageAction.title, decision.pageAction.content, null, task.id)
+          : this.store.updateTenantPage(task.tenantId, decision.pageAction.pageId, decision.pageAction.title, decision.pageAction.content);
+        if (!page) throw new Error('找不到这个工作区里的 Scratchpad 页面，页面没有被修改。');
+        const actionText = decision.pageAction.action === 'create' ? '创建' : '更新';
+        this.store.addEntry('system', `Dot ${actionText}了 Scratchpad 页面「${page.title}」。`, task.id, task.tenantId);
+        outputMessage += `\n[[page:${page.id}|${encodeURIComponent(page.title)}]]`;
+      }
       const nextMinutes = Math.max(1, Math.min(1440, Math.floor(decision.nextMinutes || current.scheduleMinutes || 15)));
       const recurrence = scheduleForTask(current.scheduleSpec, current.scheduleMinutes);
       const shouldContinueSchedule = recurrence && ['done', 'scheduled'].includes(decision.status);
@@ -70,7 +82,7 @@ export class Worker {
         status, result: decision.status === 'done' ? decision.message : current.result,
         nextRunAt, error: null, agentSessionId: decision.sessionId || current.agentSessionId,
       }, task.tenantId);
-      this.store.addEntry('dot', decision.message, task.id, task.tenantId);
+      this.store.addEntry('dot', outputMessage, task.id, task.tenantId);
       if (decision.status === 'waiting') this.notifyIfEnabled(task.tenantId, `“${task.title}”正在等待你的回复。`);
       else if (decision.status === 'done') this.notifyIfEnabled(task.tenantId, `“${task.title}”已有新结果。`);
       this.onChange();

@@ -4,6 +4,8 @@ export interface ModelSettings { baseUrl: string; model: string; hasKey: boolean
 const service = 'com.cokepoppy.coke-dots';
 const stored = new Map<string, ModelSettings>();
 const keychainFor = (tenantId: string) => new Entry(service, `tenant-${tenantId}-model-api-key`);
+const testModelFixtureEnabled = () => process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1';
+const mayUseEnvironmentModel = (tenantId: string) => tenantId === 'legacy' || testModelFixtureEnabled();
 
 export function loadModelSettings(baseUrl: string | null, model: string | null, tenantId = 'legacy') {
   stored.set(tenantId, { baseUrl: baseUrl || '', model: model || '', hasKey: Boolean(readTenantKey(tenantId)) });
@@ -23,14 +25,15 @@ export function setModelMetadata(baseUrl: string, model: string, tenantId = 'leg
 
 export function publicModelSettings(tenantId = 'legacy'): ModelSettings {
   const value = stored.get(tenantId) || { baseUrl: '', model: '', hasKey: false };
-  return { ...value, hasKey: Boolean(readTenantKey(tenantId) || (tenantId === 'legacy' && process.env.DOTS_MODEL_API_KEY?.trim())) };
+  return { ...value, hasKey: Boolean(readTenantKey(tenantId) || (mayUseEnvironmentModel(tenantId) && process.env.DOTS_MODEL_API_KEY?.trim())) };
 }
 
 export function effectiveModelConfig(tenantId = 'legacy') {
-  const apiKey = readTenantKey(tenantId) || (tenantId === 'legacy' ? process.env.DOTS_MODEL_API_KEY?.trim() || null : null);
+  const useEnvironment = mayUseEnvironmentModel(tenantId);
+  const apiKey = readTenantKey(tenantId) || (useEnvironment ? process.env.DOTS_MODEL_API_KEY?.trim() || null : null);
   const settings = stored.get(tenantId);
-  const model = settings?.model || (tenantId === 'legacy' ? process.env.DOTS_MODEL?.trim() : '') || '';
-  const baseUrl = settings?.baseUrl || (tenantId === 'legacy' ? process.env.DOTS_MODEL_BASE_URL?.trim() : '') || 'https://api.openai.com/v1';
+  const model = settings?.model || (useEnvironment ? process.env.DOTS_MODEL?.trim() : '') || '';
+  const baseUrl = settings?.baseUrl || (useEnvironment ? process.env.DOTS_MODEL_BASE_URL?.trim() : '') || 'https://api.openai.com/v1';
   return apiKey && model ? { apiKey, model, baseUrl: baseUrl.replace(/\/$/, '') } : null;
 }
 

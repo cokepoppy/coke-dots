@@ -138,6 +138,34 @@ test('workspace memories persist, are tenant scoped, and can only be edited by t
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('Scratchpad pages persist per tenant and an agent task reuses its page on later runs', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-pages-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'pages-alpha', email: 'pages-alpha@example.test', name: 'Pages Alpha' });
+    const beta = store.signInGoogle({ subject: 'pages-beta', email: 'pages-beta@example.test', name: 'Pages Beta' });
+    const task = store.createTask('Create project notes', null, 'model', alpha.tenant.id);
+    const page = store.createTenantPage(alpha.tenant.id, 'Project notes', '# Plan\n- First step', null, task.id);
+    const nextRunPage = store.createTenantPage(alpha.tenant.id, 'Project notes', '# Updated plan\n- Keep the review on Friday', null, task.id);
+    assert.equal(nextRunPage.id, page.id, 'A repeated run duplicated the page created by its task');
+    assert.equal(store.tenantPages(alpha.tenant.id).length, 1);
+    assert.equal(store.tenantPage(beta.tenant.id, page.id), null);
+    assert.equal(store.updateTenantPage(beta.tenant.id, page.id, 'Cross tenant', 'Must not update'), null);
+    const personalPage = store.createTenantPage(beta.tenant.id, 'Beta notes', 'Private to Beta', beta.user.id);
+    assert.equal(personalPage.createdByName, 'Pages Beta');
+    assert.equal(store.tenantPages(beta.tenant.id).length, 1);
+    assert.throws(() => store.createTenantPage(alpha.tenant.id, ' '.repeat(3), 'body'), /页面标题/);
+    assert.throws(() => store.updateTenantPage(alpha.tenant.id, page.id, 'Title', 'x'.repeat(24001)), /正文/);
+
+    store.close(); store = new Store(directory);
+    const recovered = store.tenantPage(alpha.tenant.id, page.id);
+    assert.equal(recovered?.title, 'Project notes');
+    assert.match(recovered?.content || '', /Updated plan/);
+    assert.equal(recovered?.sourceTaskId, task.id);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('background worker stores real model result and schedules a future run', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
   let receivedPrompt = '';

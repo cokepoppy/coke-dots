@@ -117,6 +117,12 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, store.activityPage(session.tenant.id, before, limit));
     }
     if (path === '/api/memories' && req.method === 'GET') return reply(res, 200, store.tenantMemories(session.tenant.id));
+    if (path === '/api/pages' && req.method === 'GET') return reply(res, 200, store.tenantPages(session.tenant.id));
+    const pageMatch = path.match(/^\/api\/pages\/([a-f0-9-]+)$/);
+    if (pageMatch && req.method === 'GET') {
+      const page = store.tenantPage(session.tenant.id, pageMatch[1]);
+      return page ? reply(res, 200, page) : reply(res, 404, { error: '页面不存在' });
+    }
     if (path === '/api/auth/invitations' && req.method === 'GET') return reply(res, 200, store.pendingWorkspaceInvitations(session.user.email));
     const acceptInvitationMatch = path.match(/^\/api\/auth\/invitations\/([a-z0-9-]+)\/accept$/);
     if (acceptInvitationMatch && req.method === 'POST') {
@@ -128,6 +134,21 @@ const server = createServer(async (req, res) => {
     }
 
     const body = req.method === 'POST' || req.method === 'PATCH' ? await readJson(req) : {};
+    if (path === '/api/pages' && req.method === 'POST') {
+      try {
+        const page = store.createTenantPage(session.tenant.id, String(body.title || ''), String(body.content || ''), session.user.id);
+        publish();
+        return reply(res, 201, page);
+      } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法创建页面' }); }
+    }
+    if (pageMatch && req.method === 'PATCH') {
+      try {
+        const page = store.updateTenantPage(session.tenant.id, pageMatch[1], String(body.title || ''), String(body.content || ''));
+        if (!page) return reply(res, 404, { error: '页面不存在' });
+        publish();
+        return reply(res, 200, page);
+      } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法保存页面' }); }
+    }
     if (path === '/api/memories' && req.method === 'POST') {
       const note = String(body.note || '').trim();
       if (!note || note.length > 1000) return reply(res, 400, { error: '记忆内容需为 1–1000 个字符' });

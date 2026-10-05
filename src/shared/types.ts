@@ -53,3 +53,15 @@ export interface Watch {
   lastStatus: string | null;
   error: string | null;
 }
+
+export interface WorkspacePage {
+  id: string;
+  tenantId: string;
+  title: string;
+  content: string;
+  createdBy: string | null;
+  createdByName: string | null;
+  sourceTaskId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}

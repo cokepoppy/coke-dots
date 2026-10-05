@@ -78,8 +78,12 @@ async function startMockModel() {
         const hasReply = prompt.includes('User reply: Use Friday.');
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isMemoryCheck = prompt.includes('E2E memory prompt — apply the saved workspace preference');
-        const isComplete = hasReply || isRecurringCheck || isMemoryCheck;
-        const content = JSON.stringify({ status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : 'What launch date should I use?' });
+        const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
+        const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
+        const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate;
+        const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
+        const decision = { status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPageRequest ? 'I created the team launch notes.' : isPageUpdate ? 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        const content = JSON.stringify(decision);
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ choices: [{ message: { content } }] }));
       } catch {
@@ -573,6 +577,76 @@ try {
     await savedMemory.waitFor({ state: 'visible' });
     await savedMemory.getByRole('button', { name: '删除' }).click();
     await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
+  });
+
+  await recordStep('Dot creates a connected Scratchpad page from chat, and workspace members share it', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    const instruction = 'E2E Scratchpad page — create the team launch notes';
+    const promptStart = mockModelPrompts.length;
+    await createTask(alphaPage!, instruction);
+    const pageLink = alphaPage!.locator('.timeline .message.dot .message-page-link');
+    await pageLink.filter({ hasText: 'Team launch notes' }).waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => mockModelPrompts.length === promptStart + 1, 10_000);
+    assert.match(mockModelPrompts[promptStart], /Scratchpad pages in this workspace/);
+    await pageLink.filter({ hasText: 'Team launch notes' }).click();
+    const pane = alphaPage!.getByTestId('scratchpad-page');
+    await pane.waitFor({ state: 'visible' });
+    await pane.getByText('Connected', { exact: true }).waitFor({ state: 'visible' });
+    await pane.getByRole('heading', { name: 'Team launch notes', exact: true }).waitFor({ state: 'visible' });
+    await pane.getByText('Review the short intro', { exact: false }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '19a-agent-created-scratchpad-page');
+
+    await clickNav(alphaPage!, '你的 dot');
+    const updateInstruction = 'E2E Scratchpad page — update the team launch notes';
+    const updatePromptStart = mockModelPrompts.length;
+    await createTask(alphaPage!, updateInstruction);
+    const updatedPageLink = alphaPage!.locator('.timeline .message.dot .message-page-link').filter({ hasText: 'Team launch notes' });
+    await updatedPageLink.waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => mockModelPrompts.length === updatePromptStart + 1, 10_000);
+    assert.match(mockModelPrompts[updatePromptStart], /ID: [a-f0-9-]{36}\nTitle: Team launch notes/);
+    await updatedPageLink.click();
+    await pane.getByText('Revised outline', { exact: false }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '19b-agent-updated-scratchpad-page');
+
+    await pane.getByRole('button', { name: 'Edit' }).click();
+    await pane.getByLabel('编辑页面标题').fill('Team launch notes revised');
+    await pane.getByLabel('编辑页面内容').fill('## Release review\n- Approve the short intro\n- Confirm the release date');
+    await pane.getByRole('button', { name: 'Save changes' }).click();
+    await pane.getByRole('heading', { name: 'Team launch notes revised', exact: true }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '19c-edited-scratchpad-page');
+
+    await clickNav(alphaPage!, 'Scratchpad');
+    const library = alphaPage!.getByTestId('scratchpad-library');
+    await library.waitFor({ state: 'visible' });
+    await library.getByTestId('scratchpad-page-row').filter({ hasText: 'Team launch notes revised' }).waitFor({ state: 'visible' });
+    await library.getByLabel('页面标题').fill('Workspace research notes');
+    await library.getByLabel('页面内容').fill('# Research\n- Compare two sources before sharing');
+    await library.getByRole('button', { name: 'Create page' }).click();
+    await alphaPage!.getByTestId('scratchpad-page').getByRole('heading', { name: 'Workspace research notes', exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.getByTestId('scratchpad-page').getByRole('button', { name: /Your Personal Scratchpad/ }).click();
+    await library.getByTestId('scratchpad-page-row').filter({ hasText: 'Workspace research notes' }).waitFor({ state: 'visible' });
+    assert.equal(await library.getByTestId('scratchpad-page-row').count(), 2, 'The user-created page was not persisted beside the agent-created page');
+    const sharedPageId = await alphaPage!.evaluate(async () => {
+      const pages = await fetch('/api/pages').then(response => response.json()) as { id: string; title: string }[];
+      return pages.find(page => page.title === 'Workspace research notes')?.id || null;
+    });
+    assert(sharedPageId, 'The newly created tenant page was missing from the authenticated API');
+
+    await selectTenant(betaPage!, 'Alpha Shared');
+    await clickNav(betaPage!, 'Scratchpad');
+    await betaPage!.getByTestId('scratchpad-page-row').filter({ hasText: 'Team launch notes revised' }).waitFor({ state: 'visible' });
+    await betaPage!.getByTestId('scratchpad-page-row').filter({ hasText: 'Workspace research notes' }).waitFor({ state: 'visible' });
+    await screenshot(betaPage!, '19d-beta-shared-scratchpad');
+    await selectTenant(betaPage!, 'Beta workspace');
+    await clickNav(betaPage!, 'Scratchpad');
+    await betaPage!.getByText('Your Scratchpad pages will appear here.', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await betaPage!.getByTestId('scratchpad-page-row').count(), 0, 'A shared-workspace page appeared in Beta personal Scratchpad');
+    const privatePageResponse = await betaPage!.evaluate(async (id: string) => fetch(`/api/pages/${id}`).then(response => response.status), sharedPageId);
+    assert.equal(privatePageResponse, 404, 'A Beta personal session retrieved an Alpha shared-workspace page by ID');
+    await screenshot(betaPage!, '19e-beta-scratchpad-isolation');
   });
 
   await recordStep('Recurring work runs again automatically and remains cancellable in Chrome', async () => {

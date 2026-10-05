@@ -12,6 +12,17 @@ test('agent output must specify a real task state', () => {
   assert.throws(() => parseDecision('{"status":"done","message":""}'));
 });
 
+test('agent Scratchpad actions require bounded page content and a valid tenant page ID', () => {
+  const id = '01234567-89ab-cdef-0123-456789abcdef';
+  const created = parseDecision(JSON.stringify({ status: 'done', message: 'I created your page.', pageAction: { action: 'create', title: 'Launch notes', content: '# Outline\n- Draft the intro' } }));
+  assert.deepEqual(created.pageAction, { action: 'create', title: 'Launch notes', content: '# Outline\n- Draft the intro' });
+  const updated = parseDecision(JSON.stringify({ status: 'done', message: 'I updated the page.', pageAction: { action: 'update', pageId: id, title: 'Launch notes', content: 'Updated outline' } }));
+  assert.deepEqual(updated.pageAction, { action: 'update', pageId: id, title: 'Launch notes', content: 'Updated outline' });
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Invalid', pageAction: { action: 'update', pageId: '../other-tenant', title: 'Notes', content: 'Body' } })), /页面操作无效/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Invalid', pageAction: { action: 'create', title: 'Notes', content: 'x'.repeat(24001) } })), /页面内容无效/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'waiting', message: 'Which page?', pageAction: { action: 'create', title: 'Notes', content: 'Draft' } })), /不能同时写入/);
+});
+
 test('selected engine is durable per task', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-engines-'));
   try {

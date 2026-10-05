@@ -9,9 +9,11 @@ import './notification.css';
 import './activity.css';
 import './scheduled.css';
 import './recurrence.css';
+import './pages.css';
 import { ComputerView } from './ComputerView.tsx';
 import { DotContextPanel } from './DotContextPanel.tsx';
 import { ScheduledView } from './ScheduledView.tsx';
+import { PagePane, PagesView } from './Pages.tsx';
 
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
@@ -33,6 +35,22 @@ function Avatar({ shape, color, small = false }: { shape: string; color: string;
   return <div className={`avatar ${shape} ${small ? 'small' : ''}`} style={{ backgroundColor: color }}><span className="eyes"><i /><i /></span></div>;
 }
 
+function MessageBody({ body, onOpenPage }: { body: string; onOpenPage: (id: string) => void }) {
+  const token = /\[\[page:([a-f0-9-]{36})\|([^\]]+)\]\]/gi;
+  const content: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const match of body.matchAll(token)) {
+    const index = match.index ?? 0;
+    if (index > cursor) content.push(<React.Fragment key={`text-${cursor}`}>{body.slice(cursor, index)}</React.Fragment>);
+    let title = match[2];
+    try { title = decodeURIComponent(match[2]); } catch { /* Preserve malformed display text safely. */ }
+    content.push(<button key={`page-${match[1]}`} className="message-page-link" onClick={() => onOpenPage(match[1])}>{title} ↗</button>);
+    cursor = index + match[0].length;
+  }
+  if (cursor < body.length) content.push(<React.Fragment key={`text-${cursor}`}>{body.slice(cursor)}</React.Fragment>);
+  return <p className="message-body">{content}</p>;
+}
+
 function App() {
   const [authContext, setAuthContext] = useState<AuthContext | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -41,8 +59,9 @@ function App() {
   const [e2eAuthAvailable, setE2eAuthAvailable] = useState(false);
   const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
   const [state, setState] = useState<Snapshot>(initial);
-  const [view, setView] = useState<'chat' | 'activity' | 'scheduled' | 'computer' | 'profile'>('chat');
+  const [view, setView] = useState<'chat' | 'activity' | 'scheduled' | 'computer' | 'profile' | 'pages'>('chat');
   const [selected, setSelected] = useState<string | null>(null);
+  const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const [schedule, setSchedule] = useState(false);
@@ -87,6 +106,12 @@ function App() {
   const entries = useMemo(() => selected ? state.entries.filter(e => e.taskId === selected) : state.entries, [state.entries, selected]);
   const active = state.tasks.filter(t => ['queued', 'working', 'waiting', 'scheduled'].includes(t.status));
 
+  function openPage(pageId: string, taskId: string | null = null) {
+    setSelectedPageId(pageId);
+    if (taskId) setSelected(taskId);
+    setView('chat');
+  }
+
   async function submit() {
     if (!draft.trim() || busy) return;
     setBusy(true); setError('');
@@ -97,7 +122,7 @@ function App() {
           ? { frequency, time: scheduleTime, timeZone: scheduleTimeZone, endDate: scheduleEndDate || null }
           : { frequency, weekdays: scheduleWeekdays, time: scheduleTime, timeZone: scheduleTimeZone, endDate: scheduleEndDate || null };
       const task = await request('/tasks', 'POST', { instruction: draft, scheduleSpec, scheduleMinutes: schedule && frequency === 'interval' ? minutes : null, engine }) as Task;
-      setDraft(''); setSelected(task.id); setView('chat'); setSchedule(false); setFrequency('interval'); setMinutes(60); setScheduleWeekdays([]); setScheduleEndDate('');
+      setDraft(''); setSelected(task.id); setSelectedPageId(null); setView('chat'); setSchedule(false); setFrequency('interval'); setMinutes(60); setScheduleWeekdays([]); setScheduleEndDate('');
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 
@@ -122,7 +147,7 @@ function App() {
       const response = await fetch('/api/auth/tenant', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setAuthContext(data as AuthContext); setState(initial); setStateLoaded(false); setSelected(null); setError('');
+      setAuthContext(data as AuthContext); setState(initial); setStateLoaded(false); setSelected(null); setSelectedPageId(null); setError('');
     } catch (e) { setError(String(e)); }
   }
 
@@ -132,12 +157,12 @@ function App() {
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     const refreshed = await fetch('/api/auth/me');
     if (refreshed.ok) setAuthContext(await refreshed.json() as AuthContext);
-    setState(initial); setStateLoaded(false); setSelected(null);
+    setState(initial); setStateLoaded(false); setSelected(null); setSelectedPageId(null);
   }
 
   async function logout() {
     try { await fetch('/api/auth/logout', { method: 'POST' }); }
-    finally { setAuthContext(null); setState(initial); }
+    finally { setAuthContext(null); setState(initial); setSelectedPageId(null); }
   }
 
   async function acceptInvitation(invitation: WorkspaceInvitation) {
@@ -148,7 +173,7 @@ function App() {
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setAuthContext(data as AuthContext);
       setInvitations(current => current.filter(item => item.tenantId !== invitation.tenantId));
-      setState(initial); setStateLoaded(false); setSelected(null); setView('chat');
+      setState(initial); setStateLoaded(false); setSelected(null); setSelectedPageId(null); setView('chat');
     } catch (e) { setError(String(e)); }
   }
 
@@ -158,27 +183,29 @@ function App() {
   return <div className={`shell dots-dark ${view === 'scheduled' ? 'scheduled-mode' : ''}`} data-testid="app-shell" data-theme="dark" data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">●</span> Coke Dots</div>
-      <button className={`nav ${view === 'chat' ? 'selected' : ''}`} onClick={() => { setView('chat'); setSelected(null); }}>✦ <span>你的 dot</span></button>
-      <button className={`nav ${view === 'activity' ? 'selected' : ''}`} onClick={() => setView('activity')}>▤ <span>Activity</span><em>{active.length || ''}</em></button>
-      <button className={`nav ${view === 'scheduled' ? 'selected' : ''}`} onClick={() => setView('scheduled')}>◷ <span>Scheduled</span></button>
-      <button className={`nav ${view === 'computer' ? 'selected' : ''}`} onClick={() => setView('computer')}>▣ <span>电脑</span></button>
+      <button className={`nav ${view === 'chat' ? 'selected' : ''}`} onClick={() => { setSelectedPageId(null); setView('chat'); setSelected(null); }}>✦ <span>你的 dot</span></button>
+      <button className={`nav ${view === 'activity' ? 'selected' : ''}`} onClick={() => { setSelectedPageId(null); setView('activity'); }}>▤ <span>Activity</span><em>{active.length || ''}</em></button>
+      <button className={`nav ${view === 'scheduled' ? 'selected' : ''}`} onClick={() => { setSelectedPageId(null); setView('scheduled'); }}>◷ <span>Scheduled</span></button>
+      <button className={`nav ${view === 'pages' ? 'selected' : ''}`} onClick={() => { setSelectedPageId(null); setView('pages'); }}>▤ <span>Scratchpad</span></button>
+      <button className={`nav ${view === 'computer' ? 'selected' : ''}`} onClick={() => { setSelectedPageId(null); setView('computer'); }}>▣ <span>电脑</span></button>
       <div className="side-caption">正在负责</div>
-      <div className="task-links">{stateLoaded ? state.tasks.slice(0, 12).map(task => <button key={task.id} className={selected === task.id ? 'on' : ''} onClick={() => { setView('chat'); setSelected(task.id); }}><span className={`status-dot ${task.status}`} />{task.title}</button>) : <span className="side-loading">恢复中…</span>}</div>
-      <button className="profile-link" onClick={() => setView('profile')}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
+      <div className="task-links">{stateLoaded ? state.tasks.slice(0, 12).map(task => <button key={task.id} className={selected === task.id ? 'on' : ''} onClick={() => { setSelectedPageId(null); setView('chat'); setSelected(task.id); }}><span className={`status-dot ${task.status}`} />{task.title}</button>) : <span className="side-loading">恢复中…</span>}</div>
+      <button className="profile-link" onClick={() => { setSelectedPageId(null); setView('profile'); }}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
-      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : ''}</span><div className="top-actions"><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
+      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="top-actions"><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {view === 'chat' && <div className="chat-layout"><section className="chat-panel">
         {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : !selectedTask && entries.length === 0 ? <div className="welcome onboarding-welcome" data-testid="dot-onboarding"><Avatar {...state.profile} /><h1>Hey! I’m your dot</h1><p className="onboarding-promise">Message or call me anytime. I’ll keep things moving, even when we’re not talking, and check in with updates or questions.</p><p className="onboarding-name-prompt">Want to give me a name?</p><button className="onboarding-customize" data-testid="onboarding-customize" onClick={() => setView('profile')}>Customize your dot <span aria-hidden="true">→</span></button><p className="onboarding-start-prompt">Start looking for ways to help. Anything top of mind?</p><div className="suggestions onboarding-actions"><button data-testid="onboarding-start" onClick={() => { composerRef.current?.focus(); }}>Start looking for ways to help <span aria-hidden="true">→</span></button></div><p className="onboarding-footer">A few things I could take off your plate.</p></div> : <div className="timeline">
           {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
-          {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <Avatar {...state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><p>{entry.body}</p></div></article>)}
+          {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <Avatar {...state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={entry.body} onOpenPage={id => openPage(id, entry.taskId)} /></div></article>)}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
         </div>}
         <div className="composer-wrap"><div className="composer"><textarea ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="send" disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
-      </section>{(selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
-      {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}
+      </section>{selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => setSelectedPageId(null)} /> : (selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
+      {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
+      {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
         onCancelTask={task => void act(task, 'cancelSchedule')}
         onWatchAction={(watch, action) => void actWatch(watch.id, action)}
@@ -233,7 +260,7 @@ function LoginScreen({ googleConfigured, e2eAuthAvailable }: { googleConfigured:
   return <main className="auth-page"><div className="auth-card"><div className="brand"><span className="brand-mark">●</span> Coke Dots</div><h1>让你的个人代理持续推进工作</h1><p>使用 Google 账号登录。每个工作区的任务、记录、模型密钥和浏览器会话相互隔离。</p>{authError && <div className="auth-error">{authErrors[authError] || '登录失败，请重试。'}</div>}{desktopError && <div className="auth-error">{desktopError}</div>}{googleConfigured ? isElectron ? <button className="google-login" disabled={desktopPending} onClick={() => void beginDesktopLogin()}><span>G</span>{desktopPending ? '等待浏览器完成登录…' : '使用 Google 登录'}</button> : <a className="google-login" href="/api/auth/google/start"><span>G</span>使用 Google 登录</a> : <div className="auth-setup"><strong>需要配置 Google OAuth</strong><span>在本机服务环境中设置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET，然后重启服务。</span></div>}{e2eAuthAvailable && <div className="e2e-login"><label htmlFor="e2e-email">E2E 测试账号</label><input id="e2e-email" type="email" value={e2eEmail} onChange={event => setE2eEmail(event.target.value)} /><button data-testid="e2e-sign-in" className="google-login" onClick={() => void signInE2e()}>测试环境登录</button></div>}<small>仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。</small></div></main>;
 }
 
-function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask }: { tenantId: string; profileName: string; state: Snapshot; stateLoaded: boolean; onSelectTask: (taskId: string) => void }) {
+function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask, onOpenPage }: { tenantId: string; profileName: string; state: Snapshot; stateLoaded: boolean; onSelectTask: (taskId: string) => void; onOpenPage: (pageId: string, taskId?: string | null) => void }) {
   const tenantIdRef = useRef(tenantId);
   tenantIdRef.current = tenantId;
   const pageGeneration = useRef(0);
@@ -304,7 +331,7 @@ function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask 
         const task = entry.taskId ? tasks.get(entry.taskId) : undefined;
         return <li className={`activity-entry ${entry.kind}`} data-testid="activity-entry" key={entry.id}>
           <div className="activity-entry-head"><strong>{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? profileName : '系统'}</strong><time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div>
-          <p>{entry.body}</p>
+          <MessageBody body={entry.body} onOpenPage={pageId => onOpenPage(pageId, entry.taskId)} />
           {task && <button className="activity-open-task" onClick={() => onSelectTask(task.id)}>打开任务：{task.title} →</button>}
         </li>;
       })}</ol>}

@@ -1,0 +1,62 @@
+.pages-view.content{display:block;overflow:auto;padding:52px clamp(24px,6vw,92px) 40px}
+.scratchpad-library-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;max-width:1060px;margin:0 auto 27px}
+.scratchpad-library-heading h1{margin:11px 0 7px;font-size:27px;letter-spacing:-.035em;font-weight:620}
+.scratchpad-library-heading p{margin:0;color:#8e8995;font-size:12px}
+.scratchpad-connected{display:inline-flex;align-items:center;gap:7px;color:#78ae84;font-size:10px;font-weight:550}
+.scratchpad-connected i{width:6px;height:6px;border-radius:50%;background:#78ae84;box-shadow:0 0 8px #78ae8466}
+.scratchpad-count{padding:6px 9px;border:1px solid #333039;border-radius:20px;color:#a8a3ad;font-size:10px}
+.scratchpad-library-grid{display:grid;grid-template-columns:minmax(265px,.75fr) minmax(380px,1.25fr);gap:15px;max-width:1060px;margin:0 auto}
+.scratchpad-create,.scratchpad-page-list{border:1px solid #302d34;border-radius:14px;background:#131215}
+.scratchpad-create{display:grid;align-content:start;gap:13px;padding:20px}
+.scratchpad-card-icon,.scratchpad-page-icon{display:grid;place-items:center;width:29px;height:29px;border-radius:8px;background:#27232d;color:#b9a1e5;font-size:16px}
+.scratchpad-create h2{margin:0;font-size:14px;font-weight:600}
+.scratchpad-create>p{margin:-7px 0 3px;color:#908b96;font-size:11px;line-height:1.5}
+.scratchpad-create label,.scratchpad-page-editor label{display:grid;gap:7px;color:#aaa5b0;font-size:10px}
+.scratchpad-create input,.scratchpad-create textarea,.scratchpad-page-editor input,.scratchpad-page-editor textarea{width:100%;border:1px solid #39353f;border-radius:8px;background:#19171c;color:#e9e5ee;padding:9px 10px;font:inherit;font-size:11px;outline:none}
+.scratchpad-create input:focus,.scratchpad-create textarea:focus,.scratchpad-page-editor input:focus,.scratchpad-page-editor textarea:focus{border-color:#8d75b5;box-shadow:0 0 0 2px #8d75b522}
+.scratchpad-create textarea{min-height:113px;resize:vertical;line-height:1.55}
+.scratchpad-create .primary{justify-self:start;margin-top:2px}
+.scratchpad-create button:disabled,.scratchpad-page-actions button:disabled{opacity:.5;cursor:not-allowed}
+.scratchpad-page-list{display:grid;align-content:start;gap:1px;padding:8px;min-height:270px}
+.scratchpad-page-row{width:100%;display:flex;align-items:center;gap:12px;padding:14px 12px;border:0;border-radius:9px;background:transparent;color:#eeeaf2;text-align:left;cursor:pointer}
+.scratchpad-page-row:hover{background:#201e23}
+.scratchpad-page-copy{display:grid;gap:5px;min-width:0;flex:1}
+.scratchpad-page-copy strong{font-size:12px;font-weight:580;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scratchpad-page-copy small{color:#8e8994;font-size:10px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scratchpad-page-chevron{color:#77727e;font-size:22px}
+.scratchpad-page-icon{width:27px;height:27px;flex:none;background:#202a22;color:#8cc398;font-size:13px}
+.scratchpad-list-empty{display:grid;place-items:center;flex:1;min-height:245px;color:#8c8792;font-size:11px}
+.scratchpad-sharing-note{max-width:1060px;margin:15px auto 0;color:#77727e;font-size:10px;line-height:1.5}
+.scratchpad-error{margin:0 auto 13px;max-width:1060px;color:#f0a6a0;font-size:11px}
+.scratchpad-page-pane.split{width:min(54%,760px);min-width:360px;flex:none;overflow:auto;border-left:1px solid #28262c;background:#111113}
+.scratchpad-page-pane.full{flex:1;min-height:0;overflow:auto;background:#0d0d0f}
+.scratchpad-page-toolbar{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:14px;min-height:53px;padding:0 22px;border-bottom:1px solid #28262c;background:#111113eF;backdrop-filter:blur(12px)}
+.full .scratchpad-page-toolbar{padding:0 clamp(22px,6vw,92px)}
+.scratchpad-back{display:flex;align-items:center;gap:7px;margin-right:auto;padding:5px 0;border:0;background:transparent;color:#a39da9;font-size:10px;cursor:pointer}
+.scratchpad-back:first-letter{font-size:19px}
+.scratchpad-back:hover{color:#eeeaf2}
+.scratchpad-edit,.scratchpad-page-actions>button:not(.primary),.scratchpad-page-missing button{padding:7px 11px;border:1px solid #39353f;border-radius:7px;background:#1a181d;color:#c6c1cb;font-size:10px;cursor:pointer}
+.scratchpad-page-loading,.scratchpad-page-missing{margin:60px auto;max-width:560px;color:#9b96a0;font-size:12px}
+.scratchpad-document{max-width:720px;margin:0 auto;padding:46px 52px 54px}
+.scratchpad-document>h1{margin:0 0 29px;color:#eeebf1;font-size:25px;line-height:1.25;letter-spacing:-.03em;font-weight:620}
+.scratchpad-markdown{color:#cbc7d0;font-size:12px;line-height:1.75;overflow-wrap:anywhere}
+.scratchpad-markdown h2{margin:26px 0 8px;color:#e8e4ec;font-size:15px;font-weight:600}
+.scratchpad-markdown h3{margin:21px 0 7px;color:#e1dce6;font-size:13px;font-weight:600}
+.scratchpad-markdown p{margin:0 0 13px;white-space:pre-wrap}
+.scratchpad-markdown .scratchpad-blank{height:9px}
+.scratchpad-bullet{display:flex;align-items:flex-start;gap:9px;margin:3px 0;padding-left:3px}
+.scratchpad-bullet i{width:4px;height:4px;margin-top:9px;border-radius:50%;background:#a78dce;flex:none}
+.scratchpad-document footer{margin-top:32px;padding-top:12px;border-top:1px solid #2a272f;color:#77727d;font-size:9px}
+.scratchpad-page-editor{display:grid;gap:15px;max-width:720px;margin:0 auto;padding:36px 52px}
+.scratchpad-page-editor input{height:38px;font-size:13px}
+.scratchpad-page-editor textarea{min-height:420px;resize:vertical;font-size:12px;line-height:1.7}
+.scratchpad-page-actions{display:flex;gap:9px}
+.scratchpad-page-actions .primary{padding:8px 14px;font-size:10px;cursor:pointer}
+.scratchpad-page-missing h2{margin:0 0 9px;color:#eeeaf2;font-size:17px}
+.scratchpad-page-missing p{margin:0 0 17px}
+.message-body{white-space:pre-wrap;overflow-wrap:anywhere}
+.message-page-link{margin:5px 6px 0 0;padding:5px 9px;border:1px solid #54466b;border-radius:7px;background:#292332;color:#ceb9f0;font-size:11px;cursor:pointer}
+.message-page-link:hover{border-color:#9b7ac9;background:#342a41}
+.activity-entry .message-body{margin:7px 0 0;color:#c2bec8;font-size:12px;line-height:1.55}
+@media(max-width:920px){.scratchpad-library-grid{grid-template-columns:1fr}.scratchpad-page-pane.split{width:46%;min-width:320px}.scratchpad-document{padding:36px 28px}}
+@media(max-width:700px){.pages-view.content{padding:28px 18px}.scratchpad-library-heading{align-items:flex-start;flex-direction:column}.scratchpad-page-pane.split{width:auto;min-width:0;flex:auto;min-height:460px;border-top:1px solid #28262c;border-left:0}.scratchpad-page-toolbar{padding:0 16px}.scratchpad-page-editor{padding:26px 18px}.scratchpad-document{padding:30px 20px}}

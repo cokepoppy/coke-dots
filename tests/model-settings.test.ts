@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.ts';
-import { effectiveModelConfig, publicModelSettings, setModelMetadata } from '../src/server/model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, publicModelSettings, setModelMetadata } from '../src/server/model-settings.ts';
 
 test('model endpoint and name persist without a secret in SQLite', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-settings-'));
@@ -30,4 +30,22 @@ test('environment model credential is used without appearing in public settings'
     assert.equal(effectiveModelConfig()?.apiKey, 'test-secret');
     assert.equal(JSON.stringify(publicModelSettings()).includes('test-secret'), false);
   } finally { delete process.env.DOTS_MODEL_API_KEY; delete process.env.DOTS_MODEL; }
+});
+
+test('the shared E2E model fixture can serve disposable test tenants without writing a key to Keychain', () => {
+  const old = { nodeEnv: process.env.NODE_ENV, e2eAuth: process.env.DOTS_E2E_AUTH, baseUrl: process.env.DOTS_MODEL_BASE_URL, model: process.env.DOTS_MODEL, apiKey: process.env.DOTS_MODEL_API_KEY };
+  const tenantId = 'disposable-e2e-model-tenant';
+  process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '1';
+  process.env.DOTS_MODEL_BASE_URL = 'http://127.0.0.1:43191/v1'; process.env.DOTS_MODEL = 'fixture-model'; process.env.DOTS_MODEL_API_KEY = 'fixture-only-key';
+  try {
+    loadModelSettings(null, null, tenantId);
+    assert.deepEqual(effectiveModelConfig(tenantId), { apiKey: 'fixture-only-key', model: 'fixture-model', baseUrl: 'http://127.0.0.1:43191/v1' });
+    assert.equal(publicModelSettings(tenantId).hasKey, true);
+    process.env.DOTS_E2E_AUTH = '0';
+    assert.equal(effectiveModelConfig(tenantId), null, 'The test-only model must not be available without the E2E auth fixture');
+  } finally {
+    for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2eAuth], ['DOTS_MODEL_BASE_URL', old.baseUrl], ['DOTS_MODEL', old.model], ['DOTS_MODEL_API_KEY', old.apiKey]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });
