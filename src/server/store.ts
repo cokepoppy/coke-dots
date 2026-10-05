@@ -304,6 +304,28 @@ export class Store {
     return this.getTask(id, tenantId);
   }
 
+  replyToTask(id: string, message: string, tenantId = 'legacy'): Task | null {
+    const old = this.getTask(id, tenantId);
+    if (!old) return null;
+    if (old.status !== 'waiting') throw new Error('Task is not waiting for a reply');
+    const reply = message.trim();
+    if (!reply || reply.length > 5000) throw new Error('Invalid task reply');
+    const now = new Date().toISOString();
+    const instruction = `${old.instruction}\n\nUser reply: ${reply}`;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const current = this.getTask(id, tenantId);
+      if (!current) { this.db.exec('ROLLBACK'); return null; }
+      if (current.status !== 'waiting') throw new Error('Task is not waiting for a reply');
+      this.db.prepare("UPDATE tasks SET instruction=?,status='queued',next_run_at=?,error=NULL,updated_at=? WHERE tenant_id=? AND id=?")
+        .run(instruction, now, now, tenantId, id);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+        .run(tenantId, id, 'user', reply, now);
+      this.db.exec('COMMIT');
+      return this.getTask(id, tenantId);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
   addEntry(kind: Entry['kind'], body: string, taskId: string | null = null, tenantId = 'legacy'): Entry {
     const now = new Date().toISOString();
     const result = this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)').run(tenantId, taskId, kind, body, now);

@@ -201,8 +201,19 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
   return <div className={`task-controls ${compact ? 'compact' : ''}`}>
     {!compact && <span className={`pill ${task.status}`}>{statusText[task.status]}</span>}
     {['working', 'queued', 'scheduled'].includes(task.status) && <button onClick={() => void act(task, 'pause')}>暂停</button>}
-    {['paused', 'waiting', 'failed'].includes(task.status) && <button onClick={() => void act(task, task.status === 'failed' ? 'retry' : 'resume')}>{task.status === 'failed' ? '重试' : '继续'}</button>}
-    {!compact && <><button onClick={() => void act(task, 'priority', { priority: task.priority + 1 })}>提高优先级</button><div className="redirect"><input value={redirect} onChange={e => setRedirect(e.target.value)} placeholder="调整这项工作的要求" /><button disabled={!redirect.trim()} onClick={() => { void act(task, 'redirect', { instruction: redirect }); setRedirect(''); }}>更新</button></div></>}
+    {['paused', 'failed'].includes(task.status) && <button onClick={() => void act(task, task.status === 'failed' ? 'retry' : 'resume')}>{task.status === 'failed' ? '重试' : '继续'}</button>}
+    {!compact && <>
+      <button onClick={() => void act(task, 'priority', { priority: task.priority + 1 })}>提高优先级</button>
+      <div className="redirect">
+        <input aria-label={task.status === 'waiting' ? '回复 dot 的问题' : '调整这项工作的要求'} value={redirect} onChange={e => setRedirect(e.target.value)} placeholder={task.status === 'waiting' ? '回复 dot 的问题…' : '调整这项工作的要求'} />
+        <button disabled={!redirect.trim()} onClick={() => {
+          const action = task.status === 'waiting' ? 'reply' : 'redirect';
+          const extra = task.status === 'waiting' ? { message: redirect } : { instruction: redirect };
+          void act(task, action, extra);
+          setRedirect('');
+        }}>{task.status === 'waiting' ? '回复并继续' : '更新'}</button>
+      </div>
+    </>}
   </div>;
 }
 

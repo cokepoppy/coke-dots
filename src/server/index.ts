@@ -223,7 +223,12 @@ const server = createServer(async (req, res) => {
       if (action === 'pause') store.updateTask(old.id, { status: 'paused', nextRunAt: null }, session.tenant.id);
       else if (action === 'resume' || action === 'retry') store.updateTask(old.id, { status: 'queued', nextRunAt: new Date().toISOString(), error: null }, session.tenant.id);
       else if (action === 'cancelSchedule') store.updateTask(old.id, { scheduleMinutes: null, status: 'paused', nextRunAt: null }, session.tenant.id);
-      else if (action === 'redirect') {
+      else if (action === 'reply') {
+        const message = String(body.message || '').trim();
+        if (!message || message.length > 5000) return reply(res, 400, { error: 'Invalid task reply' });
+        if (old.status !== 'waiting') return reply(res, 409, { error: 'Task is not waiting for a reply' });
+        store.replyToTask(old.id, message, session.tenant.id);
+      } else if (action === 'redirect') {
         const instruction = String(body.instruction || '').trim();
         if (!instruction || instruction.length > 10000) return reply(res, 400, { error: 'Invalid instruction' });
         store.updateTask(old.id, { instruction, status: 'queued', nextRunAt: new Date().toISOString() }, session.tenant.id);

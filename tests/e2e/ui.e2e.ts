@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { appendFile, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -24,6 +25,11 @@ const screenshotNames: string[] = [];
 const serverLogs: string[] = [];
 const pageErrors: string[] = [];
 let server: ChildProcess | null = null;
+let mockModelServer: Server | null = null;
+let mockModelPrompts: string[] = [];
+let testModelBaseUrl = '';
+let testModelApiKey = '';
+let testModelName = '';
 let browser: Browser | null = null;
 let alphaContext: BrowserContext | null = null;
 let betaContext: BrowserContext | null = null;
@@ -54,6 +60,35 @@ async function reservePort() {
   return address.port;
 }
 
+async function startMockModel() {
+  mockModelPrompts = [];
+  mockModelServer = createHttpServer((request, response) => {
+    let raw = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => { raw += chunk; });
+    request.on('end', () => {
+      try {
+        assert.equal(request.method, 'POST');
+        assert.equal(request.url, '/v1/chat/completions');
+        const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+        const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
+        mockModelPrompts.push(prompt);
+        const hasReply = prompt.includes('User reply: Use Friday.');
+        const content = JSON.stringify({ status: hasReply ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : 'What launch date should I use?' });
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ choices: [{ message: { content } }] }));
+      } catch {
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'Invalid test model request' }));
+      }
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => mockModelServer!.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  const address = mockModelServer.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}/v1`;
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -75,9 +110,9 @@ async function startServer(port: number) {
       DOTS_CHROME_BIN: chromePath,
       GOOGLE_CLIENT_ID: '',
       GOOGLE_CLIENT_SECRET: '',
-      DOTS_MODEL_BASE_URL: '',
-      DOTS_MODEL_API_KEY: '',
-      DOTS_MODEL: '',
+      DOTS_MODEL_BASE_URL: testModelBaseUrl,
+      DOTS_MODEL_API_KEY: testModelApiKey,
+      DOTS_MODEL: testModelName,
       DOTS_CLAUDE_BIN: '',
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
@@ -338,6 +373,9 @@ try {
   });
 
   await recordStep('Restart the local service and recover both authenticated tenant sessions and task data', async () => {
+    testModelBaseUrl = await startMockModel();
+    testModelApiKey = 'e2e-local-only';
+    testModelName = 'e2e-model';
     await restartService();
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await betaPage!.reload({ waitUntil: 'domcontentloaded' });
@@ -353,6 +391,24 @@ try {
     await screenshot(betaPage!, '13-beta-after-service-restart');
     await selectTenant(betaPage!, 'Beta workspace');
     await betaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'detached' });
+  });
+
+  await recordStep('A user reply resumes a waiting task while retaining the original goal', async () => {
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id'), 'legacy');
+    const originalGoal = 'Prepare the project launch plan';
+    await createTask(alphaPage!, originalGoal);
+    await alphaPage!.locator('.timeline .pill.waiting').waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.timeline .message.dot p').filter({ hasText: 'What launch date should I use?' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByPlaceholder('回复 dot 的问题…').fill('Use Friday.');
+    await alphaPage!.getByRole('button', { name: '回复并继续' }).click();
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: 'Use Friday.' }).waitFor({ state: 'visible' });
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.task-links button').filter({ hasText: originalGoal }).waitFor({ state: 'visible' });
+    assert.equal(mockModelPrompts.length, 2, 'The model did not receive both the original task and the reply');
+    assert.match(mockModelPrompts[1], /Task: Prepare the project launch plan\n\nUser reply: Use Friday\./);
+    await screenshot(alphaPage!, '17-waiting-task-resumed');
+    await selectTenant(alphaPage!, 'Alpha Shared');
   });
 
   await recordStep('Alpha shared-workspace computer opens under the shared Dot identity', async () => {
@@ -423,6 +479,10 @@ try {
   await betaContext?.close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
   await stopServer(server);
+  if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
+  testModelBaseUrl = '';
+  testModelApiKey = '';
+  testModelName = '';
   await writeFile(join(artifactRoot, 'server.log'), serverLogs.join(''));
   const videoFiles = (await readdir(videoDir)).filter(name => name.endsWith('.webm')).map(name => `video/${name}`);
   await writeFile(join(artifactRoot, 'manifest.json'), JSON.stringify({

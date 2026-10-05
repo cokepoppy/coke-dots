@@ -25,6 +25,26 @@ test('tasks, redirects and profile survive database reopen', () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('a waiting task accepts a tenant-scoped reply without losing its original goal', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
+  try {
+    const store = new Store(directory);
+    const task = store.createTask('Prepare the project launch plan');
+    store.updateTask(task.id, { status: 'waiting', nextRunAt: null, result: 'I need a confirmed launch date.' });
+    assert.equal(store.replyToTask(task.id, 'Use Friday.', 'another-tenant'), null);
+    assert.throws(() => store.replyToTask(task.id, '   '), /Invalid task reply/);
+    assert.throws(() => store.replyToTask(task.id, 'x'.repeat(5001)), /Invalid task reply/);
+    const resumed = store.replyToTask(task.id, 'Use Friday.');
+    assert.equal(resumed?.status, 'queued');
+    assert.equal(resumed?.title, task.title);
+    assert.equal(resumed?.instruction, 'Prepare the project launch plan\n\nUser reply: Use Friday.');
+    assert.ok(resumed?.nextRunAt);
+    assert.ok(store.snapshot(false).entries.some(entry => entry.taskId === task.id && entry.kind === 'user' && entry.body === 'Use Friday.'));
+    assert.throws(() => store.replyToTask(task.id, 'A second reply'), /not waiting/);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('background worker stores real model result and schedules a future run', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
   const modelServer = createServer(async (req, res) => {
