@@ -95,10 +95,58 @@ test('activity feed pages in descending order and stays tenant scoped', () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('workspace memories persist, are tenant scoped, and can only be edited by their creator or an admin', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-memory-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'memory-alpha', email: 'memory-alpha@example.test', name: 'Memory Alpha' });
+    const beta = store.signInGoogle({ subject: 'memory-beta', email: 'memory-beta@example.test', name: 'Memory Beta' });
+    const workspace = store.createWorkspace(alpha.user.id, 'Memory Team');
+    const invitation = store.addWorkspaceMember(workspace.id, alpha.user.id, beta.user.email, 'member');
+    assert.equal(invitation.ok, true);
+    if (!invitation.ok || invitation.kind !== 'invitation') throw new Error('Expected Beta workspace invitation');
+    const betaSession = 'memory-beta-workspace-session';
+    store.createSession(betaSession, beta.user.id, beta.tenant.id, new Date(Date.now() + 60_000).toISOString());
+    assert.ok(store.acceptWorkspaceInvitation(workspace.id, betaSession, beta.user.id, beta.user.email));
+    const note = store.addTenantMemory(alpha.tenant.id, alpha.user.id, 'Use Mandarin and China Standard Time.');
+    const shared = store.addTenantMemory(workspace.id, alpha.user.id, 'The team review happens on Thursday.');
+    const betaShared = store.addTenantMemory(workspace.id, beta.user.id, 'Beta added a team note.');
+    assert.equal(store.tenantMemories(alpha.tenant.id).length, 1);
+    assert.equal(store.tenantMemories(beta.tenant.id).length, 0);
+    assert.equal(store.tenantMemories(workspace.id).length, 2);
+    assert.equal(store.updateTenantMemory(beta.tenant.id, note.id, beta.user.id, 'Try to cross tenant'), null);
+    assert.equal(store.deleteTenantMemory(beta.tenant.id, note.id, beta.user.id), false);
+    assert.equal(store.updateTenantMemory(workspace.id, shared.id, beta.user.id, 'Unauthorized edit'), 'forbidden');
+    assert.equal(store.deleteTenantMemory(workspace.id, shared.id, beta.user.id), 'forbidden');
+    const adminUpdated = store.updateTenantMemory(workspace.id, betaShared.id, alpha.user.id, 'The owner can maintain team notes.');
+    assert.equal(adminUpdated && adminUpdated !== 'forbidden' ? adminUpdated.note : null, 'The owner can maintain team notes.');
+    assert.throws(() => store.addTenantMemory(alpha.tenant.id, alpha.user.id, '   '), /Invalid memory note/);
+    assert.throws(() => store.addTenantMemory(alpha.tenant.id, alpha.user.id, 'x'.repeat(1001)), /Invalid memory note/);
+    for (let index = 0; index < 19; index++) store.addTenantMemory(alpha.tenant.id, alpha.user.id, `Memory ${index + 2}`);
+    assert.throws(() => store.addTenantMemory(alpha.tenant.id, alpha.user.id, 'Memory 21'), /最多保存 20 条/);
+    assert.equal(store.tenantMemories(alpha.tenant.id).length, 20);
+    const updated = store.updateTenantMemory(workspace.id, shared.id, alpha.user.id, 'The team review happens Friday.');
+    assert.equal(updated && updated !== 'forbidden' ? updated.note : null, 'The team review happens Friday.');
+    store.close();
+    store = new Store(directory);
+    assert.equal(store.tenantMemories(alpha.tenant.id).find(memory => memory.id === note.id)?.note, 'Use Mandarin and China Standard Time.');
+    assert.equal(store.tenantMemories(workspace.id).find(memory => memory.id === shared.id)?.note, 'The team review happens Friday.');
+    assert.equal(store.deleteTenantMemory(workspace.id, shared.id, alpha.user.id), true);
+    assert.equal(store.tenantMemories(workspace.id).length, 1);
+    assert.equal(store.tenantMemories(workspace.id)[0]?.note, 'The owner can maintain team notes.');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('background worker stores real model result and schedules a future run', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
+  let receivedPrompt = '';
   const modelServer = createServer(async (req, res) => {
     assert.equal(req.url, '/chat/completions');
+    let raw = '';
+    for await (const chunk of req) raw += String(chunk);
+    const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+    receivedPrompt = payload.messages?.find(message => message.role === 'user')?.content || '';
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'Checked the supplied information.' }) } }] }));
   });
@@ -109,6 +157,8 @@ test('background worker stores real model result and schedules a future run', as
   process.env.DOTS_MODEL = 'test-model';
   process.env.DOTS_MODEL_API_KEY = 'test-key';
   const store = new Store(directory);
+  const user = store.signInGoogle({ subject: 'worker-memory', email: 'worker-memory@example.test', name: 'Worker Memory' });
+  store.addTenantMemory(user.tenant.id, user.user.id, 'Use short Mandarin summaries.');
   const task = store.createTask('Check supplied information', 60);
   store.setSetting('desktopNotifications', 'true');
   const notifications: { title: string; body: string }[] = [];
@@ -118,6 +168,7 @@ test('background worker stores real model result and schedules a future run', as
     await waitFor(() => store.getTask(task.id)?.status === 'scheduled');
     const completed = store.getTask(task.id)!;
     assert.equal(completed.result, 'Checked the supplied information.');
+    assert.match(receivedPrompt, /User-approved workspace notes[\s\S]*1\. Use short Mandarin summaries\./, 'The worker failed to include the current tenant\'s approved memory');
     assert.ok(completed.nextRunAt && completed.nextRunAt > new Date().toISOString());
     assert.ok(store.snapshot(true).entries.some(e => e.taskId === task.id && e.kind === 'dot'));
     assert.deepEqual(notifications, [{ title: 'Dot', body: '“Check supplied information”已有新结果。' }]);

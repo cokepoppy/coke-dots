@@ -10,6 +10,7 @@ export interface AppUser { id: string; email: string; name: string }
 export interface TenantSummary { id: string; name: string; role: string; kind: string }
 export interface TenantMember { id: string; email: string; name: string; role: string }
 export interface WorkspaceInvitation { tenantId: string; tenantName?: string; email: string; role: string; invitedAt: string; expiresAt: string }
+export interface TenantMemory { id: string; tenantId: string; note: string; createdBy: string; createdByName: string; createdAt: string; updatedAt: string }
 export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantSummary; expiresAt: string }
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
 
@@ -75,6 +76,12 @@ export class Store {
         tenant_id TEXT NOT NULL REFERENCES tenants(id), key TEXT NOT NULL, value TEXT NOT NULL,
         PRIMARY KEY(tenant_id,key)
       );
+      CREATE TABLE IF NOT EXISTS tenant_memories (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        created_by TEXT NOT NULL REFERENCES users(id), note TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS tenant_memories_scope ON tenant_memories(tenant_id,created_at DESC);
     `);
 
     // Migrate the pre-auth single-user database into a reserved workspace. Its records
@@ -342,6 +349,52 @@ export class Store {
       .all(tenantId, beforeId, beforeId, boundedLimit + 1) as Record<string, unknown>[];
     const page = rows.slice(0, boundedLimit).map(toEntry);
     return { entries: page, nextCursor: rows.length > boundedLimit ? page.at(-1)?.id ?? null : null };
+  }
+
+  tenantMemories(tenantId: string): TenantMemory[] {
+    return this.db.prepare(`SELECT m.id,m.tenant_id AS tenantId,m.note,m.created_by AS createdBy,u.name AS createdByName,m.created_at AS createdAt,m.updated_at AS updatedAt
+      FROM tenant_memories m JOIN users u ON u.id=m.created_by WHERE m.tenant_id=? ORDER BY m.created_at DESC,m.id DESC`)
+      .all(tenantId) as unknown as TenantMemory[];
+  }
+
+  addTenantMemory(tenantId: string, createdBy: string, note: string): TenantMemory {
+    const normalized = note.trim();
+    if (!normalized || normalized.length > 1000) throw new Error('Invalid memory note');
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const count = this.db.prepare('SELECT COUNT(*) AS count FROM tenant_memories WHERE tenant_id=?').get(tenantId) as { count: number };
+      if (count.count >= 20) throw new Error('工作区最多保存 20 条记忆');
+      this.db.prepare('INSERT INTO tenant_memories(id,tenant_id,created_by,note,created_at,updated_at) VALUES (?,?,?,?,?,?)')
+        .run(id, tenantId, createdBy, normalized, now, now);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.tenantMemories(tenantId).find(memory => memory.id === id)!;
+  }
+
+  updateTenantMemory(tenantId: string, id: string, actorUserId: string, note: string): TenantMemory | null | 'forbidden' {
+    const normalized = note.trim();
+    if (!normalized || normalized.length > 1000) throw new Error('Invalid memory note');
+    const memory = this.db.prepare('SELECT created_by FROM tenant_memories WHERE tenant_id=? AND id=?').get(tenantId, id) as { created_by: string } | undefined;
+    if (!memory) return null;
+    if (!this.canManageTenantMemory(tenantId, actorUserId, memory.created_by)) return 'forbidden';
+    this.db.prepare('UPDATE tenant_memories SET note=?,updated_at=? WHERE tenant_id=? AND id=?')
+      .run(normalized, new Date().toISOString(), tenantId, id);
+    return this.tenantMemories(tenantId).find(item => item.id === id)!;
+  }
+
+  deleteTenantMemory(tenantId: string, id: string, actorUserId: string): boolean | 'forbidden' {
+    const memory = this.db.prepare('SELECT created_by FROM tenant_memories WHERE tenant_id=? AND id=?').get(tenantId, id) as { created_by: string } | undefined;
+    if (!memory) return false;
+    if (!this.canManageTenantMemory(tenantId, actorUserId, memory.created_by)) return 'forbidden';
+    this.db.prepare('DELETE FROM tenant_memories WHERE tenant_id=? AND id=?').run(tenantId, id);
+    return true;
+  }
+
+  private canManageTenantMemory(tenantId: string, actorUserId: string, createdBy: string) {
+    if (createdBy === actorUserId) return true;
+    return Boolean(this.db.prepare("SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=? AND role IN ('owner','admin')").get(tenantId, actorUserId));
   }
 
   createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null): Task {

@@ -53,7 +53,7 @@ export class Worker {
       const workspace = join(this.workspaceRoot, task.tenantId, task.id);
       mkdirSync(workspace, { recursive: true });
       const decision = await adapter.run({
-        tenantId: task.tenantId, prompt: task.instruction, priorResult: task.result, sessionId: task.agentSessionId,
+        tenantId: task.tenantId, prompt: task.instruction, memories: this.store.tenantMemories(task.tenantId).map(memory => memory.note), priorResult: task.result, sessionId: task.agentSessionId,
         workspace,
         onEvent: message => { this.store.addEntry('system', message, task.id, task.tenantId); this.onChange(); },
       });

@@ -17,6 +17,7 @@ const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 interface TenantMember { id: string; email: string; name: string; role: string }
 interface WorkspaceInvitation { tenantId: string; tenantName?: string; email: string; role: string; invitedAt: string; expiresAt: string }
+interface TenantMemory { id: string; tenantId: string; note: string; createdBy: string; createdByName: string; createdAt: string; updatedAt: string }
 const statusText: Record<TaskStatus, string> = {
   queued: '排队中', working: '工作中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停',
 };
@@ -378,6 +379,12 @@ function Profile({ state, auth, onError }: { state: Snapshot; auth: AuthContext;
   const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
   const [memberNotice, setMemberNotice] = useState('');
   const [membersError, setMembersError] = useState('');
+  const [memories, setMemories] = useState<TenantMemory[]>([]);
+  const [memoryDraft, setMemoryDraft] = useState('');
+  const [editingMemory, setEditingMemory] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState('');
+  const [memoryError, setMemoryError] = useState('');
+  const [memoryBusy, setMemoryBusy] = useState(false);
   const refreshMembers = async () => {
     const response = await fetch(`/api/tenants/${auth.tenant.id}/members`);
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
@@ -392,6 +399,42 @@ function Profile({ state, auth, onError }: { state: Snapshot; auth: AuthContext;
   useEffect(() => { setDesktopNotifications(state.preferences.desktopNotifications); }, [state.preferences.desktopNotifications]);
   useEffect(() => { if (state.modelSettings.baseUrl) setBaseUrl(state.modelSettings.baseUrl); if (state.modelSettings.model) setModel(state.modelSettings.model); }, [state.modelSettings.baseUrl, state.modelSettings.model]);
   useEffect(() => { void refreshMembers().catch(error => setMembersError(String(error))); }, [auth.tenant.id]);
+  useEffect(() => {
+    let active = true;
+    setMemoryDraft(''); setEditingMemory(null); setEditingDraft(''); setMemoryError(''); setMemories([]);
+    void fetch('/api/memories').then(async response => {
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (active) setMemories(data as TenantMemory[]);
+    }).catch(error => { if (active) setMemoryError(String(error)); });
+    return () => { active = false; };
+  }, [auth.tenant.id]);
+  async function addMemory() {
+    setMemoryBusy(true); setMemoryError('');
+    try {
+      const memory = await request('/memories', 'POST', { note: memoryDraft }) as TenantMemory;
+      setMemories(current => [memory, ...current]); setMemoryDraft('');
+    } catch (error) { setMemoryError(String(error)); }
+    finally { setMemoryBusy(false); }
+  }
+  async function saveMemory(memory: TenantMemory) {
+    setMemoryBusy(true); setMemoryError('');
+    try {
+      const updated = await request(`/memories/${memory.id}`, 'PATCH', { note: editingDraft }) as TenantMemory;
+      setMemories(current => current.map(item => item.id === updated.id ? updated : item)); setEditingMemory(null); setEditingDraft('');
+    } catch (error) { setMemoryError(String(error)); }
+    finally { setMemoryBusy(false); }
+  }
+  async function removeMemory(memory: TenantMemory) {
+    setMemoryBusy(true); setMemoryError('');
+    try {
+      const response = await fetch(`/api/memories/${memory.id}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setMemories(current => current.filter(item => item.id !== memory.id));
+    } catch (error) { setMemoryError(String(error)); }
+    finally { setMemoryBusy(false); }
+  }
   return <section className="content profile-content">
     <div className="section-heading"><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div>
     <div className="profile-card">
@@ -406,6 +449,28 @@ function Profile({ state, auth, onError }: { state: Snapshot; auth: AuthContext;
     <div className="profile-card model-card notification-card">
       <label className="notification-toggle"><input aria-label="桌面通知" type="checkbox" checked={desktopNotifications} disabled={notificationBusy} onChange={async event => { const enabled = event.currentTarget.checked; setNotificationBusy(true); setDesktopNotifications(enabled); try { await request('/preferences', 'PATCH', { desktopNotifications: enabled }); } catch (error) { setDesktopNotifications(!enabled); onError(String(error)); } finally { setNotificationBusy(false); } }} /><span><strong>桌面通知</strong><small>{desktopNotifications ? '此工作区已开启任务和网页监控提醒。' : '此工作区的提醒目前关闭。'}</small></span></label>
       <small className="notification-note">通知只显示 Dot 名称和事项状态，不包含任务结果正文。</small>
+    </div>
+    <div className="section-heading model-heading"><h2>工作区记忆</h2><p>你明确保存的偏好、决定和背景会提供给此工作区中的 Dot 任务。成员可查看；创建者和管理员可编辑或删除。不会自动从聊天中提取。</p></div>
+    <div className="profile-card model-card memory-card" data-testid="memory-manager">
+      <div className="memory-list" aria-label="已保存的工作区记忆">
+        {memories.map(memory => {
+          const canManage = memory.createdBy === auth.user.id || ['owner', 'admin'].includes(auth.tenant.role);
+          return <article className="memory-row" data-testid="memory-row" key={memory.id}>
+            {editingMemory === memory.id ? <>
+              <label>编辑这条记忆<textarea aria-label="编辑这条记忆" maxLength={1000} value={editingDraft} onChange={event => setEditingDraft(event.target.value)} /></label>
+              <div className="memory-actions"><button className="primary" disabled={memoryBusy || !editingDraft.trim()} onClick={() => void saveMemory(memory)}>保存记忆</button><button disabled={memoryBusy} onClick={() => { setEditingMemory(null); setEditingDraft(''); }}>取消</button></div>
+            </> : <>
+              <p>{memory.note}</p><small>由 {memory.createdByName} 保存</small>
+              {canManage && <div className="memory-actions"><button aria-label={`编辑记忆：${memory.note}`} disabled={memoryBusy} onClick={() => { setEditingMemory(memory.id); setEditingDraft(memory.note); }}>编辑</button><button aria-label={`删除记忆：${memory.note}`} disabled={memoryBusy} onClick={() => void removeMemory(memory)}>删除</button></div>}
+            </>}
+          </article>;
+        })}
+        {memories.length === 0 && <small data-testid="empty-memory-list">还没有保存的记忆。</small>}
+      </div>
+      <label>添加一条 Dot 应记住的信息<textarea aria-label="添加记忆" maxLength={1000} value={memoryDraft} onChange={event => setMemoryDraft(event.target.value)} placeholder="例如：回答时优先使用中文，日期按北京时间表达。" /></label>
+      <button className="primary" disabled={memoryBusy || !memoryDraft.trim() || memories.length >= 20} onClick={() => void addMemory()}>添加记忆</button>
+      <small>每个工作区最多 20 条，每条最多 1000 个字符。</small>
+      {memoryError && <small role="alert" className="member-error">{memoryError}</small>}
     </div>
     <div className="section-heading model-heading"><h2>工作区成员</h2><p>所有成员都必须使用对应 Google 账号登录并接受邀请后才能访问。邀请 7 天后过期；Coke Dots 不会代发邮件，请通过其他方式通知对方。当前角色：{auth.tenant.role}。</p></div>
     <div className="profile-card model-card">

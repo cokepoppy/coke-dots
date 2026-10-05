@@ -116,6 +116,7 @@ const server = createServer(async (req, res) => {
       }
       return reply(res, 200, store.activityPage(session.tenant.id, before, limit));
     }
+    if (path === '/api/memories' && req.method === 'GET') return reply(res, 200, store.tenantMemories(session.tenant.id));
     if (path === '/api/auth/invitations' && req.method === 'GET') return reply(res, 200, store.pendingWorkspaceInvitations(session.user.email));
     const acceptInvitationMatch = path.match(/^\/api\/auth\/invitations\/([a-z0-9-]+)\/accept$/);
     if (acceptInvitationMatch && req.method === 'POST') {
@@ -127,6 +128,29 @@ const server = createServer(async (req, res) => {
     }
 
     const body = req.method === 'POST' || req.method === 'PATCH' ? await readJson(req) : {};
+    if (path === '/api/memories' && req.method === 'POST') {
+      const note = String(body.note || '').trim();
+      if (!note || note.length > 1000) return reply(res, 400, { error: '记忆内容需为 1–1000 个字符' });
+      try { return reply(res, 201, store.addTenantMemory(session.tenant.id, session.user.id, note)); }
+      catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法保存记忆' }); }
+    }
+    const memoryMatch = path.match(/^\/api\/memories\/([a-f0-9-]+)$/);
+    if (memoryMatch && req.method === 'PATCH') {
+      const note = String(body.note || '').trim();
+      if (!note || note.length > 1000) return reply(res, 400, { error: '记忆内容需为 1–1000 个字符' });
+      try {
+        const memory = store.updateTenantMemory(session.tenant.id, memoryMatch[1], session.user.id, note);
+        if (memory === 'forbidden') return reply(res, 403, { error: '只能修改自己创建的记忆，或请工作区管理员处理' });
+        if (!memory) return reply(res, 404, { error: '记忆不存在' });
+        return reply(res, 200, memory);
+      } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法保存记忆' }); }
+    }
+    if (memoryMatch && req.method === 'DELETE') {
+      const deleted = store.deleteTenantMemory(session.tenant.id, memoryMatch[1], session.user.id);
+      if (deleted === 'forbidden') return reply(res, 403, { error: '只能删除自己创建的记忆，或请工作区管理员处理' });
+      if (!deleted) return reply(res, 404, { error: '记忆不存在' });
+      return reply(res, 200, { ok: true });
+    }
     if (path === '/api/auth/tenant' && req.method === 'POST') {
       const tenantId = String(body.tenantId || '');
       if (!store.selectSessionTenant(session.tokenHash, session.user.id, tenantId)) return reply(res, 403, { error: '你不是该工作区成员' });

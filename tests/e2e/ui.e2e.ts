@@ -77,8 +77,9 @@ async function startMockModel() {
         mockModelPrompts.push(prompt);
         const hasReply = prompt.includes('User reply: Use Friday.');
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
-        const isComplete = hasReply || isRecurringCheck;
-        const content = JSON.stringify({ status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : 'What launch date should I use?' });
+        const isMemoryCheck = prompt.includes('E2E memory prompt — apply the saved workspace preference');
+        const isComplete = hasReply || isRecurringCheck || isMemoryCheck;
+        const content = JSON.stringify({ status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : 'What launch date should I use?' });
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ choices: [{ message: { content } }] }));
       } catch {
@@ -527,6 +528,51 @@ try {
     assert.match(mockModelPrompts[1], /Task: Prepare the project launch plan\n\nUser reply: Use Friday\./);
     await screenshot(alphaPage!, '17-waiting-task-resumed');
     await selectTenant(alphaPage!, 'Alpha Shared');
+  });
+
+  await recordStep('Workspace memory is user managed, reaches the agent prompt, and stays tenant isolated', async () => {
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    await alphaPage!.locator('.profile-link').click();
+    const memoryManager = alphaPage!.getByTestId('memory-manager');
+    await memoryManager.waitFor({ state: 'visible' });
+    await memoryManager.getByTestId('empty-memory-list').waitFor({ state: 'visible' });
+    await memoryManager.getByLabel('添加记忆').fill('Alpha prefers concise updates.');
+    await memoryManager.getByRole('button', { name: '添加记忆' }).click();
+    const memoryRow = memoryManager.getByTestId('memory-row').filter({ hasText: 'Alpha prefers concise updates.' });
+    await memoryRow.waitFor({ state: 'visible' });
+    await memoryRow.getByRole('button', { name: '编辑' }).click();
+    await memoryRow.getByLabel('编辑这条记忆').fill('Alpha prefers concise Mandarin updates.');
+    await memoryManager.getByTestId('memory-row').first().getByRole('button', { name: '保存记忆' }).click();
+    const updatedMemoryRow = memoryManager.getByTestId('memory-row').filter({ hasText: 'Alpha prefers concise Mandarin updates.' });
+    await updatedMemoryRow.waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '18-alpha-workspace-memory');
+
+    const promptStart = mockModelPrompts.length;
+    await clickNav(alphaPage!, '你的 dot');
+    const memoryTask = 'E2E memory prompt — apply the saved workspace preference';
+    await createTask(alphaPage!, memoryTask);
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => mockModelPrompts.length === promptStart + 1, 10_000);
+    assert.match(mockModelPrompts[promptStart], /User-approved workspace notes[\s\S]*Alpha prefers concise Mandarin updates\./, 'Saved note did not reach the actual model request');
+    await screenshot(alphaPage!, '18b-agent-used-workspace-memory');
+
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await alphaPage!.locator('.profile-link').click();
+    await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.getByTestId('memory-row').count(), 0, 'Alpha personal memory appeared in Alpha Shared');
+
+    await selectTenant(betaPage!, 'Beta workspace');
+    await betaPage!.locator('.profile-link').click();
+    await betaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
+    assert.equal(await betaPage!.getByTestId('memory-row').count(), 0, 'Alpha personal memory appeared in Beta personal workspace');
+    await screenshot(betaPage!, '18c-beta-memory-isolation');
+
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    await alphaPage!.locator('.profile-link').click();
+    const savedMemory = alphaPage!.getByTestId('memory-row').filter({ hasText: 'Alpha prefers concise Mandarin updates.' });
+    await savedMemory.waitFor({ state: 'visible' });
+    await savedMemory.getByRole('button', { name: '删除' }).click();
+    await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
   });
 
   await recordStep('Recurring work runs again automatically and remains cancellable in Chrome', async () => {
