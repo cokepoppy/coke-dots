@@ -42,7 +42,7 @@ export function scheduleForTask(scheduleSpec: ScheduleSpec | null | undefined, s
 }
 
 export function describeSchedule(spec: ScheduleSpec): string {
-  if (spec.frequency === 'interval') return `Every ${spec.intervalMinutes} minutes`;
+  if (spec.frequency === 'interval') return `Every ${spec.intervalMinutes} ${spec.intervalMinutes === 1 ? 'minute' : 'minutes'}`;
   const suffix = spec.endDate ? ` · until ${spec.endDate}` : '';
   if (spec.frequency === 'daily') return `Daily at ${spec.time} (${spec.timeZone})${suffix}`;
   const days = spec.weekdays.map(day => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ');

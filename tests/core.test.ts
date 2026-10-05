@@ -81,6 +81,46 @@ test('background worker stores real model result and schedules a future run', as
   }
 });
 
+test('background worker persists the next daily occurrence in the selected time zone', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-calendar-worker-'));
+  const modelServer = createServer(async (_req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'Daily check completed.' }) } }] }));
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'test-model';
+  process.env.DOTS_MODEL_API_KEY = 'test-key';
+  let store = new Store(directory);
+  const scheduleSpec = { frequency: 'daily' as const, time: '23:59', timeZone: 'Asia/Shanghai', endDate: null };
+  const task = store.createTask('Run the daily check', null, 'model', 'legacy', scheduleSpec, new Date(Date.now() - 1_000).toISOString());
+  const worker = new Worker(store, () => {});
+  try {
+    worker.start();
+    await waitFor(() => store.getTask(task.id)?.status === 'scheduled');
+    const completed = store.getTask(task.id)!;
+    assert.equal(completed.result, 'Daily check completed.');
+    assert.ok(completed.nextRunAt && Date.parse(completed.nextRunAt) > Date.now());
+    const localTime = new Intl.DateTimeFormat('en-GB', { timeZone: scheduleSpec.timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(completed.nextRunAt!));
+    assert.equal(localTime, scheduleSpec.time);
+    worker.stop();
+    store.close();
+    store = new Store(directory);
+    const recovered = store.getTask(task.id)!;
+    assert.deepEqual(recovered.scheduleSpec, scheduleSpec);
+    assert.equal(recovered.nextRunAt, completed.nextRunAt);
+  } finally {
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    delete process.env.DOTS_MODEL_BASE_URL;
+    delete process.env.DOTS_MODEL;
+    delete process.env.DOTS_MODEL_API_KEY;
+  }
+});
+
 async function waitFor(predicate: () => boolean, timeout = 3000) {
   const start = Date.now();
   while (!predicate()) {

@@ -74,7 +74,9 @@ async function startMockModel() {
         const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
         mockModelPrompts.push(prompt);
         const hasReply = prompt.includes('User reply: Use Friday.');
-        const content = JSON.stringify({ status: hasReply ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : 'What launch date should I use?' });
+        const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
+        const isComplete = hasReply || isRecurringCheck;
+        const content = JSON.stringify({ status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : 'What launch date should I use?' });
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ choices: [{ message: { content } }] }));
       } catch {
@@ -149,6 +151,14 @@ async function delay(milliseconds: number) {
   await new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds));
 }
 
+async function waitFor(predicate: () => boolean, timeout = 3_000) {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeout) throw new Error('Timed out waiting for browser task state');
+    await delay(20);
+  }
+}
+
 async function recordStep(name: string, action: () => Promise<void>) {
   await action();
   steps.push({ name, result: 'passed' });
@@ -180,11 +190,13 @@ async function signIn(page: Page, email: string) {
 async function createTask(page: Page, instruction: string, scheduled = false) {
   if (scheduled) {
     await page.getByLabel('定期检查').check();
+    await page.getByLabel('重复频率').selectOption('interval');
     await page.locator('input.minutes').fill('60');
   }
   await page.getByPlaceholder('告诉 dot 接下来要负责什么…').fill(instruction);
   await page.locator('button.send').click();
   await page.locator('.timeline .message.user p').filter({ hasText: instruction }).waitFor({ state: 'visible', timeout: 10_000 });
+  if (scheduled) await page.waitForFunction(() => document.querySelector<HTMLInputElement>('.schedule-toggle input[type="checkbox"]')?.checked === false);
 }
 
 async function selectTenant(page: Page, text: string) {
@@ -352,6 +364,7 @@ try {
     await alphaPage!.getByPlaceholder('告诉 dot 接下来要负责什么…').fill(weeklyTask);
     await alphaPage!.locator('button.send').click();
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: weeklyTask }).waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector<HTMLInputElement>('.schedule-toggle input[type="checkbox"]')?.checked === false);
     await clickNav(alphaPage!, 'Scheduled');
     await alphaPage!.locator('.scheduled-item').filter({ hasText: weeklyTask }).waitFor({ state: 'visible' });
     const weeklyDetail = alphaPage!.getByTestId('scheduled-detail');
@@ -457,6 +470,44 @@ try {
     assert.equal(mockModelPrompts.length, 2, 'The model did not receive both the original task and the reply');
     assert.match(mockModelPrompts[1], /Task: Prepare the project launch plan\n\nUser reply: Use Friday\./);
     await screenshot(alphaPage!, '17-waiting-task-resumed');
+    await selectTenant(alphaPage!, 'Alpha Shared');
+  });
+
+  await recordStep('Recurring work runs again automatically and remains cancellable in Chrome', async () => {
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    const instruction = 'E2E recurring run — verify due work reruns automatically';
+    const promptCount = () => mockModelPrompts.filter(prompt => prompt.includes(instruction)).length;
+    const initialCount = promptCount();
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.getByLabel('定期检查').check();
+    await alphaPage!.getByLabel('重复频率').selectOption('interval');
+    await alphaPage!.locator('input.minutes').fill('1');
+    await alphaPage!.getByPlaceholder('告诉 dot 接下来要负责什么…').fill(instruction);
+    await alphaPage!.locator('button.send').click();
+    await alphaPage!.locator('.timeline .message.dot p').filter({ hasText: 'The recurring check completed.' }).waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.timeline .pill.scheduled').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => promptCount() === initialCount + 1, 15_000);
+    await screenshot(alphaPage!, '07d-recurring-run-completed');
+
+    await waitFor(() => promptCount() === initialCount + 2, 80_000);
+    await alphaPage!.waitForFunction(async instructionText => {
+      const response = await fetch('/api/state');
+      const state = await response.json() as { tasks: { instruction: string; status: string; nextRunAt: string | null }[] };
+      const task = state.tasks.find(item => item.instruction === instructionText);
+      return task?.status === 'scheduled' && Boolean(task.nextRunAt) && Date.parse(task.nextRunAt!) > Date.now();
+    }, instruction, { timeout: 20_000 });
+
+    await clickNav(alphaPage!, 'Scheduled');
+    const item = alphaPage!.locator('.scheduled-item').filter({ hasText: instruction });
+    await item.waitFor({ state: 'visible' });
+    await item.click();
+    const detail = alphaPage!.getByTestId('scheduled-detail');
+    await detail.getByText('Every 1 minute', { exact: true }).waitFor({ state: 'visible' });
+    await detail.getByText('The recurring check completed.', { exact: false }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '07e-recurring-run-rescheduled');
+    await detail.getByRole('button', { name: 'Cancel schedule' }).click();
+    await item.waitFor({ state: 'detached' });
+    assert.equal(promptCount(), initialCount + 2, 'The interval did not trigger exactly one automatic follow-up run');
     await selectTenant(alphaPage!, 'Alpha Shared');
   });
 
