@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Engine, Entry, PageActionApproval, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import './style.css';
+import './chat-theme.css';
 import './watch.css';
 import './dark-theme.css';
 import './onboarding.css';
@@ -18,6 +19,7 @@ import { PermissionRules } from './PermissionRules.tsx';
 
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
+type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
 interface WorkspaceInvitation { tenantId: string; tenantName?: string; email: string; role: string; invitedAt: string; expiresAt: string }
 interface TenantMemory { id: string; tenantId: string; note: string; createdBy: string; createdByName: string; createdAt: string; updatedAt: string }
@@ -55,6 +57,7 @@ function MessageBody({ body, onOpenPage }: { body: string; onOpenPage: (id: stri
 
 function App() {
   const [authContext, setAuthContext] = useState<AuthContext | null>(null);
+  const [theme, setTheme] = useState<Theme>('light');
   const [authChecked, setAuthChecked] = useState(false);
   const [stateLoaded, setStateLoaded] = useState(false);
   const [googleConfigured, setGoogleConfigured] = useState(false);
@@ -94,6 +97,15 @@ function App() {
   }, [authContext?.user.id]);
 
   useEffect(() => {
+    if (!authContext) { setTheme('light'); return; }
+    try {
+      setTheme(localStorage.getItem(`coke-dots:theme:${authContext.user.id}`) === 'dark' ? 'dark' : 'light');
+    } catch {
+      setTheme('light');
+    }
+  }, [authContext?.user.id]);
+
+  useEffect(() => {
     if (!authContext) return;
     setStateLoaded(false);
     const stream = new EventSource('/api/events');
@@ -113,6 +125,14 @@ function App() {
     setSelectedPageId(pageId);
     if (taskId) setSelected(taskId);
     setView('chat');
+  }
+
+  function toggleTheme() {
+    const next: Theme = theme === 'light' ? 'dark' : 'light';
+    setTheme(next);
+    if (authContext) {
+      try { localStorage.setItem(`coke-dots:theme:${authContext.user.id}`, next); } catch { /* Keep the current session usable when storage is unavailable. */ }
+    }
   }
 
   async function submit() {
@@ -183,7 +203,7 @@ function App() {
   if (!authChecked) return <div className="auth-loading">Coke Dots</div>;
   if (!authContext) return <LoginScreen googleConfigured={googleConfigured} e2eAuthAvailable={e2eAuthAvailable} />;
 
-  return <div className={`shell dots-dark ${view === 'scheduled' ? 'scheduled-mode' : ''} ${view === 'chat' && selectedPageId ? 'page-open-mode' : ''}`} data-testid="app-shell" data-theme="dark" data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
+  return <div className={`shell ${theme === 'dark' ? 'dots-dark' : ''} ${view === 'scheduled' ? 'scheduled-mode' : ''} ${view === 'chat' && selectedPageId ? 'page-open-mode' : ''}`} data-testid="app-shell" data-theme={theme} data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">●</span> Coke Dots</div>
       <button className={`nav ${view === 'chat' ? 'selected' : ''}`} aria-label="你的 dot" title="你的 dot" onClick={() => { setSelectedPageId(null); setView('chat'); setSelected(null); }}>✦ <span>你的 dot</span></button>
@@ -196,7 +216,7 @@ function App() {
       <button className="profile-link" onClick={() => { setSelectedPageId(null); setView('profile'); }}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
-      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="top-actions"><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
+      <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {view === 'chat' && <div className="chat-layout"><section className="chat-panel">
