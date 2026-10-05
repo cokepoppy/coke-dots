@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/server/store.ts';
 import { Worker } from '../src/server/worker.ts';
 
@@ -214,7 +215,59 @@ test('tenant action rules are admin managed and page approvals do not write unti
     assert.equal(store.tenantPages(workspace.id).length, 1, 'Declining the proposed write created page data');
     assert.equal(store.deleteTenantActionRule(workspace.id, beta.user.id), 'forbidden');
     assert.equal(store.deleteTenantActionRule(workspace.id, alpha.user.id), true);
+
+    const stoppableTask = store.createTask('Prepare notes and wait for Scratchpad approval', null, 'model', workspace.id);
+    store.updateTask(stoppableTask.id, { status: 'working' }, workspace.id);
+    store.requestPageActionApproval(workspace.id, stoppableTask.id, { ...proposal, title: 'Cancelled notes' }, 'Proposed page.', 'done', null);
+    const stopped = store.stopTask(stoppableTask.id, workspace.id, beta.user.id);
+    assert.equal(stopped?.task.status, 'stopped');
+    assert.equal(stopped?.cancelledApprovals, 1);
+    assert.equal(store.pageActionApproval(workspace.id, stoppableTask.id)?.status, 'cancelled');
+    assert.equal(store.resolvePageActionApproval(workspace.id, stoppableTask.id, alpha.user.id, 'approve'), null, 'A stopped task left its Scratchpad proposal actionable');
+    assert.equal(store.tenantPages(workspace.id).length, 1, 'Stopping a pending approval wrote a page');
+    assert.equal(store.stopTask(stoppableTask.id, alpha.tenant.id, alpha.user.id), null, 'A different tenant stopped a task by guessing its ID');
+
+    const recurringTask = store.createTask('Continue the weekly release review', 60, 'model', workspace.id);
+    assert.throws(() => store.stopTask(recurringTask.id, workspace.id, alpha.user.id), /Scheduled/);
+    assert.equal(store.getTask(recurringTask.id, workspace.id)?.status, 'queued', 'Task stop removed a recurring schedule outside Scheduled');
     store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('existing approval tables migrate without losing pending proposals before a task is stopped', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-approval-migration-'));
+  try {
+    const original = new Store(directory);
+    const owner = original.signInGoogle({ subject: 'approval-migration-owner', email: 'approval-migration@example.test', name: 'Migration Owner' });
+    const task = original.createTask('Prepare an approval proposal', null, 'model', owner.tenant.id);
+    original.updateTask(task.id, { status: 'working' }, owner.tenant.id);
+    original.requestPageActionApproval(owner.tenant.id, task.id, { action: 'create', title: 'Migration draft', content: '# Pending' }, 'Review this draft.', 'done', null);
+    original.close();
+
+    const db = new DatabaseSync(join(directory, 'dots.db'));
+    db.exec(`
+      DROP INDEX IF EXISTS page_action_approvals_task;
+      DROP INDEX IF EXISTS page_action_approvals_one_pending;
+      ALTER TABLE page_action_approvals RENAME TO page_action_approvals_current;
+      CREATE TABLE page_action_approvals (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id),
+        action_json TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','approved','declined')),
+        resume_status TEXT NOT NULL CHECK (resume_status IN ('done','scheduled')), next_run_at TEXT,
+        created_at TEXT NOT NULL, decided_at TEXT
+      );
+      INSERT INTO page_action_approvals(id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at,decided_at)
+        SELECT id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at,decided_at FROM page_action_approvals_current;
+      DROP TABLE page_action_approvals_current;
+      CREATE INDEX page_action_approvals_task ON page_action_approvals(tenant_id,task_id,created_at DESC);
+      CREATE UNIQUE INDEX page_action_approvals_one_pending ON page_action_approvals(tenant_id,task_id) WHERE status='pending';
+    `);
+    db.close();
+
+    const migrated = new Store(directory);
+    assert.equal(migrated.pageActionApproval(owner.tenant.id, task.id)?.status, 'pending');
+    assert.equal(migrated.stopTask(task.id, owner.tenant.id, owner.user.id)?.task.status, 'stopped');
+    assert.equal(migrated.pageActionApproval(owner.tenant.id, task.id)?.status, 'cancelled');
+    migrated.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

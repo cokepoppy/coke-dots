@@ -15,4 +15,7 @@
 .activity-feed button:disabled{opacity:.55;cursor:wait}
 .activity-empty,.activity-error{padding:17px 3px;color:#96919d;font-size:11px}
 .activity-error{color:#f0a6a0}
+.pill.stopped{background:#fcebea;color:#b76a65}
+.task-controls button.stop-task{background:#fcebea;color:#a84f4b}
+.dots-dark .pill.stopped,.dots-dark .task-controls button.stop-task{background:#3b2423;color:#e7a09a}
 @media(max-width:650px){.activity-entry{padding:12px}.activity-entry-head{align-items:flex-start;flex-direction:column;gap:4px}}

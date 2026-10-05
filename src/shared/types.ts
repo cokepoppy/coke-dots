@@ -1,7 +1,7 @@
 import type { ScheduleSpec } from './scheduling.ts';
 
 export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
-export type TaskStatus = 'queued' | 'working' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused';
+export type TaskStatus = 'queued' | 'working' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused' | 'stopped';
 export type ActionRuleMode = 'without-asking' | 'when-requested' | 'ask-before' | 'hand-off';
 export type { ScheduleSpec } from './scheduling.ts';
 
@@ -88,7 +88,7 @@ export interface PageActionApproval {
   taskId: string;
   action: ScratchpadPageAction;
   message: string;
-  status: 'pending' | 'approved' | 'declined';
+  status: 'pending' | 'approved' | 'declined' | 'cancelled';
   resumeStatus: 'done' | 'scheduled';
   nextRunAt: string | null;
   createdAt: string;

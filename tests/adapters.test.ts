@@ -54,3 +54,17 @@ test('Claude adapter uses restricted tools and records a resumable session ID', 
     assert.equal(args.includes('--dangerously-skip-permissions'), false);
   } finally { delete process.env.DOTS_CLAUDE_BIN; delete process.env.DOTS_TEST_ARGS; rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('Claude adapter terminates its child process when Activity stops the task', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-claude-stop-'));
+  const script = join(directory, 'mock-claude.js');
+  writeFileSync(script, 'setTimeout(() => console.log(JSON.stringify({status:"done",message:"Late result"})), 30000);');
+  process.env.DOTS_CLAUDE_BIN = script;
+  const controller = new AbortController();
+  try {
+    const running = adapters.claude.run({ prompt: 'Wait for a result', priorResult: null, sessionId: null, workspace: directory, onEvent: () => {}, signal: controller.signal });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    controller.abort();
+    await assert.rejects(running, /任务已停止/);
+  } finally { delete process.env.DOTS_CLAUDE_BIN; rmSync(directory, { recursive: true, force: true }); }
+});

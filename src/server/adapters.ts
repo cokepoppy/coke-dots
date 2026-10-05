@@ -19,6 +19,7 @@ export interface AgentRequest {
   sessionId: string | null;
   workspace: string;
   onEvent: (message: string) => void;
+  signal?: AbortSignal;
 }
 export type AgentPageAction = ScratchpadPageAction;
 export interface AgentDecision { status: 'done' | 'waiting' | 'scheduled'; message: string; nextMinutes?: number; sessionId?: string; pageAction?: AgentPageAction }
@@ -70,7 +71,7 @@ export const adapters: Record<Engine, AgentAdapter> = {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` },
           body: JSON.stringify({ model: config.model, temperature: 0.2, messages: [{ role: 'system', content: instruction }, { role: 'user', content: formatPrompt(input) }] }),
-          signal: controller.signal,
+          signal: input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal,
         });
         if (!response.ok) throw new Error(`模型服务返回 HTTP ${response.status}`);
         const data = await response.json() as { choices?: { message?: { content?: string } }[] };
@@ -91,7 +92,7 @@ export const adapters: Record<Engine, AgentAdapter> = {
       if (input.sessionId) args.push('--resume', sessionId);
       else args.push('--session-id', sessionId);
       args.push(formatPrompt(input));
-      const output = await runCommand(command, args, input.workspace, input.onEvent);
+      const output = await runCommand(command, args, input.workspace, input.onEvent, input.signal);
       return parseDecision(output, sessionId);
     },
   },
@@ -111,12 +112,17 @@ export const adapters: Record<Engine, AgentAdapter> = {
         sessionManager: sdk.SessionManager.inMemory(input.workspace),
       });
       const unsubscribe = session.subscribe(event => { if (event.type === 'tool_execution_start') input.onEvent('Pi 正在使用只读工具。'); });
+      let sessionDisposed = false;
+      const disposeSession = () => { if (!sessionDisposed) { sessionDisposed = true; session.dispose(); } };
+      if (input.signal?.aborted) disposeSession();
+      else input.signal?.addEventListener('abort', disposeSession, { once: true });
       try {
+        if (input.signal?.aborted) throw new Error('任务已停止');
         await session.prompt(formatPrompt(input));
         const assistant = [...session.messages].reverse().find((row: unknown) => (row as { role?: string }).role === 'assistant') as { content?: { type?: string; text?: string }[] } | undefined;
         const text = assistant?.content?.filter(item => item.type === 'text').map(item => item.text || '').join('\n') || '';
         return parseDecision(text);
-      } finally { unsubscribe(); session.dispose(); }
+      } finally { input.signal?.removeEventListener('abort', disposeSession); unsubscribe(); disposeSession(); }
     },
   },
   dsh: {
@@ -130,10 +136,16 @@ export const adapters: Record<Engine, AgentAdapter> = {
       const moduleName = '@deepseek-ai/dsh-sdk-client';
       const sdk = await import(moduleName) as { DeepSeekHarness: new (options: Record<string, unknown>) => { run: (prompt: string, options: { sessionId?: string; onNotification: (row: { method: string }) => void }) => Promise<{ finalResponse: string; sessionId: string }>; close: () => Promise<void> } };
       const harness = new sdk.DeepSeekHarness({ launch: { command: bin, args: [config], cwd: input.workspace, env: process.env }, cwd: input.workspace });
+      let closePromise: Promise<void> | null = null;
+      const closeHarness = () => closePromise ||= harness.close();
+      const abortHarness = () => { void closeHarness().catch(() => undefined); };
+      if (input.signal?.aborted) abortHarness();
+      else input.signal?.addEventListener('abort', abortHarness, { once: true });
       try {
+        if (input.signal?.aborted) throw new Error('任务已停止');
         const result = await harness.run(formatPrompt(input), { sessionId: input.sessionId || undefined, onNotification: row => { if (row.method === 'session.event') input.onEvent('DeepSeek Harness 正在处理任务。'); } });
         return parseDecision(result.finalResponse, result.sessionId);
-      } finally { await harness.close(); }
+      } finally { input.signal?.removeEventListener('abort', abortHarness); await closeHarness(); }
     },
   },
 };
@@ -155,14 +167,26 @@ function claudeBin() {
   return resolveExecutable(nearby) || 'claude';
 }
 
-async function runCommand(command: string, args: string[], cwd: string, onEvent: (message: string) => void): Promise<string> {
+async function runCommand(command: string, args: string[], cwd: string, onEvent: (message: string) => void, signal?: AbortSignal): Promise<string> {
   return await new Promise((resolvePromise, reject) => {
+    if (signal?.aborted) { reject(new Error('任务已停止')); return; }
     const child = spawn(command, args, { cwd: resolve(cwd), env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = ''; let error = '';
     const timeout = setTimeout(() => child.kill('SIGTERM'), 5 * 60_000);
+    let forceKill: NodeJS.Timeout | null = null;
+    const abort = () => {
+      child.kill('SIGTERM');
+      forceKill = setTimeout(() => child.kill('SIGKILL'), 2_000);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      if (forceKill) clearTimeout(forceKill);
+      signal?.removeEventListener('abort', abort);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
     child.stdout.on('data', chunk => { output += chunk.toString(); if (output.length > 1_000_000) child.kill('SIGTERM'); });
     child.stderr.on('data', chunk => { error += chunk.toString(); if (error.length > 100_000) child.kill('SIGTERM'); });
-    child.on('error', reject);
-    child.on('close', code => { clearTimeout(timeout); if (code === 0) { onEvent('Claude Code 已返回结果。'); resolvePromise(output); } else reject(new Error(`Claude Code 退出码 ${code}: ${error.slice(-500)}`)); });
+    child.on('error', error => { cleanup(); reject(error); });
+    child.on('close', code => { cleanup(); if (signal?.aborted) reject(new Error('任务已停止')); else if (code === 0) { onEvent('Claude Code 已返回结果。'); resolvePromise(output); } else reject(new Error(`Claude Code 退出码 ${code}: ${error.slice(-500)}`)); });
   });
 }

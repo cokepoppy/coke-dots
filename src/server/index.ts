@@ -350,9 +350,17 @@ const server = createServer(async (req, res) => {
       const old = store.getTask(taskMatch[1], session.tenant.id);
       if (!old) return reply(res, 404, { error: 'Task not found' });
       const action = String(body.action || '');
+      if (old.status === 'stopped') return reply(res, 409, { error: '这项工作已停止，不能继续或修改' });
       if (action === 'pause') store.updateTask(old.id, { status: 'paused', nextRunAt: null }, session.tenant.id);
       else if (action === 'resume' || action === 'retry') store.updateTask(old.id, { status: 'queued', nextRunAt: new Date().toISOString(), error: null }, session.tenant.id);
       else if (action === 'cancelSchedule') store.updateTask(old.id, { scheduleMinutes: null, scheduleSpec: null, status: 'paused', nextRunAt: null }, session.tenant.id);
+      else if (action === 'stop') {
+        try {
+          const stopped = store.stopTask(old.id, session.tenant.id, session.user.id);
+          if (!stopped) return reply(res, 409, { error: '这项工作当前不能停止' });
+        } catch (error) { return reply(res, 409, { error: error instanceof Error ? error.message : '无法停止这项工作' }); }
+        worker.stopTask(old.id);
+      }
       else if (action === 'reply') {
         const message = String(body.message || '').trim();
         if (!message || message.length > 5000) return reply(res, 400, { error: 'Invalid task reply' });

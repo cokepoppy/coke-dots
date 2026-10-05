@@ -7,7 +7,7 @@ type ScheduledItem =
   | { key: string; kind: 'watch'; title: string; searchable: string; updatedAt: string; watch: Watch };
 
 const statusText: Record<Task['status'], string> = {
-  queued: 'Queued', working: 'Working', waiting: 'Needs you', scheduled: 'Monitoring', done: 'Complete', failed: 'Failed', paused: 'Paused',
+  queued: 'Queued', working: 'Working', waiting: 'Needs you', scheduled: 'Monitoring', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
 };
 
 export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onOpenTask, onNewTask, onAddWatch }: {

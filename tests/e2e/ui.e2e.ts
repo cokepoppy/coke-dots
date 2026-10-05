@@ -27,6 +27,8 @@ const pageErrors: string[] = [];
 let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockModelPrompts: string[] = [];
+let heldStopModelRelease: (() => void) | null = null;
+let heldStopModelAborted = false;
 let testModelBaseUrl = '';
 let testModelApiKey = '';
 let testModelName = '';
@@ -68,7 +70,7 @@ async function startMockModel() {
     let raw = '';
     request.setEncoding('utf8');
     request.on('data', chunk => { raw += chunk; });
-    request.on('end', () => {
+    request.on('end', async () => {
       try {
         assert.equal(request.method, 'POST');
         assert.equal(request.url, '/v1/chat/completions');
@@ -80,11 +82,19 @@ async function startMockModel() {
         const isMemoryCheck = prompt.includes('E2E memory prompt — apply the saved workspace preference');
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
         const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
+        const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
+        if (isStopTask) {
+          heldStopModelAborted = false;
+          response.once('close', () => { heldStopModelAborted = true; });
+          await new Promise<void>(resolvePromise => { heldStopModelRelease = resolvePromise; });
+          heldStopModelRelease = null;
+        }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate;
+        const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate || isStopTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
-        const decision = { status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        const decision = { status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
+        if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ choices: [{ message: { content } }] }));
       } catch {
@@ -165,6 +175,12 @@ async function waitFor(predicate: () => boolean, timeout = 3_000) {
     if (Date.now() - start > timeout) throw new Error('Timed out waiting for browser task state');
     await delay(20);
   }
+}
+
+function releaseHeldStopModel() {
+  const release = heldStopModelRelease as (() => void) | null;
+  if (release) release();
+  heldStopModelRelease = null;
 }
 
 async function recordStep(name: string, action: () => Promise<void>) {
@@ -706,6 +722,63 @@ try {
     await screenshot(betaPage!, '19e-beta-scratchpad-isolation');
   });
 
+  await recordStep('Activity stops a running task and cancels its pending page approval', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    const instruction = 'E2E stop task — stop while the model is still working';
+    const promptStart = mockModelPrompts.length;
+    await createTask(alphaPage!, instruction);
+    await waitFor(() => mockModelPrompts.length === promptStart + 1, 10_000);
+    await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 5_000 });
+    const taskId = await alphaPage!.evaluate(async (goal: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string }[] };
+      return state.tasks.find(task => task.instruction === goal)?.id || null;
+    }, instruction);
+    assert(taskId, 'The running task was missing from its tenant state');
+    await clickNav(alphaPage!, 'Activity');
+    const card = alphaPage!.locator('.task-card').filter({ hasText: instruction });
+    await card.getByRole('button', { name: '停止工作' }).click();
+    await card.getByText('已停止', { exact: true }).waitFor({ state: 'visible' });
+    await waitFor(() => heldStopModelAborted, 5_000);
+    releaseHeldStopModel();
+    const stopped = await alphaPage!.evaluate(async (id: string) => {
+      const [taskResponse, stateResponse] = await Promise.all([fetch(`/api/state`), fetch(`/api/tasks/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'resume' }) })]);
+      const state = await taskResponse.json() as { tasks: { id: string; status: string; result: string | null }[] };
+      const task = state.tasks.find(item => item.id === id);
+      return { task, resumeStatus: stateResponse.status };
+    }, taskId);
+    assert.equal(stopped.task?.status, 'stopped');
+    assert.equal(stopped.task?.result, null, 'The aborted model call committed a late result');
+    assert.equal(stopped.resumeStatus, 409, 'A stopped task was allowed to resume');
+    assert.equal(await alphaPage!.evaluate(async () => (await fetch('/api/pages').then(response => response.json()) as unknown[]).length), 2, 'Stopping the task changed Scratchpad pages');
+    await screenshot(alphaPage!, '20a-stopped-running-task');
+
+    await clickNav(alphaPage!, '你的 dot');
+    const approvalInstruction = 'E2E Scratchpad page — create the team launch notes after stop cancellation';
+    await createTask(alphaPage!, approvalInstruction);
+    const approval = alphaPage!.getByTestId('page-action-approval');
+    await approval.waitFor({ state: 'visible', timeout: 15_000 });
+    const approvalTaskId = await alphaPage!.evaluate(async (goal: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string }[] };
+      return state.tasks.find(task => task.instruction === goal)?.id || null;
+    }, approvalInstruction);
+    assert(approvalTaskId, 'The page approval task was missing');
+    const beforeStopPageCount = await alphaPage!.evaluate(async () => (await fetch('/api/pages').then(response => response.json()) as unknown[]).length);
+    await clickNav(alphaPage!, 'Activity');
+    const approvalCard = alphaPage!.locator('.task-card').filter({ hasText: approvalInstruction });
+    await approvalCard.getByRole('button', { name: '停止工作' }).click();
+    await approvalCard.getByText('已停止', { exact: true }).waitFor({ state: 'visible' });
+    const cancelledApproval = await alphaPage!.evaluate(async (id: string) => fetch(`/api/tasks/${id}/approval`).then(response => response.json()), approvalTaskId) as { status: string };
+    assert.equal(cancelledApproval.status, 'cancelled', 'Stopping a waiting task left its approval actionable');
+    assert.equal(await alphaPage!.evaluate(async () => (await fetch('/api/pages').then(response => response.json()) as unknown[]).length), beforeStopPageCount, 'A cancelled approval wrote its page');
+    await approvalCard.getByRole('button', { name: /查看详情/ }).click();
+    await alphaPage!.locator('.timeline .pill.stopped').waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.getByTestId('page-action-approval').count(), 0, 'The stopped task kept actionable approval controls');
+    assert.equal(await alphaPage!.getByRole('button', { name: '提高优先级' }).count(), 0, 'A stopped task still exposed an active task control');
+    assert.equal(await alphaPage!.getByPlaceholder('调整这项工作的要求').count(), 0, 'A stopped task still accepted a redirect');
+    await screenshot(alphaPage!, '20b-stopped-page-approval');
+  });
+
   await recordStep('Recurring work runs again automatically and remains cancellable in Chrome', async () => {
     await selectTenant(alphaPage!, 'Alpha workspace');
     const instruction = 'E2E recurring run — verify due work reruns automatically';
@@ -807,6 +880,7 @@ try {
   if (gammaPage) await gammaPage.screenshot({ path: join(artifactRoot, 'failure-gamma.png'), fullPage: true }).catch(() => undefined);
   throw error;
 } finally {
+  releaseHeldStopModel();
   if (alphaContext) await alphaContext.tracing.stop({ path: join(artifactRoot, 'alpha-trace.zip') }).catch(() => undefined);
   if (betaContext) await betaContext.tracing.stop({ path: join(artifactRoot, 'beta-trace.zip') }).catch(() => undefined);
   if (gammaContext) await gammaContext.tracing.stop({ path: join(artifactRoot, 'gamma-trace.zip') }).catch(() => undefined);

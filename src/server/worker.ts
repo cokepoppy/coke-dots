@@ -10,6 +10,7 @@ import { sendDesktopNotification, type DesktopNotifier } from './notifications.t
 export class Worker {
   private timer: NodeJS.Timeout | null = null;
   private active = new Set<string>();
+  private abortControllers = new Map<string, AbortController>();
   private activeByTenant = new Map<string, number>();
   private stopped = false;
 
@@ -17,6 +18,7 @@ export class Worker {
 
   start() { this.stopped = false; this.timer = setInterval(() => void this.tick(), 2000); void this.tick(); }
   stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null; }
+  stopTask(taskId: string) { this.abortControllers.get(taskId)?.abort(new Error('Task stopped by user')); }
 
   async tick() {
     if (this.stopped) return;
@@ -26,9 +28,12 @@ export class Worker {
       const tenantActive = this.activeByTenant.get(task.tenantId) || 0;
       if (tenantActive >= 2) continue;
       this.active.add(task.id);
+      const controller = new AbortController();
+      this.abortControllers.set(task.id, controller);
       this.activeByTenant.set(task.tenantId, tenantActive + 1);
-      void this.run(task).finally(() => {
+      void this.run(task, controller.signal).finally(() => {
         this.active.delete(task.id);
+        if (this.abortControllers.get(task.id) === controller) this.abortControllers.delete(task.id);
         const count = (this.activeByTenant.get(task.tenantId) || 1) - 1;
         if (count > 0) this.activeByTenant.set(task.tenantId, count);
         else this.activeByTenant.delete(task.tenantId);
@@ -36,7 +41,7 @@ export class Worker {
     }
   }
 
-  private async run(task: Task) {
+  private async run(task: Task, signal: AbortSignal) {
     loadModelSettings(this.store.getSetting('modelBaseUrl', task.tenantId), this.store.getSetting('modelName', task.tenantId), task.tenantId);
     const adapter = adapters[task.engine];
     if (!adapter?.available(task.tenantId)) {
@@ -58,6 +63,7 @@ export class Worker {
         actionRule: this.store.tenantActionRule(task.tenantId),
         priorResult: task.result, sessionId: task.agentSessionId,
         workspace,
+        signal,
         onEvent: message => { this.store.addEntry('system', message, task.id, task.tenantId); this.onChange(); },
       });
       const current = this.store.getTask(task.id, task.tenantId);

@@ -98,7 +98,7 @@ export class Store {
       );
       CREATE TABLE IF NOT EXISTS page_action_approvals (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id),
-        action_json TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','approved','declined')),
+        action_json TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','approved','declined','cancelled')),
         resume_status TEXT NOT NULL CHECK (resume_status IN ('done','scheduled')), next_run_at TEXT,
         created_at TEXT NOT NULL, decided_at TEXT, decided_by TEXT REFERENCES users(id)
       );
@@ -117,6 +117,7 @@ export class Store {
     this.addColumnIfMissing('tasks', 'agent_session_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
     this.addColumnIfMissing('page_action_approvals', 'decided_by', 'TEXT REFERENCES users(id)');
+    this.ensurePageApprovalCancellationStatus();
     const oldProfile = this.tableExists('profile');
     if (oldProfile) this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color) SELECT 'legacy',name,shape,color FROM profile WHERE id=1");
     this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color) VALUES ('legacy','Dot','circle','#ba9af7')");
@@ -145,6 +146,29 @@ export class Store {
   private addColumnIfMissing(table: string, name: string, declaration: string) {
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
     if (!columns.some(column => column.name === name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${declaration}`);
+  }
+
+  private ensurePageApprovalCancellationStatus() {
+    const schema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='page_action_approvals'").get() as { sql: string } | undefined;
+    if (!schema || schema.sql.includes("'cancelled'")) return;
+    this.db.exec(`
+      BEGIN IMMEDIATE;
+      DROP INDEX IF EXISTS page_action_approvals_task;
+      DROP INDEX IF EXISTS page_action_approvals_one_pending;
+      ALTER TABLE page_action_approvals RENAME TO page_action_approvals_legacy;
+      CREATE TABLE page_action_approvals (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id),
+        action_json TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','approved','declined','cancelled')),
+        resume_status TEXT NOT NULL CHECK (resume_status IN ('done','scheduled')), next_run_at TEXT,
+        created_at TEXT NOT NULL, decided_at TEXT, decided_by TEXT REFERENCES users(id)
+      );
+      INSERT INTO page_action_approvals(id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at,decided_at,decided_by)
+        SELECT id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at,decided_at,decided_by FROM page_action_approvals_legacy;
+      DROP TABLE page_action_approvals_legacy;
+      CREATE INDEX page_action_approvals_task ON page_action_approvals(tenant_id,task_id,created_at DESC);
+      CREATE UNIQUE INDEX page_action_approvals_one_pending ON page_action_approvals(tenant_id,task_id) WHERE status='pending';
+      COMMIT;
+    `);
   }
 
   createOAuthFlow(flow: OAuthFlow) {
@@ -615,6 +639,26 @@ export class Store {
     this.db.prepare('UPDATE tasks SET instruction=?,status=?,priority=?,next_run_at=?,schedule_minutes=?,schedule_json=?,result=?,error=?,updated_at=?,agent_session_id=? WHERE tenant_id=? AND id=?')
       .run(next.instruction, next.status, next.priority, next.nextRunAt, next.scheduleMinutes, next.scheduleSpec ? JSON.stringify(next.scheduleSpec) : null, next.result, next.error, next.updatedAt, next.agentSessionId, tenantId, id);
     return this.getTask(id, tenantId);
+  }
+
+  stopTask(id: string, tenantId: string, actorUserId: string): { task: Task; cancelledApprovals: number } | null {
+    if (!this.isTenantMember(tenantId, actorUserId)) throw new Error('你不是该工作区成员');
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const task = this.getTask(id, tenantId);
+      if (!task || ['done', 'failed', 'stopped'].includes(task.status)) { this.db.exec('ROLLBACK'); return null; }
+      if (scheduleForTask(task.scheduleSpec, task.scheduleMinutes)) throw new Error('周期任务请在 Scheduled 中取消，以保留暂停与周期管理的独立状态');
+      const updated = this.db.prepare("UPDATE tasks SET status='stopped',next_run_at=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status IN ('queued','working','waiting','scheduled','paused')")
+        .run(now, tenantId, id);
+      if (!Number(updated.changes)) { this.db.exec('ROLLBACK'); return null; }
+      const cancelled = this.db.prepare("UPDATE page_action_approvals SET status='cancelled',decided_at=?,decided_by=? WHERE tenant_id=? AND task_id=? AND status='pending'")
+        .run(now, actorUserId, tenantId, id);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+        .run(tenantId, id, 'system', Number(cancelled.changes) ? '工作已停止；待批准的 Scratchpad 写入请求已取消，页面没有更改。' : '工作已由工作区成员停止。', now);
+      this.db.exec('COMMIT');
+      return { task: this.getTask(id, tenantId)!, cancelledApprovals: Number(cancelled.changes) };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   replyToTask(id: string, message: string, tenantId = 'legacy'): Task | null {
