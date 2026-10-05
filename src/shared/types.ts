@@ -2,6 +2,7 @@ import type { ScheduleSpec } from './scheduling.ts';
 
 export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
 export type TaskStatus = 'queued' | 'working' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused';
+export type ActionRuleMode = 'without-asking' | 'when-requested' | 'ask-before' | 'hand-off';
 export type { ScheduleSpec } from './scheduling.ts';
 
 export interface Task {
@@ -64,4 +65,32 @@ export interface WorkspacePage {
   sourceTaskId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TenantActionRule {
+  id: string;
+  tenantId: string;
+  scope: 'scratchpad-write';
+  instruction: string;
+  mode: ActionRuleMode;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ScratchpadPageAction =
+  | { action: 'create'; title: string; content: string }
+  | { action: 'update'; pageId: string; title: string; content: string };
+
+export interface PageActionApproval {
+  id: string;
+  tenantId: string;
+  taskId: string;
+  action: ScratchpadPageAction;
+  message: string;
+  status: 'pending' | 'approved' | 'declined';
+  resumeStatus: 'done' | 'scheduled';
+  nextRunAt: string | null;
+  createdAt: string;
+  decidedAt: string | null;
 }

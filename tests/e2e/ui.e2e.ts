@@ -80,9 +80,10 @@ async function startMockModel() {
         const isMemoryCheck = prompt.includes('E2E memory prompt — apply the saved workspace preference');
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
         const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
+        const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
         const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
-        const decision = { status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPageRequest ? 'I created the team launch notes.' : isPageUpdate ? 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        const decision = { status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ choices: [{ message: { content } }] }));
@@ -579,18 +580,66 @@ try {
     await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
   });
 
-  await recordStep('Dot creates a connected Scratchpad page from chat, and workspace members share it', async () => {
+  await recordStep('Workspace admins set a tenant rule and members can review its scope', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await alphaPage!.locator('.profile-link').click();
+    const ruleManager = alphaPage!.getByTestId('action-rule-manager');
+    await ruleManager.waitFor({ state: 'visible' });
+    await ruleManager.getByRole('button', { name: 'Add rule' }).click();
+    await ruleManager.getByLabel('规则说明').fill('Create or update the shared launch notes.');
+    await ruleManager.getByLabel('规则处理方式').selectOption('ask-before');
+    await ruleManager.getByRole('button', { name: 'Save rule' }).click();
+    await ruleManager.getByTestId('custom-action-rule').getByText('Ask before taking action', { exact: true }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '18d-alpha-shared-scratchpad-rule');
+
+    await selectTenant(betaPage!, 'Alpha Shared');
+    await betaPage!.locator('.profile-link').click();
+    const memberRuleManager = betaPage!.getByTestId('action-rule-manager');
+    await memberRuleManager.getByTestId('custom-action-rule').waitFor({ state: 'visible' });
+    assert.equal(await memberRuleManager.getByRole('button', { name: 'Edit rule' }).count(), 0, 'A regular workspace member received rule-management controls');
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+  });
+
+  await recordStep('Scratchpad page actions wait for tenant approval and respect a decline', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await clickNav(alphaPage!, '你的 dot');
     const instruction = 'E2E Scratchpad page — create the team launch notes';
     const promptStart = mockModelPrompts.length;
     await createTask(alphaPage!, instruction);
-    const pageLink = alphaPage!.locator('.timeline .message.dot .message-page-link');
-    await pageLink.filter({ hasText: 'Team launch notes' }).waitFor({ state: 'visible', timeout: 15_000 });
-    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    const approval = alphaPage!.getByTestId('page-action-approval');
+    await approval.waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.timeline .pill.waiting').waitFor({ state: 'visible', timeout: 15_000 });
     await waitFor(() => mockModelPrompts.length === promptStart + 1, 10_000);
+    assert.match(mockModelPrompts[promptStart], /Mode: If this task calls for a Scratchpad page action/);
+    assert.match(mockModelPrompts[promptStart], /Create or update the shared launch notes/);
+    assert.match(await approval.innerText(), /Review the short intro/);
+    const taskId = await alphaPage!.evaluate(async (goal: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string }[] };
+      return state.tasks.find(task => task.instruction === goal)?.id || null;
+    }, instruction);
+    assert(taskId, 'The waiting page task was absent from the tenant state');
+    assert.equal(await alphaPage!.evaluate(async () => (await fetch('/api/pages').then(response => response.json()) as unknown[]).length), 0, 'The pending approval wrote the proposed page too early');
+
+    await selectTenant(betaPage!, 'Beta workspace');
+    assert.equal(await betaPage!.evaluate(async (id: string) => fetch(`/api/tasks/${id}/approval`).then(response => response.status), taskId), 404, 'A different personal tenant retrieved a pending approval');
+    await selectTenant(betaPage!, 'Alpha Shared');
+    await clickNav(betaPage!, 'Activity');
+    const sharedTask = betaPage!.locator('.task-card').filter({ hasText: instruction });
+    await sharedTask.getByRole('button', { name: /查看详情/ }).click();
+    const memberApproval = betaPage!.getByTestId('page-action-approval');
+    await memberApproval.waitFor({ state: 'visible' });
+    await screenshot(betaPage!, '18e-member-scratchpad-approval');
+    const pendingState = await betaPage!.evaluate(async (id: string) => fetch(`/api/tasks/${id}/approval`).then(response => response.json()), taskId) as { status: string };
+    assert.equal(pendingState.status, 'pending');
+    await memberApproval.getByRole('button', { name: '批准并执行' }).click();
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    const approvedPages = await alphaPage!.evaluate(async () => fetch('/api/pages').then(response => response.json())) as { id: string; title: string; content: string }[];
+    assert.equal(approvedPages.length, 1, 'Approval did not write exactly one page');
+    assert.equal(approvedPages[0].title, 'Team launch notes');
+    const alphaPageId = approvedPages[0].id;
     assert.match(mockModelPrompts[promptStart], /Scratchpad pages in this workspace/);
-    await pageLink.filter({ hasText: 'Team launch notes' }).click();
+    await alphaPage!.locator('.timeline .message.dot .message-page-link').filter({ hasText: 'Team launch notes' }).click();
     const pane = alphaPage!.getByTestId('scratchpad-page');
     await pane.waitFor({ state: 'visible' });
     await pane.getByText('Connected', { exact: true }).waitFor({ state: 'visible' });
@@ -602,14 +651,22 @@ try {
     const updateInstruction = 'E2E Scratchpad page — update the team launch notes';
     const updatePromptStart = mockModelPrompts.length;
     await createTask(alphaPage!, updateInstruction);
-    const updatedPageLink = alphaPage!.locator('.timeline .message.dot .message-page-link').filter({ hasText: 'Team launch notes' });
-    await updatedPageLink.waitFor({ state: 'visible', timeout: 15_000 });
-    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    const updateApproval = alphaPage!.getByTestId('page-action-approval');
+    await updateApproval.waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.timeline .pill.waiting').waitFor({ state: 'visible', timeout: 15_000 });
     await waitFor(() => mockModelPrompts.length === updatePromptStart + 1, 10_000);
     assert.match(mockModelPrompts[updatePromptStart], /ID: [a-f0-9-]{36}\nTitle: Team launch notes/);
-    await updatedPageLink.click();
-    await pane.getByText('Revised outline', { exact: false }).waitFor({ state: 'visible' });
-    await screenshot(alphaPage!, '19b-agent-updated-scratchpad-page');
+    await updateApproval.getByRole('button', { name: '拒绝并保持不变' }).click();
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    const afterDecline = await alphaPage!.evaluate(async (id: string) => fetch(`/api/pages/${id}`).then(response => response.json()), alphaPageId) as { content: string };
+    assert.match(afterDecline.content, /Review the short intro/);
+    assert.doesNotMatch(afterDecline.content, /Revised outline/, 'The declined change modified the page');
+    await screenshot(alphaPage!, '19b-declined-scratchpad-update');
+
+    await clickNav(alphaPage!, 'Scratchpad');
+    const pageList = alphaPage!.getByTestId('scratchpad-library');
+    await pageList.getByTestId('scratchpad-page-row').filter({ hasText: 'Team launch notes' }).click();
+    await pane.getByRole('heading', { name: 'Team launch notes', exact: true }).waitFor({ state: 'visible' });
 
     await pane.getByRole('button', { name: 'Edit' }).click();
     await pane.getByLabel('编辑页面标题').fill('Team launch notes revised');

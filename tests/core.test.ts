@@ -166,6 +166,121 @@ test('Scratchpad pages persist per tenant and an agent task reuses its page on l
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('tenant action rules are admin managed and page approvals do not write until approved', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-rules-'));
+  try {
+    const store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'rules-alpha', email: 'rules-alpha@example.test', name: 'Rules Alpha' });
+    const beta = store.signInGoogle({ subject: 'rules-beta', email: 'rules-beta@example.test', name: 'Rules Beta' });
+    const workspace = store.createWorkspace(alpha.user.id, 'Rules team');
+    const added = store.addWorkspaceMember(workspace.id, alpha.user.id, beta.user.email, 'member');
+    assert.equal(added.ok, true);
+    if (!added.ok || added.kind !== 'invitation') throw new Error('Expected a pending Beta workspace invitation');
+    const betaSession = 'rules-beta-workspace-session';
+    store.createSession(betaSession, beta.user.id, beta.tenant.id, new Date(Date.now() + 60_000).toISOString());
+    assert.ok(store.acceptWorkspaceInvitation(workspace.id, betaSession, beta.user.id, beta.user.email));
+    assert.equal(store.isWorkspaceAdmin(workspace.id, alpha.user.id), true);
+    assert.equal(store.isWorkspaceAdmin(workspace.id, beta.user.id), false);
+    assert.throws(() => store.saveTenantActionRule(workspace.id, beta.user.id, 'Update release notes', 'ask-before'), /only workspaces owners|管理员/i);
+    const rule = store.saveTenantActionRule(workspace.id, alpha.user.id, 'Update release notes', 'ask-before');
+    assert.equal(rule.mode, 'ask-before');
+    assert.equal(store.tenantActionRule(alpha.tenant.id), null, 'The shared-workspace rule leaked into the owner personal tenant');
+    assert.throws(() => store.saveTenantActionRule(workspace.id, alpha.user.id, 'x'.repeat(1001), 'ask-before'), /规则说明/);
+
+    const task = store.createTask('Create a page with release notes', null, 'model', workspace.id);
+    store.updateTask(task.id, { status: 'working' }, workspace.id);
+    const proposal = { action: 'create' as const, title: 'Release notes', content: '# Draft\n- Publish Friday' };
+    const approval = store.requestPageActionApproval(workspace.id, task.id, proposal, 'Prepare the release notes page.', 'done', null);
+    assert.equal(approval.status, 'pending');
+    assert.equal(store.getTask(task.id, workspace.id)?.status, 'waiting');
+    assert.equal(store.tenantPages(workspace.id).length, 0, 'A page was written before approval');
+    assert.equal(store.pageActionApproval(alpha.tenant.id, task.id), null, 'Another tenant retrieved a pending approval');
+    assert.equal(store.resolvePageActionApproval(alpha.tenant.id, task.id, alpha.user.id, 'approve'), null, 'A different tenant resolved an approval by guessing its task ID');
+
+    const resolved = store.resolvePageActionApproval(workspace.id, task.id, beta.user.id, 'approve');
+    assert.equal(resolved?.approval.status, 'approved');
+    assert.equal(resolved?.page?.title, 'Release notes');
+    assert.equal(store.getTask(task.id, workspace.id)?.status, 'done');
+    assert.equal(store.tenantPages(workspace.id)[0]?.content, '# Draft\n- Publish Friday');
+    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, workspace.id).entries.some(entry => entry.taskId === task.id && /批准/.test(entry.body)));
+
+    const declinedTask = store.createTask('Create an unapproved page', null, 'model', workspace.id);
+    store.updateTask(declinedTask.id, { status: 'working' }, workspace.id);
+    store.requestPageActionApproval(workspace.id, declinedTask.id, { ...proposal, title: 'Never saved' }, 'Proposed page.', 'done', null);
+    const declined = store.resolvePageActionApproval(workspace.id, declinedTask.id, alpha.user.id, 'decline');
+    assert.equal(declined?.approval.status, 'declined');
+    assert.equal(declined?.page, null);
+    assert.equal(store.tenantPage(workspace.id, declinedTask.id), null);
+    assert.equal(store.tenantPages(workspace.id).length, 1, 'Declining the proposed write created page data');
+    assert.equal(store.deleteTenantActionRule(workspace.id, beta.user.id), 'forbidden');
+    assert.equal(store.deleteTenantActionRule(workspace.id, alpha.user.id), true);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Scratchpad write rules enforce no-ask, explicit-request, and hand-off modes in the worker', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-rule-worker-'));
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+  let requestNumber = 0;
+  const modelServer = createServer((req, res) => {
+    let raw = '';
+    req.setEncoding('utf8');
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+      const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
+      prompts.push(prompt);
+      requestNumber += 1;
+      const title = ['Allowed draft', 'Explicit gate draft', 'Hand-off draft'][requestNumber - 1];
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'Page change proposal ready.', pageAction: { action: 'create', title, content: `# ${title}` } }) } }] }));
+    });
+  });
+  const prompts: string[] = [];
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '1';
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}/v1`; process.env.DOTS_MODEL = 'test-model'; process.env.DOTS_MODEL_API_KEY = 'fixture-key';
+  const store = new Store(directory);
+  const user = store.signInGoogle({ subject: 'rule-worker-user', email: 'rule-worker@example.test', name: 'Rule Worker' });
+  const worker = new Worker(store, () => {});
+  try {
+    worker.start();
+    store.saveTenantActionRule(user.tenant.id, user.user.id, 'Prepare useful project notes.', 'without-asking');
+    const noAskTask = store.createTask('E2E permission mode one', null, 'model', user.tenant.id);
+    void worker.tick();
+    await waitFor(() => store.getTask(noAskTask.id, user.tenant.id)?.status === 'done');
+    assert.equal(store.tenantPages(user.tenant.id).length, 1, 'The no-ask mode did not perform its supported page write');
+    assert.match(prompts[0], /Take the Scratchpad page action without asking again/);
+
+    store.saveTenantActionRule(user.tenant.id, user.user.id, 'Create a page only if directly requested.', 'when-requested');
+    const explicitTask = store.createTask('E2E permission mode two', null, 'model', user.tenant.id);
+    void worker.tick();
+    await waitFor(() => store.getTask(explicitTask.id, user.tenant.id)?.status === 'waiting');
+    assert.equal(store.tenantPages(user.tenant.id).length, 1, 'A non-explicit page write bypassed the runtime check');
+    assert.match(prompts[1], /only when the user explicitly requests that action/);
+    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, user.tenant.id).entries.some(entry => entry.taskId === explicitTask.id && /明确要求/.test(entry.body)));
+
+    store.saveTenantActionRule(user.tenant.id, user.user.id, 'Hand over page changes for manual editing.', 'hand-off');
+    const handoffTask = store.createTask('E2E permission mode three', null, 'model', user.tenant.id);
+    void worker.tick();
+    await waitFor(() => store.getTask(handoffTask.id, user.tenant.id)?.status === 'waiting');
+    assert.equal(store.tenantPages(user.tenant.id).length, 1, 'A hand-off rule allowed the agent page write');
+    assert.match(prompts[2], /Do not use pageAction/);
+    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, user.tenant.id).entries.some(entry => entry.taskId === handoffTask.id && /自行创建/.test(entry.body)));
+  } finally {
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('background worker stores real model result and schedules a future run', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
   let receivedPrompt = '';

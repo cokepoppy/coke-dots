@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Engine, Entry, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import type { Engine, Entry, PageActionApproval, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import './style.css';
 import './watch.css';
 import './dark-theme.css';
@@ -14,6 +14,7 @@ import { ComputerView } from './ComputerView.tsx';
 import { DotContextPanel } from './DotContextPanel.tsx';
 import { ScheduledView } from './ScheduledView.tsx';
 import { PagePane, PagesView } from './Pages.tsx';
+import { PermissionRules } from './PermissionRules.tsx';
 
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
@@ -373,13 +374,44 @@ function RecurrenceEditor({ frequency, setFrequency, minutes, setMinutes, time, 
 
 function TaskControls({ task, act, compact = false }: { task: Task; act: (task: Task, action: string, extra?: object) => Promise<void>; compact?: boolean }) {
   const [redirect, setRedirect] = useState('');
+  const [approval, setApproval] = useState<PageActionApproval | null>(null);
+  const [approvalLoaded, setApprovalLoaded] = useState(false);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const [approvalError, setApprovalError] = useState('');
+  useEffect(() => {
+    let active = true;
+    setApproval(null); setApprovalLoaded(false); setApprovalError('');
+    if (compact || task.status !== 'waiting') { setApprovalLoaded(true); return () => { active = false; }; }
+    void fetch(`/api/tasks/${task.id}/approval`).then(async response => {
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (active) setApproval(data as PageActionApproval | null);
+    }).catch(reason => { if (active) setApprovalError(reason instanceof Error ? reason.message : String(reason)); })
+      .finally(() => { if (active) setApprovalLoaded(true); });
+    return () => { active = false; };
+  }, [task.id, task.status, compact]);
+  async function decideApproval(decision: 'approve' | 'decline') {
+    setApprovalBusy(true); setApprovalError('');
+    try {
+      const result = await request(`/tasks/${task.id}/approval`, 'POST', { decision }) as { approval: PageActionApproval };
+      setApproval(result.approval);
+    } catch (reason) { setApprovalError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setApprovalBusy(false); }
+  }
   return <div className={`task-controls ${compact ? 'compact' : ''}`}>
     {!compact && <span className={`pill ${task.status}`}>{statusText[task.status]}</span>}
     {['working', 'queued', 'scheduled'].includes(task.status) && <button onClick={() => void act(task, 'pause')}>暂停</button>}
     {['paused', 'failed'].includes(task.status) && <button onClick={() => void act(task, task.status === 'failed' ? 'retry' : 'resume')}>{task.status === 'failed' ? '重试' : '继续'}</button>}
     {!compact && <>
       <button onClick={() => void act(task, 'priority', { priority: task.priority + 1 })}>提高优先级</button>
-      <div className="redirect">
+      {task.status === 'waiting' && !approvalLoaded && <small role="status" className="approval-loading">正在读取待审批操作…</small>}
+      {approval?.status === 'pending' && <div className="page-approval" data-testid="page-action-approval">
+        <div className="page-approval-heading"><strong>Scratchpad 页面写入等待批准</strong><small>批准后才会保存到当前工作区。</small></div>
+        <div className="page-approval-proposal"><strong>{approval.action.action === 'create' ? '创建' : '更新'}：{approval.action.title}</strong><p>{approval.message}</p><pre>{approval.action.content}</pre></div>
+        {approvalError && <small role="alert" className="approval-error">{approvalError}</small>}
+        <div className="page-approval-actions"><button className="approve" disabled={approvalBusy} onClick={() => void decideApproval('approve')}>{approvalBusy ? '处理中…' : '批准并执行'}</button><button disabled={approvalBusy} onClick={() => void decideApproval('decline')}>拒绝并保持不变</button></div>
+      </div>}
+      {approvalLoaded && !approval && <div className="redirect">
         <input aria-label={task.status === 'waiting' ? '回复 dot 的问题' : '调整这项工作的要求'} value={redirect} onChange={e => setRedirect(e.target.value)} placeholder={task.status === 'waiting' ? '回复 dot 的问题…' : '调整这项工作的要求'} />
         <button disabled={!redirect.trim()} onClick={() => {
           const action = task.status === 'waiting' ? 'reply' : 'redirect';
@@ -387,7 +419,7 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
           void act(task, action, extra);
           setRedirect('');
         }}>{task.status === 'waiting' ? '回复并继续' : '更新'}</button>
-      </div>
+      </div>}
     </>}
   </div>;
 }
@@ -499,6 +531,7 @@ function Profile({ state, auth, onError }: { state: Snapshot; auth: AuthContext;
       <small>每个工作区最多 20 条，每条最多 1000 个字符。</small>
       {memoryError && <small role="alert" className="member-error">{memoryError}</small>}
     </div>
+    <PermissionRules tenantId={auth.tenant.id} role={auth.tenant.role} />
     <div className="section-heading model-heading"><h2>工作区成员</h2><p>所有成员都必须使用对应 Google 账号登录并接受邀请后才能访问。邀请 7 天后过期；Coke Dots 不会代发邮件，请通过其他方式通知对方。当前角色：{auth.tenant.role}。</p></div>
     <div className="profile-card model-card">
       <div className="member-list">{members.map(member => <div className="member-row" key={member.id}>

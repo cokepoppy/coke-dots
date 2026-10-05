@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Engine, Entry, ScheduleSpec, Snapshot, Task, TaskStatus, Watch, WorkspacePage } from '../shared/types.ts';
+import type { ActionRuleMode, Engine, Entry, PageActionApproval, ScheduleSpec, ScratchpadPageAction, Snapshot, Task, TaskStatus, TenantActionRule, Watch, WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -90,6 +90,20 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS workspace_pages_scope ON workspace_pages(tenant_id,updated_at DESC);
       CREATE UNIQUE INDEX IF NOT EXISTS workspace_pages_source_task ON workspace_pages(tenant_id,source_task_id) WHERE source_task_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS tenant_action_rules (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), scope TEXT NOT NULL CHECK (scope='scratchpad-write'),
+        instruction TEXT NOT NULL, mode TEXT NOT NULL CHECK (mode IN ('without-asking','when-requested','ask-before','hand-off')),
+        created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(tenant_id,scope)
+      );
+      CREATE TABLE IF NOT EXISTS page_action_approvals (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id),
+        action_json TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','approved','declined')),
+        resume_status TEXT NOT NULL CHECK (resume_status IN ('done','scheduled')), next_run_at TEXT,
+        created_at TEXT NOT NULL, decided_at TEXT, decided_by TEXT REFERENCES users(id)
+      );
+      CREATE INDEX IF NOT EXISTS page_action_approvals_task ON page_action_approvals(tenant_id,task_id,created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS page_action_approvals_one_pending ON page_action_approvals(tenant_id,task_id) WHERE status='pending';
     `);
 
     // Migrate the pre-auth single-user database into a reserved workspace. Its records
@@ -102,6 +116,7 @@ export class Store {
     this.addColumnIfMissing('tasks', 'engine', "TEXT NOT NULL DEFAULT 'model'");
     this.addColumnIfMissing('tasks', 'agent_session_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
+    this.addColumnIfMissing('page_action_approvals', 'decided_by', 'TEXT REFERENCES users(id)');
     const oldProfile = this.tableExists('profile');
     if (oldProfile) this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color) SELECT 'legacy',name,shape,color FROM profile WHERE id=1");
     this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color) VALUES ('legacy','Dot','circle','#ba9af7')");
@@ -405,6 +420,115 @@ export class Store {
     return Boolean(this.db.prepare("SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=? AND role IN ('owner','admin')").get(tenantId, actorUserId));
   }
 
+  isWorkspaceAdmin(tenantId: string, actorUserId: string) {
+    return Boolean(this.db.prepare("SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=? AND role IN ('owner','admin')").get(tenantId, actorUserId));
+  }
+
+  isTenantMember(tenantId: string, userId: string) {
+    return Boolean(this.db.prepare('SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=?').get(tenantId, userId));
+  }
+
+  tenantActionRule(tenantId: string): TenantActionRule | null {
+    const row = this.db.prepare(`SELECT id,tenant_id AS tenantId,scope,instruction,mode,created_by AS createdBy,created_at AS createdAt,updated_at AS updatedAt
+      FROM tenant_action_rules WHERE tenant_id=? AND scope='scratchpad-write'`).get(tenantId) as (TenantActionRule & { createdBy: string }) | undefined;
+    return row || null;
+  }
+
+  saveTenantActionRule(tenantId: string, actorUserId: string, instruction: string, mode: ActionRuleMode): TenantActionRule {
+    const normalized = instruction.trim();
+    if (!normalized || normalized.length > 1000) throw new Error('规则说明需为 1–1000 个字符');
+    if (!['without-asking', 'when-requested', 'ask-before', 'hand-off'].includes(mode)) throw new Error('规则处理方式无效');
+    if (!this.isWorkspaceAdmin(tenantId, actorUserId)) throw new Error('只有工作区所有者或管理员可以修改权限规则');
+    const now = new Date().toISOString();
+    const existing = this.db.prepare("SELECT id,created_by AS createdBy,created_at AS createdAt FROM tenant_action_rules WHERE tenant_id=? AND scope='scratchpad-write'")
+      .get(tenantId) as { id: string; createdBy: string; createdAt: string } | undefined;
+    if (existing) {
+      this.db.prepare("UPDATE tenant_action_rules SET instruction=?,mode=?,updated_at=? WHERE tenant_id=? AND scope='scratchpad-write'")
+        .run(normalized, mode, now, tenantId);
+    } else {
+      this.db.prepare('INSERT INTO tenant_action_rules(id,tenant_id,scope,instruction,mode,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)')
+        .run(randomUUID(), tenantId, 'scratchpad-write', normalized, mode, actorUserId, now, now);
+    }
+    return this.tenantActionRule(tenantId)!;
+  }
+
+  deleteTenantActionRule(tenantId: string, actorUserId: string): boolean | 'forbidden' {
+    if (!this.isWorkspaceAdmin(tenantId, actorUserId)) return 'forbidden';
+    const result = this.db.prepare("DELETE FROM tenant_action_rules WHERE tenant_id=? AND scope='scratchpad-write'").run(tenantId);
+    return Number(result.changes) > 0;
+  }
+
+  pageActionApproval(tenantId: string, taskId: string): PageActionApproval | null {
+    const row = this.db.prepare(`SELECT id,tenant_id AS tenantId,task_id AS taskId,action_json,message,status,
+      resume_status AS resumeStatus,next_run_at AS nextRunAt,created_at AS createdAt,decided_at AS decidedAt
+      FROM page_action_approvals WHERE tenant_id=? AND task_id=? ORDER BY created_at DESC,id DESC LIMIT 1`).get(tenantId, taskId) as (Omit<PageActionApproval, 'action'> & { action_json: string }) | undefined;
+    if (!row) return null;
+    return { ...row, action: JSON.parse(row.action_json) as ScratchpadPageAction };
+  }
+
+  requestPageActionApproval(tenantId: string, taskId: string, action: ScratchpadPageAction, message: string, resumeStatus: 'done' | 'scheduled', nextRunAt: string | null, sessionId: string | null = null): PageActionApproval {
+    assertPageContent(action.title, action.content);
+    if (action.action === 'update' && !/^[a-f0-9-]{36}$/i.test(action.pageId)) throw new Error('页面操作无效');
+    if (action.action === 'update' && !this.tenantPage(tenantId, action.pageId)) throw new Error('找不到这个工作区里的 Scratchpad 页面');
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const task = this.db.prepare('SELECT status FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, taskId) as { status: TaskStatus } | undefined;
+      if (!task || task.status !== 'working') throw new Error('当前工作已不在等待审批的状态');
+      const id = randomUUID();
+      this.db.prepare(`INSERT INTO page_action_approvals(id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at)
+        VALUES (?,?,?,?,?,'pending',?,?,?)`).run(id, tenantId, taskId, JSON.stringify(action), message.slice(0, 2000), resumeStatus, nextRunAt, now);
+      this.db.prepare("UPDATE tasks SET status='waiting',next_run_at=NULL,error=NULL,agent_session_id=COALESCE(?,agent_session_id),updated_at=? WHERE tenant_id=? AND id=?")
+        .run(sessionId, now, tenantId, taskId);
+      const verb = action.action === 'create' ? '创建' : '更新';
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+        .run(tenantId, taskId, 'dot', `我准备${verb} Scratchpad 页面「${action.title}」。内容尚未保存，请先查看下方提案并决定是否批准。`, now);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+        .run(tenantId, taskId, 'system', `Scratchpad 页面写入「${action.title}」等待审批；批准前没有修改页面。`, now);
+      this.db.exec('COMMIT');
+      return this.pageActionApproval(tenantId, taskId)!;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  resolvePageActionApproval(tenantId: string, taskId: string, actorUserId: string, decision: 'approve' | 'decline'): { approval: PageActionApproval; page: WorkspacePage | null } | null {
+    if (!this.isTenantMember(tenantId, actorUserId)) throw new Error('你不是该工作区成员');
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db.prepare(`SELECT id,action_json,message,resume_status AS resumeStatus,next_run_at AS nextRunAt
+        FROM page_action_approvals WHERE tenant_id=? AND task_id=? AND status='pending' ORDER BY created_at DESC,id DESC LIMIT 1`)
+        .get(tenantId, taskId) as { id: string; action_json: string; message: string; resumeStatus: 'done' | 'scheduled'; nextRunAt: string | null } | undefined;
+      if (!row) { this.db.exec('ROLLBACK'); return null; }
+      const task = this.db.prepare('SELECT status FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, taskId) as { status: TaskStatus } | undefined;
+      if (!task || task.status !== 'waiting') throw new Error('这项工作已不在等待审批状态');
+      let page: WorkspacePage | null = null;
+      let dotMessage: string;
+      let result: string;
+      if (decision === 'approve') {
+        const action = JSON.parse(row.action_json) as ScratchpadPageAction;
+        page = action.action === 'create'
+          ? this.persistTenantPage(tenantId, action.title, action.content, null, taskId, now)
+          : this.updateTenantPage(tenantId, action.pageId, action.title, action.content);
+        if (!page) throw new Error('找不到这个工作区里的 Scratchpad 页面，页面没有被修改。');
+        const verb = action.action === 'create' ? '创建' : '更新';
+        dotMessage = `已按批准${verb} Scratchpad 页面「${page.title}」。${row.message ? `\n${row.message}` : ''}\n[[page:${page.id}|${encodeURIComponent(page.title)}]]`;
+        result = `已按批准${verb} Scratchpad 页面「${page.title}」。${row.message}`;
+      } else {
+        dotMessage = '这次 Scratchpad 页面写入已拒绝，页面内容没有更改。';
+        result = dotMessage;
+      }
+      this.db.prepare('UPDATE page_action_approvals SET status=?,decided_at=?,decided_by=? WHERE tenant_id=? AND id=? AND status=\'pending\'')
+        .run(decision === 'approve' ? 'approved' : 'declined', now, actorUserId, tenantId, row.id);
+      this.db.prepare('UPDATE tasks SET status=?,next_run_at=?,result=?,error=NULL,updated_at=? WHERE tenant_id=? AND id=?')
+        .run(row.resumeStatus, row.resumeStatus === 'scheduled' ? row.nextRunAt : null, result, now, tenantId, taskId);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)').run(tenantId, taskId, 'dot', dotMessage, now);
+      const audit = decision === 'approve' ? '用户批准了 Scratchpad 页面写入。' : '用户拒绝了 Scratchpad 页面写入；页面未更改。';
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)').run(tenantId, taskId, 'system', audit, now);
+      this.db.exec('COMMIT');
+      return { approval: this.pageActionApproval(tenantId, taskId)!, page };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
   tenantPages(tenantId: string): WorkspacePage[] {
     return this.db.prepare(`SELECT p.id,p.tenant_id AS tenantId,p.title,p.content,p.created_by AS createdBy,
       u.name AS createdByName,p.source_task_id AS sourceTaskId,p.created_at AS createdAt,p.updated_at AS updatedAt
@@ -422,37 +546,41 @@ export class Store {
   createTenantPage(tenantId: string, title: string, content: string, createdBy: string | null = null, sourceTaskId: string | null = null): WorkspacePage {
     const normalizedTitle = title.trim();
     const normalizedContent = content.trim();
-    if (!normalizedTitle || normalizedTitle.length > 120 || !normalizedContent || normalizedContent.length > 24000) throw new Error('页面标题需为 1–120 个字符，正文需为 1–24000 个字符');
+    assertPageContent(normalizedTitle, normalizedContent);
     const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      if (sourceTaskId) {
-        const existing = this.db.prepare('SELECT id FROM workspace_pages WHERE tenant_id=? AND source_task_id=?').get(tenantId, sourceTaskId) as { id: string } | undefined;
-        if (existing) {
-          this.db.prepare('UPDATE workspace_pages SET title=?,content=?,updated_at=? WHERE tenant_id=? AND id=?')
-            .run(normalizedTitle, normalizedContent, now, tenantId, existing.id);
-          this.db.exec('COMMIT');
-          return this.tenantPage(tenantId, existing.id)!;
-        }
-      }
-      const count = this.db.prepare('SELECT COUNT(*) AS count FROM workspace_pages WHERE tenant_id=?').get(tenantId) as { count: number };
-      if (count.count >= 50) throw new Error('工作区最多保存 50 个 Scratchpad 页面');
-      const id = randomUUID();
-      this.db.prepare('INSERT INTO workspace_pages(id,tenant_id,title,content,created_by,source_task_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(id, tenantId, normalizedTitle, normalizedContent, createdBy, sourceTaskId, now, now);
+      const page = this.persistTenantPage(tenantId, normalizedTitle, normalizedContent, createdBy, sourceTaskId, now);
       this.db.exec('COMMIT');
-      return this.tenantPage(tenantId, id)!;
+      return page;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   updateTenantPage(tenantId: string, id: string, title: string, content: string): WorkspacePage | null {
     const normalizedTitle = title.trim();
     const normalizedContent = content.trim();
-    if (!normalizedTitle || normalizedTitle.length > 120 || !normalizedContent || normalizedContent.length > 24000) throw new Error('页面标题需为 1–120 个字符，正文需为 1–24000 个字符');
+    assertPageContent(normalizedTitle, normalizedContent);
     const updatedAt = new Date().toISOString();
     const result = this.db.prepare('UPDATE workspace_pages SET title=?,content=?,updated_at=? WHERE tenant_id=? AND id=?')
       .run(normalizedTitle, normalizedContent, updatedAt, tenantId, id);
     return Number(result.changes) ? this.tenantPage(tenantId, id) : null;
+  }
+
+  private persistTenantPage(tenantId: string, title: string, content: string, createdBy: string | null, sourceTaskId: string | null, now: string): WorkspacePage {
+    if (sourceTaskId) {
+      const existing = this.db.prepare('SELECT id FROM workspace_pages WHERE tenant_id=? AND source_task_id=?').get(tenantId, sourceTaskId) as { id: string } | undefined;
+      if (existing) {
+        this.db.prepare('UPDATE workspace_pages SET title=?,content=?,updated_at=? WHERE tenant_id=? AND id=?')
+          .run(title, content, now, tenantId, existing.id);
+        return this.tenantPage(tenantId, existing.id)!;
+      }
+    }
+    const count = this.db.prepare('SELECT COUNT(*) AS count FROM workspace_pages WHERE tenant_id=?').get(tenantId) as { count: number };
+    if (count.count >= 50) throw new Error('工作区最多保存 50 个 Scratchpad 页面');
+    const id = randomUUID();
+    this.db.prepare('INSERT INTO workspace_pages(id,tenant_id,title,content,created_by,source_task_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)')
+      .run(id, tenantId, title, content, createdBy, sourceTaskId, now, now);
+    return this.tenantPage(tenantId, id)!;
   }
 
   createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null): Task {
@@ -599,4 +727,8 @@ function toWatch(r: Record<string, unknown>): Watch {
     lastCheckedAt: r.last_checked_at == null ? null : String(r.last_checked_at),
     lastStatus: r.last_status == null ? null : String(r.last_status), error: r.error == null ? null : String(r.error),
   };
+}
+
+function assertPageContent(title: string, content: string) {
+  if (!title || title.length > 120 || !content || content.length > 24000) throw new Error('页面标题需为 1–120 个字符，正文需为 1–24000 个字符');
 }

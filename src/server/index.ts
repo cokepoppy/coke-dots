@@ -5,7 +5,7 @@ import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
-import type { Engine, ScheduleSpec } from '../shared/types.ts';
+import type { ActionRuleMode, Engine, ScheduleSpec } from '../shared/types.ts';
 import { nextScheduleOccurrence, validateScheduleSpec } from '../shared/scheduling.ts';
 import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 import { ComputerManager } from './computer.ts';
@@ -116,6 +116,7 @@ const server = createServer(async (req, res) => {
       }
       return reply(res, 200, store.activityPage(session.tenant.id, before, limit));
     }
+    if (path === '/api/action-rule' && req.method === 'GET') return reply(res, 200, store.tenantActionRule(session.tenant.id));
     if (path === '/api/memories' && req.method === 'GET') return reply(res, 200, store.tenantMemories(session.tenant.id));
     if (path === '/api/pages' && req.method === 'GET') return reply(res, 200, store.tenantPages(session.tenant.id));
     const pageMatch = path.match(/^\/api\/pages\/([a-f0-9-]+)$/);
@@ -133,7 +134,21 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, { user: updated.user, tenant: updated.tenant, tenants: store.tenantsForUser(updated.user.id) });
     }
 
-    const body = req.method === 'POST' || req.method === 'PATCH' ? await readJson(req) : {};
+    const body = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT' ? await readJson(req) : {};
+    if (path === '/api/action-rule' && req.method === 'PUT') {
+      if (!store.isWorkspaceAdmin(session.tenant.id, session.user.id)) return reply(res, 403, { error: '只有工作区所有者或管理员可以修改权限规则' });
+      try {
+        const rule = store.saveTenantActionRule(session.tenant.id, session.user.id, String(body.instruction || ''), String(body.mode || '') as ActionRuleMode);
+        publish();
+        return reply(res, 200, rule);
+      } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法保存权限规则' }); }
+    }
+    if (path === '/api/action-rule' && req.method === 'DELETE') {
+      const deleted = store.deleteTenantActionRule(session.tenant.id, session.user.id);
+      if (deleted === 'forbidden') return reply(res, 403, { error: '只有工作区所有者或管理员可以修改权限规则' });
+      publish();
+      return reply(res, 200, { ok: true });
+    }
     if (path === '/api/pages' && req.method === 'POST') {
       try {
         const page = store.createTenantPage(session.tenant.id, String(body.title || ''), String(body.content || ''), session.user.id);
@@ -313,6 +328,22 @@ const server = createServer(async (req, res) => {
       setModelMetadata(baseUrl, model, session.tenant.id);
       publish();
       return reply(res, 200, publicModelSettings(session.tenant.id));
+    }
+    const approvalMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/approval$/);
+    if (approvalMatch && req.method === 'GET') {
+      if (!store.getTask(approvalMatch[1], session.tenant.id)) return reply(res, 404, { error: 'Task not found' });
+      return reply(res, 200, store.pageActionApproval(session.tenant.id, approvalMatch[1]));
+    }
+    if (approvalMatch && req.method === 'POST') {
+      const task = store.getTask(approvalMatch[1], session.tenant.id);
+      if (!task) return reply(res, 404, { error: 'Task not found' });
+      const decision = String(body.decision || '');
+      if (decision !== 'approve' && decision !== 'decline') return reply(res, 400, { error: 'Invalid approval decision' });
+      const result = store.resolvePageActionApproval(session.tenant.id, task.id, session.user.id, decision);
+      if (!result) return reply(res, 404, { error: 'No pending Scratchpad approval' });
+      publish();
+      if (result.approval.resumeStatus === 'scheduled') void worker.tick();
+      return reply(res, 200, result);
     }
     const taskMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)$/);
     if (taskMatch && req.method === 'PATCH') {
