@@ -16,6 +16,13 @@
 .activity-empty,.activity-error{padding:17px 3px;color:#96919d;font-size:11px}
 .activity-error{color:#f0a6a0}
 .pill.stopped{background:#fcebea;color:#b76a65}
+.pill.delegating{background:#e8f0fa;color:#567da9}
+.task-card.delegated-child{margin-left:24px;border-style:dashed}
+.delegated-from{display:block;margin-top:14px;color:#8c8792;font-size:10px}
+.task-card.delegated-child h2{margin-top:7px}
 .task-controls button.stop-task{background:#fcebea;color:#a84f4b}
 .dots-dark .pill.stopped,.dots-dark .task-controls button.stop-task{background:#3b2423;color:#e7a09a}
+.dots-dark .pill.delegating{background:#202d3a;color:#a3c2e3}
+.dots-dark .task-card.delegated-child{border-color:#3c3942}
+.dots-dark .delegated-from{color:#9c96a4}
 @media(max-width:650px){.activity-entry{padding:12px}.activity-entry-head{align-items:flex-start;flex-direction:column;gap:4px}}

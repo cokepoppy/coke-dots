@@ -25,6 +25,7 @@ export class Worker {
 
   async tick() {
     if (this.stopped) return;
+    this.store.releaseReadyDelegations();
     for (const task of this.store.dueTasks()) {
       if (this.active.size >= Worker.maxActiveTasks) break;
       if (this.active.has(task.id)) continue;
@@ -40,6 +41,7 @@ export class Worker {
         const count = (this.activeByTenant.get(task.tenantId) || 1) - 1;
         if (count > 0) this.activeByTenant.set(task.tenantId, count);
         else this.activeByTenant.delete(task.tenantId);
+        void this.tick();
       });
     }
   }
@@ -60,10 +62,13 @@ export class Worker {
     try {
       const workspace = join(this.workspaceRoot, task.tenantId, task.id);
       mkdirSync(workspace, { recursive: true });
+      const children = this.store.delegatedTasks(task.id, task.tenantId);
       const decision = await adapter.run({
         tenantId: task.tenantId, prompt: task.instruction, memories: this.store.tenantMemories(task.tenantId).map(memory => memory.note),
         pages: this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
         actionRule: this.store.tenantActionRule(task.tenantId),
+        allowDelegation: !task.parentTaskId && children.length === 0,
+        delegatedResults: children.map(child => ({ title: child.title, status: child.status, result: child.result, error: child.error })),
         priorResult: task.result, sessionId: task.agentSessionId,
         workspace,
         signal,
@@ -71,6 +76,13 @@ export class Worker {
       });
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
+      if (task.parentTaskId && decision.status === 'scheduled') throw new Error('子任务不能创建周期安排');
+      if (decision.status === 'delegating') {
+        const delegated = this.store.createDelegatedTasks(task.id, task.tenantId, decision.delegations || [], decision.message, decision.sessionId);
+        this.notifyIfEnabled(task.tenantId, `“${task.title}”已拆分为 ${delegated.length} 项并行工作。`);
+        this.onChange();
+        return;
+      }
       const nextMinutes = Math.max(1, Math.min(1440, Math.floor(decision.nextMinutes || current.scheduleMinutes || 15)));
       const recurrence = scheduleForTask(current.scheduleSpec, current.scheduleMinutes);
       const shouldContinueSchedule = recurrence && ['done', 'scheduled'].includes(decision.status);

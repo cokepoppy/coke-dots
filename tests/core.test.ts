@@ -26,6 +26,43 @@ test('tasks, redirects and profile survive database reopen', () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('delegated tasks persist, recover after restart, and aggregate only inside their tenant', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-delegation-'));
+  try {
+    let store = new Store(directory);
+    const owner = store.signInGoogle({ subject: 'delegation-owner', email: 'delegate@example.test', name: 'Delegate' });
+    const other = store.signInGoogle({ subject: 'delegation-other', email: 'other@example.test', name: 'Other' });
+    const parent = store.createTask('Prepare a research brief', null, 'model', owner.tenant.id);
+    store.updateTask(parent.id, { status: 'working' }, owner.tenant.id);
+    const children = store.createDelegatedTasks(parent.id, owner.tenant.id, [
+      { title: 'Market sizing', instruction: 'Estimate market size from supplied material.' },
+      { title: 'Competitor review', instruction: 'Compare the named competitors.' },
+      { title: 'Risk list', instruction: 'Identify the main risks.' },
+    ], 'I split the research into three parallel questions.');
+    assert.equal(store.getTask(parent.id, owner.tenant.id)?.status, 'delegating');
+    assert.equal(store.getTask(children[0].id, other.tenant.id), null, 'A different tenant read a child task by guessing its ID');
+    assert.equal(store.delegatedTasks(parent.id, other.tenant.id).length, 0, 'A different tenant saw the parent’s children');
+    store.updateTask(children[0].id, { status: 'done', result: 'Market is growing.' }, owner.tenant.id);
+    store.updateTask(children[1].id, { status: 'working' }, owner.tenant.id);
+    assert.equal(store.releaseReadyDelegations(), 0, 'Parent resumed before every child became terminal');
+    store.close();
+
+    store = new Store(directory);
+    assert.equal(store.getTask(parent.id, owner.tenant.id)?.status, 'delegating', 'Parent delegation state did not survive restart');
+    assert.equal(store.getTask(children[1].id, owner.tenant.id)?.status, 'queued', 'Active child was not safely requeued after restart');
+    store.updateTask(children[1].id, { status: 'failed', error: 'Source unavailable.' }, owner.tenant.id);
+    const stopped = store.stopTask(children[2].id, owner.tenant.id, owner.user.id);
+    assert.equal(stopped?.task.status, 'stopped');
+    assert.equal(store.getTask(parent.id, owner.tenant.id)?.status, 'delegating', 'Stopping one child prematurely stopped the parent');
+    assert.equal(store.releaseReadyDelegations(), 1, 'Parent did not resume after each child reached a terminal state');
+    const resumed = store.getTask(parent.id, owner.tenant.id);
+    assert.equal(resumed?.status, 'queued');
+    assert.deepEqual(store.delegatedTasks(parent.id, owner.tenant.id).map(task => task.status), ['done', 'failed', 'stopped']);
+    assert.equal(store.releaseReadyDelegations(), 0, 'Parent was released more than once');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('a waiting task accepts a tenant-scoped reply without losing its original goal', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
   try {

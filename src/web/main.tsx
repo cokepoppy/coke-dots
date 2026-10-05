@@ -22,7 +22,7 @@ interface TenantMember { id: string; email: string; name: string; role: string }
 interface WorkspaceInvitation { tenantId: string; tenantName?: string; email: string; role: string; invitedAt: string; expiresAt: string }
 interface TenantMemory { id: string; tenantId: string; note: string; createdBy: string; createdByName: string; createdAt: string; updatedAt: string }
 const statusText: Record<TaskStatus, string> = {
-  queued: '排队中', working: '工作中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停', stopped: '已停止',
+  queued: '排队中', working: '工作中', delegating: '并行处理中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停', stopped: '已停止',
 };
 
 async function request(path: string, method: 'POST' | 'PATCH', body: object) {
@@ -319,13 +319,24 @@ function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask,
   }
 
   const tasks = new Map(state.tasks.map(task => [task.id, task]));
+  const childrenByParent = new Map<string, Task[]>();
+  for (const task of state.tasks) if (task.parentTaskId) childrenByParent.set(task.parentTaskId, [...(childrenByParent.get(task.parentTaskId) || []), task]);
+  const activityTasks = state.tasks.filter(task => !task.parentTaskId).flatMap(task => [task, ...(childrenByParent.get(task.id) || [])]);
   return <section className="content activity-content">
     <div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div>
-    <div className="cards">{!stateLoaded ? <div className="empty workspace-loading" role="status">正在加载工作区…</div> : !state.tasks.length ? <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div> : state.tasks.map(task => <div className="task-card" key={task.id}>
+    <div className="cards">{!stateLoaded ? <div className="empty workspace-loading" role="status">正在加载工作区…</div> : !state.tasks.length ? <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div> : activityTasks.map(task => {
+      const parent = task.parentTaskId ? tasks.get(task.parentTaskId) : undefined;
+      const children = childrenByParent.get(task.id) || [];
+      const terminalChildren = children.filter(child => ['done', 'failed', 'stopped'].includes(child.status)).length;
+      const description = task.parentTaskId ? task.error || task.result || task.instruction
+        : task.status === 'delegating' ? `${terminalChildren}/${children.length} 项子任务已结束。${task.result ? ` ${task.result}` : ''}`
+          : task.error || task.result || task.instruction;
+      return <div className={`task-card ${task.parentTaskId ? 'delegated-child' : ''}`} data-testid={`task-card-${task.id}`} key={task.id}>
       <div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div>
-      <h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p>
+      {parent && <small className="delegated-from">委派自：{parent.title}</small>}
+      <h2>{task.title}</h2><p>{description}</p>
       <div className="card-actions"><button onClick={() => onSelectTask(task.id)}>查看详情 →</button><TaskControls task={task} act={async (item, action, extra) => { try { await request(`/tasks/${item.id}`, 'PATCH', { action, ...extra }); } catch (reason) { setError(String(reason)); } }} compact /></div>
-    </div>)}</div>
+    </div>})}</div>
     <section className="activity-feed" data-testid="activity-feed" aria-label="Recent activity">
       <header><div><h2>Recent activity</h2><p>任务进度、用户方向和执行记录</p></div><button onClick={() => setRefreshKey(value => value + 1)} disabled={loading}>刷新</button></header>
       {error && <p className="activity-error" role="alert">{error}</p>}
@@ -400,10 +411,10 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
     finally { setApprovalBusy(false); }
   }
   const hasRecurringSchedule = Boolean(task.scheduleSpec || task.scheduleMinutes !== null);
-  const canStop = !hasRecurringSchedule && ['queued', 'working', 'waiting', 'scheduled', 'paused'].includes(task.status);
+  const canStop = !hasRecurringSchedule && ['queued', 'working', 'delegating', 'waiting', 'scheduled', 'paused'].includes(task.status);
   return <div className={`task-controls ${compact ? 'compact' : ''}`}>
     {!compact && <span className={`pill ${task.status}`}>{statusText[task.status]}</span>}
-    {!hasRecurringSchedule && ['working', 'queued', 'scheduled'].includes(task.status) && <button onClick={() => void act(task, 'pause')}>暂停</button>}
+    {!hasRecurringSchedule && ['working', 'queued', 'delegating', 'scheduled'].includes(task.status) && <button onClick={() => void act(task, 'pause')}>暂停</button>}
     {['paused', 'failed'].includes(task.status) && <button onClick={() => void act(task, task.status === 'failed' ? 'retry' : 'resume')}>{task.status === 'failed' ? '重试' : '继续'}</button>}
     {canStop && <button className="stop-task" title="停止后这项工作不能继续" onClick={() => void act(task, 'stop')}>停止工作</button>}
     {!compact && <>

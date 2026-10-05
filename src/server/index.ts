@@ -356,12 +356,23 @@ const server = createServer(async (req, res) => {
         worker.pauseTask(old.id);
         store.updateTask(old.id, { status: 'paused', nextRunAt: null }, session.tenant.id);
       }
-      else if (action === 'resume' || action === 'retry') store.updateTask(old.id, { status: 'queued', nextRunAt: new Date().toISOString(), error: null }, session.tenant.id);
+      else if (action === 'resume' || action === 'retry') {
+        const children = old.parentTaskId ? [] : store.delegatedTasks(old.id, session.tenant.id);
+        const waitingOnChildren = action === 'resume' && children.some(child => !['done', 'failed', 'stopped'].includes(child.status));
+        store.updateTask(old.id, { status: waitingOnChildren ? 'delegating' : 'queued', nextRunAt: waitingOnChildren ? null : new Date().toISOString(), error: null }, session.tenant.id);
+      }
       else if (action === 'cancelSchedule') store.updateTask(old.id, { scheduleMinutes: null, scheduleSpec: null, status: 'paused', nextRunAt: null }, session.tenant.id);
       else if (action === 'stop') {
         try {
           const stopped = store.stopTask(old.id, session.tenant.id, session.user.id);
           if (!stopped) return reply(res, 409, { error: '这项工作当前不能停止' });
+          if (!old.parentTaskId) {
+            for (const child of store.delegatedTasks(old.id, session.tenant.id)) {
+              if (['done', 'failed', 'stopped'].includes(child.status)) continue;
+              store.stopTask(child.id, session.tenant.id, session.user.id);
+              worker.stopTask(child.id);
+            }
+          }
         } catch (error) { return reply(res, 409, { error: error instanceof Error ? error.message : '无法停止这项工作' }); }
         worker.stopTask(old.id);
       }

@@ -5,7 +5,7 @@ import './context-panel.css';
 interface ComputerState { ready: boolean; owner: 'agent' | 'user'; url: string; title: string }
 
 const statusLabel: Record<TaskStatus, string> = {
-  queued: 'Queued', working: 'Working', waiting: 'Needs you', scheduled: 'Scheduled', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
+  queued: 'Queued', working: 'Working', delegating: 'Parallel work', waiting: 'Needs you', scheduled: 'Scheduled', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
 };
 
 export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSelectTask }: {

@@ -33,6 +33,9 @@ let pauseModelHeld = false;
 let heldStopModelRelease: (() => void) | null = null;
 let heldStopModelAborted = false;
 let parallelModelReleases: (() => void)[] = [];
+let delegatedModelReleases = new Map<string, () => void>();
+let delegatedModelPrompts: string[] = [];
+let delegatedModelAborted = new Set<string>();
 let testModelBaseUrl = '';
 let testModelApiKey = '';
 let testModelName = '';
@@ -89,6 +92,9 @@ async function startMockModel() {
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
         const isParallelTask = prompt.includes('E2E parallel work —');
+        const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
+        const isDelegationAggregate = prompt.includes('E2E delegation goal — build a launch packet') && prompt.includes('Delegated task results:');
+        const delegatedChild = ['Market scan', 'Competitor scan', 'Launch risks'].find(title => prompt.includes(`E2E delegated child — ${title.toLowerCase()}`));
         if (isPauseTask && !pauseModelHeld) {
           pauseModelHeld = true;
           heldPauseModelAborted = false;
@@ -103,10 +109,20 @@ async function startMockModel() {
           heldStopModelRelease = null;
         }
         if (isParallelTask) await new Promise<void>(resolvePromise => parallelModelReleases.push(resolvePromise));
+        if (delegatedChild) {
+          delegatedModelPrompts.push(prompt);
+          response.once('close', () => { if (!response.writableFinished) delegatedModelAborted.add(delegatedChild); });
+          await new Promise<void>(resolvePromise => delegatedModelReleases.set(delegatedChild, resolvePromise));
+          delegatedModelReleases.delete(delegatedChild);
+        }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isParallelTask;
+        const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
-        const decision = { status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
+          { title: 'Market scan', instruction: 'E2E delegated child — market scan' },
+          { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
+          { title: 'Launch risks', instruction: 'E2E delegated child — launch risks' },
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -932,6 +948,51 @@ try {
     await screenshot(alphaPage!, 'parallel-three-tasks-completed');
   });
 
+  await recordStep('One goal delegates three parallel tasks, supports a single-child stop, and resumes with their results', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    const parentInstruction = 'E2E delegation goal — build a launch packet';
+    const initialParentCalls = mockModelPrompts.filter(prompt => prompt.includes(parentInstruction)).length;
+    await createTask(alphaPage!, parentInstruction);
+    await clickNav(alphaPage!, 'Activity');
+    const parentCard = alphaPage!.locator('.task-card').filter({ has: alphaPage!.getByRole('heading', { name: parentInstruction, exact: true }) });
+    await parentCard.locator('.pill.delegating').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => delegatedModelPrompts.length === 3, 15_000);
+    const childCards = ['Market scan', 'Competitor scan', 'Launch risks'].map(title => alphaPage!.locator('.task-card').filter({ hasText: title }));
+    for (const card of childCards) await card.locator('.pill.working').waitFor({ state: 'visible', timeout: 10_000 });
+    await screenshot(alphaPage!, 'delegated-three-children-working');
+
+    await childCards[0].getByRole('button', { name: '停止工作' }).click();
+    await childCards[0].locator('.pill.stopped').waitFor({ state: 'visible', timeout: 10_000 });
+    await waitFor(() => delegatedModelAborted.has('Market scan'), 5_000);
+    await childCards[1].locator('.pill.working').waitFor({ state: 'visible' });
+    await childCards[2].locator('.pill.working').waitFor({ state: 'visible' });
+    await parentCard.locator('.pill.delegating').waitFor({ state: 'visible' });
+    await parentCard.getByRole('button', { name: '暂停' }).click();
+    await parentCard.locator('.pill.paused').waitFor({ state: 'visible' });
+    await childCards[1].locator('.pill.working').waitFor({ state: 'visible' });
+    await childCards[2].locator('.pill.working').waitFor({ state: 'visible' });
+    for (const title of ['Competitor scan', 'Launch risks']) delegatedModelReleases.get(title)?.();
+    await childCards[1].locator('.pill.done').waitFor({ state: 'visible', timeout: 10_000 });
+    await childCards[2].locator('.pill.done').waitFor({ state: 'visible', timeout: 10_000 });
+    await parentCard.locator('.pill.paused').waitFor({ state: 'visible' });
+    await parentCard.getByRole('button', { name: '继续' }).click();
+
+    await parentCard.locator('.pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => mockModelPrompts.filter(prompt => prompt.includes(parentInstruction)).length === initialParentCalls + 2, 5_000);
+    const aggregatePrompt = mockModelPrompts.filter(prompt => prompt.includes('Delegated task results:')).at(-1) || '';
+    assert.match(aggregatePrompt, /Market scan \[stopped\]/, 'Parent did not receive the stopped child state');
+    assert.match(aggregatePrompt, /Competitor scan \[done\]/, 'Parent did not receive a successful child result');
+    assert.match(aggregatePrompt, /Launch risks \[done\]/, 'Parent did not receive the second successful child result');
+    assert.match(aggregatePrompt, /verified findings/, 'Child result text was not returned to the parent');
+    await screenshot(alphaPage!, 'delegated-parent-aggregate-completed');
+
+    await selectTenant(betaPage!, 'Beta workspace');
+    await clickNav(betaPage!, 'Activity');
+    assert.equal(await betaPage!.locator('.task-card').filter({ hasText: 'Market scan' }).count(), 0, 'A different tenant saw Alpha’s delegated task');
+    assert.equal(await betaPage!.locator('.task-card').filter({ hasText: 'Completed launch packet' }).count(), 0, 'A different tenant saw Alpha’s parent result');
+  });
+
   await recordStep('Alpha shared-workspace computer opens under the shared Dot identity', async () => {
     await clickNav(alphaPage!, '电脑');
     await alphaPage!.getByRole('heading', { name: 'Shared Dot 的电脑' }).waitFor({ state: 'visible' });
@@ -998,6 +1059,7 @@ try {
   releaseHeldPauseModel();
   releaseHeldStopModel();
   releaseParallelModels();
+  for (const release of delegatedModelReleases.values()) release();
   if (alphaContext) await alphaContext.tracing.stop({ path: join(artifactRoot, 'alpha-trace.zip') }).catch(() => undefined);
   if (betaContext) await betaContext.tracing.stop({ path: join(artifactRoot, 'beta-trace.zip') }).catch(() => undefined);
   if (gammaContext) await gammaContext.tracing.stop({ path: join(artifactRoot, 'gamma-trace.zip') }).catch(() => undefined);

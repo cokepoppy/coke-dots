@@ -58,7 +58,7 @@ export class Store {
         status TEXT NOT NULL, priority INTEGER NOT NULL, next_run_at TEXT,
         schedule_minutes INTEGER, result TEXT, error TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT
+        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT, parent_task_id TEXT
       );
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'legacy', task_id TEXT,
@@ -116,6 +116,7 @@ export class Store {
     this.addColumnIfMissing('tasks', 'engine', "TEXT NOT NULL DEFAULT 'model'");
     this.addColumnIfMissing('tasks', 'agent_session_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
+    this.addColumnIfMissing('tasks', 'parent_task_id', 'TEXT');
     this.addColumnIfMissing('page_action_approvals', 'decided_by', 'TEXT REFERENCES users(id)');
     this.ensurePageApprovalCancellationStatus();
     const oldProfile = this.tableExists('profile');
@@ -125,6 +126,7 @@ export class Store {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS tasks_due ON tasks(status, next_run_at, priority);
       CREATE INDEX IF NOT EXISTS tasks_tenant ON tasks(tenant_id, created_at);
+      CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(tenant_id, parent_task_id, created_at);
       CREATE INDEX IF NOT EXISTS entries_task ON entries(tenant_id, task_id, id);
       CREATE INDEX IF NOT EXISTS entries_timeline ON entries(tenant_id, id DESC);
       CREATE INDEX IF NOT EXISTS watches_due ON watches(status, next_check_at);
@@ -620,6 +622,63 @@ export class Store {
     return this.getTask(id, tenantId)!;
   }
 
+  createDelegatedTasks(parentId: string, tenantId: string, delegations: { title: string; instruction: string }[], summaryMessage: string, sessionId?: string): Task[] {
+    if (!Array.isArray(delegations) || delegations.length < 1 || delegations.length > 3) throw new Error('代理子任务数量无效');
+    for (const child of delegations) {
+      if (!child.title.trim() || child.title.trim().length > 120 || !child.instruction.trim() || child.instruction.trim().length > 5000) throw new Error('代理子任务内容无效');
+    }
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const parent = this.getTask(parentId, tenantId);
+      if (!parent || parent.status !== 'working' || parent.parentTaskId || scheduleForTask(parent.scheduleSpec, parent.scheduleMinutes)) throw new Error('当前工作不能委派子任务');
+      if (this.delegatedTasks(parentId, tenantId).length) throw new Error('此工作已经委派过子任务');
+      const children: Task[] = [];
+      for (const delegated of delegations) {
+        const id = randomUUID();
+        const title = delegated.title.trim();
+        const instruction = delegated.instruction.trim();
+        this.db.prepare('INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, tenantId, title, instruction, 'queued', parent.priority, now, null, null, null, now, now, parent.engine, null, null, parentId);
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+          .run(tenantId, id, 'system', `由「${parent.title}」委派；结果将返回给主任务。`, now);
+        children.push(this.getTask(id, tenantId)!);
+      }
+      this.db.prepare("UPDATE tasks SET status='delegating',result=?,next_run_at=NULL,error=NULL,agent_session_id=COALESCE(?,agent_session_id),updated_at=? WHERE tenant_id=? AND id=? AND status='working'")
+        .run(summaryMessage.slice(0, 10000), sessionId || parent.agentSessionId, now, tenantId, parentId);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+        .run(tenantId, parentId, 'system', `已拆分为 ${children.length} 项并行子任务；可在 Activity 中分别查看或停止。`, now);
+      this.db.exec('COMMIT');
+      return children;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  delegatedTasks(parentId: string, tenantId: string): Task[] {
+    return (this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? AND parent_task_id=? ORDER BY rowid').all(tenantId, parentId) as Record<string, unknown>[]).map(toTask);
+  }
+
+  releaseReadyDelegations(now = new Date().toISOString()): number {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const parents = this.db.prepare("SELECT id,tenant_id FROM tasks WHERE status='delegating'").all() as { id: string; tenant_id: string }[];
+      let released = 0;
+      for (const parent of parents) {
+        const state = this.db.prepare("SELECT COUNT(*) AS total,SUM(CASE WHEN status IN ('done','failed','stopped') THEN 1 ELSE 0 END) AS terminal FROM tasks WHERE tenant_id=? AND parent_task_id=?")
+          .get(parent.tenant_id, parent.id) as { total: number; terminal: number | null };
+        if (!state.total || state.terminal !== state.total) continue;
+        const changed = this.db.prepare("UPDATE tasks SET status='queued',next_run_at=?,updated_at=? WHERE tenant_id=? AND id=? AND status='delegating'")
+          .run(now, now, parent.tenant_id, parent.id);
+        if (!Number(changed.changes)) continue;
+        const children = this.delegatedTasks(parent.id, parent.tenant_id);
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+          .run(parent.tenant_id, parent.id, 'system', `所有 ${children.length} 项子任务均已结束；主任务正在汇总结果。`, now);
+        released++;
+      }
+      this.db.exec('COMMIT');
+      return released;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
   getTask(id: string, tenantId = 'legacy'): Task | null {
     const row = this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, id) as Record<string, unknown> | undefined;
     return row ? toTask(row) : null;
@@ -649,7 +708,7 @@ export class Store {
       const task = this.getTask(id, tenantId);
       if (!task || ['done', 'failed', 'stopped'].includes(task.status)) { this.db.exec('ROLLBACK'); return null; }
       if (scheduleForTask(task.scheduleSpec, task.scheduleMinutes)) throw new Error('周期任务请在 Scheduled 中取消，以保留暂停与周期管理的独立状态');
-      const updated = this.db.prepare("UPDATE tasks SET status='stopped',next_run_at=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status IN ('queued','working','waiting','scheduled','paused')")
+      const updated = this.db.prepare("UPDATE tasks SET status='stopped',next_run_at=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status IN ('queued','working','delegating','waiting','scheduled','paused')")
         .run(now, tenantId, id);
       if (!Number(updated.changes)) { this.db.exec('ROLLBACK'); return null; }
       const cancelled = this.db.prepare("UPDATE page_action_approvals SET status='cancelled',decided_at=?,decided_by=? WHERE tenant_id=? AND task_id=? AND status='pending'")
@@ -749,7 +808,7 @@ function toTask(r: Record<string, unknown>): Task {
   }
   scheduleSpec = scheduleForTask(scheduleSpec, scheduleMinutes);
   return {
-    id: String(r.id), tenantId: String(r.tenant_id), title: String(r.title), instruction: String(r.instruction),
+    id: String(r.id), tenantId: String(r.tenant_id), parentTaskId: r.parent_task_id == null ? null : String(r.parent_task_id), title: String(r.title), instruction: String(r.instruction),
     engine: r.engine as Engine, agentSessionId: r.agent_session_id == null ? null : String(r.agent_session_id),
     status: r.status as TaskStatus, priority: Number(r.priority),
     nextRunAt: r.next_run_at == null ? null : String(r.next_run_at),

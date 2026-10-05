@@ -1,13 +1,14 @@
 import type { ScheduleSpec } from './scheduling.ts';
 
 export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
-export type TaskStatus = 'queued' | 'working' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused' | 'stopped';
+export type TaskStatus = 'queued' | 'working' | 'delegating' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused' | 'stopped';
 export type ActionRuleMode = 'without-asking' | 'when-requested' | 'ask-before' | 'hand-off';
 export type { ScheduleSpec } from './scheduling.ts';
 
 export interface Task {
   id: string;
   tenantId: string;
+  parentTaskId: string | null;
   engine: Engine;
   agentSessionId: string | null;
   title: string;

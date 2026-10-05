@@ -23,6 +23,19 @@ test('agent Scratchpad actions require bounded page content and a valid tenant p
   assert.throws(() => parseDecision(JSON.stringify({ status: 'waiting', message: 'Which page?', pageAction: { action: 'create', title: 'Notes', content: 'Draft' } })), /不能同时写入/);
 });
 
+test('agent can create at most three bounded delegated tasks and children cannot delegate', () => {
+  assert.equal(parseDecision(JSON.stringify({ status: 'done', message: 'Finished.', delegations: [] })).status, 'done');
+  const decision = parseDecision(JSON.stringify({ status: 'delegating', message: 'Split the research into independent questions.', delegations: [
+    { title: 'Market size', instruction: 'Estimate the addressable market from the supplied sources.' },
+    { title: 'Competitors', instruction: 'Compare competitors using the supplied criteria.' },
+  ] }));
+  assert.equal(decision.status, 'delegating');
+  assert.equal(decision.delegations?.length, 2);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Too many', delegations: Array.from({ length: 4 }, (_, index) => ({ title: `Child ${index}`, instruction: 'Work independently.' })) })), /数量无效/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Invalid child', delegations: [{ title: 'Child', instruction: 'x'.repeat(5001) }] })), /内容无效/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Recursive', delegations: [{ title: 'Child', instruction: 'Run recursively.' }] }), undefined, false), /不能继续委派/);
+});
+
 test('selected engine is durable per task', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-engines-'));
   try {
