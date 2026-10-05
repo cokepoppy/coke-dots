@@ -1,6 +1,6 @@
 # Dots reference evidence
 
-Research date: 2026-10-05. This ledger separates product documentation, hands-on demonstrations, and a scripted launch film. A video index or written summary is a lead for review, not proof of pixels or behavior. No reference frame has been captured yet: YouTube denied the available download path with a bot challenge, and the browser automation session timed out. No component may be called pixel-matched until reference frames and comparison results exist.
+Research date: 2026-10-05. This ledger separates product documentation, hands-on demonstrations, and a scripted launch film. A video index or written summary is a lead for review, not proof of pixels or behavior. V1 was opened and inspected in local Chrome by navigating its chapter list and viewing the player at the listed times. One cropped browser screenshot of the 06:26 player view is saved locally under the ignored `research/frames/` directory; other sampled states were visually inspected but are not persisted. YouTube's transcript side panel remained on its loading spinner, so observations use video frames and on-screen captions. No component may be called pixel-matched until stable reference frames and comparison results exist.
 
 ## Source register
 
@@ -11,7 +11,7 @@ Research date: 2026-10-05. This ledger separates product documentation, hands-on
 | O3 | https://learn.chatgpt.com/docs/dots/tasks-and-memory | Official usage documentation | Activity, assigned work, background tasks, recurring work |
 | O4 | https://learn.chatgpt.com/docs/dots/computers-and-apps | Official usage documentation | Computer view, Take over, Return control |
 | O5 | https://learn.chatgpt.com/docs/dots/controls | Official usage documentation | Review, approval, pause, delegated task stop |
-| V1 | https://www.youtube.com/watch?v=V_1Vn2WfpEY | Hands-on video; frames pending | Setup, conversation, delegation, scheduled tasks |
+| V1 | https://www.youtube.com/watch?v=V_1Vn2WfpEY | Hands-on video; reviewed in Chrome; one cropped player screenshot saved locally (not tracked) | Setup, conversation, task delegation, voice call, generated outputs, Scheduled page and a visible failure; see [time-coded observations](futurepedia-v1-observations.md) |
 | V2 | https://www.youtube.com/watch?v=Q9tF0R8d_Co | Hands-on video; frames pending | Avatar, rename, cloud computer, call, parallel work |
 | V3 | https://www.youtube.com/watch?v=uXspbC2srEQ | Scripted official film; frames pending | Visual leads only; do not infer runtime behavior |
 | G1 | https://developers.google.com/identity/openid-connect/openid-connect | Google identity protocol | Stable `sub` identity and ID-token claims |
@@ -31,11 +31,11 @@ The video chapter leads are from https://www.postcutoff.com/v/futurepedia-i-test
 
 | Surface | Action | Expected state visible to user | Evidence | Visual reference |
 | --- | --- | --- | --- | --- |
-| Onboarding | Create dot; optionally connect apps and computer | Dot conversation available | O2 | Pending V1 01:18–02:46; V2 01:25–04:30 |
-| Profile | Edit name, shape, color, eyes, glasses, accessories | Saved identity and updated handle | O2 | Pending V1 01:18–02:46; V2 02:14–07:12 |
-| Conversation | Give ongoing responsibility and redirect it | Same dot continues with updated priorities | O3 | Pending V1 03:07–06:07 |
-| Activity | Open a delegated task | Progress, files, result or request for input | O3, O5 | Pending V1 07:46–08:55 |
-| Scheduled | Request recurring work; open Scheduled | Instructions, timing and destination visible | O3, O5 | Pending V1 09:28–10:11 |
+| Onboarding | Create dot; optionally connect apps and computer | Dot conversation available | O2 | V1 01:18–02:46 shows Chat/Work home and first dot conversation; no customization or connection flow shown |
+| Profile | Edit name, shape, color, eyes, glasses, accessories | Saved identity and updated handle | O2 | V1 02:46 shows the user choosing the name “dot”; visual customization remains pending V2 02:14–07:12 |
+| Conversation | Give ongoing responsibility and redirect it | Same dot continues with updated priorities | O3 | V1 02:46 and 06:06 show greeting, task request, and a later instruction; exact persistence behavior is not demonstrated |
+| Activity | Open a delegated task | Progress, files, result or request for input | O3, O5 | V1 06:06–09:28 shows a multi-tool request and returned outputs in conversation; a dedicated Activity page remains pending |
+| Scheduled | Request recurring work; open Scheduled | Instructions, timing and destination visible | O3, O5 | V1 10:01 shows the Scheduled list and a monitoring item; the selected chat visibly fails to open |
 | Computer | Open computer; Take over; Return control | Control holder changes explicitly | O4 | Pending V2 04:30–05:40 |
 | Controls | Pause main task; stop delegated task; cancel schedule | Distinct stopped scopes | O5 | Pending |
 
@@ -57,6 +57,8 @@ The video chapter leads are from https://www.postcutoff.com/v/futurepedia-i-test
 5. Capture our app at the same viewport and compare overlay, changed-pixel ratio and region-level differences. Require visual review for font antialiasing and video compression artifacts.
 6. Replay the observed path, including failed steps, against a local build. A screenshot match does not establish workflow parity; a successful task does not establish visual parity.
 
+V1's chapter titles and selected frames have now been reviewed directly in Chrome. A local-only browser-captured crop of the 06:26 call screen and timestamped observations are recorded in [futurepedia-v1-observations.md](futurepedia-v1-observations.md). The crop documents a visible state but does not replace source-frame capture, measurements, or image comparison.
+
 ## Replay scripts
 
 - **Setup:** create dot → inspect default name and avatar → edit visible appearance controls → rename → reopen profile → confirm persistence.
@@ -67,4 +69,4 @@ The video chapter leads are from https://www.postcutoff.com/v/futurepedia-i-test
 
 ## Local browser verification
 
-`npm run test:e2e` exercises the Coke Dots interface with real Chrome clicks at a fixed 1440 × 1000 viewport. It saves app screenshots, per-account recordings, Playwright traces, and a run manifest under the ignored `artifacts/e2e/` directory. These artifacts verify our own page state and control flow; they do not establish visual parity with Dots. Original reference frames, measurements, and image-difference results are still pending. The test sign-in fixture also does not validate Google's live OAuth screens or callback.
+`npm run test:e2e` exercises the Coke Dots interface with real Chrome clicks at a fixed 1440 × 1000 viewport. It saves app screenshots, per-account recordings, Playwright traces, and a run manifest under the ignored `artifacts/e2e/` directory. These artifacts verify our own page state and control flow; they do not establish visual parity with Dots. V1 has been reviewed in Chrome and one cropped screenshot is persisted, but reference frames have not been measured or compared with Coke Dots. The test sign-in fixture also does not validate Google's live OAuth screens or callback.
