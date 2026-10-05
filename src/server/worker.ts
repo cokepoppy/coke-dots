@@ -8,6 +8,8 @@ import { loadModelSettings } from './model-settings.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
 export class Worker {
+  private static readonly maxActiveTasks = 4;
+  private static readonly maxActiveTasksPerTenant = 3;
   private timer: NodeJS.Timeout | null = null;
   private active = new Set<string>();
   private abortControllers = new Map<string, AbortController>();
@@ -24,10 +26,10 @@ export class Worker {
   async tick() {
     if (this.stopped) return;
     for (const task of this.store.dueTasks()) {
-      if (this.active.size >= 4) break;
+      if (this.active.size >= Worker.maxActiveTasks) break;
       if (this.active.has(task.id)) continue;
       const tenantActive = this.activeByTenant.get(task.tenantId) || 0;
-      if (tenantActive >= 2) continue;
+      if (tenantActive >= Worker.maxActiveTasksPerTenant) continue;
       this.active.add(task.id);
       const controller = new AbortController();
       this.abortControllers.set(task.id, controller);

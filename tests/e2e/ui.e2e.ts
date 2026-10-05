@@ -32,6 +32,7 @@ let heldPauseModelAborted = false;
 let pauseModelHeld = false;
 let heldStopModelRelease: (() => void) | null = null;
 let heldStopModelAborted = false;
+let parallelModelReleases: (() => void)[] = [];
 let testModelBaseUrl = '';
 let testModelApiKey = '';
 let testModelName = '';
@@ -87,6 +88,7 @@ async function startMockModel() {
         const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
+        const isParallelTask = prompt.includes('E2E parallel work —');
         if (isPauseTask && !pauseModelHeld) {
           pauseModelHeld = true;
           heldPauseModelAborted = false;
@@ -100,10 +102,11 @@ async function startMockModel() {
           await new Promise<void>(resolvePromise => { heldStopModelRelease = resolvePromise; });
           heldStopModelRelease = null;
         }
+        if (isParallelTask) await new Promise<void>(resolvePromise => parallelModelReleases.push(resolvePromise));
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask;
+        const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isParallelTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
-        const decision = { status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        const decision = { status: isComplete ? 'done' : 'waiting', message: hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -198,6 +201,10 @@ function releaseHeldPauseModel() {
   const release = heldPauseModelRelease as (() => void) | null;
   if (release) release();
   heldPauseModelRelease = null;
+}
+
+function releaseParallelModels() {
+  for (const release of parallelModelReleases.splice(0)) release();
 }
 
 async function recordStep(name: string, action: () => Promise<void>) {
@@ -903,6 +910,28 @@ try {
     await selectTenant(alphaPage!, 'Alpha Shared');
   });
 
+  await recordStep('Three independent tasks run in parallel in one workspace and finish in Activity', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    const instructions = [1, 2, 3].map(index => `E2E parallel work — ${index}`);
+    const initialCount = mockModelPrompts.filter(prompt => prompt.includes('E2E parallel work —')).length;
+    for (const instruction of instructions) await createTask(alphaPage!, instruction);
+    await waitFor(() => mockModelPrompts.filter(prompt => prompt.includes('E2E parallel work —')).length === initialCount + 3, 12_000);
+    await clickNav(alphaPage!, 'Activity');
+    for (const instruction of instructions) {
+      const card = alphaPage!.locator('.task-card').filter({ hasText: instruction });
+      await card.waitFor({ state: 'visible' });
+      await card.locator('.pill.working').waitFor({ state: 'visible' });
+    }
+    await screenshot(alphaPage!, 'parallel-three-tasks-working');
+    releaseParallelModels();
+    for (const instruction of instructions) {
+      await alphaPage!.locator('.task-card').filter({ hasText: instruction }).locator('.pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    }
+    assert.equal(mockModelPrompts.filter(prompt => prompt.includes('E2E parallel work —')).length, initialCount + 3, 'One task was called more than once or did not start');
+    await screenshot(alphaPage!, 'parallel-three-tasks-completed');
+  });
+
   await recordStep('Alpha shared-workspace computer opens under the shared Dot identity', async () => {
     await clickNav(alphaPage!, '电脑');
     await alphaPage!.getByRole('heading', { name: 'Shared Dot 的电脑' }).waitFor({ state: 'visible' });
@@ -968,6 +997,7 @@ try {
 } finally {
   releaseHeldPauseModel();
   releaseHeldStopModel();
+  releaseParallelModels();
   if (alphaContext) await alphaContext.tracing.stop({ path: join(artifactRoot, 'alpha-trace.zip') }).catch(() => undefined);
   if (betaContext) await betaContext.tracing.stop({ path: join(artifactRoot, 'beta-trace.zip') }).catch(() => undefined);
   if (gammaContext) await gammaContext.tracing.stop({ path: join(artifactRoot, 'gamma-trace.zip') }).catch(() => undefined);
