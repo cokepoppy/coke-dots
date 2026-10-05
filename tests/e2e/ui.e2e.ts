@@ -211,6 +211,20 @@ try {
     await screenshot(alphaPage!, '02-alpha-home');
   });
 
+  await recordStep('First-run greeting opens Dot customization and focuses the task composer', async () => {
+    const onboarding = alphaPage!.getByTestId('dot-onboarding');
+    await onboarding.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
+    await onboarding.getByText('Message or call me anytime. I’ll keep things moving, even when we’re not talking, and check in with updates or questions.').waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, 'onboarding-first-run');
+    await alphaPage!.getByTestId('onboarding-customize').click();
+    await alphaPage!.getByRole('heading', { name: '你的 dot' }).waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.getByLabel('名字').inputValue(), 'Dot');
+    await clickNav(alphaPage!, '你的 dot');
+    await onboarding.waitFor({ state: 'visible' });
+    await alphaPage!.getByTestId('onboarding-start').click();
+    assert.equal(await alphaPage!.getByPlaceholder('告诉 dot 接下来要负责什么…').evaluate(element => document.activeElement === element), true, 'The start action should put the task composer in focus');
+  });
+
   const alphaPrivateTask = 'E2E alpha private goal — inventory the project risks';
   await recordStep('Create a persistent task and inspect its visible execution state', async () => {
     await createTask(alphaPage!, alphaPrivateTask);
