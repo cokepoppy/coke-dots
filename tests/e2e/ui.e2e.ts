@@ -856,6 +856,23 @@ try {
       return task?.status === 'scheduled' && Boolean(task.nextRunAt) && Date.parse(task.nextRunAt!) > Date.now();
     }, instruction, { timeout: 20_000 });
 
+    await clickNav(alphaPage!, 'Activity');
+    const activityCard = alphaPage!.locator('.task-card').filter({ hasText: instruction });
+    await activityCard.waitFor({ state: 'visible' });
+    assert.equal(await activityCard.getByRole('button', { name: '暂停' }).count(), 0, 'A recurring run exposed the one-off Pause action in Activity');
+    await screenshot(alphaPage!, '07f-recurring-task-activity-controls');
+    const pauseResult = await alphaPage!.evaluate(async (goal: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string; nextRunAt: string | null }[] };
+      const task = state.tasks.find(item => item.instruction === goal);
+      if (!task) throw new Error('Recurring task missing from state');
+      const response = await fetch(`/api/tasks/${task.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'pause' }) });
+      const after = await fetch('/api/state').then(result => result.json()) as { tasks: { id: string; status: string; nextRunAt: string | null }[] };
+      return { statusCode: response.status, before: task, after: after.tasks.find(item => item.id === task.id) };
+    }, instruction);
+    assert.equal(pauseResult.statusCode, 409, 'The server allowed a recurring task to be paused outside Scheduled');
+    assert.equal(pauseResult.after?.status, 'scheduled', 'Rejected pause changed the recurring task status');
+    assert.equal(pauseResult.after?.nextRunAt, pauseResult.before.nextRunAt, 'Rejected pause removed the next recurring run');
+
     await clickNav(alphaPage!, 'Scheduled');
     const item = alphaPage!.locator('.scheduled-item').filter({ hasText: instruction });
     await item.waitFor({ state: 'visible' });

@@ -402,7 +402,7 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
   const canStop = !hasRecurringSchedule && ['queued', 'working', 'waiting', 'scheduled', 'paused'].includes(task.status);
   return <div className={`task-controls ${compact ? 'compact' : ''}`}>
     {!compact && <span className={`pill ${task.status}`}>{statusText[task.status]}</span>}
-    {['working', 'queued', 'scheduled'].includes(task.status) && <button onClick={() => void act(task, 'pause')}>暂停</button>}
+    {!hasRecurringSchedule && ['working', 'queued', 'scheduled'].includes(task.status) && <button onClick={() => void act(task, 'pause')}>暂停</button>}
     {['paused', 'failed'].includes(task.status) && <button onClick={() => void act(task, task.status === 'failed' ? 'retry' : 'resume')}>{task.status === 'failed' ? '重试' : '继续'}</button>}
     {canStop && <button className="stop-task" title="停止后这项工作不能继续" onClick={() => void act(task, 'stop')}>停止工作</button>}
     {!compact && <>

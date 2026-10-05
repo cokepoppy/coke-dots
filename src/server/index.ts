@@ -6,7 +6,7 @@ import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
 import type { ActionRuleMode, Engine, ScheduleSpec } from '../shared/types.ts';
-import { nextScheduleOccurrence, validateScheduleSpec } from '../shared/scheduling.ts';
+import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 import { ComputerManager } from './computer.ts';
 import { AuthService } from './auth.ts';
@@ -352,6 +352,7 @@ const server = createServer(async (req, res) => {
       const action = String(body.action || '');
       if (old.status === 'stopped') return reply(res, 409, { error: '这项工作已停止，不能继续或修改' });
       if (action === 'pause') {
+        if (scheduleForTask(old.scheduleSpec, old.scheduleMinutes)) return reply(res, 409, { error: '周期任务请在 Scheduled 中结束，以保留后续运行。' });
         worker.pauseTask(old.id);
         store.updateTask(old.id, { status: 'paused', nextRunAt: null }, session.tenant.id);
       }
