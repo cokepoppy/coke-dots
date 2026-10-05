@@ -204,6 +204,7 @@ try {
     await signIn(alphaPage!, 'alpha@example.test');
     await alphaPage!.getByTestId('app-shell').waitFor();
     assert.equal(await alphaPage!.locator('.profile-link small').innerText(), 'alpha@example.test');
+    assert.equal(await alphaPage!.getByTestId('dot-context-panel').count(), 0, 'A new-dot welcome state should not show the post-setup details panel');
     await screenshot(alphaPage!, '02-alpha-home');
   });
 
@@ -214,12 +215,28 @@ try {
     await alphaPage!.waitForFunction(() => ['失败', '已完成'].includes(document.querySelector('.timeline .pill')?.textContent?.trim() || ''), null, { timeout: 15_000 });
     const status = await alphaPage!.locator('.timeline .pill').innerText();
     assert.equal(status, '失败', 'With model credentials disabled, the task must fail visibly instead of claiming completion');
-    await screenshot(alphaPage!, '03-task-progress');
+    const contextPanel = alphaPage!.getByTestId('dot-context-panel');
+    await contextPanel.waitFor({ state: 'visible' });
+    await contextPanel.getByRole('region', { name: 'Computers' }).waitFor({ state: 'visible' });
+    await contextPanel.getByRole('region', { name: 'Recent activity' }).getByText(alphaPrivateTask).waitFor({ state: 'visible' });
+    assert.equal(await contextPanel.getByRole('button', { name: 'Call, not connected' }).isDisabled(), true);
+    assert.equal(await contextPanel.getByRole('button', { name: 'Slack, not connected' }).isDisabled(), true);
+    await contextPanel.getByText('No skills yet', { exact: true }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '03-task-progress-and-context');
+  });
+
+  await recordStep('Dot computer shortcut opens the tenant-isolated browser workspace', async () => {
+    await alphaPage!.getByTestId('dot-computer-row').click();
+    await alphaPage!.getByRole('heading', { name: '打开独立浏览器' }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, 'context-computer-shortcut');
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.getByTestId('dot-context-panel').waitFor({ state: 'visible' });
   });
 
   await recordStep('A second Google-style account is isolated before workspace invitation', async () => {
     await signIn(betaPage!, 'beta@example.test');
     assert.equal(await betaPage!.locator('.task-links button').count(), 0, 'Beta inherited Alpha task links');
+    assert.equal(await betaPage!.getByTestId('dot-context-panel').count(), 0, 'Beta personal onboarding inherited Alpha conversation context');
     await assertNoVisibleText(betaPage!, alphaPrivateTask);
     await screenshot(betaPage!, '04-beta-isolated');
   });
