@@ -351,15 +351,31 @@ try {
     await betaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, '12-alpha-after-service-restart');
     await screenshot(betaPage!, '13-beta-after-service-restart');
+    await selectTenant(betaPage!, 'Beta workspace');
+    await betaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'detached' });
   });
 
-  await recordStep('Computer view opens a separate browser and gates control behind takeover', async () => {
+  await recordStep('Alpha shared-workspace computer opens under the shared Dot identity', async () => {
     await clickNav(alphaPage!, '电脑');
     await alphaPage!.getByRole('heading', { name: 'Shared Dot 的电脑' }).waitFor({ state: 'visible' });
     await alphaPage!.getByRole('button', { name: '打开电脑' }).click();
     await alphaPage!.getByRole('button', { name: '接管' }).waitFor({ state: 'visible', timeout: 20_000 });
     await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot 正在控制' }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, '14-computer-dot-control');
+  });
+
+  await recordStep('Beta personal computer remains isolated from Alpha shared computer', async () => {
+    await clickNav(betaPage!, '电脑');
+    await betaPage!.getByRole('heading', { name: 'Dot 的电脑' }).waitFor({ state: 'visible' });
+    await betaPage!.getByRole('button', { name: '打开电脑' }).waitFor({ state: 'visible' });
+    assert.equal(await betaPage!.locator('.browser-frame').count(), 0, 'Beta inherited another tenant’s already-open computer');
+    await betaPage!.getByRole('button', { name: '打开电脑' }).click();
+    await betaPage!.getByRole('status').filter({ hasText: 'Dot 正在控制' }).waitFor({ state: 'visible', timeout: 20_000 });
+    assert.equal(await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot 正在控制' }).count(), 1, 'Opening Beta’s computer changed Alpha’s control owner');
+    await screenshot(betaPage!, '14-beta-private-computer');
+  });
+
+  await recordStep('Computer user input stays disabled until explicit takeover', async () => {
     const addressBar = alphaPage!.locator('.browser-toolbar input');
     assert.equal(await addressBar.isDisabled(), true, 'Browser navigation is enabled before takeover');
     await alphaPage!.getByRole('button', { name: '接管' }).click();
