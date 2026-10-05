@@ -33,8 +33,10 @@ let testModelName = '';
 let browser: Browser | null = null;
 let alphaContext: BrowserContext | null = null;
 let betaContext: BrowserContext | null = null;
+let gammaContext: BrowserContext | null = null;
 let alphaPage: Page | null = null;
 let betaPage: Page | null = null;
+let gammaPage: Page | null = null;
 let baseUrl = '';
 let failure = '';
 let e2ePort = 0;
@@ -234,12 +236,16 @@ try {
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
   alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   betaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
+  gammaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   await alphaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
   await betaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
+  await gammaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
   alphaPage = await alphaContext.newPage();
   betaPage = await betaContext.newPage();
+  gammaPage = await gammaContext.newPage();
   alphaPage.on('pageerror', error => pageErrors.push(`alpha: ${error.message}`));
   betaPage.on('pageerror', error => pageErrors.push(`beta: ${error.message}`));
+  gammaPage.on('pageerror', error => pageErrors.push(`gamma: ${error.message}`));
 
   await recordStep('Unauthenticated page and E2E-only sign-in control render', async () => {
     await alphaPage!.goto(baseUrl, { waitUntil: 'domcontentloaded' });
@@ -406,9 +412,16 @@ try {
   await recordStep('Invite the second signed-in account and verify member permissions', async () => {
     await alphaPage!.getByPlaceholder('teammate@example.com').fill('beta@example.test');
     await alphaPage!.getByRole('button', { name: '添加工作区成员' }).click();
-    await alphaPage!.locator('.member-row').filter({ hasText: 'beta@example.test' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('region', { name: '待接受邀请' }).getByText('beta@example.test').waitFor({ state: 'visible' });
+    await alphaPage!.getByPlaceholder('teammate@example.com').fill('gamma@example.test');
+    await alphaPage!.getByRole('button', { name: '添加工作区成员' }).click();
+    await alphaPage!.getByRole('status').filter({ hasText: '邀请已创建' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('region', { name: '待接受邀请' }).getByText('gamma@example.test').waitFor({ state: 'visible' });
     await betaPage!.reload({ waitUntil: 'domcontentloaded' });
     await betaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await betaPage!.getByRole('region', { name: '工作区邀请' }).getByText('Alpha Shared').waitFor({ state: 'visible' });
+    assert.equal(await betaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).count(), 0, 'An existing Google account received access before accepting the invitation');
+    await betaPage!.getByRole('button', { name: '接受并打开工作区' }).click();
     await betaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).waitFor({ state: 'attached' });
     await selectTenant(betaPage!, 'Alpha Shared');
     await betaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
@@ -417,6 +430,35 @@ try {
     await betaPage!.locator('.member-row').filter({ hasText: 'alpha@example.test' }).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.getByRole('button', { name: '添加工作区成员' }).isDisabled(), true, 'A regular member received workspace-admin controls');
     await screenshot(betaPage!, '10-beta-shared-member');
+
+    await signIn(gammaPage!, 'gamma@example.test');
+    await gammaPage!.getByRole('region', { name: '工作区邀请' }).getByText('Alpha Shared').waitFor({ state: 'visible' });
+    assert.equal(await gammaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).count(), 0, 'A pending invitation exposed the workspace before acceptance');
+    await screenshot(gammaPage!, '10b-gamma-pending-invitation');
+    await gammaPage!.getByRole('button', { name: '接受并打开工作区' }).click();
+    await gammaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
+    assert.equal(await gammaPage!.locator('.profile-link strong').innerText(), 'Shared Dot');
+    await gammaPage!.locator('.profile-link').click();
+    await gammaPage!.locator('.member-row').filter({ hasText: 'gamma@example.test' }).waitFor({ state: 'visible' });
+    await screenshot(gammaPage!, '10c-gamma-accepted-workspace');
+  });
+
+  await recordStep('Owner can revoke an unexpired pending invitation and an accepted member session', async () => {
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.locator('.profile-link').click();
+    await alphaPage!.getByPlaceholder('teammate@example.com').fill('delta@example.test');
+    await alphaPage!.getByRole('button', { name: '添加工作区成员' }).click();
+    const deltaInvitation = alphaPage!.getByRole('region', { name: '待接受邀请' }).getByText('delta@example.test');
+    await deltaInvitation.waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('button', { name: '撤销 delta@example.test 的邀请' }).click();
+    await deltaInvitation.waitFor({ state: 'detached' });
+    assert.equal(await alphaPage!.getByRole('region', { name: '待接受邀请' }).getByText('gamma@example.test').count(), 0, 'The accepted member remained as a pending invitation');
+    await alphaPage!.locator('.member-row').filter({ hasText: 'gamma@example.test' }).getByRole('button', { name: '移除' }).click();
+    await alphaPage!.locator('.member-row').filter({ hasText: 'gamma@example.test' }).waitFor({ state: 'detached' });
+    await gammaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await gammaPage!.getByTestId('e2e-sign-in').waitFor({ state: 'visible' });
+    await screenshot(gammaPage!, '10d-gamma-removed-session');
   });
 
   await recordStep('Tenant switch hides shared data from Beta personal workspace', async () => {
@@ -571,12 +613,15 @@ try {
   failure = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
   if (alphaPage) await alphaPage.screenshot({ path: join(artifactRoot, 'failure-alpha.png'), fullPage: true }).catch(() => undefined);
   if (betaPage) await betaPage.screenshot({ path: join(artifactRoot, 'failure-beta.png'), fullPage: true }).catch(() => undefined);
+  if (gammaPage) await gammaPage.screenshot({ path: join(artifactRoot, 'failure-gamma.png'), fullPage: true }).catch(() => undefined);
   throw error;
 } finally {
   if (alphaContext) await alphaContext.tracing.stop({ path: join(artifactRoot, 'alpha-trace.zip') }).catch(() => undefined);
   if (betaContext) await betaContext.tracing.stop({ path: join(artifactRoot, 'beta-trace.zip') }).catch(() => undefined);
+  if (gammaContext) await gammaContext.tracing.stop({ path: join(artifactRoot, 'gamma-trace.zip') }).catch(() => undefined);
   await alphaContext?.close().catch(() => undefined);
   await betaContext?.close().catch(() => undefined);
+  await gammaContext?.close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));

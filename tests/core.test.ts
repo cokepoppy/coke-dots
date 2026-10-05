@@ -45,6 +45,33 @@ test('a waiting task accepts a tenant-scoped reply without losing its original g
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('workspace invitations require a matching signed-in email and are accepted once', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-invitation-'));
+  try {
+    const store = new Store(directory);
+    const owner = store.signInGoogle({ subject: 'owner-sub', email: 'owner@example.test', name: 'Owner' });
+    const workspace = store.createWorkspace(owner.user.id, 'Design team');
+    const invitee = store.signInGoogle({ subject: 'invitee-sub', email: 'new.member@example.test', name: 'New Member' });
+    const invite = store.addWorkspaceMember(workspace.id, owner.user.id, 'new.member@example.test', 'member');
+    assert.equal(invite.ok, true);
+    if (!invite.ok || invite.kind !== 'invitation') throw new Error('Expected a pending invitation');
+    assert.equal(invite.invitation.email, 'new.member@example.test');
+    assert.deepEqual(store.pendingWorkspaceInvitations('NEW.MEMBER@example.test').map(item => item.tenantName), ['Design team']);
+    assert.equal(store.tenantsForUser(invitee.user.id).some(item => item.id === workspace.id), false, 'A pending invitation granted membership before acceptance');
+    const sessionHash = 'invitee-session-hash';
+    store.createSession(sessionHash, invitee.user.id, invitee.tenant.id, new Date(Date.now() + 60_000).toISOString());
+    assert.equal(store.acceptWorkspaceInvitation(workspace.id, sessionHash, invitee.user.id, 'other@example.test'), null);
+    assert.equal(store.pendingWorkspaceInvitations(invitee.user.email).length, 1, 'A mismatched identity consumed the invitation');
+    const accepted = store.acceptWorkspaceInvitation(workspace.id, sessionHash, invitee.user.id, invitee.user.email);
+    assert.equal(accepted?.id, workspace.id);
+    assert.equal(accepted?.role, 'member');
+    assert.equal(store.getSession(sessionHash)?.tenant.id, workspace.id, 'Accepting did not switch the session to the joined workspace');
+    assert.equal(store.pendingWorkspaceInvitations(invitee.user.email).length, 0);
+    assert.equal(store.acceptWorkspaceInvitation(workspace.id, sessionHash, invitee.user.id, invitee.user.email), null, 'The same invitation was accepted twice');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('background worker stores real model result and schedules a future run', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
   const modelServer = createServer(async (req, res) => {

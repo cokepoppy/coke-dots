@@ -1,5 +1,15 @@
 .profile-card.notification-card{gap:12px}
 .profile-card.notification-card .notification-toggle{display:flex;align-items:flex-start;gap:11px;margin:0;color:#ddd9e2;cursor:pointer}
+.invitation-banner{padding:12px 26px;background:#211d29;border-bottom:1px solid #41384f}
+.invitation-banner-row{display:flex;align-items:center;justify-content:space-between;gap:18px;max-width:1100px;margin:0 auto;padding:5px 0;color:#e7e0f0}
+.invitation-banner-row>div{display:grid;gap:4px}
+.invitation-banner-row strong{font-size:13px}
+.invitation-banner-row span{color:#aaa2b5;font-size:11px}
+.invitation-banner-row button{flex:none;border:0;border-radius:8px;padding:9px 13px;background:#ece5f6;color:#28212f;font-size:12px;font-weight:600}
+.member-invitations{display:grid;gap:8px;margin:4px 0 10px;padding-top:4px}
+.member-invitations>strong{color:#d7d1dc;font-size:12px}
+.pending-invitation{margin:0}
+@media(max-width:700px){.invitation-banner{padding:10px 14px}.invitation-banner-row{align-items:flex-start;flex-direction:column}.invitation-banner-row button{align-self:flex-end}}
 .notification-toggle>input{flex:none;margin:3px 0 0;accent-color:#ad89e9}
 .notification-toggle>span{display:grid;gap:5px}
 .notification-toggle strong{font-size:12px;font-weight:600}

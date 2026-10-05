@@ -107,6 +107,15 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot(session.tenant.id));
+    if (path === '/api/auth/invitations' && req.method === 'GET') return reply(res, 200, store.pendingWorkspaceInvitations(session.user.email));
+    const acceptInvitationMatch = path.match(/^\/api\/auth\/invitations\/([a-z0-9-]+)\/accept$/);
+    if (acceptInvitationMatch && req.method === 'POST') {
+      const tenant = store.acceptWorkspaceInvitation(acceptInvitationMatch[1], session.tokenHash, session.user.id, session.user.email);
+      if (!tenant) return reply(res, 404, { error: '邀请不存在或已过期' });
+      publish();
+      const updated = auth.session(req)!;
+      return reply(res, 200, { user: updated.user, tenant: updated.tenant, tenants: store.tenantsForUser(updated.user.id) });
+    }
 
     const body = req.method === 'POST' || req.method === 'PATCH' ? await readJson(req) : {};
     if (path === '/api/auth/tenant' && req.method === 'POST') {
@@ -137,7 +146,24 @@ const server = createServer(async (req, res) => {
       const result = store.addWorkspaceMember(session.tenant.id, session.user.id, email, role);
       if (!result.ok) return reply(res, 404, { error: result.error });
       publish();
-      return reply(res, 201, { user: result.user, role });
+      if (result.kind === 'invitation') return reply(res, 201, { invited: true, invitation: result.invitation });
+      return reply(res, 201, { invited: false, user: result.user, role });
+    }
+    const invitationListMatch = path.match(/^\/api\/tenants\/([a-z0-9-]+)\/invitations$/);
+    if (invitationListMatch && req.method === 'GET') {
+      if (invitationListMatch[1] !== session.tenant.id) return reply(res, 403, { error: '请先切换到目标工作区' });
+      const invitations = store.workspaceInvitations(session.tenant.id, session.user.id);
+      if (!invitations) return reply(res, 403, { error: '只有工作区所有者或管理员可以查看邀请' });
+      return reply(res, 200, invitations);
+    }
+    const invitationMatch = path.match(/^\/api\/tenants\/([a-z0-9-]+)\/invitations\/(.+)$/);
+    if (invitationMatch && req.method === 'DELETE') {
+      if (invitationMatch[1] !== session.tenant.id) return reply(res, 403, { error: '请先切换到目标工作区' });
+      let email = '';
+      try { email = decodeURIComponent(invitationMatch[2]).trim().toLowerCase(); } catch { return reply(res, 400, { error: '邮箱地址无效' }); }
+      const result = store.revokeWorkspaceInvitation(session.tenant.id, session.user.id, email);
+      if (!result.ok) return reply(res, 403, { error: result.error });
+      return reply(res, 200, { ok: true });
     }
     const removeMemberMatch = path.match(/^\/api\/tenants\/([a-z0-9-]+)\/members\/([a-f0-9-]+)$/);
     if (removeMemberMatch && req.method === 'DELETE') {

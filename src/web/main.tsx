@@ -15,6 +15,7 @@ import { ScheduledView } from './ScheduledView.tsx';
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 interface TenantMember { id: string; email: string; name: string; role: string }
+interface WorkspaceInvitation { tenantId: string; tenantName?: string; email: string; role: string; invitedAt: string; expiresAt: string }
 const statusText: Record<TaskStatus, string> = {
   queued: '排队中', working: '工作中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停',
 };
@@ -36,6 +37,7 @@ function App() {
   const [stateLoaded, setStateLoaded] = useState(false);
   const [googleConfigured, setGoogleConfigured] = useState(false);
   const [e2eAuthAvailable, setE2eAuthAvailable] = useState(false);
+  const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
   const [state, setState] = useState<Snapshot>(initial);
   const [view, setView] = useState<'chat' | 'activity' | 'scheduled' | 'computer' | 'profile'>('chat');
   const [selected, setSelected] = useState<string | null>(null);
@@ -57,6 +59,15 @@ function App() {
       .then(setAuthContext).catch(() => setAuthContext(null)).finally(() => setAuthChecked(true));
     void fetch('/api/auth/config').then(response => response.json()).then(data => { setGoogleConfigured(Boolean(data.googleConfigured)); setE2eAuthAvailable(Boolean(data.e2eAuthAvailable)); }).catch(() => { setGoogleConfigured(false); setE2eAuthAvailable(false); });
   }, []);
+
+  useEffect(() => {
+    if (!authContext) { setInvitations([]); return; }
+    const refresh = () => void fetch('/api/auth/invitations').then(async response => response.ok ? await response.json() as WorkspaceInvitation[] : [])
+      .then(setInvitations).catch(() => setInvitations([]));
+    refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => window.clearInterval(timer);
+  }, [authContext?.user.id]);
 
   useEffect(() => {
     if (!authContext) return;
@@ -127,6 +138,18 @@ function App() {
     finally { setAuthContext(null); setState(initial); }
   }
 
+  async function acceptInvitation(invitation: WorkspaceInvitation) {
+    try {
+      setError('');
+      const response = await fetch(`/api/auth/invitations/${invitation.tenantId}/accept`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setAuthContext(data as AuthContext);
+      setInvitations(current => current.filter(item => item.tenantId !== invitation.tenantId));
+      setState(initial); setStateLoaded(false); setSelected(null); setView('chat');
+    } catch (e) { setError(String(e)); }
+  }
+
   if (!authChecked) return <div className="auth-loading">Coke Dots</div>;
   if (!authContext) return <LoginScreen googleConfigured={googleConfigured} e2eAuthAvailable={e2eAuthAvailable} />;
 
@@ -143,6 +166,7 @@ function App() {
     </aside>
     <main className="main">
       <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : ''}</span><div className="top-actions"><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
+      {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {view === 'chat' && <div className="chat-layout"><section className="chat-panel">
         {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : !selectedTask && entries.length === 0 ? <div className="welcome onboarding-welcome" data-testid="dot-onboarding"><Avatar {...state.profile} /><h1>Hey! I’m your dot</h1><p className="onboarding-promise">Message or call me anytime. I’ll keep things moving, even when we’re not talking, and check in with updates or questions.</p><p className="onboarding-name-prompt">Want to give me a name?</p><button className="onboarding-customize" data-testid="onboarding-customize" onClick={() => setView('profile')}>Customize your dot <span aria-hidden="true">→</span></button><p className="onboarding-start-prompt">Start looking for ways to help. Anything top of mind?</p><div className="suggestions onboarding-actions"><button data-testid="onboarding-start" onClick={() => { composerRef.current?.focus(); }}>Start looking for ways to help <span aria-hidden="true">→</span></button></div><p className="onboarding-footer">A few things I could take off your plate.</p></div> : <div className="timeline">
@@ -270,17 +294,64 @@ function Profile({ state, auth, onError }: { state: Snapshot; auth: AuthContext;
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [memberEmail, setMemberEmail] = useState('');
   const [members, setMembers] = useState<TenantMember[]>([]);
+  const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
+  const [memberNotice, setMemberNotice] = useState('');
   const [membersError, setMembersError] = useState('');
   const refreshMembers = async () => {
     const response = await fetch(`/api/tenants/${auth.tenant.id}/members`);
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
     setMembers(await response.json() as TenantMember[]);
+    if (['owner', 'admin'].includes(auth.tenant.role)) {
+      const inviteResponse = await fetch(`/api/tenants/${auth.tenant.id}/invitations`);
+      if (!inviteResponse.ok) throw new Error((await inviteResponse.json()).error || `HTTP ${inviteResponse.status}`);
+      setInvitations(await inviteResponse.json() as WorkspaceInvitation[]);
+    } else setInvitations([]);
   };
   useEffect(() => { setName(state.profile.name); setShape(state.profile.shape); setColor(state.profile.color); }, [state.profile.name, state.profile.shape, state.profile.color]);
   useEffect(() => { setDesktopNotifications(state.preferences.desktopNotifications); }, [state.preferences.desktopNotifications]);
   useEffect(() => { if (state.modelSettings.baseUrl) setBaseUrl(state.modelSettings.baseUrl); if (state.modelSettings.model) setModel(state.modelSettings.model); }, [state.modelSettings.baseUrl, state.modelSettings.model]);
   useEffect(() => { void refreshMembers().catch(error => setMembersError(String(error))); }, [auth.tenant.id]);
-  return <section className="content profile-content"><div className="section-heading"><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div><div className="profile-card"><Avatar shape={shape} color={color} /><label>名字<input maxLength={40} value={name} onChange={e => setName(e.target.value)} /></label><div className="field-label">形状</div><div className="choices">{['circle', 'square', 'triangle'].map(item => <button key={item} className={shape === item ? 'chosen' : ''} onClick={() => setShape(item)}>{item === 'circle' ? '圆形' : item === 'square' ? '方形' : '三角形'}</button>)}</div><label>颜色<input type="color" value={color} onChange={e => setColor(e.target.value)} /></label><button className="primary" onClick={async () => { try { await request('/profile', 'PATCH', { name, shape, color }); } catch (e) { onError(String(e)); } }}>保存更改</button></div><div className="section-heading model-heading"><h2>通知</h2><p>后台工作需要你处理或完成时，在这台 Mac 上提醒你。</p></div><div className="profile-card model-card notification-card"><label className="notification-toggle"><input aria-label="桌面通知" type="checkbox" checked={desktopNotifications} disabled={notificationBusy} onChange={async event => { const enabled = event.currentTarget.checked; setNotificationBusy(true); setDesktopNotifications(enabled); try { await request('/preferences', 'PATCH', { desktopNotifications: enabled }); } catch (error) { setDesktopNotifications(!enabled); onError(String(error)); } finally { setNotificationBusy(false); } }} /><span><strong>桌面通知</strong><small>{desktopNotifications ? '此工作区已开启任务和网页监控提醒。' : '此工作区的提醒目前关闭。'}</small></span></label><small className="notification-note">通知只显示 Dot 名称和事项状态，不包含任务结果正文。</small></div><div className="section-heading model-heading"><h2>工作区成员</h2><p>添加已登录 Coke Dots 的 Google 账号。当前角色：{auth.tenant.role}。</p></div><div className="profile-card model-card"><div className="member-list">{members.map(member => <div className="member-row" key={member.id}><span><strong>{member.name}</strong><small>{member.email}</small></span><span className="member-role">{member.role === 'owner' ? '所有者' : member.role === 'admin' ? '管理员' : '成员'}</span>{['owner', 'admin'].includes(auth.tenant.role) && member.role !== 'owner' && <button onClick={async () => { try { const response = await fetch(`/api/tenants/${auth.tenant.id}/members/${member.id}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>移除</button>}</div>)}</div><label>Google 账号邮箱<input type="email" value={memberEmail} onChange={event => setMemberEmail(event.target.value)} placeholder="teammate@example.com" /></label><button className="primary" disabled={!['owner', 'admin'].includes(auth.tenant.role) || !memberEmail.trim()} onClick={async () => { try { await request(`/tenants/${auth.tenant.id}/members`, 'POST', { email: memberEmail, role: 'member' }); setMemberEmail(''); setMembersError(''); await refreshMembers(); } catch (e) { onError(String(e)); } }}>添加工作区成员</button>{membersError && <small className="member-error">{membersError}</small>}{!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以添加成员。</small>}</div><div className="section-heading model-heading"><h2>模型 API</h2><p>此 API 密钥只用于当前工作区，并保存在 macOS 钥匙串。</p></div><div className="profile-card model-card"><label>API 地址<input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} /></label><label>模型名称<input value={model} onChange={e => setModel(e.target.value)} /></label><label>API 密钥<input type="password" autoComplete="off" placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label><button className="primary" onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存模型设置</button></div></section>;
+  return <section className="content profile-content">
+    <div className="section-heading"><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div>
+    <div className="profile-card">
+      <Avatar shape={shape} color={color} />
+      <label>名字<input maxLength={40} value={name} onChange={e => setName(e.target.value)} /></label>
+      <div className="field-label">形状</div>
+      <div className="choices">{['circle', 'square', 'triangle'].map(item => <button key={item} className={shape === item ? 'chosen' : ''} onClick={() => setShape(item)}>{item === 'circle' ? '圆形' : item === 'square' ? '方形' : '三角形'}</button>)}</div>
+      <label>颜色<input type="color" value={color} onChange={e => setColor(e.target.value)} /></label>
+      <button className="primary" onClick={async () => { try { await request('/profile', 'PATCH', { name, shape, color }); } catch (e) { onError(String(e)); } }}>保存更改</button>
+    </div>
+    <div className="section-heading model-heading"><h2>通知</h2><p>后台工作需要你处理或完成时，在这台 Mac 上提醒你。</p></div>
+    <div className="profile-card model-card notification-card">
+      <label className="notification-toggle"><input aria-label="桌面通知" type="checkbox" checked={desktopNotifications} disabled={notificationBusy} onChange={async event => { const enabled = event.currentTarget.checked; setNotificationBusy(true); setDesktopNotifications(enabled); try { await request('/preferences', 'PATCH', { desktopNotifications: enabled }); } catch (error) { setDesktopNotifications(!enabled); onError(String(error)); } finally { setNotificationBusy(false); } }} /><span><strong>桌面通知</strong><small>{desktopNotifications ? '此工作区已开启任务和网页监控提醒。' : '此工作区的提醒目前关闭。'}</small></span></label>
+      <small className="notification-note">通知只显示 Dot 名称和事项状态，不包含任务结果正文。</small>
+    </div>
+    <div className="section-heading model-heading"><h2>工作区成员</h2><p>所有成员都必须使用对应 Google 账号登录并接受邀请后才能访问。邀请 7 天后过期；Coke Dots 不会代发邮件，请通过其他方式通知对方。当前角色：{auth.tenant.role}。</p></div>
+    <div className="profile-card model-card">
+      <div className="member-list">{members.map(member => <div className="member-row" key={member.id}>
+        <span><strong>{member.name}</strong><small>{member.email}</small></span>
+        <span className="member-role">{member.role === 'owner' ? '所有者' : member.role === 'admin' ? '管理员' : '成员'}</span>
+        {['owner', 'admin'].includes(auth.tenant.role) && member.role !== 'owner' && <button onClick={async () => { try { const response = await fetch(`/api/tenants/${auth.tenant.id}/members/${member.id}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>移除</button>}
+      </div>)}</div>
+      {invitations.length > 0 && <div className="member-invitations" role="region" aria-label="待接受邀请"><strong>待接受邀请</strong>{invitations.map(invitation => <div className="member-row pending-invitation" key={invitation.email}>
+        <span><strong>{invitation.email}</strong><small>有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</small></span>
+        <span className="member-role">{invitation.role === 'admin' ? '管理员' : '成员'}</span>
+        <button aria-label={`撤销 ${invitation.email} 的邀请`} onClick={async () => { try { const response = await fetch(`/api/tenants/${auth.tenant.id}/invitations/${encodeURIComponent(invitation.email)}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>撤销</button>
+      </div>)}</div>}
+      <label>Google 账号邮箱<input type="email" value={memberEmail} onChange={e => { setMemberEmail(e.target.value); setMemberNotice(''); }} placeholder="teammate@example.com" /></label>
+      <button className="primary" disabled={!['owner', 'admin'].includes(auth.tenant.role) || !memberEmail.trim()} onClick={async () => { try { const result = await request(`/tenants/${auth.tenant.id}/members`, 'POST', { email: memberEmail, role: 'member' }) as { invited: boolean }; setMemberEmail(''); setMembersError(''); setMemberNotice(result.invited ? '邀请已创建。对方在 Coke Dots 登录同一 Google 账号后，会看到待接受邀请。' : '成员已加入工作区。'); await refreshMembers(); } catch (e) { onError(String(e)); } }}>添加工作区成员</button>
+      {memberNotice && <small role="status">{memberNotice}</small>}
+      {membersError && <small className="member-error">{membersError}</small>}
+      {!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以添加成员。</small>}
+    </div>
+    <div className="section-heading model-heading"><h2>模型 API</h2><p>此 API 密钥只用于当前工作区，并保存在 macOS 钥匙串。</p></div>
+    <div className="profile-card model-card">
+      <label>API 地址<input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} /></label>
+      <label>模型名称<input value={model} onChange={e => setModel(e.target.value)} /></label>
+      <label>API 密钥<input type="password" autoComplete="off" placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label>
+      <button className="primary" onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存模型设置</button>
+    </div>
+  </section>;
 }
 
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);

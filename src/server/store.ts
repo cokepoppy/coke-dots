@@ -9,6 +9,7 @@ export interface GoogleIdentity { subject: string; email: string; name: string }
 export interface AppUser { id: string; email: string; name: string }
 export interface TenantSummary { id: string; name: string; role: string; kind: string }
 export interface TenantMember { id: string; email: string; name: string; role: string }
+export interface WorkspaceInvitation { tenantId: string; tenantName?: string; email: string; role: string; invitedAt: string; expiresAt: string }
 export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantSummary; expiresAt: string }
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
 
@@ -34,6 +35,12 @@ export class Store {
         role TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(tenant_id, user_id)
       );
       CREATE INDEX IF NOT EXISTS memberships_user ON memberships(user_id, tenant_id);
+      CREATE TABLE IF NOT EXISTS workspace_invitations (
+        tenant_id TEXT NOT NULL REFERENCES tenants(id), email TEXT NOT NULL COLLATE NOCASE,
+        role TEXT NOT NULL CHECK (role IN ('admin','member')), invited_by TEXT NOT NULL REFERENCES users(id),
+        invited_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(tenant_id,email)
+      );
+      CREATE INDEX IF NOT EXISTS workspace_invitations_email ON workspace_invitations(email,expires_at);
       CREATE TABLE IF NOT EXISTS auth_sessions (
         token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
         active_tenant_id TEXT NOT NULL REFERENCES tenants(id), created_at TEXT NOT NULL, expires_at TEXT NOT NULL
@@ -239,9 +246,61 @@ export class Store {
     const admin = this.db.prepare("SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=? AND role IN ('owner','admin')").get(tenantId, actorUserId);
     if (!admin) return { ok: false as const, error: '只有工作区所有者或管理员可以添加成员' };
     const user = this.db.prepare('SELECT id,email,name FROM users WHERE email=? COLLATE NOCASE').get(email) as AppUser | undefined;
-    if (!user) return { ok: false as const, error: '该 Google 账号尚未登录 Coke Dots' };
-    this.db.prepare('INSERT OR IGNORE INTO memberships(tenant_id,user_id,role,created_at) VALUES (?,?,?,?)').run(tenantId, user.id, role, new Date().toISOString());
-    return { ok: true as const, user };
+    if (user && this.db.prepare('SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=?').get(tenantId, user.id)) {
+      return { ok: true as const, kind: 'member' as const, user };
+    }
+    // Never grant a workspace based only on a stored email match. Even accounts
+    // that have signed in before must authenticate and explicitly accept.
+    const invitedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    this.db.prepare(`INSERT INTO workspace_invitations(tenant_id,email,role,invited_by,invited_at,expires_at)
+      VALUES(?,?,?,?,?,?) ON CONFLICT(tenant_id,email) DO UPDATE SET role=excluded.role,invited_by=excluded.invited_by,invited_at=excluded.invited_at,expires_at=excluded.expires_at`)
+      .run(tenantId, email, role, actorUserId, invitedAt, expiresAt);
+    return { ok: true as const, kind: 'invitation' as const, invitation: { tenantId, email, role, invitedAt, expiresAt } };
+  }
+
+  workspaceInvitations(tenantId: string, actorUserId: string, now = new Date().toISOString()): WorkspaceInvitation[] | null {
+    const admin = this.db.prepare("SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=? AND role IN ('owner','admin')").get(tenantId, actorUserId);
+    if (!admin) return null;
+    this.db.prepare('DELETE FROM workspace_invitations WHERE tenant_id=? AND expires_at<=?').run(tenantId, now);
+    return this.db.prepare('SELECT tenant_id AS tenantId,email,role,invited_at AS invitedAt,expires_at AS expiresAt FROM workspace_invitations WHERE tenant_id=? AND expires_at>? ORDER BY invited_at DESC')
+      .all(tenantId, now) as unknown as WorkspaceInvitation[];
+  }
+
+  revokeWorkspaceInvitation(tenantId: string, actorUserId: string, email: string) {
+    const admin = this.db.prepare("SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=? AND role IN ('owner','admin')").get(tenantId, actorUserId);
+    if (!admin) return { ok: false as const, error: '只有工作区所有者或管理员可以撤销邀请' };
+    const result = this.db.prepare('DELETE FROM workspace_invitations WHERE tenant_id=? AND email=? COLLATE NOCASE').run(tenantId, email);
+    return Number(result.changes) ? { ok: true as const } : { ok: false as const, error: '邀请不存在或已过期' };
+  }
+
+  pendingWorkspaceInvitations(email: string, now = new Date().toISOString()): WorkspaceInvitation[] {
+    this.db.prepare('DELETE FROM workspace_invitations WHERE expires_at<=?').run(now);
+    return this.db.prepare(`SELECT i.tenant_id AS tenantId,t.name AS tenantName,i.email,i.role,i.invited_at AS invitedAt,i.expires_at AS expiresAt
+      FROM workspace_invitations i JOIN tenants t ON t.id=i.tenant_id WHERE i.email=? COLLATE NOCASE AND i.expires_at>? ORDER BY i.invited_at DESC`)
+      .all(email, now) as unknown as WorkspaceInvitation[];
+  }
+
+  acceptWorkspaceInvitation(tenantId: string, tokenHash: string, userId: string, email: string, now = new Date().toISOString()): TenantSummary | null {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const invite = this.db.prepare('SELECT role,expires_at FROM workspace_invitations WHERE tenant_id=? AND email=? COLLATE NOCASE')
+        .get(tenantId, email) as { role: string; expires_at: string } | undefined;
+      if (!invite || invite.expires_at <= now) {
+        if (invite) this.db.prepare('DELETE FROM workspace_invitations WHERE tenant_id=? AND email=? COLLATE NOCASE').run(tenantId, email);
+        this.db.exec('COMMIT');
+        return null;
+      }
+      this.db.prepare('INSERT OR IGNORE INTO memberships(tenant_id,user_id,role,created_at) VALUES (?,?,?,?)')
+        .run(tenantId, userId, invite.role, now);
+      this.db.prepare('DELETE FROM workspace_invitations WHERE tenant_id=? AND email=? COLLATE NOCASE').run(tenantId, email);
+      this.db.prepare('UPDATE auth_sessions SET active_tenant_id=? WHERE token_hash=? AND user_id=?').run(tenantId, tokenHash, userId);
+      const tenant = this.db.prepare(`SELECT t.id,t.name,t.kind,m.role FROM memberships m JOIN tenants t ON t.id=m.tenant_id
+        WHERE m.tenant_id=? AND m.user_id=?`).get(tenantId, userId) as TenantSummary | undefined;
+      if (!tenant) throw new Error('Accepted workspace membership was not created');
+      this.db.exec('COMMIT');
+      return tenant;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   workspaceMembers(tenantId: string): TenantMember[] {

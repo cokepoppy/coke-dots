@@ -25,6 +25,7 @@ The video chapter leads are from https://www.postcutoff.com/v/futurepedia-i-test
 - Google accounts are keyed by the verified immutable `sub` claim; profile email remains mutable display/contact information (G1).
 - Login uses an authorization-code exchange, one-time state bound to a browser cookie, PKCE, nonce validation, and verified ID-token claims (G1–G3).
 - Each account gets a personal tenant. Workspace membership controls which tenant a session can select. Application data, Keychain model keys, task working directories, and computer browser profiles are tenant-scoped.
+- Workspace email invitations expire after seven days. A matching signed-in Google account must explicitly accept before membership is created; administrators can revoke pending invites. The local app does not send invitation email, so recipients must be notified separately.
 - This app remains loopback-only. The initial local deployment supports multiple Google accounts and workspaces on the same Mac; remote access needs its own HTTPS and network access review before enabling it.
 
 ## Interaction and state matrix
