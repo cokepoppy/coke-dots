@@ -341,6 +341,24 @@ try {
     await alphaPage!.getByText('No scheduled tasks yet').first().waitFor({ state: 'visible' });
     await alphaPage!.getByTestId('scheduled-new-task').click();
     assert.equal(await alphaPage!.getByLabel('定期检查').isChecked(), true, 'New task from Scheduled did not enable the recurring-work option');
+    await alphaPage!.getByLabel('重复频率').selectOption('weekly');
+    await alphaPage!.getByLabel('星期一').check();
+    await alphaPage!.getByLabel('定时时间').fill('23:59');
+    await alphaPage!.getByLabel('时区').selectOption('Asia/Shanghai');
+    const scheduleEndDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    await alphaPage!.getByLabel('结束日期').fill(scheduleEndDate);
+    await screenshot(alphaPage!, '07b-weekly-schedule-editor');
+    const weeklyTask = 'E2E weekly schedule — summarize the Monday planning changes';
+    await alphaPage!.getByPlaceholder('告诉 dot 接下来要负责什么…').fill(weeklyTask);
+    await alphaPage!.locator('button.send').click();
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: weeklyTask }).waitFor({ state: 'visible' });
+    await clickNav(alphaPage!, 'Scheduled');
+    await alphaPage!.locator('.scheduled-item').filter({ hasText: weeklyTask }).waitFor({ state: 'visible' });
+    const weeklyDetail = alphaPage!.getByTestId('scheduled-detail');
+    await weeklyDetail.getByText('Weekly on Mon at 23:59 (Asia/Shanghai)', { exact: false }).waitFor({ state: 'visible' });
+    assert.match(await weeklyDetail.innerText(), new RegExp(`until ${scheduleEndDate}`));
+    await screenshot(alphaPage!, '07c-weekly-scheduled');
+    await weeklyDetail.getByRole('button', { name: 'Cancel schedule' }).click();
   });
 
   await recordStep('Dot appearance changes persist within Alpha personal workspace', async () => {

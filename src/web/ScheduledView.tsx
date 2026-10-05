@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Task, Watch } from '../shared/types.ts';
+import { describeSchedule, scheduleForTask } from '../shared/scheduling.ts';
 
 type ScheduledItem =
   | { key: string; kind: 'task'; title: string; searchable: string; updatedAt: string; task: Task }
@@ -27,9 +28,9 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
   const [watchError, setWatchError] = useState('');
 
   const items = useMemo<ScheduledItem[]>(() => [
-    ...tasks.filter(task => task.scheduleMinutes !== null).map(task => ({
+    ...tasks.filter(task => scheduleForTask(task.scheduleSpec, task.scheduleMinutes) !== null).map(task => ({
       key: `task:${task.id}`, kind: 'task' as const, title: task.title,
-      searchable: `${task.title} ${task.instruction} ${statusText[task.status]}`,
+      searchable: `${task.title} ${task.instruction} ${statusText[task.status]} ${describeSchedule(scheduleForTask(task.scheduleSpec, task.scheduleMinutes)!)}`,
       updatedAt: task.updatedAt, task,
     })),
     ...watches.map(watch => ({
@@ -96,7 +97,7 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
         <div className="scheduled-detail-top"><span className="scheduled-detail-label">Your dot</span><span className={`scheduled-status ${selected.task.status}`}>{statusText[selected.task.status]}</span></div>
         <h2>{selected.task.title}</h2>
         <p className="scheduled-instruction">{selected.task.instruction}</p>
-        <div className="scheduled-detail-meta"><span>Every {selected.task.scheduleMinutes} minutes</span><span>Next run: {['failed', 'paused', 'waiting'].includes(selected.task.status) ? 'Not scheduled' : selected.task.nextRunAt ? new Date(selected.task.nextRunAt).toLocaleString() : 'Not scheduled'}</span></div>
+        <div className="scheduled-detail-meta"><span>{describeSchedule(scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes)!)}</span><span>Next run: {['failed', 'paused', 'waiting'].includes(selected.task.status) ? 'Not scheduled' : selected.task.nextRunAt ? new Date(selected.task.nextRunAt).toLocaleString() : 'Not scheduled'}</span></div>
         {selected.task.error && <p className="scheduled-detail-error" role="alert">{selected.task.error}</p>}
         {selected.task.result && <div className="scheduled-result"><span>Latest result</span><p>{selected.task.result}</p></div>}
         <div className="scheduled-detail-actions">

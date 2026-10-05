@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Engine, Entry, Snapshot, Task, TaskStatus, Watch } from '../shared/types.ts';
+import type { Engine, Entry, ScheduleSpec, Snapshot, Task, TaskStatus, Watch } from '../shared/types.ts';
+import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
 export interface AppUser { id: string; email: string; name: string }
@@ -78,6 +79,7 @@ export class Store {
     this.addColumnIfMissing('oauth_flows', 'return_to', 'TEXT');
     this.addColumnIfMissing('tasks', 'engine', "TEXT NOT NULL DEFAULT 'model'");
     this.addColumnIfMissing('tasks', 'agent_session_id', 'TEXT');
+    this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
     const oldProfile = this.tableExists('profile');
     if (oldProfile) this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color) SELECT 'legacy',name,shape,color FROM profile WHERE id=1");
     this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color) VALUES ('legacy','Dot','circle','#ba9af7')");
@@ -273,14 +275,16 @@ export class Store {
     };
   }
 
-  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy'): Task {
+  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null): Task {
     const now = new Date().toISOString();
     const id = randomUUID();
     const title = instruction.trim().split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
-    this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, tenantId, title, instruction.trim(), 'queued', 0, now, scheduleMinutes, null, null, now, now, engine, null);
+    const taskSchedule = scheduleForTask(scheduleSpec, scheduleMinutes);
+    const scheduleMinutesValue = taskSchedule?.frequency === 'interval' ? taskSchedule.intervalMinutes : null;
+    this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null);
     this.addEntry('user', instruction.trim(), id, tenantId);
-    this.addEntry('system', scheduleMinutes ? `已安排每 ${scheduleMinutes} 分钟检查一次。` : '已加入工作队列。', id, tenantId);
+    this.addEntry('system', taskSchedule ? `已安排：${describeSchedule(taskSchedule)}。` : '已加入工作队列。', id, tenantId);
     return this.getTask(id, tenantId)!;
   }
 
@@ -296,12 +300,12 @@ export class Store {
     ) SELECT * FROM ranked WHERE tenant_rank<=2 ORDER BY priority DESC,next_run_at ASC LIMIT 100`).all(now) as Record<string, unknown>[]).map(toTask);
   }
 
-  updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes' | 'agentSessionId'>>, tenantId = 'legacy'): Task | null {
+  updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes' | 'scheduleSpec' | 'agentSessionId'>>, tenantId = 'legacy'): Task | null {
     const old = this.getTask(id, tenantId);
     if (!old) return null;
     const next = { ...old, ...change, updatedAt: new Date().toISOString() };
-    this.db.prepare('UPDATE tasks SET instruction=?,status=?,priority=?,next_run_at=?,schedule_minutes=?,result=?,error=?,updated_at=?,agent_session_id=? WHERE tenant_id=? AND id=?')
-      .run(next.instruction, next.status, next.priority, next.nextRunAt, next.scheduleMinutes, next.result, next.error, next.updatedAt, next.agentSessionId, tenantId, id);
+    this.db.prepare('UPDATE tasks SET instruction=?,status=?,priority=?,next_run_at=?,schedule_minutes=?,schedule_json=?,result=?,error=?,updated_at=?,agent_session_id=? WHERE tenant_id=? AND id=?')
+      .run(next.instruction, next.status, next.priority, next.nextRunAt, next.scheduleMinutes, next.scheduleSpec ? JSON.stringify(next.scheduleSpec) : null, next.result, next.error, next.updatedAt, next.agentSessionId, tenantId, id);
     return this.getTask(id, tenantId);
   }
 
@@ -386,12 +390,19 @@ export class Store {
 }
 
 function toTask(r: Record<string, unknown>): Task {
+  const scheduleMinutes = r.schedule_minutes == null ? null : Number(r.schedule_minutes);
+  let scheduleSpec: ScheduleSpec | null = null;
+  if (typeof r.schedule_json === 'string') {
+    try { scheduleSpec = validateScheduleSpec(JSON.parse(r.schedule_json)); } catch { scheduleSpec = null; }
+  }
+  scheduleSpec = scheduleForTask(scheduleSpec, scheduleMinutes);
   return {
     id: String(r.id), tenantId: String(r.tenant_id), title: String(r.title), instruction: String(r.instruction),
     engine: r.engine as Engine, agentSessionId: r.agent_session_id == null ? null : String(r.agent_session_id),
     status: r.status as TaskStatus, priority: Number(r.priority),
     nextRunAt: r.next_run_at == null ? null : String(r.next_run_at),
-    scheduleMinutes: r.schedule_minutes == null ? null : Number(r.schedule_minutes),
+    scheduleMinutes: scheduleMinutes !== null ? scheduleMinutes : scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null,
+    scheduleSpec,
     result: r.result == null ? null : String(r.result), error: r.error == null ? null : String(r.error),
     createdAt: String(r.created_at), updatedAt: String(r.updated_at),
   };

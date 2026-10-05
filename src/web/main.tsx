@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Engine, Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import type { Engine, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import './style.css';
 import './watch.css';
 import './dark-theme.css';
 import './onboarding.css';
 import './notification.css';
 import './scheduled.css';
+import './recurrence.css';
 import { ComputerView } from './ComputerView.tsx';
 import { DotContextPanel } from './DotContextPanel.tsx';
 import { ScheduledView } from './ScheduledView.tsx';
@@ -42,6 +43,11 @@ function App() {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const [schedule, setSchedule] = useState(false);
   const [minutes, setMinutes] = useState(60);
+  const [frequency, setFrequency] = useState<'interval' | 'daily' | 'weekly'>('interval');
+  const [scheduleTime, setScheduleTime] = useState('09:00');
+  const [scheduleTimeZone, setScheduleTimeZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  const [scheduleWeekdays, setScheduleWeekdays] = useState<number[]>([]);
+  const [scheduleEndDate, setScheduleEndDate] = useState('');
   const [engine, setEngine] = useState<Engine>('model');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -72,7 +78,12 @@ function App() {
     if (!draft.trim() || busy) return;
     setBusy(true); setError('');
     try {
-      const task = await request('/tasks', 'POST', { instruction: draft, scheduleMinutes: schedule ? minutes : null, engine }) as Task;
+      const scheduleSpec: ScheduleSpec | null = !schedule ? null : frequency === 'interval'
+        ? { frequency, intervalMinutes: minutes }
+        : frequency === 'daily'
+          ? { frequency, time: scheduleTime, timeZone: scheduleTimeZone, endDate: scheduleEndDate || null }
+          : { frequency, weekdays: scheduleWeekdays, time: scheduleTime, timeZone: scheduleTimeZone, endDate: scheduleEndDate || null };
+      const task = await request('/tasks', 'POST', { instruction: draft, scheduleSpec, scheduleMinutes: schedule && frequency === 'interval' ? minutes : null, engine }) as Task;
       setDraft(''); setSelected(task.id); setView('chat');
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
@@ -139,7 +150,7 @@ function App() {
           {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <Avatar {...state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><p>{entry.body}</p></div></article>)}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
         </div>}
-        <div className="composer-wrap"><div className="composer"><textarea ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label>{schedule && <label>每 <input className="minutes" type="number" min="1" max="10080" value={minutes} onChange={e => setMinutes(Number(e.target.value))} /> 分钟</label>}<button className="send" disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div></div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
+        <div className="composer-wrap"><div className="composer"><textarea ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="send" disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
       </section>{(selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
       {view === 'activity' && <section className="content"><div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div><div className="cards">{!stateLoaded ? <div className="empty workspace-loading" role="status">正在加载工作区…</div> : state.tasks.length ? state.tasks.map(task => <div className="task-card" key={task.id}><div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div><h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><TaskControls task={task} act={act} compact /></div></div>) : <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div>}</div></section>}
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
@@ -200,6 +211,31 @@ function WorkspaceSwitcher({ auth, onSwitch, onCreate, onError }: { auth: AuthCo
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
   return <div className="workspace-switcher"><label><span>工作区</span><select value={auth.tenant.id} onChange={event => void onSwitch(event.target.value)}>{auth.tenants.map(tenant => <option key={tenant.id} value={tenant.id}>{tenant.name} · {tenant.role}</option>)}</select></label>{creating ? <form onSubmit={event => { event.preventDefault(); void onCreate(name.trim()).then(() => { setName(''); setCreating(false); }).catch(error => onError(String(error))); }}><input aria-label="新工作区名称" autoFocus maxLength={60} value={name} onChange={event => setName(event.target.value)} placeholder="工作区名称" /><button disabled={!name.trim()}>创建</button><button type="button" onClick={() => setCreating(false)}>取消</button></form> : <button className="new-workspace" onClick={() => setCreating(true)}>＋ 新建工作区</button>}</div>;
+}
+
+function RecurrenceEditor({ frequency, setFrequency, minutes, setMinutes, time, setTime, timeZone, setTimeZone, weekdays, setWeekdays, endDate, setEndDate }: {
+  frequency: 'interval' | 'daily' | 'weekly';
+  setFrequency: React.Dispatch<React.SetStateAction<'interval' | 'daily' | 'weekly'>>;
+  minutes: number; setMinutes: React.Dispatch<React.SetStateAction<number>>;
+  time: string; setTime: React.Dispatch<React.SetStateAction<string>>;
+  timeZone: string; setTimeZone: React.Dispatch<React.SetStateAction<string>>;
+  weekdays: number[]; setWeekdays: React.Dispatch<React.SetStateAction<number[]>>;
+  endDate: string; setEndDate: React.Dispatch<React.SetStateAction<string>>;
+}) {
+  const zones = useMemo(() => {
+    const supported = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
+    return [...new Set(['UTC', timeZone, ...supported])].sort();
+  }, [timeZone]);
+  const dayLabels = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+  return <div className="schedule-details" data-testid="schedule-details">
+    <label>频率<select aria-label="重复频率" value={frequency} onChange={event => setFrequency(event.target.value as 'interval' | 'daily' | 'weekly')}><option value="interval">按间隔</option><option value="daily">每天</option><option value="weekly">每周</option></select></label>
+    {frequency === 'interval' ? <label>每 <input aria-label="间隔分钟数" className="minutes" type="number" min="1" max="10080" value={minutes} onChange={event => setMinutes(Number(event.target.value))} /> 分钟</label> : <>
+      <label>时间<input aria-label="定时时间" type="time" value={time} onChange={event => setTime(event.target.value)} /></label>
+      <label>时区<select aria-label="时区" value={timeZone} onChange={event => setTimeZone(event.target.value)}>{zones.map(zone => <option key={zone} value={zone}>{zone}</option>)}</select></label>
+      {frequency === 'weekly' && <fieldset className="schedule-weekdays"><legend>重复日</legend>{dayLabels.map((label, day) => <label key={day}><input aria-label={label} type="checkbox" checked={weekdays.includes(day)} onChange={event => setWeekdays(current => event.target.checked ? [...current, day] : current.filter(value => value !== day))} />{label.slice(2)}</label>)}</fieldset>}
+      <label>结束日期（可选）<input aria-label="结束日期" type="date" value={endDate} onChange={event => setEndDate(event.target.value)} /></label>
+    </>}
+  </div>;
 }
 
 function TaskControls({ task, act, compact = false }: { task: Task; act: (task: Task, action: string, extra?: object) => Promise<void>; compact?: boolean }) {

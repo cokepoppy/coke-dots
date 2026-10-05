@@ -1,5 +1,8 @@
+import type { ScheduleSpec } from './scheduling.ts';
+
 export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
 export type TaskStatus = 'queued' | 'working' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused';
+export type { ScheduleSpec } from './scheduling.ts';
 
 export interface Task {
   id: string;
@@ -12,6 +15,7 @@ export interface Task {
   priority: number;
   nextRunAt: string | null;
   scheduleMinutes: number | null;
+  scheduleSpec: ScheduleSpec | null;
   result: string | null;
   error: string | null;
   createdAt: string;

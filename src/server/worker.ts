@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Task } from '../shared/types.ts';
+import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts';
 import { Store } from './store.ts';
 import { adapters } from './adapters.ts';
 import { loadModelSettings } from './model-settings.ts';
@@ -59,9 +60,12 @@ export class Worker {
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
       const nextMinutes = Math.max(1, Math.min(1440, Math.floor(decision.nextMinutes || current.scheduleMinutes || 15)));
-      const nextRunAt = decision.status === 'scheduled' || (current.scheduleMinutes && decision.status === 'done')
-        ? new Date(Date.now() + nextMinutes * 60_000).toISOString() : null;
-      const status = current.scheduleMinutes && decision.status === 'done' ? 'scheduled' : decision.status;
+      const recurrence = scheduleForTask(current.scheduleSpec, current.scheduleMinutes);
+      const shouldContinueSchedule = recurrence && ['done', 'scheduled'].includes(decision.status);
+      const nextRunAt = shouldContinueSchedule
+        ? nextScheduleOccurrence(recurrence, new Date())
+        : decision.status === 'scheduled' ? new Date(Date.now() + nextMinutes * 60_000).toISOString() : null;
+      const status = shouldContinueSchedule ? nextRunAt ? 'scheduled' : 'done' : decision.status;
       this.store.updateTask(task.id, {
         status, result: decision.status === 'done' ? decision.message : current.result,
         nextRunAt, error: null, agentSessionId: decision.sessionId || current.agentSessionId,

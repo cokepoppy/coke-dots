@@ -5,7 +5,8 @@ import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
-import type { Engine } from '../shared/types.ts';
+import type { Engine, ScheduleSpec } from '../shared/types.ts';
+import { nextScheduleOccurrence, validateScheduleSpec } from '../shared/scheduling.ts';
 import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 import { ComputerManager } from './computer.ts';
 import { AuthService } from './auth.ts';
@@ -165,11 +166,23 @@ const server = createServer(async (req, res) => {
     if (path === '/api/tasks' && req.method === 'POST') {
       const instruction = String(body.instruction || '').trim();
       if (!instruction || instruction.length > 10000) return reply(res, 400, { error: 'Instruction must contain 1–10000 characters' });
-      const minutes = body.scheduleMinutes == null ? null : Number(body.scheduleMinutes);
-      if (minutes !== null && (!Number.isInteger(minutes) || minutes < 1 || minutes > 10080)) return reply(res, 400, { error: 'Invalid schedule' });
+      const requestedMinutes = body.scheduleMinutes == null ? null : Number(body.scheduleMinutes);
+      if (requestedMinutes !== null && (!Number.isInteger(requestedMinutes) || requestedMinutes < 1 || requestedMinutes > 10080)) return reply(res, 400, { error: 'Invalid schedule' });
+      let scheduleSpec: ScheduleSpec | null;
+      try {
+        scheduleSpec = body.scheduleSpec === undefined
+          ? requestedMinutes === null ? null : validateScheduleSpec({ frequency: 'interval', intervalMinutes: requestedMinutes })
+          : body.scheduleSpec === null ? null : validateScheduleSpec(body.scheduleSpec);
+      } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : 'Invalid schedule' }); }
+      if (scheduleSpec?.frequency === 'interval' && requestedMinutes !== null && requestedMinutes !== scheduleSpec.intervalMinutes) return reply(res, 400, { error: 'Schedule interval does not match' });
+      if (scheduleSpec && scheduleSpec.frequency !== 'interval' && requestedMinutes !== null) return reply(res, 400, { error: 'Use scheduleSpec for calendar schedules' });
+      const minutes = scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null;
       const engine = String(body.engine || 'model') as Engine;
       if (!(engine in adapters)) return reply(res, 400, { error: 'Invalid engine' });
-      const task = store.createTask(instruction, minutes, engine, session.tenant.id);
+      const now = new Date();
+      const firstRunAt = scheduleSpec && scheduleSpec.frequency !== 'interval' ? nextScheduleOccurrence(scheduleSpec, now) : now.toISOString();
+      if (scheduleSpec && !firstRunAt) return reply(res, 400, { error: 'No future run falls on or before the schedule end date' });
+      const task = store.createTask(instruction, minutes, engine, session.tenant.id, scheduleSpec, firstRunAt);
       publish(); void worker.tick();
       return reply(res, 201, task);
     }
@@ -228,7 +241,7 @@ const server = createServer(async (req, res) => {
       const action = String(body.action || '');
       if (action === 'pause') store.updateTask(old.id, { status: 'paused', nextRunAt: null }, session.tenant.id);
       else if (action === 'resume' || action === 'retry') store.updateTask(old.id, { status: 'queued', nextRunAt: new Date().toISOString(), error: null }, session.tenant.id);
-      else if (action === 'cancelSchedule') store.updateTask(old.id, { scheduleMinutes: null, status: 'paused', nextRunAt: null }, session.tenant.id);
+      else if (action === 'cancelSchedule') store.updateTask(old.id, { scheduleMinutes: null, scheduleSpec: null, status: 'paused', nextRunAt: null }, session.tenant.id);
       else if (action === 'reply') {
         const message = String(body.message || '').trim();
         if (!message || message.length > 5000) return reply(res, 400, { error: 'Invalid task reply' });
