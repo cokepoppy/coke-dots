@@ -14,6 +14,22 @@ export class AuthService {
   constructor(private store: Store, private port: number) {}
 
   configured() { return Boolean(this.clientId && this.clientSecret); }
+  e2eAuthAvailable() { return process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1'; }
+
+  e2eLogin(email: string, res: ServerResponse) {
+    if (!this.e2eAuthAvailable()) return json(res, 404, { error: 'Not found' });
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[a-z0-9._+-]+@example\.test$/.test(normalizedEmail)) return json(res, 400, { error: 'E2E sign-in only accepts @example.test accounts' });
+    const name = normalizedEmail.split('@')[0].replace(/[._+-]+/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
+    const account = this.store.signInGoogle({ subject: `coke-dots-e2e:${normalizedEmail}`, email: normalizedEmail, name: name || normalizedEmail });
+    const token = randomToken();
+    const expiresAt = new Date(Date.now() + sessionLifetimeMs).toISOString();
+    const tokenHash = hash(token);
+    this.store.createSession(tokenHash, account.user.id, account.tenant.id, expiresAt);
+    setSessionCookie(res, token, sessionLifetimeMs, false);
+    const session = this.store.getSession(tokenHash)!;
+    return json(res, 200, { user: session.user, tenant: session.tenant, tenants: this.store.tenantsForUser(session.user.id) });
+  }
 
   async begin(req: IncomingMessage, res: ServerResponse) {
     if (!this.configured()) return json(res, 503, { error: '请先配置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET。' });

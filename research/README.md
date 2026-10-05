@@ -64,3 +64,7 @@ The video chapter leads are from https://www.postcutoff.com/v/futurepedia-i-test
 - **Scheduled work:** request recurrence → inspect Scheduled details → run at the requested trigger → inspect notification → cancel future run.
 - **Computer:** open work computer → inspect without control → Take over → perform a browser action → Return control → verify agent resumes.
 - **Approval:** request a draft that would send or write externally → inspect pending decision → reject → confirm no external mutation → approve a separate action → inspect audit trail.
+
+## Local browser verification
+
+`npm run test:e2e` exercises the Coke Dots interface with real Chrome clicks at a fixed 1440 × 1000 viewport. It saves app screenshots, per-account recordings, Playwright traces, and a run manifest under the ignored `artifacts/e2e/` directory. These artifacts verify our own page state and control flow; they do not establish visual parity with Dots. Original reference frames, measurements, and image-difference results are still pending. The test sign-in fixture also does not validate Google's live OAuth screens or callback.

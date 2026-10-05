@@ -67,8 +67,13 @@ const server = createServer(async (req, res) => {
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
   if (!path.startsWith('/api/')) return serveStatic(req, res);
   if (path === '/api/health' && req.method === 'GET') return reply(res, 200, { ok: true });
-  if (path === '/api/auth/config' && req.method === 'GET') return reply(res, 200, { googleConfigured: auth.configured() });
+  if (path === '/api/auth/config' && req.method === 'GET') return reply(res, 200, { googleConfigured: auth.configured(), e2eAuthAvailable: auth.e2eAuthAvailable() });
   if (path === '/api/auth/google/start' && req.method === 'GET') return auth.begin(req, res);
+  if (path === '/api/auth/e2e/login' && req.method === 'POST' && auth.e2eAuthAvailable()) {
+    if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+    const body = await readJson(req);
+    return auth.e2eLogin(String(body.email || ''), res);
+  }
   if (path === '/api/auth/desktop/poll' && req.method === 'POST') {
     if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
     const body = await readJson(req);
@@ -243,7 +248,7 @@ function isLocalRequest(req: IncomingMessage) {
   const hostname = req.headers.host?.split(':')[0];
   const origin = req.headers.origin;
   const oauthCallback = req.method === 'GET' && req.url?.split('?')[0] === '/auth/google/callback' && origin === 'https://accounts.google.com';
-  const allowedOrigin = !origin || /^http:\/\/(127\.0\.0\.1|localhost):(5173|4317)$/.test(origin) || oauthCallback;
+  const allowedOrigin = !origin || isAllowedLocalOrigin(origin) || oauthCallback;
   return (remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1') &&
     (hostname === '127.0.0.1' || hostname === 'localhost') &&
     allowedOrigin;
@@ -252,7 +257,15 @@ function isLocalRequest(req: IncomingMessage) {
 function validMutationOrigin(req: IncomingMessage) {
   if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method || '')) return true;
   if (!req.headers.origin) return false;
-  return /^http:\/\/(127\.0\.0\.1|localhost):(5173|4317)$/.test(req.headers.origin);
+  return isAllowedLocalOrigin(req.headers.origin);
+}
+
+function isAllowedLocalOrigin(value: string) {
+  try {
+    const origin = new URL(value);
+    const allowedPorts = new Set(['5173', String(port)]);
+    return origin.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(origin.hostname) && allowedPorts.has(origin.port) && origin.origin === value;
+  } catch { return false; }
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -293,9 +306,10 @@ const shutdown = () => {
   clearInterval(sessionHeartbeat);
   worker.stop();
   watchRunner.stop();
-  server.close();
+  for (const client of clients.keys()) client.end();
+  clients.clear();
+  server.close(() => store.close());
   for (const computer of computers.values()) void computer.close();
-  store.close();
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

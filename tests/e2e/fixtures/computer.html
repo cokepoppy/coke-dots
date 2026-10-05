@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dot E2E Computer Fixture</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; width: 1280px; height: 720px; background: #f7f5fa; color: #292431; font: 18px -apple-system, BlinkMacSystemFont, sans-serif; }
+    button, input { position: absolute; left: 112px; width: 330px; height: 64px; border: 1px solid #9d8ab6; border-radius: 12px; background: white; padding: 0 18px; font: inherit; }
+    button { top: 82px; cursor: pointer; background: #57456e; color: white; }
+    input { top: 180px; }
+    #status { position: absolute; left: 112px; top: 280px; }
+  </style>
+</head>
+<body>
+  <button id="click-target" onclick="document.title = 'Dot E2E Clicked'; document.querySelector('#status').textContent = 'Click registered';">Click this computer</button>
+  <input aria-label="Computer fixture input" oninput="document.title = 'Dot E2E Typed: ' + this.value">
+  <div id="status">Waiting for interaction</div>
+</body>
+</html>

@@ -12,6 +12,12 @@ The background worker and web UI are separate processes. Closing the browser win
 
 For the Mac shell, run `npm run desktop`. It builds the web UI, server and Electron wrapper, starts a detached local server if needed, and opens the app. Closing the window leaves that server running. `npm run dev:desktop` runs the UI with Vite. The current shell requires Node.js 24 on the Mac and is a local development build, not a signed installer.
 
+## Automated browser tests
+
+Run `npm test` for the unit suite and `npm run test:e2e` for the Chrome click-through. The browser suite builds the web client, launches a loopback-only service against a fresh temporary SQLite directory, and records viewport screenshots, browser video, Playwright traces, server logs and a JSON manifest under `artifacts/e2e/<run>/`. It needs local Google Chrome; set `DOTS_CHROME_BIN` if Chrome is installed elsewhere.
+
+The suite covers login-screen rendering, two-account isolation, shared-workspace membership and role controls, persistent tasks and task redirection, schedule cancellation, service-restart recovery, and the separate computer browser's open/take-over/navigate/click/type/return path. Its sign-in button is a test-only fixture, enabled only when both `NODE_ENV=test` and `DOTS_E2E_AUTH=1`; it accepts only `@example.test` identities and uses the disposable test database. This exercises authenticated product flows without Google secrets, but does not replace a real Google OAuth acceptance test. Local screenshots and recordings document Coke Dots behavior; they are not a pixel comparison against OpenAI Dots. Reference-frame extraction and comparison remain pending in the [evidence ledger](research/README.md).
+
 Current agent execution is limited to reasoning over the user's supplied text. Browser, file and account tools are separate feature work. The agent must not claim it performed external actions when no tool was used. See [the evidence ledger](research/README.md) for confirmed behavior and visual gaps.
 
 ## Agent engines

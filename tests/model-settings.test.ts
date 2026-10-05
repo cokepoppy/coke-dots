@@ -16,7 +16,7 @@ test('model endpoint and name persist without a secret in SQLite', () => {
     store = new Store(directory);
     assert.equal(store.getSetting('modelBaseUrl'), 'https://example.com/v1');
     assert.equal(store.getSetting('modelName'), 'test-model');
-    assert.equal(store.db.prepare("SELECT value FROM settings WHERE key='modelApiKey'").get(), undefined);
+    assert.equal(store.db.prepare("SELECT value FROM tenant_settings WHERE tenant_id='legacy' AND key='modelApiKey'").get(), undefined);
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
@@ -25,7 +25,7 @@ test('environment model credential is used without appearing in public settings'
   process.env.DOTS_MODEL_API_KEY = 'test-secret';
   process.env.DOTS_MODEL = 'env-model';
   try {
-    setModelMetadata('https://example.com/v1', 'stored-model');
+    setModelMetadata('https://example.com/v1', '', 'legacy');
     assert.equal(effectiveModelConfig()?.model, 'env-model');
     assert.equal(effectiveModelConfig()?.apiKey, 'test-secret');
     assert.equal(JSON.stringify(publicModelSettings()).includes('test-secret'), false);

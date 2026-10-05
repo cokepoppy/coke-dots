@@ -26,7 +26,9 @@ function Avatar({ shape, color, small = false }: { shape: string; color: string;
 function App() {
   const [authContext, setAuthContext] = useState<AuthContext | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [stateLoaded, setStateLoaded] = useState(false);
   const [googleConfigured, setGoogleConfigured] = useState(false);
+  const [e2eAuthAvailable, setE2eAuthAvailable] = useState(false);
   const [state, setState] = useState<Snapshot>(initial);
   const [view, setView] = useState<'chat' | 'activity' | 'scheduled' | 'computer' | 'profile'>('chat');
   const [selected, setSelected] = useState<string | null>(null);
@@ -42,13 +44,14 @@ function App() {
   useEffect(() => {
     void fetch('/api/auth/me').then(async response => response.ok ? await response.json() as AuthContext : null)
       .then(setAuthContext).catch(() => setAuthContext(null)).finally(() => setAuthChecked(true));
-    void fetch('/api/auth/config').then(response => response.json()).then(data => setGoogleConfigured(Boolean(data.googleConfigured))).catch(() => setGoogleConfigured(false));
+    void fetch('/api/auth/config').then(response => response.json()).then(data => { setGoogleConfigured(Boolean(data.googleConfigured)); setE2eAuthAvailable(Boolean(data.e2eAuthAvailable)); }).catch(() => { setGoogleConfigured(false); setE2eAuthAvailable(false); });
   }, []);
 
   useEffect(() => {
     if (!authContext) return;
+    setStateLoaded(false);
     const stream = new EventSource('/api/events');
-    stream.onmessage = event => setState(JSON.parse(event.data));
+    stream.onmessage = event => { setState(JSON.parse(event.data)); setStateLoaded(true); };
     stream.onerror = () => {
       setError('与本机服务的连接已断开，正在重连。');
       void fetch('/api/auth/me').then(response => response.ok ? response.json() as Promise<AuthContext> : null).then(next => { if (!next) setAuthContext(null); }).catch(() => setAuthContext(null));
@@ -85,11 +88,12 @@ function App() {
   }
 
   async function switchTenant(tenantId: string) {
+    if (authContext?.tenant.id === tenantId) return;
     try {
       const response = await fetch('/api/auth/tenant', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setAuthContext(data as AuthContext); setState(initial); setSelected(null); setError('');
+      setAuthContext(data as AuthContext); setState(initial); setStateLoaded(false); setSelected(null); setError('');
     } catch (e) { setError(String(e)); }
   }
 
@@ -99,7 +103,7 @@ function App() {
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     const refreshed = await fetch('/api/auth/me');
     if (refreshed.ok) setAuthContext(await refreshed.json() as AuthContext);
-    setState(initial); setSelected(null);
+    setState(initial); setStateLoaded(false); setSelected(null);
   }
 
   async function logout() {
@@ -108,9 +112,9 @@ function App() {
   }
 
   if (!authChecked) return <div className="auth-loading">Coke Dots</div>;
-  if (!authContext) return <LoginScreen googleConfigured={googleConfigured} />;
+  if (!authContext) return <LoginScreen googleConfigured={googleConfigured} e2eAuthAvailable={e2eAuthAvailable} />;
 
-  return <div className="shell">
+  return <div className="shell" data-testid="app-shell" data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">●</span> Coke Dots</div>
       <button className={`nav ${view === 'chat' ? 'selected' : ''}`} onClick={() => { setView('chat'); setSelected(null); }}>✦ <span>你的 dot</span></button>
@@ -118,31 +122,32 @@ function App() {
       <button className={`nav ${view === 'scheduled' ? 'selected' : ''}`} onClick={() => setView('scheduled')}>◷ <span>Scheduled</span></button>
       <button className={`nav ${view === 'computer' ? 'selected' : ''}`} onClick={() => setView('computer')}>▣ <span>电脑</span></button>
       <div className="side-caption">正在负责</div>
-      <div className="task-links">{state.tasks.slice(0, 12).map(task => <button key={task.id} className={selected === task.id ? 'on' : ''} onClick={() => { setView('chat'); setSelected(task.id); }}><span className={`status-dot ${task.status}`} />{task.title}</button>)}</div>
+      <div className="task-links">{stateLoaded ? state.tasks.slice(0, 12).map(task => <button key={task.id} className={selected === task.id ? 'on' : ''} onClick={() => { setView('chat'); setSelected(task.id); }}><span className={`status-dot ${task.status}`} />{task.title}</button>) : <span className="side-loading">恢复中…</span>}</div>
       <button className="profile-link" onClick={() => setView('profile')}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
       <header className="topbar"><span>{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'scheduled' ? 'Scheduled' : view === 'computer' ? '电脑' : '你的 dot'}</span><div className="top-actions"><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {view === 'chat' && <section className="chat-panel">
-        {!selectedTask && entries.length === 0 ? <div className="welcome"><Avatar {...state.profile} /><h1>认识你的 {state.profile.name}</h1><p>交给它一项持续的责任。工作和进度会保存在本机，离开这个窗口后仍可继续。</p><div className="suggestions"><button onClick={() => setDraft('帮我整理这个项目的待办，并告诉我下一步需要什么信息。')}>整理一个项目 →</button><button onClick={() => { setSchedule(true); setDraft('每小时检查这项工作的进度，有变化时提醒我。'); }}>安排定期检查 →</button></div></div> : <div className="timeline">
+        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : !selectedTask && entries.length === 0 ? <div className="welcome"><Avatar {...state.profile} /><h1>认识你的 {state.profile.name}</h1><p>交给它一项持续的责任。工作和进度会保存在本机，离开这个窗口后仍可继续。</p><div className="suggestions"><button onClick={() => setDraft('帮我整理这个项目的待办，并告诉我下一步需要什么信息。')}>整理一个项目 →</button><button onClick={() => { setSchedule(true); setDraft('每小时检查这项工作的进度，有变化时提醒我。'); }}>安排定期检查 →</button></div></div> : <div className="timeline">
           {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
           {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <Avatar {...state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><p>{entry.body}</p></div></article>)}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
         </div>}
-        <div className="composer-wrap"><div className="composer"><textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label>{schedule && <label>每 <input className="minutes" type="number" min="1" max="10080" value={minutes} onChange={e => setMinutes(Number(e.target.value))} /> 分钟</label>}<button className="send" disabled={busy || !draft.trim()} onClick={() => void submit()}>↑</button></div></div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
+        <div className="composer-wrap"><div className="composer"><textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label>{schedule && <label>每 <input className="minutes" type="number" min="1" max="10080" value={minutes} onChange={e => setMinutes(Number(e.target.value))} /> 分钟</label>}<button className="send" disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div></div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
       </section>}
-      {view === 'activity' && <section className="content"><div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div><div className="cards">{state.tasks.length ? state.tasks.map(task => <div className="task-card" key={task.id}><div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div><h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><TaskControls task={task} act={act} compact /></div></div>) : <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div>}</div></section>}
-      {view === 'scheduled' && <section className="content"><div className="section-heading"><h1>Scheduled</h1><p>查看和停止定期工作。网址检查只读取页面内容，有变化时在对话中提醒你。</p></div><div className="watch-form"><input aria-label="HTTPS 网址" placeholder="https://example.com/page" value={watchUrl} onChange={e => setWatchUrl(e.target.value)} /><label>每 <input type="number" min="5" max="10080" value={watchMinutes} onChange={e => setWatchMinutes(Number(e.target.value))} /> 分钟</label><button disabled={!watchUrl.trim()} onClick={() => void addWatch()}>添加检查</button></div><div className="cards">{state.watches.map(watch => <div className="task-card" key={watch.id}><span className={`pill ${watch.status === 'active' ? 'scheduled' : 'paused'}`}>{watch.status === 'active' ? '检查中' : '已暂停'}</span><h2>{watch.url}</h2><p>每 {watch.intervalMinutes} 分钟 · {watch.lastStatus || '尚未检查'}{watch.error ? ` · ${watch.error}` : ''}</p><div className="card-actions"><button onClick={() => void actWatch(watch.id, watch.status === 'active' ? 'pause' : 'resume')}>{watch.status === 'active' ? '暂停' : '继续'}</button></div></div>)}{state.tasks.filter(t => t.scheduleMinutes !== null).map(task => <div className="task-card" key={task.id}><span className={`pill ${task.status}`}>{statusText[task.status]}</span><h2>{task.title}</h2><p>每 {task.scheduleMinutes} 分钟 · 下次运行：{task.nextRunAt ? new Date(task.nextRunAt).toLocaleString('zh-CN') : '待定'}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><button onClick={() => void act(task, 'cancelSchedule')}>取消安排</button></div></div>)}{state.watches.length === 0 && !state.tasks.some(t => t.scheduleMinutes !== null) && <div className="empty">还没有定期工作。</div>}</div></section>}
+      {view === 'activity' && <section className="content"><div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div><div className="cards">{!stateLoaded ? <div className="empty workspace-loading" role="status">正在加载工作区…</div> : state.tasks.length ? state.tasks.map(task => <div className="task-card" key={task.id}><div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div><h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><TaskControls task={task} act={act} compact /></div></div>) : <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div>}</div></section>}
+      {view === 'scheduled' && <section className="content"><div className="section-heading"><h1>Scheduled</h1><p>查看和停止定期工作。网址检查只读取页面内容，有变化时在对话中提醒你。</p></div><div className="watch-form"><input aria-label="HTTPS 网址" placeholder="https://example.com/page" value={watchUrl} onChange={e => setWatchUrl(e.target.value)} /><label>每 <input type="number" min="5" max="10080" value={watchMinutes} onChange={e => setWatchMinutes(Number(e.target.value))} /> 分钟</label><button disabled={!watchUrl.trim()} onClick={() => void addWatch()}>添加检查</button></div><div className="cards">{state.watches.map(watch => <div className="task-card" key={watch.id}><span className={`pill ${watch.status === 'active' ? 'scheduled' : 'paused'}`}>{watch.status === 'active' ? '检查中' : '已暂停'}</span><h2>{watch.url}</h2><p>每 {watch.intervalMinutes} 分钟 · {watch.lastStatus || '尚未检查'}{watch.error ? ` · ${watch.error}` : ''}</p><div className="card-actions"><button onClick={() => void actWatch(watch.id, watch.status === 'active' ? 'pause' : 'resume')}>{watch.status === 'active' ? '暂停' : '继续'}</button></div></div>)}{state.tasks.filter(t => t.scheduleMinutes !== null).map(task => <div className="task-card" key={task.id}><span className={`pill ${task.status}`}>{statusText[task.status]}</span><h2>{task.title}</h2><p>每 {task.scheduleMinutes} 分钟 · 下次运行：{task.nextRunAt ? new Date(task.nextRunAt).toLocaleString('zh-CN') : '待定'}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><button onClick={() => void act(task, 'cancelSchedule')}>取消安排</button></div></div>)}{!stateLoaded ? <div className="empty workspace-loading" role="status">正在加载工作区…</div> : state.watches.length === 0 && !state.tasks.some(t => t.scheduleMinutes !== null) && <div className="empty">还没有定期工作。</div>}</div></section>}
       {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} />}
       {view === 'computer' && <ComputerView onError={setError} />}
     </main>
   </div>;
 }
 
-function LoginScreen({ googleConfigured }: { googleConfigured: boolean }) {
+function LoginScreen({ googleConfigured, e2eAuthAvailable }: { googleConfigured: boolean; e2eAuthAvailable: boolean }) {
   const [desktopPending, setDesktopPending] = useState(false);
   const [desktopError, setDesktopError] = useState('');
+  const [e2eEmail, setE2eEmail] = useState('alpha@example.test');
   const isElectron = /Electron/i.test(navigator.userAgent);
   const authError = new URLSearchParams(window.location.search).get('authError');
   const authErrors: Record<string, string> = { cancelled: '你取消了登录。', expired: '登录请求已过期，请重试。', invalid: '登录返回信息无效。', invalid_identity: 'Google 身份验证未通过。', missing_identity: 'Google 没有返回身份令牌。', sign_in_failed: 'Google 登录失败，请检查配置后重试。' };
@@ -169,7 +174,16 @@ function LoginScreen({ googleConfigured }: { googleConfigured: boolean }) {
     } catch (error) { setDesktopError(error instanceof Error ? error.message : String(error)); }
     finally { setDesktopPending(false); }
   }
-  return <main className="auth-page"><div className="auth-card"><div className="brand"><span className="brand-mark">●</span> Coke Dots</div><h1>让你的个人代理持续推进工作</h1><p>使用 Google 账号登录。每个工作区的任务、记录、模型密钥和浏览器会话相互隔离。</p>{authError && <div className="auth-error">{authErrors[authError] || '登录失败，请重试。'}</div>}{desktopError && <div className="auth-error">{desktopError}</div>}{googleConfigured ? isElectron ? <button className="google-login" disabled={desktopPending} onClick={() => void beginDesktopLogin()}><span>G</span>{desktopPending ? '等待浏览器完成登录…' : '使用 Google 登录'}</button> : <a className="google-login" href="/api/auth/google/start"><span>G</span>使用 Google 登录</a> : <div className="auth-setup"><strong>需要配置 Google OAuth</strong><span>在本机服务环境中设置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET，然后重启服务。</span></div>}<small>仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。</small></div></main>;
+  async function signInE2e() {
+    setDesktopError('');
+    try {
+      const response = await fetch('/api/auth/e2e/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: e2eEmail }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      window.location.reload();
+    } catch (error) { setDesktopError(error instanceof Error ? error.message : String(error)); }
+  }
+  return <main className="auth-page"><div className="auth-card"><div className="brand"><span className="brand-mark">●</span> Coke Dots</div><h1>让你的个人代理持续推进工作</h1><p>使用 Google 账号登录。每个工作区的任务、记录、模型密钥和浏览器会话相互隔离。</p>{authError && <div className="auth-error">{authErrors[authError] || '登录失败，请重试。'}</div>}{desktopError && <div className="auth-error">{desktopError}</div>}{googleConfigured ? isElectron ? <button className="google-login" disabled={desktopPending} onClick={() => void beginDesktopLogin()}><span>G</span>{desktopPending ? '等待浏览器完成登录…' : '使用 Google 登录'}</button> : <a className="google-login" href="/api/auth/google/start"><span>G</span>使用 Google 登录</a> : <div className="auth-setup"><strong>需要配置 Google OAuth</strong><span>在本机服务环境中设置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET，然后重启服务。</span></div>}{e2eAuthAvailable && <div className="e2e-login"><label htmlFor="e2e-email">E2E 测试账号</label><input id="e2e-email" type="email" value={e2eEmail} onChange={event => setE2eEmail(event.target.value)} /><button data-testid="e2e-sign-in" className="google-login" onClick={() => void signInE2e()}>测试环境登录</button></div>}<small>仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。</small></div></main>;
 }
 
 function WorkspaceSwitcher({ auth, onSwitch, onCreate, onError }: { auth: AuthContext; onSwitch: (id: string) => Promise<void>; onCreate: (name: string) => Promise<void>; onError: (message: string) => void }) {
