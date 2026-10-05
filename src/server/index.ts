@@ -107,6 +107,15 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot(session.tenant.id));
+    if (path === '/api/activity' && req.method === 'GET') {
+      const limit = Number(url.searchParams.get('limit') || 50);
+      const beforeValue = url.searchParams.get('before');
+      const before = beforeValue === null ? null : Number(beforeValue);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || (before !== null && (!Number.isSafeInteger(before) || before < 1))) {
+        return reply(res, 400, { error: 'Invalid activity page' });
+      }
+      return reply(res, 200, store.activityPage(session.tenant.id, before, limit));
+    }
     if (path === '/api/auth/invitations' && req.method === 'GET') return reply(res, 200, store.pendingWorkspaceInvitations(session.user.email));
     const acceptInvitationMatch = path.match(/^\/api\/auth\/invitations\/([a-z0-9-]+)\/accept$/);
     if (acceptInvitationMatch && req.method === 'POST') {

@@ -95,6 +95,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS tasks_due ON tasks(status, next_run_at, priority);
       CREATE INDEX IF NOT EXISTS tasks_tenant ON tasks(tenant_id, created_at);
       CREATE INDEX IF NOT EXISTS entries_task ON entries(tenant_id, task_id, id);
+      CREATE INDEX IF NOT EXISTS entries_timeline ON entries(tenant_id, id DESC);
       CREATE INDEX IF NOT EXISTS watches_due ON watches(status, next_check_at);
       CREATE INDEX IF NOT EXISTS watches_tenant ON watches(tenant_id, status, next_check_at);
     `);
@@ -332,6 +333,15 @@ export class Store {
       entries: (this.db.prepare('SELECT id,tenant_id,task_id,kind,body,created_at FROM entries WHERE tenant_id=? ORDER BY id DESC LIMIT 150').all(tenantId) as Record<string, unknown>[]).map(toEntry).reverse(),
       configured, availableEngines, modelSettings,
     };
+  }
+
+  activityPage(tenantId: string, beforeId: number | null = null, limit = 50): { entries: Entry[]; nextCursor: number | null } {
+    const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const rows = this.db.prepare(`SELECT id,tenant_id,task_id,kind,body,created_at FROM entries
+      WHERE tenant_id=? AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT ?`)
+      .all(tenantId, beforeId, beforeId, boundedLimit + 1) as Record<string, unknown>[];
+    const page = rows.slice(0, boundedLimit).map(toEntry);
+    return { entries: page, nextCursor: rows.length > boundedLimit ? page.at(-1)?.id ?? null : null };
   }
 
   createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null): Task {

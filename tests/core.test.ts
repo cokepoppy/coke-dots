@@ -72,6 +72,29 @@ test('workspace invitations require a matching signed-in email and are accepted 
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('activity feed pages in descending order and stays tenant scoped', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-activity-'));
+  try {
+    const store = new Store(directory);
+    store.signInGoogle({ subject: 'activity-alpha', email: 'activity-alpha@example.test', name: 'Activity Alpha' });
+    const beta = store.signInGoogle({ subject: 'activity-beta', email: 'activity-beta@example.test', name: 'Activity Beta' });
+    const ids = Array.from({ length: 5 }, (_, index) => store.addEntry('system', `Alpha event ${index + 1}`, null, 'legacy').id);
+    store.addEntry('user', 'Beta private event', null, beta.tenant.id);
+
+    const firstPage = store.activityPage('legacy', null, 2);
+    assert.deepEqual(firstPage.entries.map(entry => entry.id), ids.slice(-2).reverse());
+    assert.equal(firstPage.nextCursor, ids[3]);
+    const secondPage = store.activityPage('legacy', firstPage.nextCursor, 2);
+    assert.deepEqual(secondPage.entries.map(entry => entry.id), ids.slice(1, 3).reverse());
+    assert.equal(secondPage.nextCursor, ids[1]);
+    const finalPage = store.activityPage('legacy', secondPage.nextCursor, 2);
+    assert.deepEqual(finalPage.entries.map(entry => entry.id), [ids[0]]);
+    assert.equal(finalPage.nextCursor, null);
+    assert.deepEqual(store.activityPage(beta.tenant.id).entries.map(entry => entry.body), ['Beta private event']);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('background worker stores real model result and schedules a future run', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
   const modelServer = createServer(async (req, res) => {

@@ -316,6 +316,9 @@ try {
     await clickNav(alphaPage!, 'Activity');
     const card = alphaPage!.locator('.task-card').filter({ hasText: alphaPrivateTask });
     await card.waitFor({ state: 'visible' });
+    const feed = alphaPage!.getByTestId('activity-feed');
+    await feed.waitFor({ state: 'visible' });
+    await feed.getByTestId('activity-entry').filter({ hasText: alphaPrivateTask }).first().waitFor({ state: 'visible' });
     await screenshot(alphaPage!, '05-activity');
     await card.getByRole('button', { name: /查看详情/ }).click();
     await alphaPage!.getByRole('button', { name: '提高优先级' }).click();
@@ -326,6 +329,11 @@ try {
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: redirectedText }).waitFor({ state: 'visible' });
     await alphaPage!.getByText('任务操作：redirect', { exact: true }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, '06-task-direction-update');
+    await clickNav(alphaPage!, 'Activity');
+    const redirectedEntry = alphaPage!.getByTestId('activity-feed').getByTestId('activity-entry').filter({ hasText: redirectedText });
+    await redirectedEntry.first().waitFor({ state: 'visible' });
+    await redirectedEntry.first().getByRole('button', { name: /打开任务/ }).click();
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: redirectedText }).waitFor({ state: 'visible' });
   });
 
   const scheduledTask = 'E2E scheduled responsibility — report on the next review';
@@ -468,6 +476,12 @@ try {
     await assertNoVisibleText(betaPage!, 'E2E shared workspace task — prepare the team review');
     assert.equal(await betaPage!.locator('.task-links button').count(), 0);
     await screenshot(betaPage!, '11-beta-personal-isolation');
+    await clickNav(betaPage!, 'Activity');
+    const activityFeed = betaPage!.getByTestId('activity-feed');
+    await activityFeed.waitFor({ state: 'visible' });
+    await activityFeed.getByText('还没有活动记录。', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await activityFeed.getByTestId('activity-entry').filter({ hasText: alphaPrivateTask }).count(), 0, 'Beta received an Alpha activity entry');
+    await screenshot(betaPage!, '11b-beta-private-activity');
   });
 
   await recordStep('Restart the local service and recover both authenticated tenant sessions and task data', async () => {

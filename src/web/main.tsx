@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Engine, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import type { Engine, Entry, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import './style.css';
 import './watch.css';
 import './dark-theme.css';
 import './onboarding.css';
 import './notification.css';
+import './activity.css';
 import './scheduled.css';
 import './recurrence.css';
 import { ComputerView } from './ComputerView.tsx';
@@ -176,7 +177,7 @@ function App() {
         </div>}
         <div className="composer-wrap"><div className="composer"><textarea ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="send" disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
       </section>{(selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
-      {view === 'activity' && <section className="content"><div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div><div className="cards">{!stateLoaded ? <div className="empty workspace-loading" role="status">正在加载工作区…</div> : state.tasks.length ? state.tasks.map(task => <div className="task-card" key={task.id}><div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div><h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p><div className="card-actions"><button onClick={() => { setSelected(task.id); setView('chat'); }}>查看详情 →</button><TaskControls task={task} act={act} compact /></div></div>) : <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div>}</div></section>}
+      {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
         onCancelTask={task => void act(task, 'cancelSchedule')}
         onWatchAction={(watch, action) => void actWatch(watch.id, action)}
@@ -229,6 +230,86 @@ function LoginScreen({ googleConfigured, e2eAuthAvailable }: { googleConfigured:
     } catch (error) { setDesktopError(error instanceof Error ? error.message : String(error)); }
   }
   return <main className="auth-page"><div className="auth-card"><div className="brand"><span className="brand-mark">●</span> Coke Dots</div><h1>让你的个人代理持续推进工作</h1><p>使用 Google 账号登录。每个工作区的任务、记录、模型密钥和浏览器会话相互隔离。</p>{authError && <div className="auth-error">{authErrors[authError] || '登录失败，请重试。'}</div>}{desktopError && <div className="auth-error">{desktopError}</div>}{googleConfigured ? isElectron ? <button className="google-login" disabled={desktopPending} onClick={() => void beginDesktopLogin()}><span>G</span>{desktopPending ? '等待浏览器完成登录…' : '使用 Google 登录'}</button> : <a className="google-login" href="/api/auth/google/start"><span>G</span>使用 Google 登录</a> : <div className="auth-setup"><strong>需要配置 Google OAuth</strong><span>在本机服务环境中设置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET，然后重启服务。</span></div>}{e2eAuthAvailable && <div className="e2e-login"><label htmlFor="e2e-email">E2E 测试账号</label><input id="e2e-email" type="email" value={e2eEmail} onChange={event => setE2eEmail(event.target.value)} /><button data-testid="e2e-sign-in" className="google-login" onClick={() => void signInE2e()}>测试环境登录</button></div>}<small>仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。</small></div></main>;
+}
+
+function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask }: { tenantId: string; profileName: string; state: Snapshot; stateLoaded: boolean; onSelectTask: (taskId: string) => void }) {
+  const tenantIdRef = useRef(tenantId);
+  tenantIdRef.current = tenantId;
+  const pageGeneration = useRef(0);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [nextCursor, setNextCursor] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [error, setError] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    const generation = ++pageGeneration.current;
+    let current = true;
+    setLoading(true); setLoadingOlder(false); setError(''); setEntries([]); setNextCursor(null);
+    void fetch('/api/activity?limit=50').then(async response => {
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      return data as { entries: Entry[]; nextCursor: number | null };
+    }).then(page => { if (current && generation === pageGeneration.current) { setEntries(page.entries); setNextCursor(page.nextCursor); } })
+      .catch(reason => { if (current) setError(reason instanceof Error ? reason.message : String(reason)); })
+      .finally(() => { if (current && generation === pageGeneration.current) setLoading(false); });
+    return () => { current = false; };
+  }, [tenantId, refreshKey]);
+
+  useEffect(() => {
+    if (loading || !state.entries.length) return;
+    const oldestSnapshotEntryId = Math.min(...state.entries.map(entry => entry.id));
+    setEntries(current => {
+      const byId = new Map(current.map(entry => [entry.id, entry]));
+      for (const entry of state.entries) byId.set(entry.id, entry);
+      return [...byId.values()].sort((a, b) => b.id - a.id);
+    });
+    setNextCursor(current => state.entries.length < 150 ? null : current === null ? null : Math.min(current, oldestSnapshotEntryId));
+  }, [state.entries, loading]);
+
+  async function loadOlder() {
+    if (nextCursor === null || loadingOlder) return;
+    const requestedTenantId = tenantIdRef.current;
+    const generation = pageGeneration.current;
+    setLoadingOlder(true); setError('');
+    try {
+      const response = await fetch(`/api/activity?limit=50&before=${nextCursor}`);
+      const data = await response.json() as { entries?: Entry[]; nextCursor?: number | null; error?: string };
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (requestedTenantId !== tenantIdRef.current || generation !== pageGeneration.current) return;
+      setEntries(current => {
+        const byId = new Map(current.map(entry => [entry.id, entry]));
+        for (const entry of data.entries || []) byId.set(entry.id, entry);
+        return [...byId.values()].sort((a, b) => b.id - a.id);
+      });
+      setNextCursor(data.nextCursor ?? null);
+    } catch (reason) { if (requestedTenantId === tenantIdRef.current && generation === pageGeneration.current) setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (requestedTenantId === tenantIdRef.current && generation === pageGeneration.current) setLoadingOlder(false); }
+  }
+
+  const tasks = new Map(state.tasks.map(task => [task.id, task]));
+  return <section className="content activity-content">
+    <div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div>
+    <div className="cards">{!stateLoaded ? <div className="empty workspace-loading" role="status">正在加载工作区…</div> : !state.tasks.length ? <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div> : state.tasks.map(task => <div className="task-card" key={task.id}>
+      <div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div>
+      <h2>{task.title}</h2><p>{task.error || task.result || task.instruction}</p>
+      <div className="card-actions"><button onClick={() => onSelectTask(task.id)}>查看详情 →</button><TaskControls task={task} act={async (item, action, extra) => { try { await request(`/tasks/${item.id}`, 'PATCH', { action, ...extra }); } catch (reason) { setError(String(reason)); } }} compact /></div>
+    </div>)}</div>
+    <section className="activity-feed" data-testid="activity-feed" aria-label="Recent activity">
+      <header><div><h2>Recent activity</h2><p>任务进度、用户方向和执行记录</p></div><button onClick={() => setRefreshKey(value => value + 1)} disabled={loading}>刷新</button></header>
+      {error && <p className="activity-error" role="alert">{error}</p>}
+      {loading ? <p className="activity-empty" role="status">正在加载活动记录…</p> : !entries.length ? <p className="activity-empty">还没有活动记录。</p> : <ol className="activity-list">{entries.map(entry => {
+        const task = entry.taskId ? tasks.get(entry.taskId) : undefined;
+        return <li className={`activity-entry ${entry.kind}`} data-testid="activity-entry" key={entry.id}>
+          <div className="activity-entry-head"><strong>{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? profileName : '系统'}</strong><time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div>
+          <p>{entry.body}</p>
+          {task && <button className="activity-open-task" onClick={() => onSelectTask(task.id)}>打开任务：{task.title} →</button>}
+        </li>;
+      })}</ol>}
+      {nextCursor !== null && <button className="activity-load-older" onClick={() => void loadOlder()} disabled={loadingOlder}>{loadingOlder ? '正在加载…' : '加载更早记录'}</button>}
+    </section>
+  </section>;
 }
 
 function WorkspaceSwitcher({ auth, onSwitch, onCreate, onError }: { auth: AuthContext; onSwitch: (id: string) => Promise<void>; onCreate: (name: string) => Promise<void>; onError: (message: string) => void }) {
