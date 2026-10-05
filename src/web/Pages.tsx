@@ -60,7 +60,39 @@ export function PagesView({ tenantId, onOpen }: { tenantId: string; onOpen: (id:
   </section>;
 }
 
-export function PagePane({ pageId, tenantId, full = false, onBack }: { pageId: string; tenantId: string; full?: boolean; onBack: () => void }) {
+export function ScratchpadNavigationPane({ tenantId, selectedPageId, refreshKey, onOpen, onBack }: { tenantId: string; selectedPageId: string; refreshKey: number; onOpen: (id: string) => void; onBack: () => void }) {
+  const [pages, setPages] = useState<WorkspacePage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const loadGeneration = useRef(0);
+
+  useEffect(() => {
+    const generation = ++loadGeneration.current;
+    let active = true;
+    setPages([]); setLoading(true); setError('');
+    void fetch('/api/pages').then(response => readResponse<WorkspacePage[]>(response)).then(next => {
+      if (active && generation === loadGeneration.current) setPages(next);
+    }).catch(reason => {
+      if (active && generation === loadGeneration.current) setError(reason instanceof Error ? reason.message : String(reason));
+    }).finally(() => {
+      if (active && generation === loadGeneration.current) setLoading(false);
+    });
+    return () => { active = false; loadGeneration.current += 1; };
+  }, [tenantId, refreshKey]);
+
+  return <aside className="scratchpad-navigation-pane" aria-label="Scratchpad page navigation" data-testid="scratchpad-navigation">
+    <header><button className="scratchpad-navigation-root" onClick={onBack} aria-label="Back to Your Personal Scratchpad"><span aria-hidden="true">‹</span>Your Personal Scratchpad</button></header>
+    {error && <p role="alert" className="scratchpad-navigation-error">{error}</p>}
+    <nav aria-label="Scratchpad pages">
+      {loading ? <p className="scratchpad-navigation-empty" role="status">Loading pages…</p> : pages.map(page => <button key={page.id} className={`scratchpad-navigation-page ${selectedPageId === page.id ? 'selected' : ''}`} aria-current={selectedPageId === page.id ? 'page' : undefined} onClick={() => onOpen(page.id)} data-testid="scratchpad-nav-page-row">
+        <span className="scratchpad-navigation-icon" aria-hidden="true">▤</span><span className="scratchpad-navigation-copy"><strong>{page.title}</strong><small>Updated {new Date(page.updatedAt).toLocaleDateString()}</small></span><span className="scratchpad-navigation-chevron" aria-hidden="true">›</span>
+      </button>)}
+      {!loading && !error && pages.length === 0 && <p className="scratchpad-navigation-empty">Your pages will appear here.</p>}
+    </nav>
+  </aside>;
+}
+
+export function PagePane({ pageId, tenantId, full = false, onBack, onPageUpdated }: { pageId: string; tenantId: string; full?: boolean; onBack: () => void; onPageUpdated?: () => void }) {
   const [page, setPage] = useState<WorkspacePage | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -89,7 +121,7 @@ export function PagePane({ pageId, tenantId, full = false, onBack }: { pageId: s
       const updated = await readResponse<WorkspacePage>(await fetch(`/api/pages/${page.id}`, {
         method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: titleDraft, content: contentDraft }),
       }));
-      setPage(updated); setTitleDraft(updated.title); setContentDraft(updated.content); setEditing(false);
+      setPage(updated); setTitleDraft(updated.title); setContentDraft(updated.content); setEditing(false); onPageUpdated?.();
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setBusy(false); }
   }

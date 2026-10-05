@@ -13,7 +13,7 @@ import './pages.css';
 import { ComputerView } from './ComputerView.tsx';
 import { DotContextPanel } from './DotContextPanel.tsx';
 import { ScheduledView } from './ScheduledView.tsx';
-import { PagePane, PagesView } from './Pages.tsx';
+import { PagePane, PagesView, ScratchpadNavigationPane } from './Pages.tsx';
 import { PermissionRules } from './PermissionRules.tsx';
 
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
@@ -63,6 +63,7 @@ function App() {
   const [view, setView] = useState<'chat' | 'activity' | 'scheduled' | 'computer' | 'profile' | 'pages'>('chat');
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
+  const [pageIndexVersion, setPageIndexVersion] = useState(0);
   const [draft, setDraft] = useState('');
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const [schedule, setSchedule] = useState(false);
@@ -181,14 +182,14 @@ function App() {
   if (!authChecked) return <div className="auth-loading">Coke Dots</div>;
   if (!authContext) return <LoginScreen googleConfigured={googleConfigured} e2eAuthAvailable={e2eAuthAvailable} />;
 
-  return <div className={`shell dots-dark ${view === 'scheduled' ? 'scheduled-mode' : ''}`} data-testid="app-shell" data-theme="dark" data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
+  return <div className={`shell dots-dark ${view === 'scheduled' ? 'scheduled-mode' : ''} ${view === 'chat' && selectedPageId ? 'page-open-mode' : ''}`} data-testid="app-shell" data-theme="dark" data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">●</span> Coke Dots</div>
-      <button className={`nav ${view === 'chat' ? 'selected' : ''}`} onClick={() => { setSelectedPageId(null); setView('chat'); setSelected(null); }}>✦ <span>你的 dot</span></button>
-      <button className={`nav ${view === 'activity' ? 'selected' : ''}`} onClick={() => { setSelectedPageId(null); setView('activity'); }}>▤ <span>Activity</span><em>{active.length || ''}</em></button>
-      <button className={`nav ${view === 'scheduled' ? 'selected' : ''}`} onClick={() => { setSelectedPageId(null); setView('scheduled'); }}>◷ <span>Scheduled</span></button>
-      <button className={`nav ${view === 'pages' ? 'selected' : ''}`} onClick={() => { setSelectedPageId(null); setView('pages'); }}>▤ <span>Scratchpad</span></button>
-      <button className={`nav ${view === 'computer' ? 'selected' : ''}`} onClick={() => { setSelectedPageId(null); setView('computer'); }}>▣ <span>电脑</span></button>
+      <button className={`nav ${view === 'chat' ? 'selected' : ''}`} aria-label="你的 dot" title="你的 dot" onClick={() => { setSelectedPageId(null); setView('chat'); setSelected(null); }}>✦ <span>你的 dot</span></button>
+      <button className={`nav ${view === 'activity' ? 'selected' : ''}`} aria-label="Activity" title="Activity" onClick={() => { setSelectedPageId(null); setView('activity'); }}>▤ <span>Activity</span><em>{active.length || ''}</em></button>
+      <button className={`nav ${view === 'scheduled' ? 'selected' : ''}`} aria-label="Scheduled" title="Scheduled" onClick={() => { setSelectedPageId(null); setView('scheduled'); }}>◷ <span>Scheduled</span></button>
+      <button className={`nav ${view === 'pages' ? 'selected' : ''}`} aria-label="Scratchpad" title="Scratchpad" onClick={() => { setSelectedPageId(null); setView('pages'); }}>▤ <span>Scratchpad</span></button>
+      <button className={`nav ${view === 'computer' ? 'selected' : ''}`} aria-label="电脑" title="电脑" onClick={() => { setSelectedPageId(null); setView('computer'); }}>▣ <span>电脑</span></button>
       <div className="side-caption">正在负责</div>
       <div className="task-links">{stateLoaded ? state.tasks.slice(0, 12).map(task => <button key={task.id} className={selected === task.id ? 'on' : ''} onClick={() => { setSelectedPageId(null); setView('chat'); setSelected(task.id); }}><span className={`status-dot ${task.status}`} />{task.title}</button>) : <span className="side-loading">恢复中…</span>}</div>
       <button className="profile-link" onClick={() => { setSelectedPageId(null); setView('profile'); }}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
@@ -204,8 +205,8 @@ function App() {
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
         </div>}
         <div className="composer-wrap"><div className="composer"><textarea ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder="告诉 dot 接下来要负责什么…" /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="send" disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
-      </section>{selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => setSelectedPageId(null)} /> : (selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
-      {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
+      </section>{selectedPageId ? <div className="scratchpad-page-split" data-testid="scratchpad-page-split"><ScratchpadNavigationPane tenantId={authContext.tenant.id} selectedPageId={selectedPageId} refreshKey={pageIndexVersion} onOpen={setSelectedPageId} onBack={() => { setSelectedPageId(null); setView('pages'); }} /><PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => { setSelectedPageId(null); setView('pages'); }} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /></div> : (selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
+      {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
       {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
         onCancelTask={task => void act(task, 'cancelSchedule')}

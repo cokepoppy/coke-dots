@@ -678,7 +678,23 @@ try {
     await pane.getByText('Connected', { exact: true }).waitFor({ state: 'visible' });
     await pane.getByRole('heading', { name: 'Team launch notes', exact: true }).waitFor({ state: 'visible' });
     await pane.getByText('Review the short intro', { exact: false }).waitFor({ state: 'visible' });
+    const pageNavigation = alphaPage!.getByTestId('scratchpad-navigation');
+    await pageNavigation.getByTestId('scratchpad-nav-page-row').filter({ hasText: 'Team launch notes' }).waitFor({ state: 'visible' });
+    await pageNavigation.getByRole('button', { name: /Team launch notes/ }).evaluate(button => { if (button.getAttribute('aria-current') !== 'page') throw new Error('The open page is not selected in Scratchpad navigation'); });
+    const splitWidths = await alphaPage!.evaluate(() => ({
+      rail: document.querySelector('.sidebar')!.getBoundingClientRect().width,
+      conversation: document.querySelector('.chat-panel')!.getBoundingClientRect().width,
+      navigation: document.querySelector('[data-testid="scratchpad-navigation"]')!.getBoundingClientRect().width,
+      document: document.querySelector('.scratchpad-page-pane.split')!.getBoundingClientRect().width,
+    }));
+    assert.equal(splitWidths.rail, 60, 'Opening a connected page did not use the narrow icon rail');
+    assert.ok(splitWidths.navigation >= 156, 'The Scratchpad page-navigation column collapsed');
+    assert.ok(splitWidths.document > splitWidths.conversation * 0.9, `The page document pane is too narrow (${splitWidths.document}px vs ${splitWidths.conversation}px conversation)`);
     await screenshot(alphaPage!, '19a-agent-created-scratchpad-page');
+    await pageNavigation.getByRole('button', { name: /Back to Your Personal Scratchpad/ }).click();
+    await alphaPage!.getByTestId('scratchpad-library').waitFor({ state: 'visible' });
+    await alphaPage!.getByTestId('scratchpad-library').getByTestId('scratchpad-page-row').filter({ hasText: 'Team launch notes' }).click();
+    await pane.getByRole('heading', { name: 'Team launch notes', exact: true }).waitFor({ state: 'visible' });
 
     await clickNav(alphaPage!, '你的 dot');
     const updateInstruction = 'E2E Scratchpad page — update the team launch notes';
