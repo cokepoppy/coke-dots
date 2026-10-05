@@ -12,7 +12,7 @@ Research date: 2026-10-05. This ledger separates product documentation, hands-on
 | O4 | https://learn.chatgpt.com/docs/dots/computers-and-apps | Official usage documentation | Computer view, Take over, Return control |
 | O5 | https://learn.chatgpt.com/docs/dots/controls | Official usage documentation | Review, approval, pause, delegated task stop |
 | V1 | https://www.youtube.com/watch?v=V_1Vn2WfpEY | Hands-on video; reviewed in Chrome; one cropped player screenshot saved locally (not tracked) | Setup, conversation, task delegation, voice call, generated outputs, Scheduled page and a visible failure; see [time-coded observations](futurepedia-v1-observations.md) |
-| V2 | https://www.youtube.com/watch?v=Q9tF0R8d_Co | Hands-on video; frames pending | Avatar, rename, cloud computer, call, parallel work |
+| V2 | https://www.youtube.com/watch?v=Q9tF0R8d_Co | Hands-on video; reviewed at chapter points in local Chrome; sampled screenshots were inspected but are not persisted | Avatar setup, Slack setup gate, cloud computer and Take over affordance, calls, parallel work, outputs, proposed automations; see [time-coded observations](john-aspinall-v2-observations.md) |
 | V3 | https://www.youtube.com/watch?v=uXspbC2srEQ | Scripted official film; frames pending | Visual leads only; do not infer runtime behavior |
 | G1 | https://developers.google.com/identity/openid-connect/openid-connect | Google identity protocol | Stable `sub` identity and ID-token claims |
 | G2 | https://developers.google.com/identity/protocols/oauth2/web-server | Google OAuth implementation guide | Authorization-code flow and state validation |
@@ -32,12 +32,15 @@ The video chapter leads are from https://www.postcutoff.com/v/futurepedia-i-test
 | Surface | Action | Expected state visible to user | Evidence | Visual reference |
 | --- | --- | --- | --- | --- |
 | Onboarding | Create dot; optionally connect apps and computer | Dot conversation available | O2 | V1 01:18–02:46 shows Chat/Work home and first dot conversation; no customization or connection flow shown |
-| Profile | Edit name, shape, color, eyes, glasses, accessories | Saved identity and updated handle | O2 | V1 02:46 shows the user choosing the name “dot”; visual customization remains pending V2 02:14–07:12 |
+| Profile | Edit identity and appearance | Saved identity and updated handle | O2 | V1 02:46 shows the user choosing “dot”; V2 02:14 shows the initial customization surface, and 08:29 shows “Dolly” in the chat/computer welcome screen. Exact appearance controls and save/reopen persistence are not legible or verified |
 | Conversation | Give ongoing responsibility and redirect it | Same dot continues with updated priorities | O3 | V1 02:46 and 06:06 show greeting, task request, and a later instruction; exact persistence behavior is not demonstrated |
-| Activity | Open a delegated task | Progress, files, result or request for input | O3, O5 | V1 06:06–09:28 shows a multi-tool request and returned outputs in conversation; a dedicated Activity page remains pending |
+| Activity | Open a delegated task | Progress, files, result or request for input | O3, O5 | V1 06:06–09:28 shows a multi-tool request and returned outputs in conversation. V2 05:40 and 13:58 show a “Recent activity” area beside the dot/computer panels; detailed event navigation remains unverified |
 | Scheduled | Request recurring work; open Scheduled | Instructions, timing and destination visible | O3, O5 | V1 10:01 shows the Scheduled list and a monitoring item; the selected chat visibly fails to open |
-| Computer | Open computer; Take over; Return control | Control holder changes explicitly | O4 | Pending V2 04:30–05:40 |
+| Computer | Open computer; Take over; Return control | Control holder changes explicitly | O4 | V2 04:30 shows an isolated browser desktop with “Roger has control” and a “Take over” button; 12:15/12:38 show “Welcome back, Dolly” and a Take over affordance. The actual click and Return control transition are not shown in sampled frames |
 | Controls | Pause main task; stop delegated task; cancel schedule | Distinct stopped scopes | O5 | Pending |
+| Integrations | Open Slack setup | Workspace selection and authorization gate | V2 | 07:12 shows a “Set up Slack” modal asking which workspace to add Roger to and a “Select a workspace” control; OAuth/authorization completion is not shown |
+| Calling | Start or resume a phone call | Call state and ongoing task context | V2 | 05:40 and 13:09 show a call interaction; precise call controls and post-call status require clearer source frames |
+| Proactive suggestions | Review proposed automations | Suggestions remain distinct from active schedules | V2 | 14:25 shows a list titled “10 automations it suggested.” The demo does not show these being scheduled or an automation notification being delivered; the presenter says he did not receive a notification |
 
 ## Functional evidence and boundaries
 
@@ -57,7 +60,7 @@ The video chapter leads are from https://www.postcutoff.com/v/futurepedia-i-test
 5. Capture our app at the same viewport and compare overlay, changed-pixel ratio and region-level differences. Require visual review for font antialiasing and video compression artifacts.
 6. Replay the observed path, including failed steps, against a local build. A screenshot match does not establish workflow parity; a successful task does not establish visual parity.
 
-V1's chapter titles and selected frames have now been reviewed directly in Chrome. A local-only browser-captured crop of the 06:26 call screen and timestamped observations are recorded in [futurepedia-v1-observations.md](futurepedia-v1-observations.md). The crop documents a visible state but does not replace source-frame capture, measurements, or image comparison.
+V1's chapter titles and selected frames have now been reviewed directly in Chrome. A local-only browser-captured crop of the 06:26 call screen and timestamped observations are recorded in [futurepedia-v1-observations.md](futurepedia-v1-observations.md). V2 has also been reviewed directly in Chrome at the sampled chapter points documented in [john-aspinall-v2-observations.md](john-aspinall-v2-observations.md). V2 screenshots were visually inspected but are not saved as files. Neither review replaces clean source-frame capture, reliable pixel measurements, or image comparison.
 
 ## Replay scripts
 
