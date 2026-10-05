@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import type { Engine, Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import './style.css';
 import './watch.css';
+import './dark-theme.css';
 import { ComputerView } from './ComputerView.tsx';
 import { DotContextPanel } from './DotContextPanel.tsx';
 
@@ -115,7 +116,7 @@ function App() {
   if (!authChecked) return <div className="auth-loading">Coke Dots</div>;
   if (!authContext) return <LoginScreen googleConfigured={googleConfigured} e2eAuthAvailable={e2eAuthAvailable} />;
 
-  return <div className="shell" data-testid="app-shell" data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
+  return <div className="shell dots-dark" data-testid="app-shell" data-theme="dark" data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">●</span> Coke Dots</div>
       <button className={`nav ${view === 'chat' ? 'selected' : ''}`} onClick={() => { setView('chat'); setSelected(null); }}>✦ <span>你的 dot</span></button>

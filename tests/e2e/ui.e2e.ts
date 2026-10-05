@@ -204,6 +204,9 @@ try {
     await signIn(alphaPage!, 'alpha@example.test');
     await alphaPage!.getByTestId('app-shell').waitFor();
     assert.equal(await alphaPage!.locator('.profile-link small').innerText(), 'alpha@example.test');
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
+    assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(17, 17, 19)');
+    assert.equal(await alphaPage!.locator('.main').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(13, 13, 15)');
     assert.equal(await alphaPage!.getByTestId('dot-context-panel').count(), 0, 'A new-dot welcome state should not show the post-setup details panel');
     await screenshot(alphaPage!, '02-alpha-home');
   });
@@ -219,6 +222,7 @@ try {
     await contextPanel.waitFor({ state: 'visible' });
     await contextPanel.getByRole('region', { name: 'Computers' }).waitFor({ state: 'visible' });
     await contextPanel.getByRole('region', { name: 'Recent activity' }).getByText(alphaPrivateTask).waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.locator('.timeline .message.user').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(93, 73, 191)');
     assert.equal(await contextPanel.getByRole('button', { name: 'Call, not connected' }).isDisabled(), true);
     assert.equal(await contextPanel.getByRole('button', { name: 'Slack, not connected' }).isDisabled(), true);
     await contextPanel.getByText('No skills yet', { exact: true }).waitFor({ state: 'visible' });
