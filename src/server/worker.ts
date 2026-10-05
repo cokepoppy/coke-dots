@@ -4,6 +4,7 @@ import type { Task } from '../shared/types.ts';
 import { Store } from './store.ts';
 import { adapters } from './adapters.ts';
 import { loadModelSettings } from './model-settings.ts';
+import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
 export class Worker {
   private timer: NodeJS.Timeout | null = null;
@@ -11,7 +12,7 @@ export class Worker {
   private activeByTenant = new Map<string, number>();
   private stopped = false;
 
-  constructor(private store: Store, private onChange: () => void, private workspaceRoot = join(process.cwd(), 'data', 'workspaces')) {}
+  constructor(private store: Store, private onChange: () => void, private workspaceRoot = join(process.cwd(), 'data', 'workspaces'), private notify: DesktopNotifier = sendDesktopNotification) {}
 
   start() { this.stopped = false; this.timer = setInterval(() => void this.tick(), 2000); void this.tick(); }
   stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null; }
@@ -40,6 +41,7 @@ export class Worker {
     if (!adapter?.available(task.tenantId)) {
       this.store.updateTask(task.id, { status: 'failed', error: `${task.engine} 内核尚未配置或安装。` }, task.tenantId);
       this.store.addEntry('system', `${task.engine} 内核不可用，任务没有执行。配置后可重试。`, task.id, task.tenantId);
+      this.notifyIfEnabled(task.tenantId, `“${task.title}”无法开始，需要检查工作区设置。`);
       this.onChange();
       return;
     }
@@ -65,6 +67,8 @@ export class Worker {
         nextRunAt, error: null, agentSessionId: decision.sessionId || current.agentSessionId,
       }, task.tenantId);
       this.store.addEntry('dot', decision.message, task.id, task.tenantId);
+      if (decision.status === 'waiting') this.notifyIfEnabled(task.tenantId, `“${task.title}”正在等待你的回复。`);
+      else if (decision.status === 'done') this.notifyIfEnabled(task.tenantId, `“${task.title}”已有新结果。`);
       this.onChange();
     } catch (error) {
       const current = this.store.getTask(task.id, task.tenantId);
@@ -72,7 +76,14 @@ export class Worker {
       const message = error instanceof Error ? error.message : String(error);
       this.store.updateTask(task.id, { status: 'failed', error: message.slice(0, 400) }, task.tenantId);
       this.store.addEntry('system', `执行失败：${message.slice(0, 400)}`, task.id, task.tenantId);
+      this.notifyIfEnabled(task.tenantId, `“${task.title}”执行失败，需要你查看。`);
       this.onChange();
     }
+  }
+
+  private notifyIfEnabled(tenantId: string, body: string) {
+    if (this.store.getSetting('desktopNotifications', tenantId) !== 'true') return;
+    try { this.notify(this.store.getProfile(tenantId).name, body); }
+    catch { /* A desktop notification must never stop background work. */ }
   }
 }

@@ -325,9 +325,12 @@ try {
 
   await recordStep('Dot appearance changes persist within Alpha personal workspace', async () => {
     await alphaPage!.locator('.profile-link').click();
+    await alphaPage!.getByLabel('桌面通知').check();
+    await alphaPage!.getByText('此工作区已开启任务和网页监控提醒。', { exact: true }).waitFor({ state: 'visible' });
     await alphaPage!.getByLabel('名字').fill('Alpha Dot');
     await alphaPage!.getByRole('button', { name: '保存更改' }).click();
     await alphaPage!.locator('.profile-link strong').filter({ hasText: 'Alpha Dot' }).waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.getByLabel('桌面通知').isChecked(), true);
     await screenshot(alphaPage!, '08-alpha-profile');
   });
 
@@ -336,6 +339,8 @@ try {
     await alphaPage!.getByLabel('新工作区名称').fill('Alpha Shared');
     await alphaPage!.locator('.workspace-switcher form').getByRole('button', { name: '创建' }).click();
     await alphaPage!.locator('.workspace-switcher select').locator('option', { hasText: 'Alpha Shared' }).waitFor({ state: 'attached' });
+    await alphaPage!.waitForFunction(() => document.querySelector<HTMLInputElement>('input[aria-label="桌面通知"]')?.checked === false);
+    assert.equal(await alphaPage!.getByLabel('桌面通知').isChecked(), false, 'A new tenant inherited personal notification preferences');
     await alphaPage!.locator('.profile-link strong').filter({ hasText: 'Dot' }).waitFor({ state: 'visible' });
     await clickNav(alphaPage!, '你的 dot');
     await createTask(alphaPage!, 'E2E shared workspace task — prepare the team review');
@@ -384,6 +389,12 @@ try {
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
     await betaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
     await selectTenant(alphaPage!, 'Alpha Shared');
+    await alphaPage!.locator('.profile-link').click();
+    assert.equal(await alphaPage!.getByLabel('桌面通知').isChecked(), false, 'Alpha Shared lost its independent notification preference after restart');
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    assert.equal(await alphaPage!.getByLabel('桌面通知').isChecked(), true, 'Alpha personal notification preference did not survive service restart');
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
     await alphaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
     await selectTenant(betaPage!, 'Alpha Shared');
     await betaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });

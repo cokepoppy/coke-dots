@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Store } from './store.ts';
 import type { Watch } from '../shared/types.ts';
+import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
 export function validateWatchUrl(input: string): string {
   const url = new URL(input);
@@ -11,7 +12,7 @@ export function validateWatchUrl(input: string): string {
 export class WatchRunner {
   private active = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
-  constructor(private store: Store, private onChange: () => void, private fetcher: typeof fetch = fetch) {}
+  constructor(private store: Store, private onChange: () => void, private fetcher: typeof fetch = fetch, private notify: DesktopNotifier = sendDesktopNotification) {}
 
   start() { this.timer = setInterval(() => void this.tick(), 30_000); void this.tick(); }
   stop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
@@ -50,7 +51,10 @@ export class WatchRunner {
       } finally { reader.releaseLock(); }
       const digest = hash.digest('hex');
       const previous = this.store.watchHash(watch.id, watch.tenantId);
-      if (previous && previous !== digest) this.store.addEntry('dot', `检测到页面内容变化：${watch.url}`, null, watch.tenantId);
+      if (previous && previous !== digest) {
+        this.store.addEntry('dot', `检测到页面内容变化：${watch.url}`, null, watch.tenantId);
+        this.notifyIfEnabled(watch.tenantId, '你关注的网页有新变化。');
+      }
       const current = this.store.getWatch(watch.id, watch.tenantId);
       if (current?.status === 'active') this.store.updateWatch(watch.id, { lastHash: digest, lastCheckedAt: new Date().toISOString(), lastStatus: previous && previous !== digest ? '内容有变化' : previous ? '没有变化' : '已建立基线', error: null }, watch.tenantId);
       this.onChange();
@@ -61,5 +65,11 @@ export class WatchRunner {
       this.store.addEntry('system', `页面检查失败：${watch.url}（${message.slice(0, 150)}）`, null, watch.tenantId);
       this.onChange();
     }
+  }
+
+  private notifyIfEnabled(tenantId: string, body: string) {
+    if (this.store.getSetting('desktopNotifications', tenantId) !== 'true') return;
+    try { this.notify(this.store.getProfile(tenantId).name, body); }
+    catch { /* A desktop notification must never stop a watch check. */ }
   }
 }

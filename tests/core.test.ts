@@ -60,7 +60,9 @@ test('background worker stores real model result and schedules a future run', as
   process.env.DOTS_MODEL_API_KEY = 'test-key';
   const store = new Store(directory);
   const task = store.createTask('Check supplied information', 60);
-  const worker = new Worker(store, () => {});
+  store.setSetting('desktopNotifications', 'true');
+  const notifications: { title: string; body: string }[] = [];
+  const worker = new Worker(store, () => {}, undefined, (title, body) => notifications.push({ title, body }));
   try {
     worker.start();
     await waitFor(() => store.getTask(task.id)?.status === 'scheduled');
@@ -68,6 +70,7 @@ test('background worker stores real model result and schedules a future run', as
     assert.equal(completed.result, 'Checked the supplied information.');
     assert.ok(completed.nextRunAt && completed.nextRunAt > new Date().toISOString());
     assert.ok(store.snapshot(true).entries.some(e => e.taskId === task.id && e.kind === 'dot'));
+    assert.deepEqual(notifications, [{ title: 'Dot', body: '“Check supplied information”已有新结果。' }]);
   } finally {
     worker.stop(); store.close();
     await new Promise<void>(resolve => modelServer.close(() => resolve()));

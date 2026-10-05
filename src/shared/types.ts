@@ -29,6 +29,7 @@ export interface Entry {
 
 export interface Snapshot {
   profile: { name: string; shape: string; color: string };
+  preferences: { desktopNotifications: boolean };
   tasks: Task[];
   watches: Watch[];
   entries: Entry[];

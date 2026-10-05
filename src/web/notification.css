@@ -1,0 +1,7 @@
+.profile-card.notification-card{gap:12px}
+.profile-card.notification-card .notification-toggle{display:flex;align-items:flex-start;gap:11px;margin:0;color:#ddd9e2;cursor:pointer}
+.notification-toggle>input{flex:none;margin:3px 0 0;accent-color:#ad89e9}
+.notification-toggle>span{display:grid;gap:5px}
+.notification-toggle strong{font-size:12px;font-weight:600}
+.notification-toggle small,.notification-note{color:#96919c;font-size:11px;line-height:1.5}
+.notification-note{margin-left:25px}

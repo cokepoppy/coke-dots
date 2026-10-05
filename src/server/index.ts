@@ -200,6 +200,12 @@ const server = createServer(async (req, res) => {
       publish();
       return reply(res, 200, snapshot(session.tenant.id).profile);
     }
+    if (path === '/api/preferences' && req.method === 'PATCH') {
+      if (typeof body.desktopNotifications !== 'boolean') return reply(res, 400, { error: 'Invalid notification preference' });
+      store.setSetting('desktopNotifications', String(body.desktopNotifications), session.tenant.id);
+      publish();
+      return reply(res, 200, snapshot(session.tenant.id).preferences);
+    }
     if (path === '/api/model-settings' && req.method === 'PATCH') {
       const baseUrl = String(body.baseUrl || '').trim().replace(/\/$/, '');
       const model = String(body.model || '').trim();
