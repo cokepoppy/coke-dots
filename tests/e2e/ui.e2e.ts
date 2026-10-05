@@ -246,7 +246,7 @@ async function screenshot(page: Page, name: string) {
 }
 
 async function clickNav(page: Page, label: string) {
-  await page.locator('.sidebar .nav').filter({ hasText: label }).click();
+  await page.getByRole('button', { name: label, exact: true }).first().click();
 }
 
 async function signIn(page: Page, email: string) {
@@ -327,9 +327,19 @@ try {
   await recordStep('Google-style tenant Alpha signs in through the rendered page', async () => {
     await signIn(alphaPage!, 'alpha@example.test');
     await alphaPage!.getByTestId('app-shell').waitFor();
+    await alphaPage!.getByTestId('chat-home').getByRole('heading', { name: 'What’s on your mind today?' }).waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.locator('.icon-rail').evaluate(element => Math.round(element.getBoundingClientRect().width)), 44);
+    assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => Math.round(element.getBoundingClientRect().width)), 224);
+    const surfaceSwitcher = alphaPage!.getByTestId('surface-switcher');
+    assert.equal(await surfaceSwitcher.getByRole('button', { name: 'Chat' }).getAttribute('aria-pressed'), 'true');
+    await surfaceSwitcher.getByRole('button', { name: 'Work' }).click();
+    assert.equal(await surfaceSwitcher.getByRole('button', { name: 'Work' }).getAttribute('aria-pressed'), 'true');
+    await alphaPage!.getByRole('heading', { name: 'Activity', exact: true }).waitFor({ state: 'visible' });
+    await surfaceSwitcher.getByRole('button', { name: 'Chat' }).click();
+    await alphaPage!.getByTestId('chat-home').waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.profile-link small').innerText(), 'alpha@example.test');
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
-    assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(241, 240, 236)');
+    assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(247, 247, 248)');
     assert.equal(await alphaPage!.locator('.main').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(255, 255, 255)');
     assert.equal(await alphaPage!.getByTestId('dot-context-panel').count(), 0, 'A new-dot welcome state should not show the post-setup details panel');
     await screenshot(alphaPage!, '02-alpha-home');
@@ -340,8 +350,8 @@ try {
     const themeToggle = alphaPage!.getByTestId('theme-toggle');
     await themeToggle.click();
     assert.equal(await shell.getAttribute('data-theme'), 'dark');
-    assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(17, 17, 19)');
-    assert.equal(await alphaPage!.locator('.main').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(13, 13, 15)');
+    assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(37, 37, 38)');
+    assert.equal(await alphaPage!.locator('.main').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(28, 28, 29)');
     await screenshot(alphaPage!, 'theme-dark');
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await shell.waitFor();
@@ -355,9 +365,14 @@ try {
   });
 
   await recordStep('First-run greeting opens Dot customization and focuses the task composer', async () => {
+    await clickNav(alphaPage!, '你的 dot');
     const onboarding = alphaPage!.getByTestId('dot-onboarding');
     await onboarding.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
     await onboarding.getByText('Message or call me anytime. I’ll keep things moving, even when we’re not talking, and check in with updates or questions.').waitFor({ state: 'visible' });
+    const surfaceSwitcher = alphaPage!.getByTestId('surface-switcher');
+    await surfaceSwitcher.getByRole('button', { name: 'Work' }).click();
+    await surfaceSwitcher.getByRole('button', { name: 'Chat' }).click();
+    await onboarding.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'onboarding-first-run');
     await alphaPage!.getByTestId('onboarding-customize').click();
     await alphaPage!.getByRole('heading', { name: '你的 dot' }).waitFor({ state: 'visible' });
@@ -733,12 +748,14 @@ try {
     await pageNavigation.getByTestId('scratchpad-nav-page-row').filter({ hasText: 'Team launch notes' }).waitFor({ state: 'visible' });
     await pageNavigation.getByRole('button', { name: /Team launch notes/ }).evaluate(button => { if (button.getAttribute('aria-current') !== 'page') throw new Error('The open page is not selected in Scratchpad navigation'); });
     const splitWidths = await alphaPage!.evaluate(() => ({
-      rail: document.querySelector('.sidebar')!.getBoundingClientRect().width,
+      rail: document.querySelector('.icon-rail')!.getBoundingClientRect().width,
+      navigationSidebar: document.querySelector('.sidebar')!.getBoundingClientRect().width,
       conversation: document.querySelector('.chat-panel')!.getBoundingClientRect().width,
       navigation: document.querySelector('[data-testid="scratchpad-navigation"]')!.getBoundingClientRect().width,
       document: document.querySelector('.scratchpad-page-pane.split')!.getBoundingClientRect().width,
     }));
-    assert.equal(splitWidths.rail, 60, 'Opening a connected page did not use the narrow icon rail');
+    assert.equal(splitWidths.rail, 44, 'The global icon rail changed width when opening a connected page');
+    assert.equal(splitWidths.navigationSidebar, 0, 'The main navigation should collapse in the connected page view');
     assert.ok(splitWidths.navigation >= 156, 'The Scratchpad page-navigation column collapsed');
     assert.ok(splitWidths.document > splitWidths.conversation * 0.9, `The page document pane is too narrow (${splitWidths.document}px vs ${splitWidths.conversation}px conversation)`);
     await screenshot(alphaPage!, '19a-agent-created-scratchpad-page');
