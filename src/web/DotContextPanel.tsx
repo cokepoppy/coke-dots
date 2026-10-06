@@ -63,7 +63,6 @@ export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSe
       {outputs.length ? <div className="context-list">{outputs.map(task => <button className="context-output-row" key={task.id} onClick={() => onSelectTask(task.id)}><span className="context-output-icon" aria-hidden="true">▤</span><span className="context-row-copy"><strong>{task.title}</strong><small>Task result</small></span></button>)}</div> : <p className="context-empty">No outputs yet</p>}
     </ContextSection>
 
-    <ContextSection title="Skills" testId="context-skills"><p className="context-empty">No skills yet</p></ContextSection>
   </aside>;
 }
 

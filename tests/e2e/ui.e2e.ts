@@ -422,8 +422,20 @@ try {
     assert.equal(await alphaPage!.locator('.timeline .message.user').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(219, 234, 254)');
     assert.equal(await contextPanel.getByRole('button', { name: 'Call, not connected' }).isDisabled(), true);
     assert.equal(await contextPanel.getByRole('button', { name: 'Slack, not connected' }).isDisabled(), true);
-    await contextPanel.getByText('No skills yet', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await contextPanel.getByRole('region', { name: 'Skills' }).count(), 0, 'The observed details panel ends after Outputs; do not invent an unverified Skills section');
+    assert.equal(await alphaPage!.evaluate(() => {
+      const actions = document.querySelector('.top-actions')!.getBoundingClientRect();
+      const panel = document.querySelector('.dot-context-panel')!.getBoundingClientRect();
+      return actions.right <= panel.left;
+    }), true, 'Top-bar tenant and theme controls overlap the observed details panel');
     await screenshot(alphaPage!, '03-task-progress-and-context');
+    await alphaPage!.getByTestId('theme-toggle').click();
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
+    assert.equal(await contextPanel.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(17, 17, 19)');
+    assert.equal(await alphaPage!.evaluate(() => document.querySelector('.top-actions')!.getBoundingClientRect().right <= document.querySelector('.dot-context-panel')!.getBoundingClientRect().left), true);
+    await screenshot(alphaPage!, '03-task-context-dark');
+    await alphaPage!.getByTestId('theme-toggle').click();
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
   });
 
   await recordStep('Dot computer shortcut opens the tenant-isolated browser workspace', async () => {
