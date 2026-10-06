@@ -58,7 +58,7 @@ export function DotAvatarEditor({ profile, onClose, onSave }: { profile: { name:
               }} small />}
           </button>)}
         </div>
-        <div className="avatar-editor-colors" role="group" aria-label="Color">
+        {(activeTab === 'Shape' || activeTab === 'Accessories') && <div className="avatar-editor-colors" role="group" aria-label="Color">
           {dotAvatarPalette.map(color => <button
             key={color}
             type="button"
@@ -68,7 +68,7 @@ export function DotAvatarEditor({ profile, onClose, onSave }: { profile: { name:
             aria-pressed={appearance.color.toLowerCase() === color}
             onClick={() => setAppearance(current => ({ ...current, color }))}
           />)}
-        </div>
+        </div>}
       </div>
       <aside className="avatar-editor-preview" aria-label="Live preview">
         <button className="avatar-editor-close" type="button" aria-label="Close customizer" onClick={onClose}>×</button>

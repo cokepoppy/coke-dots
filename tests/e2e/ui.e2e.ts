@@ -440,12 +440,16 @@ try {
     await screenshot(alphaPage!, 'avatar-customizer-light');
 
     await editor.getByRole('tab', { name: 'Eyes' }).click();
+    assert.equal(await editor.getByRole('group', { name: 'Color' }).count(), 0, 'The observed Eyes grid has no color row');
     await editor.getByRole('button', { name: 'Sparkle eyes' }).click();
     await editor.getByRole('tab', { name: 'Glasses' }).click();
+    assert.equal(await editor.getByRole('group', { name: 'Color' }).count(), 0, 'The observed Glasses grid has no color row');
     await editor.getByRole('button', { name: 'Round glasses' }).click();
     await editor.getByRole('tab', { name: 'Accessories' }).click();
+    assert.equal(await editor.getByRole('group', { name: 'Color' }).count(), 1, 'The observed Accessories grid retains its color row');
     await editor.getByRole('button', { name: 'Crown' }).click();
     await editor.getByRole('tab', { name: 'Shape' }).click();
+    assert.equal(await editor.getByRole('group', { name: 'Color' }).count(), 1, 'The observed Shape grid retains its color row');
     await editor.getByRole('button', { name: 'Heart', exact: true }).click();
     await editor.getByRole('button', { name: 'Color #f58e70' }).click();
     const preview = editor.locator('.avatar-editor-preview .avatar');
