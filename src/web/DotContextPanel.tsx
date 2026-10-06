@@ -9,11 +9,12 @@ const statusLabel: Record<TaskStatus, string> = {
   queued: 'Queued', working: 'Working', delegating: 'Parallel work', waiting: 'Needs you', scheduled: 'Scheduled', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
 };
 
-export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSelectTask }: {
+export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onStartCall, onSelectTask }: {
   profile: Snapshot['profile'];
   state: Snapshot;
   tenantId: string;
   onOpenComputer: () => void;
+  onStartCall: () => void;
   onSelectTask: (taskId: string) => void;
 }) {
   const [computer, setComputer] = useState<ComputerState | null>(null);
@@ -40,7 +41,7 @@ export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSe
     </div>
 
     <div className="context-quick-actions">
-      <button type="button" disabled title="Voice calling is not connected in this build" aria-label="Call, not connected"><span aria-hidden="true">☎</span>Call</button>
+      <button type="button" onClick={onStartCall} aria-label="Call"><span aria-hidden="true">☎</span>Call</button>
       <button type="button" disabled title="Slack is not connected in this build" aria-label="Slack, not connected"><span className="slack-mark" aria-hidden="true">✣</span>Slack</button>
     </div>
 
