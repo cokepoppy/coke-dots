@@ -306,6 +306,8 @@ const server = createServer(async (req, res) => {
     }
     if (path === '/api/profile' && req.method === 'PATCH') {
       const current = store.getProfile(session.tenant.id);
+      if (body.setupComplete !== undefined && typeof body.setupComplete !== 'boolean') return reply(res, 400, { error: 'Invalid avatar setup state' });
+      if (body.onboardingComplete !== undefined && typeof body.onboardingComplete !== 'boolean') return reply(res, 400, { error: 'Invalid onboarding state' });
       const name = body.name === undefined ? current.name : String(body.name).trim().slice(0, 40);
       const appearance: DotAppearance = {
         shape: body.shape === undefined ? current.shape : String(body.shape),
@@ -317,7 +319,7 @@ const server = createServer(async (req, res) => {
         pet: body.pet === undefined ? current.pet : String(body.pet),
       };
       if (!name || !isDotAppearance(appearance)) return reply(res, 400, { error: 'Invalid profile' });
-      store.setProfile(name, appearance.shape, appearance.color, session.tenant.id, appearance.eyes, appearance.glasses, appearance.accessory, appearance.character, appearance.pet);
+      store.setProfile(name, appearance.shape, appearance.color, session.tenant.id, appearance.eyes, appearance.glasses, appearance.accessory, appearance.character, appearance.pet, body.setupComplete === true, body.onboardingComplete === true);
       publish();
       return reply(res, 200, snapshot(session.tenant.id).profile);
     }

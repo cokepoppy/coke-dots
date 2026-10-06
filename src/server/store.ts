@@ -72,7 +72,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS tenant_profiles (
         tenant_id TEXT PRIMARY KEY REFERENCES tenants(id), name TEXT NOT NULL, shape TEXT NOT NULL, color TEXT NOT NULL,
         eyes TEXT NOT NULL DEFAULT 'dot', glasses TEXT NOT NULL DEFAULT 'none', accessory TEXT NOT NULL DEFAULT 'none',
-        character TEXT NOT NULL DEFAULT 'ring', pet TEXT NOT NULL DEFAULT 'moss'
+        character TEXT NOT NULL DEFAULT 'ring', pet TEXT NOT NULL DEFAULT 'moss',
+        avatar_setup_completed_at TEXT, onboarding_completed_at TEXT, onboarding_completed_name TEXT
       );
       CREATE TABLE IF NOT EXISTS tenant_settings (
         tenant_id TEXT NOT NULL REFERENCES tenants(id), key TEXT NOT NULL, value TEXT NOT NULL,
@@ -125,6 +126,10 @@ export class Store {
     this.addColumnIfMissing('tenant_profiles', 'accessory', "TEXT NOT NULL DEFAULT 'none'");
     this.addColumnIfMissing('tenant_profiles', 'character', "TEXT NOT NULL DEFAULT 'custom'");
     this.addColumnIfMissing('tenant_profiles', 'pet', "TEXT NOT NULL DEFAULT 'moss'");
+    this.addColumnIfMissing('tenant_profiles', 'avatar_setup_completed_at', 'TEXT');
+    this.addColumnIfMissing('tenant_profiles', 'onboarding_completed_at', 'TEXT');
+    this.addColumnIfMissing('tenant_profiles', 'onboarding_completed_name', 'TEXT');
+    this.db.exec('UPDATE tenant_profiles SET avatar_setup_completed_at=onboarding_completed_at WHERE avatar_setup_completed_at IS NULL AND onboarding_completed_at IS NOT NULL');
     this.db.exec("UPDATE tenant_profiles SET character='custom' WHERE character='classic'");
     this.ensurePageApprovalCancellationStatus();
     const oldProfile = this.tableExists('profile');
@@ -387,7 +392,7 @@ export class Store {
   removeSession(tokenHash: string) { this.db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').run(tokenHash); }
 
   snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false }, tenantId = 'legacy'): Snapshot {
-    const p = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory,character,pet FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
+    const p = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory,character,pet,avatar_setup_completed_at AS avatarSetupCompletedAt,onboarding_completed_at AS onboardingCompletedAt,onboarding_completed_name AS onboardingCompletedName FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
     if (!p) throw new Error('Workspace profile is missing');
     return {
       profile: p,
@@ -762,13 +767,15 @@ export class Store {
     return { id: Number(result.lastInsertRowid), tenantId, taskId, kind, body, createdAt: now };
   }
 
-  setProfile(name: string, shape: string, color: string, tenantId = 'legacy', eyes = 'dot', glasses = 'none', accessory = 'none', character = 'ring', pet = 'moss') {
-    this.db.prepare('UPDATE tenant_profiles SET name=?,shape=?,color=?,eyes=?,glasses=?,accessory=?,character=?,pet=? WHERE tenant_id=?')
-      .run(name, shape, color, eyes, glasses, accessory, character, pet, tenantId);
+  setProfile(name: string, shape: string, color: string, tenantId = 'legacy', eyes = 'dot', glasses = 'none', accessory = 'none', character = 'ring', pet = 'moss', completeSetup = false, completeOnboarding = false) {
+    const setupAt = completeSetup || completeOnboarding ? new Date().toISOString() : null;
+    const completedAt = completeOnboarding ? new Date().toISOString() : null;
+    this.db.prepare('UPDATE tenant_profiles SET name=?,shape=?,color=?,eyes=?,glasses=?,accessory=?,character=?,pet=?,avatar_setup_completed_at=COALESCE(avatar_setup_completed_at,?),onboarding_completed_at=COALESCE(onboarding_completed_at,?),onboarding_completed_name=COALESCE(onboarding_completed_name,?) WHERE tenant_id=?')
+      .run(name, shape, color, eyes, glasses, accessory, character, pet, setupAt, completedAt, completeOnboarding ? name : null, tenantId);
   }
 
   getProfile(tenantId = 'legacy') {
-    const profile = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory,character,pet FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
+    const profile = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory,character,pet,avatar_setup_completed_at AS avatarSetupCompletedAt,onboarding_completed_at AS onboardingCompletedAt,onboarding_completed_name AS onboardingCompletedName FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
     if (!profile) throw new Error('Workspace profile is missing');
     return profile;
   }

@@ -26,7 +26,7 @@ import './shell-replica.css';
 import './onboarding-replica.css';
 import './computer-choice.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss' }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
@@ -155,13 +155,18 @@ function App() {
     }
   }
 
-  async function saveAvatarAppearance(appearance: DotAppearance, name?: string) {
+  async function saveAvatarAppearance(appearance: DotAppearance, name?: string, completeOnboarding = false, completeSetup = false) {
     try {
-      const profile = await request('/profile', 'PATCH', { ...appearance, ...(name === undefined ? {} : { name }) }) as Snapshot['profile'];
+      const profile = await request('/profile', 'PATCH', { ...appearance, ...(name === undefined ? {} : { name }), ...(completeOnboarding ? { onboardingComplete: true } : {}), ...(completeSetup ? { setupComplete: true } : {}) }) as Snapshot['profile'];
       setState(current => ({ ...current, profile }));
       setAvatarEditorOpen(false);
       setAvatarSetupOpen(false);
     } catch (error) { setError(String(error)); }
+  }
+
+  function openDotCustomizer() {
+    if (state.profile.avatarSetupCompletedAt) setAvatarEditorOpen(true);
+    else setAvatarSetupOpen(true);
   }
 
   async function saveComputerAccess(localComputer: boolean) {
@@ -270,7 +275,7 @@ function App() {
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {computerConnectedToast && <div className="computer-connected-toast" data-testid="computer-connected-toast" role="status"><span className="computer-connected-icon" aria-hidden="true">✓</span><span>The computer is connected to your dot</span><button type="button" aria-label="Dismiss notification" onClick={() => setComputerConnectedToast(false)}>×</button></div>}
       {(view === 'home' || view === 'chat') && <div className="chat-layout"><section className="chat-panel">
-        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What’s on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} computerAccess={state.computerAccess} onComputerAccess={saveComputerAccess} onEditSetup={() => setAvatarSetupOpen(true)} /> : <div className="timeline">
+        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What’s on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} computerAccess={state.computerAccess} onComputerAccess={saveComputerAccess} onEditSetup={openDotCustomizer} /> : <div className="timeline">
           {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
           {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={entry.body} onOpenPage={id => openPage(id, entry.taskId)} /></div></article>)}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
@@ -288,9 +293,9 @@ function App() {
       {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} />}
       {view === 'computer' && <ComputerView dotName={state.profile.name} localComputerEnabled={state.computerAccess.localComputer} onManageAccess={() => setComputerAccessOpen(true)} onError={setError} />}
     </main>
-    {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={saveAvatarAppearance} />}
+    {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, false, true)} />}
     {computerAccessOpen && <DotComputerChoice localComputer={state.computerAccess.localComputer} mode="settings" onSave={saveComputerAccess} onCancel={() => setComputerAccessOpen(false)} />}
-    {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={saveAvatarAppearance} />}
+    {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, !state.profile.onboardingCompletedAt)} />}
   </div>;
 }
 

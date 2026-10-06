@@ -44,7 +44,7 @@ export interface Entry {
 }
 
 export interface Snapshot {
-  profile: { name: string } & DotAppearance;
+  profile: { name: string; avatarSetupCompletedAt: string | null; onboardingCompletedAt: string | null; onboardingCompletedName: string | null } & DotAppearance;
   preferences: { desktopNotifications: boolean };
   computerAccess: { dotComputer: true; localComputer: boolean; configured: boolean };
   tasks: Task[];

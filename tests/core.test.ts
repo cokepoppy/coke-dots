@@ -32,14 +32,48 @@ test('dot appearance is durable and isolated to its tenant', () => {
     let store = new Store(directory);
     const alpha = store.signInGoogle({ subject: 'appearance-alpha', email: 'appearance-alpha@example.test', name: 'Alpha' });
     const beta = store.signInGoogle({ subject: 'appearance-beta', email: 'appearance-beta@example.test', name: 'Beta' });
-    store.setProfile('Roger', 'heart', '#f58e70', alpha.tenant.id, 'sparkle', 'round', 'crown', 'blue', 'moss');
-    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'Roger', shape: 'heart', color: '#f58e70', eyes: 'sparkle', glasses: 'round', accessory: 'crown', character: 'blue', pet: 'moss' });
-    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss' });
+    store.setProfile('dot', 'triangle', '#f18ac0', alpha.tenant.id, 'classic', 'none', 'none', 'triangle', 'moss', true);
+    const setupAt = store.getProfile(alpha.tenant.id).avatarSetupCompletedAt;
+    assert(setupAt, 'Saving the first-run appearance editor should persist its own stage');
+    assert.equal(store.getProfile(alpha.tenant.id).onboardingCompletedAt, null, 'The first appearance editor must not finish the later conversation stage');
+    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'dot', shape: 'triangle', color: '#f18ac0', eyes: 'classic', glasses: 'none', accessory: 'none', character: 'triangle', pet: 'moss', avatarSetupCompletedAt: setupAt, onboardingCompletedAt: null, onboardingCompletedName: null });
+    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null });
+    store.setProfile('Roger', 'heart', '#f58e70', alpha.tenant.id, 'sparkle', 'round', 'crown', 'blue', 'moss', false, true);
+    const completedAt = store.getProfile(alpha.tenant.id).onboardingCompletedAt;
+    assert(completedAt, 'Saving the advanced customizer should persist completion of the expanded onboarding transcript');
+    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'Roger', shape: 'heart', color: '#f58e70', eyes: 'sparkle', glasses: 'round', accessory: 'crown', character: 'blue', pet: 'moss', avatarSetupCompletedAt: setupAt, onboardingCompletedAt: completedAt, onboardingCompletedName: 'Roger' });
+    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null });
     store.close();
 
     store = new Store(directory);
-    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'Roger', shape: 'heart', color: '#f58e70', eyes: 'sparkle', glasses: 'round', accessory: 'crown', character: 'blue', pet: 'moss' });
-    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss' });
+    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'Roger', shape: 'heart', color: '#f58e70', eyes: 'sparkle', glasses: 'round', accessory: 'crown', character: 'blue', pet: 'moss', avatarSetupCompletedAt: setupAt, onboardingCompletedAt: completedAt, onboardingCompletedName: 'Roger' });
+    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null });
+    store.setProfile('Dolly', 'heart', '#f58e70', alpha.tenant.id, 'sparkle', 'round', 'crown', 'blue', 'moss');
+    assert.equal(store.getProfile(alpha.tenant.id).onboardingCompletedName, 'Roger', 'The first-run acknowledgement keeps the name saved during setup if the profile is renamed later');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('profile migration preserves already-completed customization as the earlier setup stage', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-profile-migration-'));
+  try {
+    const database = new DatabaseSync(join(directory, 'dots.db'));
+    database.exec(`
+      CREATE TABLE tenants(id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL,created_at TEXT NOT NULL);
+      INSERT INTO tenants VALUES('legacy','Personal workspace','personal','2026-01-01T00:00:00.000Z');
+      CREATE TABLE tenant_profiles(
+        tenant_id TEXT PRIMARY KEY REFERENCES tenants(id), name TEXT NOT NULL, shape TEXT NOT NULL, color TEXT NOT NULL,
+        eyes TEXT NOT NULL DEFAULT 'classic', glasses TEXT NOT NULL DEFAULT 'none', accessory TEXT NOT NULL DEFAULT 'none',
+        character TEXT NOT NULL DEFAULT 'custom', pet TEXT NOT NULL DEFAULT 'moss', onboarding_completed_at TEXT, onboarding_completed_name TEXT
+      );
+      INSERT INTO tenant_profiles(tenant_id,name,shape,color,eyes,character,pet,onboarding_completed_at,onboarding_completed_name)
+      VALUES('legacy','Roger','scallop','#f58e70','wide','custom','moss','2026-02-01T12:00:00.000Z','Roger');
+    `);
+    database.close();
+    const store = new Store(directory);
+    const profile = store.getProfile('legacy');
+    assert.equal(profile.avatarSetupCompletedAt, profile.onboardingCompletedAt);
+    assert.equal(profile.onboardingCompletedName, 'Roger');
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

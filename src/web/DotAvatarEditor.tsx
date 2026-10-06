@@ -12,7 +12,8 @@ const labels: Record<EditorTab, Record<string, string>> = {
   Accessories: { none: 'No accessory', crown: 'Crown', halo: 'Halo', bow: 'Bow', flower: 'Flower accessory', leaf: 'Leaf', sparkle: 'Sparkle accessory', antenna: 'Antenna', cap: 'Cap' },
 };
 
-export function DotAvatarEditor({ profile, onClose, onSave }: { profile: { name: string } & DotAppearance; onClose: () => void; onSave: (appearance: DotAppearance) => Promise<void> }) {
+export function DotAvatarEditor({ profile, onClose, onSave }: { profile: { name: string } & DotAppearance; onClose: () => void; onSave: (appearance: DotAppearance, name: string) => Promise<void> }) {
+  const [name, setName] = useState(profile.name);
   const [appearance, setAppearance] = useState<DotAppearance>({ shape: profile.shape, color: profile.color, eyes: profile.eyes, glasses: profile.glasses, accessory: profile.accessory, character: profile.character, pet: profile.pet });
   const [activeTab, setActiveTab] = useState<EditorTab>('Shape');
   const [saving, setSaving] = useState(false);
@@ -24,7 +25,7 @@ export function DotAvatarEditor({ profile, onClose, onSave }: { profile: { name:
   function select(value: string) { setAppearance(current => ({ ...current, [key]: value, character: 'custom' })); }
   async function save() {
     setSaving(true);
-    try { await onSave(appearance); } finally { setSaving(false); }
+    try { await onSave(appearance, name.trim()); } finally { setSaving(false); }
   }
 
   return <div className="avatar-editor-backdrop" data-testid="avatar-editor-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
@@ -72,9 +73,9 @@ export function DotAvatarEditor({ profile, onClose, onSave }: { profile: { name:
       </div>
       <aside className="avatar-editor-preview" aria-label="Live preview">
         <button className="avatar-editor-close" type="button" aria-label="Close customizer" onClick={onClose}>×</button>
-        <strong>{profile.name}</strong>
+        <input aria-label="Dot name" maxLength={40} value={name} onChange={event => setName(event.target.value)} />
         <DotAvatar appearance={appearance} />
-        <button className="avatar-editor-save" type="button" disabled={saving} onClick={() => void save()}>{saving ? 'Saving…' : 'Save'}</button>
+        <button className="avatar-editor-save" type="button" disabled={saving || !name.trim()} onClick={() => void save()}>{saving ? 'Saving…' : 'Save'}</button>
       </aside>
     </section>
   </div>;

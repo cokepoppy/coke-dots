@@ -23,6 +23,18 @@
 .dot-onboarding-messages .message p{margin:0;color:#414148;font-size:12px;line-height:1.42;white-space:pre-wrap}
 .dot-onboarding-messages .message.user{margin-left:auto;background:#84a9dd}
 .dot-onboarding-messages .message.user p{color:#15161a}
+.dot-onboarding-messages .onboarding-customize{display:flex;align-items:center;gap:8px;width:max-content;height:30px;margin:0 0 7px;padding:0 12px;border:0;border-radius:18px;background:#f3e5d9;color:#85502f;font:inherit;font-size:11px;line-height:1;cursor:pointer}
+.dot-onboarding-messages .onboarding-customize>span:first-child{font-size:13px}
+.dot-onboarding-messages .onboarding-customize-chevron{margin-left:2px;font-size:18px;line-height:10px}
+.dot-onboarding-messages .onboarding-customize:hover{background:#ead6c5}
+.dot-onboarding-messages .onboarding-suggestion-card{width:min(750px,89%);box-sizing:border-box;padding:10px 14px 9px;background:#eeede9}
+.dot-onboarding-messages .onboarding-suggestion-card p{font-size:11px;line-height:1.3}
+.onboarding-suggestion-redaction{position:relative;height:126px;margin:5px 0 3px;overflow:hidden;border-radius:9px;background:linear-gradient(105deg,#e6e9e4 0%,#dfe4df 42%,#e8e9e5 100%)}
+.onboarding-suggestion-redaction i{position:absolute;left:5%;right:8%;height:23px;border-radius:12px;background:linear-gradient(90deg,#d3dad2 0%,#e7e9e4 55%,#d9dfd7 100%);filter:blur(12px);opacity:.8}
+.onboarding-suggestion-redaction i:nth-child(1){top:21px;right:18%}
+.onboarding-suggestion-redaction i:nth-child(2){top:56px;left:14%;right:4%}
+.onboarding-suggestion-redaction i:nth-child(3){top:91px;left:8%;right:24%}
+.dot-onboarding-messages .onboarding-suggestion-card p:last-child{margin-top:4px}
 .dot-onboarding-mode .composer-wrap{width:min(560px,100%);padding:8px 24px 20px}
 .dot-onboarding-mode .composer{min-height:54px;padding:9px 13px 7px;border-radius:28px}
 .dot-onboarding-mode .composer textarea{height:25px;min-height:25px;resize:none;font-size:12px}
@@ -34,6 +46,11 @@
 .dots-dark .dot-onboarding-messages .message p{color:#e0eee4}
 .dots-dark .dot-onboarding-messages .message.user{background:#84a9dd}
 .dots-dark .dot-onboarding-messages .message.user p{color:#15161a}
+.dots-dark .dot-onboarding-messages .onboarding-customize{background:#472f20;color:#f0b98d}
+.dots-dark .dot-onboarding-messages .onboarding-customize:hover{background:#563924}
+.dots-dark .dot-onboarding-messages .onboarding-suggestion-card{background:#10261b}
+.dots-dark .onboarding-suggestion-redaction{background:linear-gradient(105deg,#1b3024 0%,#23392b 42%,#192d21 100%)}
+.dots-dark .onboarding-suggestion-redaction i{background:linear-gradient(90deg,#2a4231 0%,#35533b 55%,#263c2d 100%)}
 .dots-dark.dot-onboarding-mode .composer{border-color:#424245;background:#3a3a3d;box-shadow:none}
 .dots-dark.dot-onboarding-mode .composer textarea{color:#f1eff4}
 .dots-dark.dot-onboarding-mode .composer textarea::placeholder{color:#b3b0b8}
