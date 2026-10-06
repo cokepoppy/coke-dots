@@ -55,9 +55,9 @@
 .message-attachments{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0;padding:0;list-style:none}
 .message-attachments li{background:#f8f8fa}
 .home-mode .composer{display:flex;align-items:center;gap:8px;width:100%;min-height:40px;padding:4px 9px 4px 16px;border-radius:25px;box-shadow:0 4px 18px #10101012}
-.home-mode .composer:focus-within{align-items:flex-end}
+.home-mode .composer:focus-within{align-items:center}
 .home-mode .composer textarea{flex:1;width:0;height:24px;min-height:24px;margin:0;padding:0;resize:none;line-height:24px;overflow-y:auto}
-.home-mode .composer textarea:focus{height:68px;min-height:68px}
+.home-mode .composer textarea:focus{height:24px;min-height:24px}
 .home-mode .composer-bottom{flex:none;align-items:center;gap:6px;justify-content:flex-end;margin:0}
 .home-mode .attachment-button{width:28px;height:28px;margin-left:-6px}
 .home-mode .composer-bottom label,.home-mode .hint{display:none}

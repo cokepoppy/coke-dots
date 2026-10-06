@@ -398,6 +398,7 @@ try {
     const homeComposerLayout = await alphaPage!.locator('.composer').evaluate(element => {
       const composer = element.getBoundingClientRect();
       const textarea = element.querySelector('textarea')!.getBoundingClientRect();
+      const dictationButton = element.querySelector<HTMLButtonElement>('[data-testid="dictation-button"]')!.getBoundingClientRect();
       const callButton = element.querySelector<HTMLButtonElement>('[data-testid="voice-call-launch"]')!.getBoundingClientRect();
       const main = element.closest('main')!.getBoundingClientRect();
       const heading = element.closest('.chat-panel')!.querySelector('.chat-home h1')!.getBoundingClientRect();
@@ -408,6 +409,7 @@ try {
         mainCenterX: main.left + main.width / 2,
         topRatio: (composer.top - main.top) / main.height,
         headingGap: composer.top - heading.bottom,
+        inputDictationDeltaY: Math.abs(textarea.top + textarea.height / 2 - (dictationButton.top + dictationButton.height / 2)),
         inputCallDeltaY: Math.abs(textarea.top + textarea.height / 2 - (callButton.top + callButton.height / 2)),
       };
     });
@@ -415,7 +417,9 @@ try {
     assert(homeComposerLayout.topRatio > 0.41 && homeComposerLayout.topRatio < 0.48, 'The landing composer should sit slightly above the center of the main pane');
     assert(Math.abs(homeComposerLayout.centerX - homeComposerLayout.mainCenterX) <= 1, 'The landing composer should be centered in the main pane');
     assert(homeComposerLayout.headingGap >= 0 && homeComposerLayout.headingGap <= 16, 'The landing heading should sit just above the composer');
+    assert(homeComposerLayout.inputDictationDeltaY <= 3, 'The dictation control should align with the composer input');
     assert(homeComposerLayout.inputCallDeltaY <= 3, 'The input and voice control should share one row');
+    assert.equal(await alphaPage!.getByTestId('dictation-button').isVisible(), true, 'The landing composer should expose the separate microphone control seen in V1 at 01:18');
     assert.equal(await alphaPage!.locator('.home-mode .send').isVisible(), false, 'The empty landing composer should show voice instead of a disabled send arrow');
     await screenshot(alphaPage!, '02-alpha-home');
   });
@@ -682,6 +686,57 @@ try {
     await alphaPage!.getByTestId('theme-toggle').click();
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
     await clickNav(alphaPage!, '你的 dot');
+  });
+
+  await recordStep('Dictate into the composer, edit the transcript, then explicitly send it', async () => {
+    await alphaPage!.getByRole('button', { name: '新聊天', exact: true }).click();
+    await alphaPage!.getByTestId('chat-home').waitFor({ state: 'visible' });
+    const dictationMockScript = [
+      '(() => {',
+      '  class FakeSpeechRecognition {',
+      '    constructor() { this.onresult = null; this.onerror = null; this.onend = null; }',
+      '    start() { window.__dotsFakeDictation = this; }',
+      '    stop() { this.onend?.(); }',
+      '    abort() {}',
+      '    emit(text) { const result = Object.assign([{ transcript: text }], { isFinal: true }); const event = Object.assign(new Event("result"), { resultIndex: 0, results: [result] }); this.onresult?.(event); }',
+      '    deny() { const event = Object.assign(new Event("error"), { error: "not-allowed" }); this.onerror?.(event); }',
+      '  }',
+      '  Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: FakeSpeechRecognition });',
+      '})()',
+    ].join('\n');
+    await alphaPage!.evaluate((script: string) => window.eval(script), dictationMockScript);
+    const speechApi = await alphaPage!.evaluate(() => typeof (window as unknown as { SpeechRecognition?: unknown }).SpeechRecognition);
+    assert.equal(speechApi, 'function', 'The E2E speech-recognition mock must be installed before clicking the microphone');
+    const draft = 'Please prepare';
+    const composer = alphaPage!.getByTestId('task-composer');
+    await composer.fill(draft);
+    assert.equal(await alphaPage!.locator('.composer').evaluate(element => Math.round(element.getBoundingClientRect().height)), 40, 'Focusing the landing draft must not shift the adjacent controls before a pointer click');
+    await composer.evaluate(element => {
+      const textarea = element as HTMLTextAreaElement;
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+    await alphaPage!.getByTestId('dictation-button').click();
+    await alphaPage!.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeDictation));
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="dictation-button"]')?.getAttribute('aria-pressed') === 'true');
+    await screenshot(alphaPage!, 'dictation-listening');
+    await alphaPage!.evaluate(() => {
+      const fake = (window as unknown as { __dotsFakeDictation?: { emit(text: string): void; onend: (() => void) | null } }).__dotsFakeDictation;
+      fake?.emit('a Friday launch agenda');
+      fake?.onend?.();
+    });
+    await alphaPage!.waitForFunction(() => document.querySelector<HTMLTextAreaElement>('[data-testid="task-composer"]')?.value === 'Please prepare a Friday launch agenda');
+    assert.equal(await alphaPage!.locator('.timeline .message.user').count(), 0, 'Dictation only edits the draft; it must not dispatch work before the user sends it');
+    await composer.fill('Please prepare a Friday launch agenda for the team.');
+    await alphaPage!.locator('button.send').click();
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: 'Please prepare a Friday launch agenda for the team.' }).waitFor({ state: 'visible', timeout: 10_000 });
+
+    await alphaPage!.getByTestId('dictation-button').click();
+    await alphaPage!.evaluate(() => (window as unknown as { __dotsFakeDictation?: { deny(): void } }).__dotsFakeDictation?.deny());
+    const error = alphaPage!.getByRole('alert').filter({ hasText: '麦克风权限未开启' });
+    await error.waitFor({ state: 'visible' });
+    await error.getByRole('button').click();
+    await alphaPage!.getByRole('button', { name: '新聊天', exact: true }).click();
+    await alphaPage!.getByTestId('chat-home').waitFor({ state: 'visible' });
   });
 
   const alphaPrivateTask = 'E2E alpha private goal — inventory the project risks';
