@@ -33,7 +33,7 @@ export function DotSetupEditor({ profile, onClose, onSave }: {
   function chooseCharacter(id: string) {
     const preset = characterPresets.find(item => item.id === id);
     if (!preset) return;
-    setAppearance(current => ({ ...current, character: preset.id, shape: preset.shape, eyes: preset.eyes, glasses: preset.glasses, accessory: preset.accessory }));
+    setAppearance(current => ({ ...current, color: preset.swatchColor, character: preset.id, shape: preset.shape, eyes: preset.eyes, glasses: preset.glasses, accessory: preset.accessory }));
   }
   async function save() {
     setSaving(true);

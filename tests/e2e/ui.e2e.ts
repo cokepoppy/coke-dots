@@ -426,10 +426,15 @@ try {
     await setupEditor.getByRole('heading', { name: 'Customize your dot' }).waitFor({ state: 'visible' });
     for (const row of ['Colors', 'Characters', 'Pets']) await setupEditor.getByRole('region', { name: row }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'dot-setup-editor-light');
+    await setupEditor.getByRole('button', { name: 'Blue character' }).click();
+    const setupPreview = setupEditor.locator('.dot-setup-avatar-preview .avatar');
+    assert.match(await setupPreview.getAttribute('class') || '', /character-blue/);
+    assert.match(await setupPreview.getAttribute('class') || '', /accessory-crown/);
+    assert.equal(await setupPreview.evaluate(element => getComputedStyle(element).getPropertyValue('--avatar-color').trim()), '#18a6da', 'Choosing the blue character should update the live preview to the blue shown in the source frame');
+    await screenshot(alphaPage!, 'dot-setup-preview-blue-light');
     await setupEditor.getByRole('button', { name: 'Color #f18ac0' }).click();
     await setupEditor.getByRole('button', { name: 'Triangle character' }).click();
     await setupEditor.getByRole('button', { name: 'Green pet' }).click();
-    const setupPreview = setupEditor.locator('.dot-setup-avatar-preview .avatar');
     assert.match(await setupPreview.getAttribute('class') || '', /triangle/);
     assert.match(await setupPreview.getAttribute('class') || '', /pet-moss/);
     assert.equal(await setupPreview.evaluate(element => getComputedStyle(element).getPropertyValue('--avatar-color').trim()), '#f18ac0');
