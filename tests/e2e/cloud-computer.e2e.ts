@@ -276,7 +276,8 @@ try {
     const state = await response.json() as { tasks: { id: string; status: string }[] };
     return state.tasks.find(task => task.id === id)?.status === 'done';
   }, created.task.id, { timeout: 20_000 });
-  assert.equal(agentCalls.length, 1);
+  const debugState = await page.evaluate(async () => await fetch('/api/state').then(response => response.json()) as { availableEngines: string[]; tasks: { id: string; engine: string; status: string; result: string | null; error: string | null }[] });
+  assert.equal(agentCalls.length, 1, `Expected one remote Agent dispatch; created=${JSON.stringify(created)}, state=${JSON.stringify(debugState.tasks.find(task => task.id === created.task.id))}, engines=${JSON.stringify(debugState.availableEngines)}, calls=${JSON.stringify(agentCalls)}, remotePaths=${JSON.stringify(remoteHttpPaths.filter(path => path.includes('/agent/')))}, logs=${logs.join('')}`);
   assert.equal(agentCalls[0].engine, 'dsh');
   assert.equal(agentCalls[0].cwd, `tasks/${created.task.id}`);
   assert.equal((agentCalls[0].computer as { baseUrl: string }).baseUrl, 'http://127.0.0.1:8082');

@@ -32,6 +32,8 @@ let mockModelPrompts: string[] = [];
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
 let pauseModelHeld = false;
+let heldVoiceModelRelease: (() => void) | null = null;
+let voiceModelHeld = false;
 let heldStopModelRelease: (() => void) | null = null;
 let heldStopModelAborted = false;
 let parallelModelReleases: (() => void)[] = [];
@@ -100,6 +102,8 @@ async function startMockModel() {
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
         const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
+        const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
+        const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
         const isParallelTask = prompt.includes('E2E parallel work —');
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
@@ -118,6 +122,11 @@ async function startMockModel() {
           await new Promise<void>(resolvePromise => { heldStopModelRelease = resolvePromise; });
           heldStopModelRelease = null;
         }
+        if (isVoiceTask && !voiceModelHeld) {
+          voiceModelHeld = true;
+          await new Promise<void>(resolvePromise => { heldVoiceModelRelease = resolvePromise; });
+          heldVoiceModelRelease = null;
+        }
         if (isParallelTask) await new Promise<void>(resolvePromise => parallelModelReleases.push(resolvePromise));
         if (delegatedChild) {
           delegatedModelPrompts.push(prompt);
@@ -126,13 +135,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'claude' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -209,9 +218,9 @@ async function delay(milliseconds: number) {
   await new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds));
 }
 
-async function waitFor(predicate: () => boolean, timeout = 3_000) {
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeout = 3_000) {
   const start = Date.now();
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() - start > timeout) throw new Error('Timed out waiting for browser task state');
     await delay(20);
   }
@@ -227,6 +236,12 @@ function releaseHeldPauseModel() {
   const release = heldPauseModelRelease as (() => void) | null;
   if (release) release();
   heldPauseModelRelease = null;
+}
+
+function releaseHeldVoiceModel() {
+  const release = heldVoiceModelRelease;
+  if (release) release();
+  heldVoiceModelRelease = null;
 }
 
 function releaseParallelModels() {
@@ -658,7 +673,7 @@ try {
     await contextPanel.getByRole('region', { name: 'Computers' }).waitFor({ state: 'visible' });
     await contextPanel.getByRole('region', { name: 'Recent activity' }).getByText(alphaPrivateTask).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.timeline .message.user').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(219, 234, 254)');
-    assert.equal(await contextPanel.getByRole('button', { name: 'Call, not connected' }).isDisabled(), true);
+    assert.equal(await contextPanel.getByRole('button', { name: 'Call' }).isDisabled(), false);
     assert.equal(await contextPanel.getByRole('button', { name: 'Slack, not connected' }).isDisabled(), true);
     assert.equal(await contextPanel.getByRole('region', { name: 'Skills' }).count(), 0, 'The observed details panel ends after Outputs; do not invent an unverified Skills section');
     assert.equal(await alphaPage!.evaluate(() => {
@@ -938,6 +953,89 @@ try {
     assert.equal(await alphaPage!.locator('.scheduled-item').count(), 0, 'Discussing ideas must not create a Scheduled entry');
     await screenshot(alphaPage!, '07-automation-proposals-unscheduled');
     await clickNav(alphaPage!, '你的 dot');
+  });
+
+  await recordStep('Voice calls dispatch tenant work, preserve in-call controls, and end without stopping assigned work', async () => {
+    const voiceMockScript = [
+      '(() => {',
+      '  class FakeSpeechRecognition {',
+      '    constructor() { this.onresult = null; this.onerror = null; this.onend = null; }',
+      '    start() { window.__dotsFakeRecognition = this; }',
+      '    abort() {}',
+      '    emit(text) { const result = Object.assign([{ transcript: text }], { isFinal: true }); const event = Object.assign(new Event("result"), { resultIndex: 0, results: [result] }); this.onresult(event); }',
+      '  }',
+      '  Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: FakeSpeechRecognition });',
+      '  Object.defineProperty(window, "__dotsSpeechOutput", { configurable: true, value: [] });',
+      '  Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { cancel() {}, speak(utterance) { window.__dotsSpeechOutput.push(utterance.text); window.setTimeout(() => utterance.onend?.(), 0); } } });',
+      '  Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { constructor(text) { this.text = text; } } });',
+      '})()',
+    ].join('\n');
+    await alphaPage!.evaluate((script: string) => window.eval(script), voiceMockScript);
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const profileCall = alphaPage!.getByTestId('voice-call');
+    await profileCall.waitFor({ state: 'visible' });
+    await profileCall.getByRole('button', { name: '结束通话' }).click();
+    await profileCall.waitFor({ state: 'hidden' });
+
+    await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
+    await alphaPage!.getByTestId('voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeRecognition));
+    await call.getByRole('button', { name: '关闭扬声器' }).click();
+    assert.equal(await call.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await call.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    await call.getByRole('button', { name: '打开扬声器' }).click();
+    await delay(1100);
+    assert.notEqual(await call.getByTestId('voice-call-timer').innerText(), '00:00', 'The call timer should advance while connected');
+
+    const instruction = 'E2E voice request — finish after the call ends';
+    await alphaPage!.evaluate((text: string) => {
+      const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
+      pageWindow.__dotsFakeRecognition?.emit(text);
+    }, instruction);
+    await call.getByText(instruction, { exact: true }).waitFor({ state: 'visible' });
+    await waitFor(() => Boolean(heldVoiceModelRelease), 10_000);
+    await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
+    await screenshot(alphaPage!, 'voice-call-task-running');
+    let speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+    assert(speechOutput.includes('收到，已加入工作队列。'), 'The call should speak its queue acknowledgement when speaker output is enabled');
+    const responseInstruction = 'E2E voice response — speak actual task result';
+    await alphaPage!.evaluate((text: string) => {
+      const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
+      pageWindow.__dotsFakeRecognition?.emit(text);
+    }, responseInstruction);
+    await alphaPage!.getByText(responseInstruction, { exact: true }).waitFor({ state: 'visible' });
+    await waitFor(async () => {
+      speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+      return speechOutput.includes('Voice response returned from the model.');
+    }, 10_000);
+    assert(speechOutput.includes('Voice response returned from the model.'), 'The call should speak the completed task result, not only acknowledge receipt');
+    const composer = alphaPage!.getByTestId('task-composer');
+    await composer.fill('Typed while the voice call is active');
+    assert.equal(await composer.inputValue(), 'Typed while the voice call is active');
+    await composer.fill('');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'hidden' });
+    releaseHeldVoiceModel();
+    await alphaPage!.waitForFunction(async (text: string) => {
+      const snapshot = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; result: string | null }[] };
+      return snapshot.tasks.some(task => task.instruction === text && task.status === 'done' && task.result === 'Voice request finished after the call ended.');
+    }, instruction, { timeout: 15_000 });
+    const alphaCalls = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null; durationSeconds: number | null }[];
+    assert.equal(alphaCalls.length, 2, 'Conversation and Dot profile call entry points must each persist a call');
+    assert(alphaCalls.every(item => item.endedAt), 'Ending each call must persist its completion time');
+    assert(alphaCalls.some(item => item.durationSeconds !== null && item.durationSeconds >= 1));
+
+    await selectTenant(betaPage!, 'Alpha Shared');
+    const betaSharedCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));
+    assert.deepEqual(betaSharedCalls, [], 'Another workspace member must not read the call owner\'s history');
+    await selectTenant(betaPage!, 'Beta workspace');
+    const betaPersonalCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));
+    assert.deepEqual(betaPersonalCalls, [], 'A different tenant must not read the call history');
   });
 
   await recordStep('A user reply resumes a waiting task while retaining the original goal', async () => {
@@ -1443,6 +1541,7 @@ try {
 } finally {
   releaseHeldPauseModel();
   releaseHeldStopModel();
+  releaseHeldVoiceModel();
   releaseParallelModels();
   for (const release of delegatedModelReleases.values()) release();
   if (alphaContext) await alphaContext.tracing.stop({ path: join(artifactRoot, 'alpha-trace.zip') }).catch(() => undefined);

@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ActionRuleMode, Engine, Entry, PageActionApproval, ScheduleSpec, ScratchpadPageAction, Snapshot, Task, TaskStatus, TenantActionRule, Watch, WorkspacePage } from '../shared/types.ts';
+import type { ActionRuleMode, Engine, Entry, PageActionApproval, ScheduleSpec, ScratchpadPageAction, Snapshot, Task, TaskStatus, TenantActionRule, VoiceCallSession, Watch, WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -64,6 +64,11 @@ export class Store {
         id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'legacy', task_id TEXT,
         kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS voice_calls (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
+        started_at TEXT NOT NULL, ended_at TEXT, duration_seconds INTEGER CHECK(duration_seconds IS NULL OR duration_seconds >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS voice_calls_owner ON voice_calls(tenant_id,user_id,started_at DESC);
       CREATE TABLE IF NOT EXISTS watches (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'legacy', url TEXT NOT NULL, interval_minutes INTEGER NOT NULL,
         status TEXT NOT NULL, next_check_at TEXT, last_checked_at TEXT,
@@ -407,6 +412,26 @@ export class Store {
       entries: (this.db.prepare('SELECT id,tenant_id,task_id,kind,body,created_at FROM entries WHERE tenant_id=? ORDER BY id DESC LIMIT 150').all(tenantId) as Record<string, unknown>[]).map(toEntry).reverse(),
       configured, availableEngines, modelSettings,
     };
+  }
+
+  createVoiceCall(tenantId: string, userId: string, now = new Date().toISOString()): VoiceCallSession {
+    const id = randomUUID();
+    this.db.prepare('INSERT INTO voice_calls(id,tenant_id,user_id,started_at) VALUES (?,?,?,?)').run(id, tenantId, userId, now);
+    return { id, tenantId, startedAt: now, endedAt: null, durationSeconds: null };
+  }
+
+  endVoiceCall(tenantId: string, userId: string, id: string, durationSeconds: number, now = new Date().toISOString()): VoiceCallSession | null {
+    this.db.prepare('UPDATE voice_calls SET ended_at=?,duration_seconds=? WHERE id=? AND tenant_id=? AND user_id=? AND ended_at IS NULL')
+      .run(now, durationSeconds, id, tenantId, userId);
+    const row = this.db.prepare('SELECT id,tenant_id,started_at,ended_at,duration_seconds FROM voice_calls WHERE id=? AND tenant_id=? AND user_id=?')
+      .get(id, tenantId, userId) as { id: string; tenant_id: string; started_at: string; ended_at: string | null; duration_seconds: number | null } | undefined;
+    return row ? { id: row.id, tenantId: row.tenant_id, startedAt: row.started_at, endedAt: row.ended_at, durationSeconds: row.duration_seconds } : null;
+  }
+
+  voiceCalls(tenantId: string, userId: string, limit = 50): VoiceCallSession[] {
+    const rows = this.db.prepare('SELECT id,tenant_id,started_at,ended_at,duration_seconds FROM voice_calls WHERE tenant_id=? AND user_id=? ORDER BY started_at DESC LIMIT ?')
+      .all(tenantId, userId, limit) as { id: string; tenant_id: string; started_at: string; ended_at: string | null; duration_seconds: number | null }[];
+    return rows.map(row => ({ id: row.id, tenantId: row.tenant_id, startedAt: row.started_at, endedAt: row.ended_at, durationSeconds: row.duration_seconds }));
   }
 
   activityPage(tenantId: string, beforeId: number | null = null, limit = 50): { entries: Entry[]; nextCursor: number | null } {

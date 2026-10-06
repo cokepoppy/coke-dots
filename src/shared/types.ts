@@ -43,6 +43,14 @@ export interface Entry {
   createdAt: string;
 }
 
+export interface VoiceCallSession {
+  id: string;
+  tenantId: string;
+  startedAt: string;
+  endedAt: string | null;
+  durationSeconds: number | null;
+}
+
 export interface Snapshot {
   profile: { name: string; avatarSetupCompletedAt: string | null; onboardingCompletedAt: string | null; onboardingCompletedName: string | null } & DotAppearance;
   preferences: { desktopNotifications: boolean };
