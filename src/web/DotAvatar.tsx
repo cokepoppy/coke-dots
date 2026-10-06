@@ -20,7 +20,7 @@ export function DotAvatar({ appearance, small = false, className = '' }: { appea
 }
 
 export function ShapeSilhouette({ shape, color, className = '' }: { shape: string; color?: string; className?: string }) {
-  return <svg className={className} style={color ? { '--avatar-color': color } as React.CSSProperties : undefined} viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+  return <svg className={className} style={color ? { '--avatar-color': color } as React.CSSProperties : undefined} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">
     <path d={dotShapePath(shape)} fill="var(--avatar-color)" />
   </svg>;
 }

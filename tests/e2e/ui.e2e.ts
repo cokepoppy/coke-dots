@@ -248,7 +248,13 @@ async function screenshot(page: Page, name: string) {
 async function waitForComputerScreenshot(page: Page) {
   await page.waitForFunction(() => {
     const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
-    return Boolean(screenshot?.complete && screenshot.naturalWidth === 1280 && screenshot.naturalHeight === 820);
+    const bounds = screenshot?.getBoundingClientRect();
+    return Boolean(
+      screenshot?.complete &&
+      screenshot.naturalWidth === 1280 &&
+      screenshot.naturalHeight === 820 &&
+      bounds && bounds.width > 0 && bounds.height > 0,
+    );
   }, null, { timeout: 20_000 });
 }
 
@@ -476,6 +482,20 @@ try {
     for (const tab of ['Shape', 'Eyes', 'Glasses', 'Accessories']) await advancedEditor.getByRole('tab', { name: tab }).waitFor({ state: 'visible' });
     assert.equal(await advancedEditor.getByRole('group', { name: 'Shape options' }).getByRole('button').count(), 11, 'The observed Shape page contains eleven silhouettes');
     assert.equal(await advancedEditor.getByRole('group', { name: 'Color' }).getByRole('button').count(), 9, 'The observed Shape page contains nine color swatches');
+    await advancedEditor.getByRole('button', { name: 'Color #f090b5' }).click();
+    assert.equal(await advancedEditor.getByRole('button', { name: 'Color #f090b5' }).getAttribute('aria-pressed'), 'true', 'The frame-aligned screenshot must use the selected pink swatch visible in the reference');
+    const swatches = advancedEditor.getByRole('group', { name: 'Color' }).getByRole('button');
+    const swatchGeometry = await swatches.evaluateAll(elements => elements.map(element => {
+      const { x, width, height } = element.getBoundingClientRect();
+      return { center: x + width / 2, width, height, outlineOffset: getComputedStyle(element).outlineOffset, outlineColor: getComputedStyle(element).outlineColor };
+    }));
+    assert.ok(swatchGeometry.every(swatch => swatch.width === 22 && swatch.height === 22), 'Color circles should match the measured 22-pixel reference size');
+    assert.ok(swatchGeometry.every((swatch, index) => index === 0 || Math.abs(swatch.center - swatchGeometry[index - 1].center - 36) <= 1), 'Color circles should follow the measured 36-pixel center spacing');
+    const dialogBounds = await advancedEditor.getByRole('dialog').boundingBox();
+    assert(dialogBounds);
+    assert.ok(Math.abs(swatchGeometry[0].center - dialogBounds.x - 30) <= 1, 'The first swatch should start at the measured horizontal offset');
+    assert.equal(swatchGeometry[0].outlineColor, 'rgb(193, 194, 194)', 'The selected dark-theme swatch should use the neutral outline visible in the source frame');
+    assert.equal(swatchGeometry[0].outlineOffset, '3px');
     await screenshot(alphaPage!, 'avatar-editor-reference-state-dark');
     await advancedEditor.getByRole('button', { name: 'Close customizer' }).click();
     await alphaPage!.getByTestId('theme-toggle').click();
