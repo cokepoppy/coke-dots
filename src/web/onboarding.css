@@ -2,9 +2,7 @@
 .dots-dark .onboarding-welcome h1{font-size:27px;letter-spacing:-.035em;margin:0 0 13px;color:#f3f1f6}
 .dots-dark .onboarding-promise{max-width:460px;margin:0 auto;color:#aaa6b0;line-height:1.75;font-size:14px}
 .dots-dark .onboarding-name-prompt{margin:28px 0 9px;color:#e5e1e9;font-size:14px;font-weight:600}
-.dots-dark .onboarding-customize{border:0;background:transparent;color:#c7a9f1;padding:7px 10px;border-radius:8px;font-size:13px;font-weight:600}
-.dots-dark .onboarding-customize:hover{background:#24212a;color:#ddc9fa}
-.dots-dark .onboarding-customize span,.dots-dark .onboarding-actions span{margin-left:5px}
+.dots-dark .onboarding-actions span{margin-left:5px}
 .dots-dark .onboarding-start-prompt{margin:28px auto 0;max-width:430px;color:#aaa6b0;font-size:13px;line-height:1.6}
 .dots-dark .onboarding-actions{margin-top:13px}
 .dots-dark .onboarding-actions button{border-color:#48424f;background:#211e25;color:#e5e0ea;padding:11px 15px;font-size:12px}
@@ -17,9 +15,7 @@
 .onboarding-welcome h1{font-size:27px;letter-spacing:-.035em;margin:0 0 13px}
 .onboarding-promise{max-width:460px;margin:0 auto;line-height:1.75;font-size:14px}
 .onboarding-name-prompt{margin:28px 0 9px;font-size:14px;font-weight:600}
-.onboarding-customize{border:0;background:transparent;color:#7259ad;padding:7px 10px;border-radius:8px;font-size:13px;font-weight:600}
-.onboarding-customize:hover{background:#f1edf8;color:#654b9f}
-.onboarding-customize span,.onboarding-actions span{margin-left:5px}
+.onboarding-actions span{margin-left:5px}
 .onboarding-start-prompt{margin:28px auto 0;max-width:430px;font-size:13px;line-height:1.6}
 .onboarding-actions{margin-top:13px}
 .onboarding-actions button{padding:11px 15px;font-size:12px}

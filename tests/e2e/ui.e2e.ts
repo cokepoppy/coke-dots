@@ -404,7 +404,9 @@ try {
     await screenshot(alphaPage!, 'computer-connected-toast-light');
     await onboarding.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
     await onboarding.getByText('Message or call me anytime. I’ll keep things moving, even when we’re not talking, and check in with updates or questions.').waitFor({ state: 'visible' });
-    await onboarding.getByText('Want to give me a name?').waitFor({ state: 'visible' });
+    assert.equal(await onboarding.locator('.dot-onboarding-messages .message').count(), 2, 'Show only the two welcome messages visible in the timestamp-verified source frame');
+    assert.equal(await onboarding.getByText('Want to give me a name?').count(), 0, 'The rechecked video frame does not support this name prompt');
+    assert.equal(await onboarding.getByRole('button', { name: 'Customize your dot' }).count(), 0, 'Do not add an unobserved customizer pill to the transcript');
     assert.equal(await onboarding.getByText('I’ll just call you dot').count(), 0, 'Do not invent a user reply that is absent from the recording');
     const firstBubble = onboarding.locator('.dot-onboarding-messages .message.dot').first();
     const firstBubbleBounds = await firstBubble.boundingBox();
@@ -421,7 +423,7 @@ try {
     await onboarding.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
     await connectedToast.waitFor({ state: 'hidden', timeout: 7000 });
     await screenshot(alphaPage!, 'onboarding-first-run');
-    await onboarding.getByRole('button', { name: 'Customize your dot' }).click();
+    await onboarding.getByRole('button', { name: '打开你的 dot 设置' }).click();
     const setupEditor = alphaPage!.getByTestId('dot-setup-backdrop');
     await setupEditor.getByRole('heading', { name: 'Customize your dot' }).waitFor({ state: 'visible' });
     for (const row of ['Colors', 'Characters', 'Pets']) await setupEditor.getByRole('region', { name: row }).waitFor({ state: 'visible' });
@@ -444,7 +446,7 @@ try {
     assert.equal(await onboarding.locator('.dot-conversation-identity').innerText(), 'dot');
     await alphaPage!.getByTestId('theme-toggle').click();
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
-    await onboarding.getByRole('button', { name: 'Customize your dot' }).click();
+    await onboarding.getByRole('button', { name: '打开你的 dot 设置' }).click();
     await setupEditor.waitFor({ state: 'visible' });
     assert.equal(await onboarding.locator('.dot-onboarding-messages .message').first().evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(16, 38, 27)');
     await screenshot(alphaPage!, 'dot-setup-editor-dark');
@@ -452,7 +454,7 @@ try {
     await setupEditor.getByRole('button', { name: 'Save', exact: true }).click();
     await setupEditor.waitFor({ state: 'hidden' });
     assert.equal(await onboarding.locator('.dot-conversation-identity').innerText(), 'Roger', 'Saving the name should update the conversation identity');
-    await onboarding.getByRole('button', { name: 'Customize your dot' }).click();
+    await onboarding.getByRole('button', { name: '打开你的 dot 设置' }).click();
     await setupEditor.waitFor({ state: 'visible' });
     await setupEditor.getByLabel('Dot name').fill('dot');
     await setupEditor.getByRole('button', { name: 'Save', exact: true }).click();
@@ -462,7 +464,7 @@ try {
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
     await alphaPage!.waitForFunction(() => document.querySelector('.profile-link .avatar')?.classList.contains('triangle'));
     assert.match(await alphaPage!.locator('.profile-link .avatar').getAttribute('class') || '', /pet-moss/);
-    await onboarding.getByRole('button', { name: '打开你的 dot 设置' }).click();
+    await openProfile(alphaPage!);
     await alphaPage!.getByRole('heading', { name: '你的 dot' }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.getByLabel('名字').inputValue(), 'dot');
     await alphaPage!.getByRole('button', { name: '更改电脑访问' }).click();

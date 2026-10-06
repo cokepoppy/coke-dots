@@ -23,11 +23,6 @@
 .dot-onboarding-messages .message p{margin:0;color:#414148;font-size:12px;line-height:1.42;white-space:pre-wrap}
 .dot-onboarding-messages .message.user{margin-left:auto;background:#84a9dd}
 .dot-onboarding-messages .message.user p{color:#15161a}
-.dot-onboarding-messages .message.onboarding-customize{min-width:0;width:fit-content;padding:0;margin-top:0;background:transparent}
-.onboarding-customize button{min-height:36px;display:inline-flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid #ead0bc;border-radius:11px;background:#fff7f0;color:#9c582f;font-size:12px;line-height:1.2;font-weight:550;text-decoration:none}
-.onboarding-customize button:hover{background:#ffefe2}
-.onboarding-customize-avatar{width:18px!important;height:18px!important;flex:none;border-radius:50%;filter:none!important}
-.onboarding-customize-chevron{margin-left:2px;font-size:18px;line-height:12px}
 .dot-onboarding-mode .composer-wrap{width:min(560px,100%);padding:8px 24px 20px}
 .dot-onboarding-mode .composer{min-height:54px;padding:9px 13px 7px;border-radius:28px}
 .dot-onboarding-mode .composer textarea{height:25px;min-height:25px;resize:none;font-size:12px}
@@ -39,8 +34,6 @@
 .dots-dark .dot-onboarding-messages .message p{color:#e0eee4}
 .dots-dark .dot-onboarding-messages .message.user{background:#84a9dd}
 .dots-dark .dot-onboarding-messages .message.user p{color:#15161a}
-.dots-dark .onboarding-customize button{border-color:#5a3c29;background:#30241d;color:#e6a174}
-.dots-dark .onboarding-customize button:hover{background:#3c2b21}
 .dots-dark.dot-onboarding-mode .composer{border-color:#424245;background:#3a3a3d;box-shadow:none}
 .dots-dark.dot-onboarding-mode .composer textarea{color:#f1eff4}
 .dots-dark.dot-onboarding-mode .composer textarea::placeholder{color:#b3b0b8}

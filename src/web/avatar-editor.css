@@ -34,8 +34,6 @@
 .avatar-editor-save:hover{background:#91e6b6}
 .avatar-editor-save:disabled{opacity:.6;cursor:wait}
 .avatar-profile-customize{height:35px;padding:0 13px;border:1px solid #e8e4eb;border-radius:8px;background:#fff;color:#55515c;font-size:12px}
-.onboarding-customize{padding:0!important;background:transparent!important}
-.onboarding-customize button{padding:0;border:0;background:transparent;color:#45414b;text-decoration:underline;text-underline-offset:2px;font-size:9px}
 .avatar{overflow:visible}
 .avatar-eyes{position:relative;z-index:2;display:flex;align-items:center;justify-content:center;gap:13px;margin-top:-2px;line-height:1}
 .avatar-eyes i{display:block;width:7px;height:9px;border-radius:50%;background:#342b45}
@@ -104,7 +102,6 @@
 .dots-dark .avatar-editor-preview{background:#10251a;color:#d6f4df}
 .dots-dark .avatar-editor-close{color:#aaa6b0}
 .dots-dark .avatar-profile-customize{border-color:#3a3740;background:#19181c;color:#d4d0d9}
-.dots-dark .onboarding-customize button{color:#e0dce4}
 .avatar.character-ring .avatar-face{background:radial-gradient(circle,#151519 0 28%,var(--avatar-color) 31% 100%)}
 .dot-setup-backdrop{background:#1513191f}
 .dot-setup-editor{width:min(598px,calc(100vw - 32px));min-height:366px;display:flex;align-items:stretch;color:#29272d;filter:drop-shadow(0 18px 42px #1e172c30)}
