@@ -476,6 +476,7 @@ test('background worker stores real model result and schedules a future run', as
     const completed = store.getTask(task.id)!;
     assert.equal(completed.result, 'Checked the supplied information.');
     assert.match(receivedPrompt, /User-approved workspace notes[\s\S]*1\. Use short Mandarin summaries\./, 'The worker failed to include the current tenant\'s approved memory');
+    assert.match(receivedPrompt, /When the user asks for automation ideas, keep them as inactive proposals and choose done; do not schedule them unless the user chooses an idea and asks to set it up with its sources, timing, and review requirements\./, 'The model prompt must keep automation brainstorming separate from active schedules');
     assert.ok(completed.nextRunAt && completed.nextRunAt > new Date().toISOString());
     assert.ok(store.snapshot(true).entries.some(e => e.taskId === task.id && e.kind === 'dot'));
     assert.deepEqual(notifications, [{ title: 'Dot', body: '“Check supplied information”已有新结果。' }]);
