@@ -380,7 +380,7 @@ try {
   await recordStep('Google-style tenant Alpha signs in through the rendered page', async () => {
     await signIn(alphaPage!, 'alpha@example.test');
     await alphaPage!.getByTestId('app-shell').waitFor();
-    await alphaPage!.getByTestId('chat-home').getByRole('heading', { name: 'What’s on your mind today?' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByTestId('chat-home').getByRole('heading', { name: "What's on your mind today?" }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.icon-rail').evaluate(element => Math.round(element.getBoundingClientRect().width)), 44);
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => Math.round(element.getBoundingClientRect().width)), 224);
     const surfaceSwitcher = alphaPage!.getByTestId('surface-switcher');
@@ -395,6 +395,28 @@ try {
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(247, 247, 248)');
     assert.equal(await alphaPage!.locator('.main').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(255, 255, 255)');
     assert.equal(await alphaPage!.getByTestId('dot-context-panel').count(), 0, 'A new-dot welcome state should not show the post-setup details panel');
+    const homeComposerLayout = await alphaPage!.locator('.composer').evaluate(element => {
+      const composer = element.getBoundingClientRect();
+      const textarea = element.querySelector('textarea')!.getBoundingClientRect();
+      const callButton = element.querySelector<HTMLButtonElement>('[data-testid="voice-call-launch"]')!.getBoundingClientRect();
+      const main = element.closest('main')!.getBoundingClientRect();
+      const heading = element.closest('.chat-panel')!.querySelector('.chat-home h1')!.getBoundingClientRect();
+      return {
+        height: composer.height,
+        centerX: composer.left + composer.width / 2,
+        centerY: composer.top + composer.height / 2,
+        mainCenterX: main.left + main.width / 2,
+        topRatio: (composer.top - main.top) / main.height,
+        headingGap: composer.top - heading.bottom,
+        inputCallDeltaY: Math.abs(textarea.top + textarea.height / 2 - (callButton.top + callButton.height / 2)),
+      };
+    });
+    assert(homeComposerLayout.height <= 44, 'The landing composer should stay in a compact single row');
+    assert(homeComposerLayout.topRatio > 0.41 && homeComposerLayout.topRatio < 0.48, 'The landing composer should sit slightly above the center of the main pane');
+    assert(Math.abs(homeComposerLayout.centerX - homeComposerLayout.mainCenterX) <= 1, 'The landing composer should be centered in the main pane');
+    assert(homeComposerLayout.headingGap >= 0 && homeComposerLayout.headingGap <= 16, 'The landing heading should sit just above the composer');
+    assert(homeComposerLayout.inputCallDeltaY <= 3, 'The input and voice control should share one row');
+    assert.equal(await alphaPage!.locator('.home-mode .send').isVisible(), false, 'The empty landing composer should show voice instead of a disabled send arrow');
     await screenshot(alphaPage!, '02-alpha-home');
   });
 
@@ -405,6 +427,7 @@ try {
     assert.equal(await shell.getAttribute('data-theme'), 'dark');
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(37, 37, 38)');
     assert.equal(await alphaPage!.locator('.main').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(28, 28, 29)');
+    assert.equal(await alphaPage!.locator('.composer').evaluate(element => Math.round(element.getBoundingClientRect().height)), 40, 'Theme changes should preserve the compact landing composer geometry');
     await screenshot(alphaPage!, 'theme-dark');
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await shell.waitFor();
