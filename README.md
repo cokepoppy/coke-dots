@@ -35,6 +35,10 @@ Each task records its selected engine and its own workspace. The adapter contrac
 
 All engines must return the same structured task decision. A missing engine, invalid output or failed call is surfaced as a failed task; Coke Dots does not fabricate success. External write and send permissions are not yet connected to these engines.
 
+### Live model smoke check
+
+`npm run test:live-model` exercises the same OpenAI-compatible adapter used by background tasks and requires `DOTS_LIVE_MODEL_API_KEY`. The defaults match the current [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/): base URL `https://api.deepseek.com` and model `deepseek-flash`. Override them with `DOTS_LIVE_MODEL_BASE_URL` and `DOTS_LIVE_MODEL`. The command makes one small request, verifies the structured task response and a unique marker, and prints status, model, marker presence, and elapsed time without printing the response or key. For interactive use, pass `--stdin-key`; the command temporarily disables terminal echo while reading the key, then restores the original terminal settings. The key is placed in this process environment only and is not written to SQLite or Keychain.
+
 ## Accounts and tenant isolation
 
 Google's immutable OpenID Connect `sub` identifies a user; verified email addresses are used to address workspace invitations. The first Google account claims the pre-authentication local workspace, preserving any existing local data. Later accounts get separate personal workspaces. Users can create additional workspaces and switch among memberships. An owner or admin can invite a verified Google email; the matching account must sign in and explicitly accept within seven days before it becomes a member. Pending invitations can be revoked, and removing a member revokes that member's sessions in the workspace. Coke Dots does not send invitation email; the inviter must notify recipients separately.
