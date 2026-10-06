@@ -1,6 +1,8 @@
 .computer-view{flex:1;min-width:0;min-height:0;width:100%;overflow:auto;display:grid;place-items:center;padding:28px 24px}
 .computer-workspace{width:min(100%,930px);display:grid;justify-items:center;gap:9px;margin:auto}
 .computer-stage{position:relative;width:min(100%,900px);aspect-ratio:4/3;overflow:hidden;border-radius:10px;background:#ffab83;box-shadow:0 12px 34px #4c34251c}
+.computer-stage.is-linux-desktop{aspect-ratio:8/5;background:#17191d;box-shadow:0 12px 34px #4c34251c}
+.computer-stage.is-linux-desktop iframe,.computer-stage.is-linux-desktop>img{display:block;width:100%;height:100%;border:0;object-fit:contain;background:#17191d}
 .computer-browser-window{position:absolute;left:7%;top:9%;width:86%;height:82%;display:grid;grid-template-rows:58px minmax(0,1fr);overflow:hidden;border:1px solid #e8d9d2;border-radius:7px 7px 2px 2px;background:#fbfaf8;box-shadow:0 3px 10px #9a5c3c35}
 .browser-window-chrome{min-width:0;display:grid;grid-template-rows:28px 30px;background:#f5b69c}
 .browser-tab-strip{display:flex;align-items:center;gap:8px;padding:0 9px;background:#f4b198;color:#68656b}

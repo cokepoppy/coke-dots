@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import './computer.css';
 
-interface ComputerState { ready: boolean; owner: 'agent' | 'user'; url: string; title: string }
+interface ComputerState { ready: boolean; owner: 'agent' | 'user'; url: string; title: string; backend?: 'local' | 'linux-desktop'; width?: number; height?: number }
 
 export function ComputerView({ dotName, localComputerEnabled, onManageAccess, onError }: { dotName: string; localComputerEnabled: boolean; onManageAccess: () => void; onError: (message: string) => void }) {
   const [state, setState] = useState<ComputerState>({ ready: false, owner: 'agent', url: '', title: '' });
@@ -63,11 +63,15 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
     }
   }
 
-  if (!localComputerEnabled) return <section className="computer-view"><div className="computer-empty" data-testid="computer-access-disabled"><div className="computer-icon">▣</div><h2>本机 Chrome 工作区已关闭</h2><p>此工作区尚未允许 Dot 使用本机上的隔离 Chrome 浏览器。</p><button onClick={onManageAccess}>更改电脑访问</button></div></section>;
+  if (!localComputerEnabled && state.backend !== 'linux-desktop') return <section className="computer-view"><div className="computer-empty" data-testid="computer-access-disabled"><div className="computer-icon">▣</div><h2>本机 Chrome 工作区已关闭</h2><p>此工作区尚未允许 Dot 使用本机上的隔离 Chrome 浏览器。</p><button onClick={onManageAccess}>更改电脑访问</button></div></section>;
 
   return <section className="computer-view" aria-label={`${dotName} 的电脑`}>
-    {!state.ready ? <div className="computer-empty"><div className="computer-icon">▣</div><h2>打开独立浏览器</h2><p>工作区会话保存在 Coke Dots 专用 Chrome 配置中。</p><button disabled={busy} onClick={() => void action('open', { dotName })}>打开电脑</button></div> : <div className={`computer-workspace${state.owner === 'user' ? ' has-user-control' : ''}`} data-testid="computer-workspace">
-      <div className="computer-stage">
+    {!state.ready ? <div className="computer-empty"><div className="computer-icon">▣</div><h2>打开独立电脑</h2><p>{state.backend === 'linux-desktop' ? '这台 Debian 云电脑和 Agent 运行时在独立工作区内持续运行。' : '工作区会话保存在 Coke Dots 专用 Chrome 配置中。'}</p><button disabled={busy} onClick={() => void action('open', { dotName })}>打开电脑</button></div> : <div className={`computer-workspace${state.owner === 'user' ? ' has-user-control' : ''}`} data-testid="computer-workspace">
+      {state.backend === 'linux-desktop' ? <div className="computer-stage is-linux-desktop" data-testid="linux-desktop-stage">
+        {state.owner === 'user'
+          ? <iframe title="Linux 云桌面" data-testid="linux-desktop-view" src="/api/computer/novnc/vnc_lite.html?scale=1&autoconnect=1&path=api/computer/novnc/websockify" />
+          : <img src={`/api/computer/screenshot?t=${frame}`} alt="Linux 云桌面画面" />}
+      </div> : <div className="computer-stage">
         <div className="computer-browser-window">
           <div className="browser-window-chrome">
             <div className="browser-tab-strip"><span className="browser-dots"><i /><i /><i /></span><span className="browser-tab-title" title={state.title || 'New tab'}>{state.title || 'New tab'}</span><span className="browser-tab-add" aria-hidden="true">＋</span></div>
@@ -84,7 +88,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
           <div className="browser-page-frame"><img src={`/api/computer/screenshot?t=${frame}`} alt="独立浏览器画面" tabIndex={state.owner === 'user' ? 0 : -1} onClick={click} onKeyDown={keyDown} /></div>
         </div>
         <div className="computer-dock" aria-hidden="true"><span className="dock-chrome">◉</span><span className="dock-terminal">›_</span><span className="dock-files">▰</span></div>
-      </div>
+      </div>}
       <div className={`computer-controlbar${state.owner === 'user' ? ' is-user-control' : ''}`}>
         <span className="computer-owner" role="status"><i />{state.owner === 'user' ? 'You have control' : `${dotName} has control`}</span>
         <button className="take-button" disabled={busy} onClick={() => void action(state.owner === 'user' ? 'return-control' : 'take-over')}>{state.owner === 'user' ? 'Return control' : 'Take over'}</button>

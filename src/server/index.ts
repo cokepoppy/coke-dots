@@ -9,9 +9,12 @@ import type { ActionRuleMode, DotAppearance, Engine, ScheduleSpec } from '../sha
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
-import { ComputerManager } from './computer.ts';
+import { ComputerManager, type ComputerRuntime } from './computer.ts';
+import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { AuthService } from './auth.ts';
 import { existsSync } from 'node:fs';
+import { createConnection, type Socket } from 'node:net';
+import type { Duplex } from 'node:stream';
 
 const envFile = resolve(process.env.DOTS_ENV_FILE || '.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -21,9 +24,17 @@ const host = '127.0.0.1';
 const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
 const auth = new AuthService(store, port);
-const computers = new Map<string, ComputerManager>();
+const computers = new Map<string, ComputerRuntime>();
+const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
-const availableFor = (tenantId: string) => (Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId));
+const configuredDesktopEngines = () => {
+  if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [] as Engine[];
+  try {
+    const configured = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, unknown>;
+    return Object.keys(configured).filter((id): id is Engine => ['claude', 'pi', 'dsh'].includes(id) && Boolean(configured[id]));
+  } catch { return [] as Engine[]; }
+};
+const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...configuredDesktopEngines()])];
 
 function snapshot(tenantId: string) {
   loadModelSettings(store.getSetting('modelBaseUrl', tenantId), store.getSetting('modelName', tenantId), tenantId);
@@ -31,10 +42,12 @@ function snapshot(tenantId: string) {
   return store.snapshot(available.includes('model'), available, publicModelSettings(tenantId), tenantId);
 }
 
-function computerFor(tenantId: string) {
+function computerFor(tenantId: string): ComputerRuntime {
   let computer = computers.get(tenantId);
   if (!computer) {
-    computer = new ComputerManager(join(dataDirectory, 'tenants', tenantId, 'computer'));
+    computer = process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop'
+      ? new LinuxDesktopComputer(tenantId)
+      : new ComputerManager(join(dataDirectory, 'tenants', tenantId, 'computer'));
     computers.set(tenantId, computer);
   }
   return computer;
@@ -56,7 +69,7 @@ const sessionHeartbeat = setInterval(() => {
   }
 }, 30_000);
 
-const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'));
+const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor);
 const watchRunner = new WatchRunner(store, publish);
 
 const server = createServer(async (req, res) => {
@@ -244,10 +257,15 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, { ok: true });
     }
 
-    if ((path === '/api/computer' || path.startsWith('/api/computer/')) && store.getSetting('localComputerEnabled', session.tenant.id) === 'false') {
+    if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop' && (path === '/api/computer' || path.startsWith('/api/computer/')) && store.getSetting('localComputerEnabled', session.tenant.id) === 'false') {
       return reply(res, 403, { error: '当前工作区尚未授权 Dot 使用本机 Chrome 工作区' });
     }
     const computer = computerFor(session.tenant.id);
+    if (path.startsWith('/api/computer/novnc/')) {
+      if (req.method !== 'GET' || !computer.novncTarget) return reply(res, 404, { error: 'Not found' });
+      if ((await computer.state()).owner !== 'user') return reply(res, 403, { error: '请先接管电脑再打开交互画面' });
+      return proxyNoVnc(req, res, computer);
+    }
     if (path === '/api/computer' && req.method === 'GET') return reply(res, 200, await computer.state());
     if (path === '/api/computer/screenshot' && req.method === 'GET') {
       const bytes = await computer.screenshot();
@@ -256,8 +274,13 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (path === '/api/computer/open' && req.method === 'POST') return reply(res, 200, await computer.open(String(body.dotName || 'Dot')));
-    if (path === '/api/computer/take-over' && req.method === 'POST') { computer.takeOver(); return reply(res, 200, await computer.state()); }
-    if (path === '/api/computer/return-control' && req.method === 'POST') { computer.returnControl(); return reply(res, 200, await computer.state()); }
+    if (path === '/api/computer/take-over' && req.method === 'POST') { await computer.takeOver(); return reply(res, 200, await computer.state()); }
+    if (path === '/api/computer/return-control' && req.method === 'POST') {
+      await computer.returnControl();
+      for (const socket of novncStreams.get(session.tenant.id) || []) socket.destroy();
+      novncStreams.delete(session.tenant.id);
+      return reply(res, 200, await computer.state());
+    }
     if (path === '/api/computer/navigate' && req.method === 'POST') return reply(res, 200, await computer.navigate(String(body.url || '')));
     if (path === '/api/computer/click' && req.method === 'POST') return reply(res, 200, await computer.click(Number(body.x), Number(body.y)));
     if (path === '/api/computer/type' && req.method === 'POST') return reply(res, 200, await computer.type(String(body.text || '')));
@@ -491,6 +514,64 @@ const shutdown = () => {
   clients.clear();
   server.close(() => store.close());
   for (const computer of computers.values()) void computer.close();
+  for (const sockets of novncStreams.values()) for (const socket of sockets) socket.destroy();
+  novncStreams.clear();
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+server.on('upgrade', (req, client, head) => {
+  void (async () => {
+    try {
+      const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
+      const prefix = '/api/computer/novnc/';
+      if (!requestUrl.pathname.startsWith(prefix) || !isLocalRequest(req) || !isAllowedLocalOrigin(req.headers.origin || '')) return client.destroy();
+      const session = auth.session(req);
+      if (!session || (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop' && store.getSetting('localComputerEnabled', session.tenant.id) === 'false')) return client.destroy();
+      const computer = computerFor(session.tenant.id);
+      if (!computer.novncTarget || (await computer.state()).owner !== 'user') return client.destroy();
+      const target = await computer.novncTarget();
+      if (!target) return client.destroy();
+      const upstream = createConnection({ host: target.hostname, port: Number(target.port || 80) });
+      const set = novncStreams.get(session.tenant.id) || new Set<Duplex>();
+      set.add(client); set.add(upstream); novncStreams.set(session.tenant.id, set);
+      const discard = () => { set.delete(client); set.delete(upstream); if (!set.size) novncStreams.delete(session.tenant.id); };
+      client.once('close', discard); upstream.once('close', discard);
+      upstream.once('error', () => client.destroy());
+      upstream.once('connect', () => {
+        const subPath = `${target.pathname.replace(/\/$/, '')}${requestUrl.pathname.slice('/api/computer/novnc'.length) || '/'}`;
+        const headers: string[] = [];
+        for (let index = 0; index < req.rawHeaders.length; index += 2) {
+          const key = req.rawHeaders[index];
+          if (key.toLowerCase() === 'host') headers.push(`Host: ${target.host}`);
+          else headers.push(`${key}: ${req.rawHeaders[index + 1]}`);
+        }
+        upstream.write(`GET ${subPath}${requestUrl.search} HTTP/1.1\r\n${headers.join('\r\n')}\r\n\r\n`);
+        if (head.length) upstream.write(head);
+        client.pipe(upstream).pipe(client);
+      });
+    } catch { client.destroy(); }
+  })();
+});
+
+async function proxyNoVnc(req: IncomingMessage, res: ServerResponse, computer: ComputerRuntime) {
+  const prefix = '/api/computer/novnc/';
+  const current = new URL(req.url || '/', `http://${host}:${port}`);
+  let suffix = current.pathname.slice(prefix.length);
+  try { suffix = suffix.split('/').map(part => decodeURIComponent(part)).join('/'); }
+  catch { return reply(res, 400, { error: 'Invalid noVNC path' }); }
+  if (!suffix || suffix.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\\'))) return reply(res, 404, { error: 'Not found' });
+  const base = await computer.novncTarget?.();
+  if (!base) return reply(res, 503, { error: 'Linux 云电脑连接尚未准备好' });
+  try {
+    const upstreamUrl = new URL(`${suffix}${current.search}`, base);
+    const upstream = await fetch(upstreamUrl, { signal: AbortSignal.timeout(10_000), redirect: 'manual' });
+    const bytes = Buffer.from(await upstream.arrayBuffer());
+    res.writeHead(upstream.status, {
+      'Content-Type': upstream.headers.get('content-type') || 'application/octet-stream',
+      'Cache-Control': 'no-store',
+      ...(upstream.headers.get('content-length') ? { 'Content-Length': upstream.headers.get('content-length')! } : {}),
+    });
+    res.end(bytes);
+  } catch { reply(res, 502, { error: 'Linux 云电脑画面暂时不可用' }); }
+}

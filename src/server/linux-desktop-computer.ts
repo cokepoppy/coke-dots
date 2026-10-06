@@ -1,0 +1,369 @@
+import { createHmac, createHash } from 'node:crypto';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { createServer } from 'node:net';
+import type { ComputerRuntime, ComputerState } from './computer.ts';
+
+const workerPort = 8082;
+const vncPort = 6080;
+
+export interface DesktopConnection {
+  workerUrl: URL;
+  novncUrl: URL;
+  agentUrl: URL;
+  workerToken: string;
+  agentToken: string;
+}
+
+export interface DesktopConnector {
+  connect(tenantId: string): Promise<DesktopConnection>;
+  close?(): Promise<void>;
+}
+
+/**
+ * K3D/Kubernetes backed desktop. Each workspace receives its own namespace,
+ * Secret, Deployment, Service and PVC. Browser and agent commands stay behind
+ * the authenticated Coke Dots API; only the browser view is proxied to users.
+ */
+export class LinuxDesktopComputer implements ComputerRuntime {
+  private connection: DesktopConnection | null = null;
+  private connecting: Promise<DesktopConnection> | null = null;
+  private owner: 'agent' | 'user' = 'agent';
+
+  constructor(private readonly tenantId: string, private readonly connector: DesktopConnector = defaultDesktopConnector()) {}
+
+  async open(dotName = 'Dot') {
+    await this.ensureConnection();
+    await this.command({ action: 'open', dotName });
+    this.owner = 'agent';
+    await this.setRemoteOwner('agent');
+    return this.state();
+  }
+
+  async state(): Promise<ComputerState> {
+    await this.ensureConnection();
+    const response = await this.request('/v1/state');
+    if (!response.ok) throw new Error(`Linux 云电脑状态查询失败（HTTP ${response.status}）`);
+    const remote = await response.json() as { ready?: boolean; url?: string; title?: string; owner?: 'agent' | 'user' };
+    return { ready: remote.ready === true, owner: remote.owner === 'user' ? 'user' : this.owner, url: remote.url || '', title: remote.title || '', backend: 'linux-desktop', width: 1440, height: 900 };
+  }
+
+  async takeOver() {
+    this.assertOpen();
+    await this.setRemoteOwner('user');
+    this.owner = 'user';
+  }
+
+  async returnControl() {
+    this.assertOpen();
+    await this.setRemoteOwner('agent');
+    this.owner = 'agent';
+  }
+
+  async navigate(url: string) {
+    this.assertUserControl();
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('只允许不含凭据的 HTTP 或 HTTPS 网址');
+    await this.command({ action: 'navigate', url: parsed.toString(), actor: 'user' });
+    return this.state();
+  }
+
+  async click(x: number, y: number) {
+    this.assertUserControl();
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 1440 || y > 900) throw new Error('点击坐标超出画面');
+    await this.command({ action: 'click', x, y, actor: 'user' });
+    return this.state();
+  }
+
+  async type(text: string) {
+    this.assertUserControl();
+    if (text.length > 2000) throw new Error('输入内容过长');
+    await this.command({ action: 'type', text, actor: 'user' });
+    return this.state();
+  }
+
+  async press(key: string) {
+    this.assertUserControl();
+    const allowed = new Set(['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', 'Space']);
+    if (!allowed.has(key)) throw new Error('不支持此电脑按键');
+    await this.command({ action: 'press', key, actor: 'user' });
+    return this.state();
+  }
+
+  async screenshot(): Promise<Buffer> {
+    this.assertOpen();
+    const response = await this.request('/v1/screenshot');
+    if (!response.ok) throw new Error(`Linux 云电脑截图失败（HTTP ${response.status}）`);
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  async novncTarget(): Promise<URL | null> {
+    return this.connection ? this.connection.novncUrl : null;
+  }
+
+  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; signal?: AbortSignal }) {
+    await this.ensureConnection();
+    const owner = await this.request('/v1/control');
+    if (!owner.ok || (await owner.json() as { owner?: string }).owner !== 'agent') throw new Error('用户正在接管这台电脑，Agent 已暂停');
+    const url = endpointUrl(this.connection!.agentUrl, 'v1/tasks/run');
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ engine: input.engine, taskId: input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
+      signal: input.signal ? AbortSignal.any([AbortSignal.timeout(15 * 60_000), input.signal]) : AbortSignal.timeout(15 * 60_000),
+    });
+    const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] };
+    if (!response.ok) throw new Error(result.error || `Linux Agent 运行时返回 HTTP ${response.status}`);
+    if (typeof result.status !== 'string' || typeof result.message !== 'string') throw new Error('Linux Agent 运行时返回了无效结果');
+    return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }) };
+  }
+
+  async close() {
+    this.owner = 'agent';
+    await this.connecting?.catch(() => undefined);
+    this.connection = null;
+    await this.connector.close?.();
+  }
+
+  private async setRemoteOwner(owner: 'agent' | 'user') {
+    const response = await this.request('/v1/control', { method: 'POST', body: JSON.stringify({ owner }) });
+    if (!response.ok) throw new Error(`Linux 云电脑交接失败（HTTP ${response.status}）`);
+  }
+
+  private async command(body: Record<string, unknown>) {
+    const response = await this.request('/v1/commands', { method: 'POST', body: JSON.stringify(body) });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(error.error || `Linux 云电脑命令失败（HTTP ${response.status}）`);
+    }
+  }
+
+  private async request(path: string, init: RequestInit = {}) {
+    this.assertOpen();
+    return fetch(endpointUrl(this.connection!.workerUrl, path), {
+      ...init,
+      headers: { authorization: `Bearer ${this.connection!.workerToken}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
+      signal: AbortSignal.timeout(30_000),
+    });
+  }
+
+  private assertOpen() { if (!this.connection) throw new Error('电脑尚未打开'); }
+  private assertUserControl() { this.assertOpen(); if (this.owner !== 'user') throw new Error('请先选择“接管”以使用鼠标和键盘'); }
+
+  private async ensureConnection() {
+    if (this.connection) return this.connection;
+    if (!this.connecting) {
+      const connecting = this.connector.connect(this.tenantId).then(connection => {
+        this.connection = connection;
+        return connection;
+      }).finally(() => {
+        if (this.connecting === connecting) this.connecting = null;
+      });
+      this.connecting = connecting;
+    }
+    return this.connecting;
+  }
+}
+
+function endpointUrl(baseValue: URL, path: string) {
+  const base = new URL(baseValue);
+  if (!base.pathname.endsWith('/')) base.pathname += '/';
+  return new URL(path.replace(/^\/+/, ''), base);
+}
+
+function defaultDesktopConnector(): DesktopConnector {
+  if (process.env.NODE_ENV === 'test' && process.env.DOTS_LINUX_DESKTOP_TEST_WORKER_URL && process.env.DOTS_LINUX_DESKTOP_TEST_NOVNC_URL && process.env.DOTS_LINUX_DESKTOP_TEST_AGENT_URL) {
+    const signingKey = process.env.DOTS_LINUX_DESKTOP_TOKEN_SECRET || 'coke-dots-test-desktop-signing-key';
+    return {
+      async connect(tenantId) {
+        const workerToken = createHmac('sha256', signingKey).update(`worker:${tenantId}`).digest('base64url');
+        const workerUrl = new URL(process.env.DOTS_LINUX_DESKTOP_TEST_WORKER_URL!.replaceAll('{tenantHash}', desktopResourceIdentity(tenantId).tenantHash));
+        const novncUrl = new URL(process.env.DOTS_LINUX_DESKTOP_TEST_NOVNC_URL!.replaceAll('{tenantHash}', desktopResourceIdentity(tenantId).tenantHash));
+        if (!workerUrl.pathname.endsWith('/')) workerUrl.pathname += '/';
+        if (!novncUrl.pathname.endsWith('/')) novncUrl.pathname += '/';
+        const agentUrl = new URL(process.env.DOTS_LINUX_DESKTOP_TEST_AGENT_URL!.replaceAll('{tenantHash}', desktopResourceIdentity(tenantId).tenantHash));
+        if (!agentUrl.pathname.endsWith('/')) agentUrl.pathname += '/';
+        const agentToken = createHmac('sha256', signingKey).update(`agent:${tenantId}`).digest('base64url');
+        return { workerUrl, novncUrl, agentUrl, workerToken, agentToken };
+      },
+    };
+  }
+  return new KubectlDesktopConnector();
+}
+
+export function desktopResourceIdentity(tenantId: string) {
+  const suffix = createHash('sha256').update(tenantId).digest('hex').slice(0, 10);
+  const tenantHash = createHash('sha256').update(tenantId).digest('hex').slice(0, 32);
+  const slug = tenantId.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 20) || 'workspace';
+  const namespace = `dots-coke-dots-${slug}-${suffix}`.slice(0, 63).replace(/-+$/g, '');
+  return { namespace, tenantHash };
+}
+
+export function desktopResources(tenantId: string, workerToken: string, agentToken: string) {
+  const identity = desktopResourceIdentity(tenantId);
+  const namespace = identity.namespace;
+  const name = 'desktop';
+  const image = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
+  const pullPolicy = process.env.DOTS_LINUX_DESKTOP_IMAGE_PULL_POLICY || 'IfNotPresent';
+  const volumeSize = process.env.DOTS_LINUX_DESKTOP_VOLUME_SIZE || '10Gi';
+  const controlNamespace = process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || 'coke-dots';
+  let agentEngines = process.env.DOTS_DESKTOP_AGENT_ADAPTERS || '';
+  try {
+    if (!agentEngines) agentEngines = Object.keys(JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}')).join(',');
+  } catch { agentEngines = ''; }
+  const objects: Record<string, unknown>[] = [
+    {
+      apiVersion: 'v1', kind: 'Secret', metadata: { name: 'desktop-runtime', namespace }, type: 'Opaque',
+      stringData: { LINUX_DESKTOP_WORKER_TOKEN: workerToken, DOTS_AGENT_RUNTIME_TOKEN: agentToken },
+    },
+    {
+      apiVersion: 'v1', kind: 'PersistentVolumeClaim', metadata: { name: 'desktop-data', namespace },
+      spec: { accessModes: ['ReadWriteOnce'], resources: { requests: { storage: volumeSize } }, ...(process.env.DOTS_LINUX_DESKTOP_STORAGE_CLASS ? { storageClassName: process.env.DOTS_LINUX_DESKTOP_STORAGE_CLASS } : {}) },
+    },
+    {
+      apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name: 'desktop-isolation', namespace },
+      spec: {
+        podSelector: { matchLabels: { app: name } }, policyTypes: ['Ingress', 'Egress'],
+        ingress: [{ from: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': controlNamespace } } }], ports: [{ protocol: 'TCP', port: 6080 }, { protocol: 'TCP', port: 8082 }, { protocol: 'TCP', port: 8083 }] }],
+        egress: [
+          { to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } } }], ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] },
+          { ports: [{ protocol: 'TCP', port: 80 }, { protocol: 'TCP', port: 443 }] },
+        ],
+      },
+    },
+    {
+      apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace, labels: { app: name, 'coke-dots.io/tenant-hash': identity.tenantHash } },
+      spec: {
+        replicas: 1, strategy: { type: 'Recreate' }, selector: { matchLabels: { app: name } },
+        template: {
+          metadata: { labels: { app: name, 'coke-dots.io/tenant-hash': identity.tenantHash } },
+          spec: {
+            automountServiceAccountToken: false,
+            securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: 'RuntimeDefault' } },
+            containers: [{
+              name, image, imagePullPolicy: pullPolicy,
+              env: [
+                { name: 'LINUX_DESKTOP_WORKER_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'LINUX_DESKTOP_WORKER_TOKEN' } } },
+                { name: 'DOTS_AGENT_RUNTIME_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'DOTS_AGENT_RUNTIME_TOKEN' } } },
+                { name: 'COKE_DESKTOP_RESOLUTION', value: '1440x900' },
+                { name: 'COKE_DESKTOP_VNC_AUTH_MODE', value: 'gateway' },
+                { name: 'COKE_DESKTOP_CHROME_NO_SANDBOX', value: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX === '1' ? '1' : '0' },
+                { name: 'DOTS_DESKTOP_AGENT_ADAPTERS', value: agentEngines },
+                ...(process.env.DOTS_AGENT_KERNELS_JSON ? [{ name: 'DOTS_AGENT_KERNELS_JSON', value: process.env.DOTS_AGENT_KERNELS_JSON }] : []),
+              ],
+              ports: [{ name: 'novnc', containerPort: 6080 }, { name: 'worker', containerPort: 8082 }, { name: 'agent', containerPort: 8083 }, { name: 'cdp', containerPort: 9222 }],
+              readinessProbe: { httpGet: { path: '/readyz', port: 'worker' }, initialDelaySeconds: 10, periodSeconds: 5, failureThreshold: 36 },
+              livenessProbe: { httpGet: { path: '/healthz', port: 'worker' }, initialDelaySeconds: 30, periodSeconds: 10 },
+              resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
+              securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: ['ALL'] } },
+              volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'shm', mountPath: '/dev/shm' }, { name: 'tmp', mountPath: '/tmp' }],
+            }],
+            volumes: [{ name: 'workspace', persistentVolumeClaim: { claimName: 'desktop-data' } }, { name: 'shm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } }, { name: 'tmp', emptyDir: { sizeLimit: '512Mi' } }],
+          },
+        },
+      },
+    },
+    {
+      apiVersion: 'v1', kind: 'Service', metadata: { name, namespace },
+      spec: { type: 'ClusterIP', selector: { app: name }, ports: [{ name: 'novnc', port: 6080, targetPort: 'novnc' }, { name: 'worker', port: workerPort, targetPort: 'worker' }, { name: 'agent', port: 8083, targetPort: 'agent' }] },
+    },
+  ];
+  return [
+    { apiVersion: 'v1', kind: 'Namespace', metadata: { name: namespace, labels: { 'coke-dots.io/managed-by': 'coke-dots', 'coke-dots.io/tenant-hash': identity.tenantHash } } },
+    { apiVersion: 'v1', kind: 'List', items: objects },
+  ];
+}
+
+class KubectlDesktopConnector implements DesktopConnector {
+  private portForward: ChildProcess | null = null;
+  private current: DesktopConnection | null = null;
+
+  async connect(tenantId: string): Promise<DesktopConnection> {
+    if (this.current) return this.current;
+    const signingKey = process.env.DOTS_LINUX_DESKTOP_TOKEN_SECRET;
+    if (!signingKey || signingKey.length < 32) throw new Error('Linux 云电脑需要配置至少 32 字符的 DOTS_LINUX_DESKTOP_TOKEN_SECRET');
+    const identity = desktopResourceIdentity(tenantId);
+    const workerToken = createHmac('sha256', signingKey).update(`worker:${tenantId}`).digest('base64url');
+    const agentToken = createHmac('sha256', signingKey).update(`agent:${tenantId}`).digest('base64url');
+    const resources = desktopResources(tenantId, workerToken, agentToken);
+    await kubectl(['apply', '-f', '-'], JSON.stringify(resources[0]));
+    await kubectl(['apply', '-f', '-'], JSON.stringify(resources[1]));
+    await kubectl(['-n', identity.namespace, 'rollout', 'status', 'deployment/desktop', '--timeout=180s']);
+
+    if (process.env.KUBERNETES_SERVICE_HOST && process.env.DOTS_LINUX_DESKTOP_FORCE_PORT_FORWARD !== '1') {
+      const serviceHost = `desktop.${identity.namespace}.svc.cluster.local`;
+      this.current = { workerUrl: new URL(`http://${serviceHost}:${workerPort}`), novncUrl: new URL(`http://${serviceHost}:${vncPort}`), agentUrl: new URL(`http://${serviceHost}:8083`), workerToken, agentToken };
+      return this.current;
+    }
+
+    const ports = await reservePorts(3);
+    this.portForward = spawn('kubectl', ['-n', identity.namespace, 'port-forward', '--address', '127.0.0.1', `svc/desktop`, `${ports[0]}:${workerPort}`, `${ports[1]}:${vncPort}`, `${ports[2]}:8083`], { stdio: ['ignore', 'pipe', 'ignore'] });
+    try {
+      await waitForPortForward(this.portForward, ports[0], ports[1], ports[2]);
+      this.current = { workerUrl: new URL(`http://127.0.0.1:${ports[0]}`), novncUrl: new URL(`http://127.0.0.1:${ports[1]}`), agentUrl: new URL(`http://127.0.0.1:${ports[2]}`), workerToken, agentToken };
+      return this.current;
+    } catch (error) {
+      this.portForward.kill('SIGTERM'); this.portForward = null;
+      throw error;
+    }
+  }
+
+  async close() {
+    this.portForward?.kill('SIGTERM');
+    this.portForward = null;
+    this.current = null;
+  }
+}
+
+async function kubectl(args: string[], input?: string) {
+  const child = spawn(process.env.DOTS_KUBECTL_BIN || 'kubectl', args, { stdio: ['pipe', 'ignore', 'pipe'] });
+  let stderr = '';
+  child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-1000); });
+  if (input !== undefined) child.stdin.end(input);
+  else child.stdin.end();
+  const code = await new Promise<number>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', value => resolve(value ?? 1));
+  });
+  if (code !== 0) {
+    // kubectl diagnostics can include serialized Secret fields. Keep them out
+    // of application responses and logs; the command and exit status suffice.
+    void stderr;
+    throw new Error(`kubectl ${args[0]} failed (exit ${code})`);
+  }
+}
+
+async function reservePorts(count: number) {
+  const ports: number[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const listener = createServer();
+    await new Promise<void>((resolve, reject) => listener.once('error', reject).listen(0, '127.0.0.1', resolve));
+    const address = listener.address();
+    if (!address || typeof address === 'string') throw new Error('Could not reserve a local port for kubectl port-forward');
+    ports.push(address.port);
+    await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
+  }
+  return ports;
+}
+
+async function waitForPortForward(child: ChildProcess, ...ports: number[]) {
+  const deadline = Date.now() + 15_000;
+  let output = '';
+  if (!child.stdout) throw new Error('kubectl port-forward output is unavailable');
+  let fail: ((error: Error) => void) | undefined;
+  const exited = new Promise<never>((_, reject) => { fail = reject; });
+  const onExit = (code: number | null) => fail?.(new Error(`kubectl port-forward exited (code ${code ?? 'unknown'})`));
+  const onError = () => fail?.(new Error('kubectl port-forward failed to start'));
+  child.once('exit', onExit);
+  child.once('error', onError);
+  child.stdout.on('data', chunk => { output += chunk.toString(); });
+  try {
+    while (Date.now() < deadline) {
+      if (ports.every(port => output.includes(`127.0.0.1:${port}`))) return;
+      await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 50))]);
+    }
+    throw new Error('kubectl port-forward did not become ready');
+  } finally {
+    child.off('exit', onExit);
+    child.off('error', onError);
+  }
+}

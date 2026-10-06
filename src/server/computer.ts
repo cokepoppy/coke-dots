@@ -2,9 +2,32 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 
-export interface ComputerState { ready: boolean; owner: 'agent' | 'user'; url: string; title: string }
+export interface ComputerState {
+  ready: boolean;
+  owner: 'agent' | 'user';
+  url: string;
+  title: string;
+  backend: 'local' | 'linux-desktop';
+  width: number;
+  height: number;
+}
 
-export class ComputerManager {
+export interface ComputerRuntime {
+  state(): Promise<ComputerState>;
+  open(dotName?: string): Promise<ComputerState>;
+  takeOver(): Promise<void> | void;
+  returnControl(): Promise<void> | void;
+  navigate(url: string): Promise<ComputerState>;
+  click(x: number, y: number): Promise<ComputerState>;
+  type(text: string): Promise<ComputerState>;
+  press(key: string): Promise<ComputerState>;
+  screenshot(): Promise<Buffer>;
+  close(): Promise<void>;
+  novncTarget?(): Promise<URL | null>;
+  runAgentTask?(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] }>;
+}
+
+export class ComputerManager implements ComputerRuntime {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private owner: 'agent' | 'user' = 'agent';
@@ -31,7 +54,7 @@ export class ComputerManager {
 
   async state(): Promise<ComputerState> {
     const page = this.page;
-    return { ready: Boolean(page && !page.isClosed()), owner: this.owner, url: page?.url() || '', title: page && !page.isClosed() ? await page.title().catch(() => '') : '' };
+    return { ready: Boolean(page && !page.isClosed()), owner: this.owner, url: page?.url() || '', title: page && !page.isClosed() ? await page.title().catch(() => '') : '', backend: 'local', width: 1280, height: 820 };
   }
 
   takeOver() { if (!this.page) throw new Error('电脑尚未打开'); this.owner = 'user'; }

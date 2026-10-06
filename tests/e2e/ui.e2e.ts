@@ -677,7 +677,7 @@ try {
 
   await recordStep('Dot computer shortcut opens the tenant-isolated browser workspace', async () => {
     await alphaPage!.getByTestId('dot-computer-row').click();
-    await alphaPage!.getByRole('heading', { name: '打开独立浏览器' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('heading', { name: '打开独立电脑' }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'context-computer-shortcut');
     await clickNav(alphaPage!, '你的 dot');
     await alphaPage!.getByTestId('dot-context-panel').waitFor({ state: 'visible' });

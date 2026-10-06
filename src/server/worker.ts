@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import type { Task } from '../shared/types.ts';
 import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts';
 import { Store } from './store.ts';
-import { adapters, type Engine } from './adapters.ts';
+import { adapters, formatAgentPrompt, parseDecision, type AgentRequest, type Engine } from './adapters.ts';
+import type { ComputerRuntime } from './computer.ts';
 import { loadModelSettings } from './model-settings.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
@@ -16,7 +17,7 @@ export class Worker {
   private activeByTenant = new Map<string, number>();
   private stopped = false;
 
-  constructor(private store: Store, private onChange: () => void, private workspaceRoot = join(process.cwd(), 'data', 'workspaces'), private notify: DesktopNotifier = sendDesktopNotification) {}
+  constructor(private store: Store, private onChange: () => void, private workspaceRoot = join(process.cwd(), 'data', 'workspaces'), private notify: DesktopNotifier = sendDesktopNotification, private computerFor?: (tenantId: string) => ComputerRuntime) {}
 
   start() { this.stopped = false; this.timer = setInterval(() => void this.tick(), 2000); void this.tick(); }
   stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null; }
@@ -49,7 +50,10 @@ export class Worker {
   private async run(task: Task, signal: AbortSignal) {
     loadModelSettings(this.store.getSetting('modelBaseUrl', task.tenantId), this.store.getSetting('modelName', task.tenantId), task.tenantId);
     const adapter = adapters[task.engine];
-    if (!adapter?.available(task.tenantId)) {
+    const computer = this.computerFor?.(task.tenantId);
+    const remoteEngines = parseRemoteEngines();
+    const useDesktopRuntime = Boolean(computer?.runAgentTask && process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && remoteEngines.includes(task.engine));
+    if (!useDesktopRuntime && !adapter?.available(task.tenantId)) {
       this.store.updateTask(task.id, { status: 'failed', error: `${task.engine} 内核尚未配置或安装。` }, task.tenantId);
       this.store.addEntry('system', `${task.engine} 内核不可用，任务没有执行。配置后可重试。`, task.id, task.tenantId);
       this.notifyIfEnabled(task.tenantId, `“${task.title}”无法开始，需要检查工作区设置。`);
@@ -57,6 +61,7 @@ export class Worker {
       return;
     }
     const availableEngines = (Object.keys(adapters) as Engine[]).filter(engine => adapters[engine].available(task.tenantId));
+    for (const engine of remoteEngines) if (!availableEngines.includes(engine)) availableEngines.push(engine);
     this.store.updateTask(task.id, { status: 'working', error: null }, task.tenantId);
     this.store.addEntry('system', `使用 ${task.engine} 开始处理。`, task.id, task.tenantId);
     this.onChange();
@@ -64,7 +69,7 @@ export class Worker {
       const workspace = join(this.workspaceRoot, task.tenantId, task.id);
       mkdirSync(workspace, { recursive: true });
       const children = this.store.delegatedTasks(task.id, task.tenantId);
-      const decision = await adapter.run({
+      const input: AgentRequest = {
         tenantId: task.tenantId, prompt: task.instruction, memories: this.store.tenantMemories(task.tenantId).map(memory => memory.note),
         pages: this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
         actionRule: this.store.tenantActionRule(task.tenantId),
@@ -75,7 +80,10 @@ export class Worker {
         workspace,
         signal,
         onEvent: message => { this.store.addEntry('system', message, task.id, task.tenantId); this.onChange(); },
-      });
+      };
+      const decision = useDesktopRuntime
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines })
+        : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
       if (task.parentTaskId && decision.status === 'scheduled') throw new Error('子任务不能创建周期安排');
@@ -151,6 +159,14 @@ export class Worker {
     try { this.notify(this.store.getProfile(tenantId).name, body); }
     catch { /* A desktop notification must never stop background work. */ }
   }
+}
+
+function parseRemoteEngines(): Engine[] {
+  if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [];
+  try {
+    const configured = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, unknown>;
+    return (Object.keys(configured) as string[]).filter((engine): engine is Engine => ['claude', 'pi', 'dsh'].includes(engine) && Boolean(configured[engine]));
+  } catch { return []; }
 }
 
 function explicitScratchpadRequest(instruction: string) {
