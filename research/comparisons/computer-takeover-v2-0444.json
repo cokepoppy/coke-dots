@@ -1,0 +1,9 @@
+{
+  "id": "computer-takeover-v2-0444",
+  "reference": "../frames/john-aspinall-v2-0444-dot-control-replay.png",
+  "referenceRect": { "x": 308, "y": 552, "width": 1061, "height": 797 },
+  "implementationRect": { "x": 404, "y": 165, "width": 900, "height": 675 },
+  "output": "../../artifacts/reference-comparison/computer-takeover-v2-0444",
+  "threshold": 32,
+  "note": "The reference is a compressed YouTube/Chrome capture. The crop targets the orange computer stage at V2 04:44; the implementation crop comes from the passing 1440x1000 Chrome E2E screenshot. The source contains a different desktop browser page and has unknown CSS viewport dimensions, so this comparison diagnoses the stage and browser composition only, not pixel parity."
+}
