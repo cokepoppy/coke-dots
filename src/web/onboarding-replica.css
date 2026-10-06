@@ -13,16 +13,21 @@
 @media(max-width:700px){.dot-context-mode .topbar{right:12px}}
 .dot-onboarding-mode .dot-onboarding{display:flex;flex:1;min-height:0;flex-direction:column;text-align:left}
 .dot-onboarding-title{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-.dot-conversation-identity{display:flex;flex:none;flex-direction:column;align-items:center;gap:1px;margin:31px auto 0;padding:0;border:0;background:transparent;color:#28272c;font-size:10px;line-height:1.1}
+.dot-conversation-identity{display:flex;flex:none;flex-direction:column;align-items:center;gap:1px;margin:0 auto;padding:0;border:0;background:transparent;color:#28272c;font-size:10px;line-height:1.1}
 .dot-conversation-identity:hover .dot-conversation-avatar{transform:scale(1.04)}
-.dot-conversation-identity .dot-conversation-avatar{width:52px;height:52px;margin:0;border-radius:50%;filter:none;transition:transform .12s ease}
-.dot-conversation-status{align-self:center;margin-top:4px;color:#77757d;font-size:8px;line-height:1.2}
-.dot-conversation-time{align-self:center;margin-top:17px;color:#87858d;font-size:9px;line-height:1.2}
-.dot-onboarding-messages{width:min(620px,100%);flex:1;min-height:0;overflow:auto;margin:18px auto 0;padding:0 24px 10px}
-.dot-onboarding-messages .message{display:block;width:fit-content;max-width:min(84%,650px);min-width:92px;padding:6px 10px;margin:0 0 5px;border:0;border-radius:14px;background:#f0efed}
-.dot-onboarding-messages .message p{margin:0;color:#414148;font-size:9px;line-height:1.42;white-space:pre-wrap}
+.dot-conversation-identity .dot-conversation-avatar{width:58px;height:58px;margin:0;border-radius:50%;filter:none;transition:transform .12s ease}
+.dot-conversation-status{align-self:center;margin-top:4px;color:#77757d;font-size:9px;line-height:1.2}
+.dot-conversation-time{align-self:center;margin-top:76px;color:#87858d;font-size:9px;line-height:1.2}
+.dot-onboarding-messages{width:min(840px,100%);flex:1;min-height:0;overflow:auto;margin:18px auto 0;padding:0 24px 10px}
+.dot-onboarding-messages .message{display:block;width:fit-content;max-width:min(89%,750px);min-width:158px;padding:10px 14px;margin:0 0 7px;border:0;border-radius:14px;background:#f0efed}
+.dot-onboarding-messages .message p{margin:0;color:#414148;font-size:12px;line-height:1.42;white-space:pre-wrap}
 .dot-onboarding-messages .message.user{margin-left:auto;background:#84a9dd}
 .dot-onboarding-messages .message.user p{color:#15161a}
+.dot-onboarding-messages .message.onboarding-customize{min-width:0;width:fit-content;padding:0;margin-top:0;background:transparent}
+.onboarding-customize button{min-height:36px;display:inline-flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid #ead0bc;border-radius:11px;background:#fff7f0;color:#9c582f;font-size:12px;line-height:1.2;font-weight:550;text-decoration:none}
+.onboarding-customize button:hover{background:#ffefe2}
+.onboarding-customize-avatar{width:18px!important;height:18px!important;flex:none;border-radius:50%;filter:none!important}
+.onboarding-customize-chevron{margin-left:2px;font-size:18px;line-height:12px}
 .dot-onboarding-mode .composer-wrap{width:min(560px,100%);padding:8px 24px 20px}
 .dot-onboarding-mode .composer{min-height:54px;padding:9px 13px 7px;border-radius:28px}
 .dot-onboarding-mode .composer textarea{height:25px;min-height:25px;resize:none;font-size:12px}
@@ -30,12 +35,14 @@
 .dot-onboarding-mode .composer-bottom label,.dot-onboarding-mode .hint{display:none}
 .dot-onboarding-mode .send{width:28px;height:28px;background:#77777d;color:#fff;font-size:18px}
 .dots-dark .dot-conversation-identity{color:#efedf1}
-.dots-dark .dot-onboarding-messages .message{background:#303033}
-.dots-dark .dot-onboarding-messages .message p{color:#e5e4e8}
+.dots-dark .dot-onboarding-messages .message{background:#10261b}
+.dots-dark .dot-onboarding-messages .message p{color:#e0eee4}
 .dots-dark .dot-onboarding-messages .message.user{background:#84a9dd}
 .dots-dark .dot-onboarding-messages .message.user p{color:#15161a}
+.dots-dark .onboarding-customize button{border-color:#5a3c29;background:#30241d;color:#e6a174}
+.dots-dark .onboarding-customize button:hover{background:#3c2b21}
 .dots-dark.dot-onboarding-mode .composer{border-color:#424245;background:#3a3a3d;box-shadow:none}
 .dots-dark.dot-onboarding-mode .composer textarea{color:#f1eff4}
 .dots-dark.dot-onboarding-mode .composer textarea::placeholder{color:#b3b0b8}
 .dots-dark.dot-onboarding-mode .send{background:#1888f5;color:#fff}
-@media(max-width:620px){.dot-onboarding-messages{padding-right:14px;padding-left:14px}.dot-onboarding-messages .message{max-width:92%}.dot-onboarding-mode .composer-wrap{padding-right:12px;padding-left:12px}}
+@media(max-width:620px){.dot-conversation-time{margin-top:54px}.dot-onboarding-messages{padding-right:14px;padding-left:14px}.dot-onboarding-messages .message{max-width:92%}.dot-onboarding-mode .composer-wrap{padding-right:12px;padding-left:12px}}
