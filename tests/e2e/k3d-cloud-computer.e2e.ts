@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,7 +20,9 @@ const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `k3d-cloud-computer-$
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
 const tokenSecret = randomBytes(32).toString('base64url');
+const agentAdapterSource = "const fs=require('node:fs');let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const task=JSON.parse(input);fs.writeFileSync('runtime-persistence.txt',task.taskId);console.log(JSON.stringify({status:'done',message:'Adapter completed: '+task.prompt+'; runtime token visible to child: '+Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)}))})";
 let appServer: ChildProcess | null = null;
+let agentPortForward: ChildProcess | null = null;
 let browser: Browser | null = null;
 let page: Page | null = null;
 let appPort = 0;
@@ -53,7 +55,8 @@ async function startApp(): Promise<ChildProcess> {
       DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE: process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || cluster,
       DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX || '1',
       DOTS_LINUX_DESKTOP_TEST_WORKER_URL: '', DOTS_LINUX_DESKTOP_TEST_NOVNC_URL: '', DOTS_LINUX_DESKTOP_TEST_AGENT_URL: '',
-      DOTS_AGENT_KERNELS_JSON: '{}',
+      DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
+      DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: 'node', args: ['-e', agentAdapterSource] } }),
       GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: '', DOTS_MODEL_API_KEY: '', DOTS_MODEL: '', DOTS_CLAUDE_BIN: '', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -84,9 +87,24 @@ async function signIn(target: Page): Promise<string> {
   await target.reload({ waitUntil: 'domcontentloaded' });
   await target.getByTestId('app-shell').waitFor({ state: 'visible' });
   await target.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  const workspace = await target.evaluate(async name => {
+    const response = await fetch('/api/tenants', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+    return { status: response.status, body: await response.json() as { id?: string } };
+  }, `K3D cloud E2E ${randomUUID()}`);
+  assert.equal(workspace.status, 201, 'Create a disposable tenant workspace for the live K3D desktop');
+  await target.reload({ waitUntil: 'domcontentloaded' });
+  await target.getByTestId('app-shell').waitFor({ state: 'visible' });
+  await target.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
   const tenantId = await target.getByTestId('app-shell').getAttribute('data-tenant-id');
   assert(tenantId, 'The signed-in workspace must expose its verified tenant ID to the E2E harness');
+  assert.equal(tenantId, workspace.body.id, 'The E2E session must use the unique workspace it just created');
   return tenantId;
+}
+
+function assertNamespaceIsNew(name: string) {
+  const result = spawnSync('kubectl', ['get', 'namespace', name, '-o', 'name'], { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (result.status === 0) throw new Error(`Refusing to reuse pre-existing tenant desktop namespace ${name}`);
+  assert.match(result.stderr, /NotFound/i, `Could not safely check tenant namespace ${name}: ${(result.stderr || result.stdout).slice(-800)}`);
 }
 
 try {
@@ -107,6 +125,7 @@ try {
   page.on('console', message => { if (message.type() === 'error') logs.push(`console: ${message.text()}`); });
   tenantId = await signIn(page);
   namespace = desktopResourceIdentity(tenantId).namespace;
+  assertNamespaceIsNew(namespace);
   console.log('Test tenant signed in and first-run setup completed');
 
   kubectlNamespaceCreated = true;
@@ -120,6 +139,14 @@ try {
   });
   console.log(`Computer API returned HTTP ${computerStatus.status}${computerStatus.body.error ? ` (${computerStatus.body.error})` : ''}`);
   assert.equal(computerStatus.status, 200, 'The cloud computer API must connect to the tenant desktop');
+  const desktopPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
+  assert(desktopPod, `The tenant namespace ${namespace} must contain its desktop Pod`);
+  const osRelease = command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', '/etc/os-release']);
+  assert.match(osRelease, /^ID=debian$/m, 'The running cloud computer must identify itself as Debian');
+  assert.match(osRelease, /^VERSION_CODENAME=bookworm$/m, 'The running cloud computer must be Debian Bookworm');
+  const nodeVersion = command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'node', '--version']);
+  assert.match(nodeVersion, /^v22\./, 'The desktop image must include the configured Node.js Agent runtime');
+  console.log(`Verified live tenant desktop OS: Debian Bookworm (${nodeVersion})`);
   const remoteImage = page.locator('img[alt="Linux 云桌面画面"]');
   await remoteImage.waitFor({ state: 'visible', timeout: 240_000 });
   await page.waitForFunction(() => {
@@ -141,6 +168,35 @@ try {
   }
   assert(samples.size > 4, `The live K3D screenshot must contain a rendered desktop, not a blank placeholder (sampled ${samples.size} colors)`);
   await page.screenshot({ path: join(artifacts, '01-agent-desktop.png'), fullPage: true });
+
+  const agentPort = await freePort();
+  agentPortForward = spawn('kubectl', ['-n', namespace, 'port-forward', '--address', '127.0.0.1', 'svc/desktop', `${agentPort}:8083`], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let portForwardOutput = '';
+  agentPortForward.stdout?.on('data', chunk => { portForwardOutput += String(chunk); });
+  agentPortForward.stderr?.on('data', chunk => { portForwardOutput += String(chunk); });
+  const portForwardDeadline = Date.now() + 15_000;
+  while (!portForwardOutput.includes(`127.0.0.1:${agentPort}`) && Date.now() < portForwardDeadline) {
+    if (agentPortForward.exitCode !== null) throw new Error(`Agent runtime port-forward exited early: ${portForwardOutput}`);
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+  }
+  assert(portForwardOutput.includes(`127.0.0.1:${agentPort}`), `Agent runtime port-forward did not become ready: ${portForwardOutput}`);
+  const agentToken = createHmac('sha256', tokenSecret).update(`agent:${tenantId}`).digest('base64url');
+  const runtimeTaskId = randomUUID();
+  const runtimeResponse = await fetch(`http://127.0.0.1:${agentPort}/v1/tasks/run`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${agentToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ engine: 'dsh', taskId: runtimeTaskId, prompt: 'real Debian runtime smoke', sessionId: null, cwd: 'tasks/runtime-smoke' }),
+  });
+  const runtimeResult = await runtimeResponse.json() as { status?: string; message?: string; engine?: string };
+  assert.equal(runtimeResponse.status, 200, `The live Agent runtime must execute its configured adapter: ${JSON.stringify(runtimeResult)}`);
+  assert.equal(runtimeResult.status, 'done');
+  assert.equal(runtimeResult.engine, 'dsh');
+  assert.match(runtimeResult.message || '', /Adapter completed: real Debian runtime smoke; runtime token visible to child: false/);
+  const workspacePath = `/workspace/tasks/runtime-smoke/runtime-persistence.txt`;
+  assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The real Agent runtime must leave its task artifact in the tenant workspace PVC');
+  agentPortForward.kill('SIGTERM');
+  agentPortForward = null;
+  console.log('Live Agent runtime executed its configured adapter and kept the runtime token out of the child process');
 
   await page.getByRole('button', { name: 'Take over' }).click();
   const vncCanvas = page.frameLocator('[data-testid="linux-desktop-view"]').locator('canvas').first();
@@ -169,11 +225,19 @@ try {
   await page.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible' });
   await page.screenshot({ path: join(artifacts, '03-agent-control-restored.png'), fullPage: true });
   console.log('Real cloud-browser navigate/click/type and control hand-back passed');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian Bookworm desktop Pod', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'browser navigate/click/type', 'takeover and return'], artifacts }, null, 2));
+
+  command(['kubectl', '-n', namespace, 'delete', 'pod', desktopPod, '--wait=true', '--timeout=90s']);
+  command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', 'pod', '-l', 'app=desktop', '--timeout=120s']);
+  const restartedPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
+  assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
+  assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The tenant workspace artifact must survive a desktop Pod restart');
+  console.log('Tenant Agent artifact survived recreation of the Debian desktop Pod');
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian Bookworm desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'browser navigate/click/type', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
 } finally {
+  agentPortForward?.kill('SIGTERM');
   await page?.context().close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
   if (appServer && appServer.exitCode === null) {

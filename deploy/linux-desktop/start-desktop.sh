@@ -5,8 +5,15 @@ export DISPLAY="${DISPLAY:-:1}"
 resolution="${COKE_DESKTOP_RESOLUTION:-1440x900}"
 start_url="${COKE_DESKTOP_START_URL:-https://example.com}"
 chrome_bin="${COKE_DESKTOP_CHROME_BIN:-/usr/bin/chromium}"
-mkdir -p "$HOME" "$HOME/.config/chromium" "$HOME/.vnc" /workspace/.coke-desktop /tmp/.X11-unix
+profile_dir="$HOME/.config/chromium"
+mkdir -p "$HOME" "$profile_dir" "$HOME/.vnc" /workspace/.coke-desktop /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
+
+# A recreated Pod mounts the prior Pod's persistent Chromium profile. Chrome's
+# singleton links include the old Pod name and can block CDP startup forever;
+# this entrypoint runs before any Chromium process exists in the new container.
+# Drop only process ownership links, keeping cookies, files, and preferences.
+rm -f "$profile_dir/SingletonLock" "$profile_dir/SingletonCookie" "$profile_dir/SingletonSocket"
 
 Xvfb "$DISPLAY" -screen 0 "${resolution}x24" -ac +extension GLX +render -noreset >/tmp/dots-xvfb.log 2>&1 &
 xvfb_pid=$!
