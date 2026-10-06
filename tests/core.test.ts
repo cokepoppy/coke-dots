@@ -26,6 +26,24 @@ test('tasks, redirects and profile survive database reopen', () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('dot appearance is durable and isolated to its tenant', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-appearance-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'appearance-alpha', email: 'appearance-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'appearance-beta', email: 'appearance-beta@example.test', name: 'Beta' });
+    store.setProfile('Roger', 'heart', '#f58e70', alpha.tenant.id, 'sparkle', 'round', 'crown');
+    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'Roger', shape: 'heart', color: '#f58e70', eyes: 'sparkle', glasses: 'round', accessory: 'crown' });
+    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#ba9af7', eyes: 'classic', glasses: 'none', accessory: 'none' });
+    store.close();
+
+    store = new Store(directory);
+    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'Roger', shape: 'heart', color: '#f58e70', eyes: 'sparkle', glasses: 'round', accessory: 'crown' });
+    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#ba9af7', eyes: 'classic', glasses: 'none', accessory: 'none' });
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('delegated tasks persist, recover after restart, and aggregate only inside their tenant', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-delegation-'));
   try {

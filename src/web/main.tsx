@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Engine, Entry, PageActionApproval, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import type { DotAppearance, Engine, Entry, PageActionApproval, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import './style.css';
 import './chat-theme.css';
 import './watch.css';
 import './dark-theme.css';
+import './avatar-editor.css';
 import './onboarding.css';
 import './notification.css';
 import './activity.css';
@@ -17,10 +18,12 @@ import { ScheduledView } from './ScheduledView.tsx';
 import { PagePane, PagesView, ScratchpadNavigationPane } from './Pages.tsx';
 import { PermissionRules } from './PermissionRules.tsx';
 import { DotOnboarding } from './DotOnboarding.tsx';
+import { DotAvatar } from './DotAvatar.tsx';
+import { DotAvatarEditor } from './DotAvatarEditor.tsx';
 import './shell-replica.css';
 import './onboarding-replica.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7', eyes: 'classic', glasses: 'none', accessory: 'none' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
@@ -36,10 +39,6 @@ async function request(path: string, method: 'POST' | 'PATCH', body: object) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
-}
-
-function Avatar({ shape, color, small = false }: { shape: string; color: string; small?: boolean }) {
-  return <div className={`avatar ${shape} ${small ? 'small' : ''}`} style={{ backgroundColor: color }}><span className="eyes"><i /><i /></span></div>;
 }
 
 function MessageBody({ body, onOpenPage }: { body: string; onOpenPage: (id: string) => void }) {
@@ -67,6 +66,7 @@ function App() {
   const [e2eAuthAvailable, setE2eAuthAvailable] = useState(false);
   const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
   const [state, setState] = useState<Snapshot>(initial);
+  const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [view, setView] = useState<'home' | 'chat' | 'activity' | 'scheduled' | 'computer' | 'profile' | 'pages'>('home');
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
@@ -141,6 +141,14 @@ function App() {
     if (authContext) {
       try { localStorage.setItem(`coke-dots:theme:${authContext.user.id}`, next); } catch { /* Keep the current session usable when storage is unavailable. */ }
     }
+  }
+
+  async function saveAvatarAppearance(appearance: DotAppearance) {
+    try {
+      const profile = await request('/profile', 'PATCH', appearance) as Snapshot['profile'];
+      setState(current => ({ ...current, profile }));
+      setAvatarEditorOpen(false);
+    } catch (error) { setError(String(error)); }
   }
 
   async function submit() {
@@ -222,7 +230,7 @@ function App() {
       <button className={`rail-button ${view === 'scheduled' ? 'selected' : ''}`} aria-label="Scheduled" title="Scheduled" onClick={() => { setSelectedPageId(null); setView('scheduled'); }}>◴</button>
       <button className={`rail-button ${view === 'computer' ? 'selected' : ''}`} aria-label="电脑" title="电脑" onClick={() => { setSelectedPageId(null); setView('computer'); }}>▣</button>
       <span className="rail-spacer" />
-      <button className="rail-user" aria-label="你的 dot 设置" title="你的 dot 设置" onClick={() => { setSelectedPageId(null); setView('profile'); }}><Avatar {...state.profile} small /></button>
+      <button className="rail-user" aria-label="你的 dot 设置" title="你的 dot 设置" onClick={() => { setSelectedPageId(null); setView('profile'); }}><DotAvatar appearance={state.profile} small /></button>
     </aside>
     <aside className="sidebar">
       <div className="sidebar-heading"><strong>ChatGPT</strong><span>⌄</span><button aria-label="搜索" title="搜索">⌕</button></div>
@@ -232,16 +240,16 @@ function App() {
       <button className={`sidebar-item ${view === 'pages' ? 'selected' : ''}`} aria-label="Pinned Scratchpad" onClick={() => { setSelectedPageId(null); setView('pages'); }}>▱ <span>Scratchpad</span></button>
       <div className="side-caption recent-caption">Recent</div>
       <div className="task-links">{stateLoaded ? state.tasks.slice(0, 12).map(task => <button key={task.id} className={selected === task.id ? 'on' : ''} onClick={() => { setSelectedPageId(null); setView('chat'); setSelected(task.id); }}><span className={`status-dot ${task.status}`} />{task.title}</button>) : <span className="side-loading">恢复中…</span>}</div>
-      <button className="profile-link" onClick={() => { setSelectedPageId(null); setView('profile'); }}><Avatar {...state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
+      <button className="profile-link" onClick={() => { setSelectedPageId(null); setView('profile'); }}><DotAvatar appearance={state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
       <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {(view === 'home' || view === 'chat') && <div className="chat-layout"><section className="chat-panel">
-        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What’s on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding onCustomize={() => setView('profile')} onOpenScratchpad={() => { setSelectedPageId(null); setView('pages'); }} /> : <div className="timeline">
+        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What’s on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} onCustomize={() => setView('profile')} onEditAppearance={() => setAvatarEditorOpen(true)} onOpenScratchpad={() => { setSelectedPageId(null); setView('pages'); }} /> : <div className="timeline">
           {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
-          {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <Avatar {...state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={entry.body} onOpenPage={id => openPage(id, entry.taskId)} /></div></article>)}
+          {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={entry.body} onOpenPage={id => openPage(id, entry.taskId)} /></div></article>)}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
         </div>}
         <div className="composer-wrap"><div className="composer"><textarea data-testid="task-composer" ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder={view === 'home' ? 'Ask ChatGPT' : 'Type a message'} /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="send" disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
@@ -254,9 +262,10 @@ function App() {
         onOpenTask={task => { setSelected(task.id); setView('chat'); }}
         onNewTask={() => { setSchedule(true); setView('chat'); requestAnimationFrame(() => composerRef.current?.focus()); }}
         onAddWatch={addScheduledWatch} />}
-      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} />}
+      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onEditAppearance={() => setAvatarEditorOpen(true)} />}
       {view === 'computer' && <ComputerView dotName={state.profile.name} onError={setError} />}
     </main>
+    {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={saveAvatarAppearance} />}
   </div>;
 }
 
@@ -479,10 +488,8 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
   </div>;
 }
 
-function Profile({ state, auth, onError }: { state: Snapshot; auth: AuthContext; onError: (s: string) => void }) {
+function Profile({ state, auth, onError, onEditAppearance }: { state: Snapshot; auth: AuthContext; onError: (s: string) => void; onEditAppearance: () => void }) {
   const [name, setName] = useState(state.profile.name);
-  const [shape, setShape] = useState(state.profile.shape);
-  const [color, setColor] = useState(state.profile.color);
   const [baseUrl, setBaseUrl] = useState(state.modelSettings.baseUrl || 'https://api.openai.com/v1');
   const [model, setModel] = useState(state.modelSettings.model);
   const [apiKey, setApiKey] = useState('');
@@ -509,7 +516,7 @@ function Profile({ state, auth, onError }: { state: Snapshot; auth: AuthContext;
       setInvitations(await inviteResponse.json() as WorkspaceInvitation[]);
     } else setInvitations([]);
   };
-  useEffect(() => { setName(state.profile.name); setShape(state.profile.shape); setColor(state.profile.color); }, [state.profile.name, state.profile.shape, state.profile.color]);
+  useEffect(() => { setName(state.profile.name); }, [state.profile.name]);
   useEffect(() => { setDesktopNotifications(state.preferences.desktopNotifications); }, [state.preferences.desktopNotifications]);
   useEffect(() => { if (state.modelSettings.baseUrl) setBaseUrl(state.modelSettings.baseUrl); if (state.modelSettings.model) setModel(state.modelSettings.model); }, [state.modelSettings.baseUrl, state.modelSettings.model]);
   useEffect(() => { void refreshMembers().catch(error => setMembersError(String(error))); }, [auth.tenant.id]);
@@ -552,12 +559,10 @@ function Profile({ state, auth, onError }: { state: Snapshot; auth: AuthContext;
   return <section className="content profile-content">
     <div className="section-heading"><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div>
     <div className="profile-card">
-      <Avatar shape={shape} color={color} />
+      <DotAvatar appearance={state.profile} />
+      <button type="button" className="avatar-profile-customize" onClick={onEditAppearance}>Customize your dot</button>
       <label>名字<input maxLength={40} value={name} onChange={e => setName(e.target.value)} /></label>
-      <div className="field-label">形状</div>
-      <div className="choices">{['circle', 'square', 'triangle'].map(item => <button key={item} className={shape === item ? 'chosen' : ''} onClick={() => setShape(item)}>{item === 'circle' ? '圆形' : item === 'square' ? '方形' : '三角形'}</button>)}</div>
-      <label>颜色<input type="color" value={color} onChange={e => setColor(e.target.value)} /></label>
-      <button className="primary" onClick={async () => { try { await request('/profile', 'PATCH', { name, shape, color }); } catch (e) { onError(String(e)); } }}>保存更改</button>
+      <button className="primary" onClick={async () => { try { await request('/profile', 'PATCH', { name }); } catch (e) { onError(String(e)); } }}>保存更改</button>
     </div>
     <div className="section-heading model-heading"><h2>通知</h2><p>后台工作需要你处理或完成时，在这台 Mac 上提醒你。</p></div>
     <div className="profile-card model-card notification-card">

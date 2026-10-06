@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import { DotAvatar } from './DotAvatar.tsx';
 import './context-panel.css';
 
 interface ComputerState { ready: boolean; owner: 'agent' | 'user'; url: string; title: string }
@@ -34,7 +35,7 @@ export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSe
 
   return <aside className="dot-context-panel" aria-label={`${profile.name} details`} data-testid="dot-context-panel" data-tenant-id={tenantId}>
     <div className="context-agent">
-      <div className={`context-avatar ${profile.shape}`} style={{ backgroundColor: profile.color }} aria-hidden="true"><span>••</span></div>
+      <DotAvatar appearance={profile} small className="context-avatar" />
       <strong>{profile.name}</strong>
     </div>
 

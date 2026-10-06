@@ -5,7 +5,8 @@ import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
-import type { ActionRuleMode, Engine, ScheduleSpec } from '../shared/types.ts';
+import type { ActionRuleMode, DotAppearance, Engine, ScheduleSpec } from '../shared/types.ts';
+import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 import { ComputerManager } from './computer.ts';
@@ -300,11 +301,17 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, store.getWatch(watch.id, session.tenant.id));
     }
     if (path === '/api/profile' && req.method === 'PATCH') {
-      const name = String(body.name || '').trim().slice(0, 40);
-      const shape = String(body.shape || 'circle');
-      const color = String(body.color || '#ba9af7');
-      if (!name || !['circle', 'square', 'triangle'].includes(shape) || !/^#[0-9a-fA-F]{6}$/.test(color)) return reply(res, 400, { error: 'Invalid profile' });
-      store.setProfile(name, shape, color, session.tenant.id);
+      const current = store.getProfile(session.tenant.id);
+      const name = body.name === undefined ? current.name : String(body.name).trim().slice(0, 40);
+      const appearance: DotAppearance = {
+        shape: body.shape === undefined ? current.shape : String(body.shape),
+        color: body.color === undefined ? current.color : String(body.color),
+        eyes: body.eyes === undefined ? current.eyes : String(body.eyes),
+        glasses: body.glasses === undefined ? current.glasses : String(body.glasses),
+        accessory: body.accessory === undefined ? current.accessory : String(body.accessory),
+      };
+      if (!name || !isDotAppearance(appearance)) return reply(res, 400, { error: 'Invalid profile' });
+      store.setProfile(name, appearance.shape, appearance.color, session.tenant.id, appearance.eyes, appearance.glasses, appearance.accessory);
       publish();
       return reply(res, 200, snapshot(session.tenant.id).profile);
     }

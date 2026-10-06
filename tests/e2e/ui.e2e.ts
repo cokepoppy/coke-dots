@@ -408,6 +408,61 @@ try {
     assert.equal(await composer.evaluate(element => document.activeElement === element), true, 'The chat composer should receive focus on click');
   });
 
+  await recordStep('Customize the Dot appearance in both themes and restore it from tenant storage', async () => {
+    await clickNav(alphaPage!, '你的 dot');
+    const onboarding = alphaPage!.getByTestId('dot-onboarding');
+    const editor = alphaPage!.getByRole('dialog', { name: 'Customize your dot' });
+    await onboarding.getByRole('button', { name: 'Customize your dot' }).click();
+    await editor.waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
+    await screenshot(alphaPage!, 'avatar-customizer-light');
+
+    await editor.getByRole('tab', { name: 'Eyes' }).click();
+    await editor.getByRole('button', { name: 'Sparkle eyes' }).click();
+    await editor.getByRole('tab', { name: 'Glasses' }).click();
+    await editor.getByRole('button', { name: 'Round glasses' }).click();
+    await editor.getByRole('tab', { name: 'Accessories' }).click();
+    await editor.getByRole('button', { name: 'Crown' }).click();
+    await editor.getByRole('tab', { name: 'Shape' }).click();
+    await editor.getByRole('button', { name: 'Heart', exact: true }).click();
+    await editor.getByRole('button', { name: 'Color #f58e70' }).click();
+    const preview = editor.locator('.avatar-editor-preview .avatar');
+    assert.match(await preview.getAttribute('class') || '', /heart/);
+    assert.match(await preview.getAttribute('class') || '', /eyes-sparkle/);
+    assert.match(await preview.getAttribute('class') || '', /glasses-round/);
+    assert.match(await preview.getAttribute('class') || '', /accessory-crown/);
+    assert.equal(await preview.locator('.avatar-face').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(245, 142, 112)');
+    assert.equal(await preview.evaluate(element => getComputedStyle(element).clipPath), 'none', 'Face accessories must not be clipped by the selected heart silhouette');
+    const faceBox = await preview.locator('.avatar-face').boundingBox();
+    const crownBox = await preview.locator('.avatar-accessory').boundingBox();
+    assert(faceBox && crownBox && crownBox.y < faceBox.y, 'The crown must extend above the face silhouette');
+    await screenshot(alphaPage!, 'avatar-customizer-preview-light');
+    await editor.getByRole('button', { name: 'Save', exact: true }).click();
+    await editor.waitFor({ state: 'hidden' });
+    const savedAvatar = alphaPage!.locator('.profile-link .avatar');
+    await alphaPage!.waitForFunction(() => document.querySelector('.profile-link .avatar')?.classList.contains('heart'));
+    assert.match(await savedAvatar.getAttribute('class') || '', /eyes-sparkle/);
+    assert.match(await savedAvatar.getAttribute('class') || '', /glasses-round/);
+    assert.match(await savedAvatar.getAttribute('class') || '', /accessory-crown/);
+
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.waitForFunction(() => document.querySelector('.dot-conversation-identity .avatar')?.classList.contains('heart'));
+    assert.match(await alphaPage!.locator('.dot-conversation-identity .avatar').getAttribute('class') || '', /accessory-crown/);
+
+    await alphaPage!.getByTestId('theme-toggle').click();
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
+    await alphaPage!.getByRole('button', { name: 'Customize your dot' }).click();
+    await editor.waitFor({ state: 'visible' });
+    assert.equal(await editor.locator('.avatar-editor-preview').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(16, 37, 26)');
+    await screenshot(alphaPage!, 'avatar-customizer-dark');
+    await editor.getByRole('button', { name: 'Close customizer' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
+  });
+
   const alphaPrivateTask = 'E2E alpha private goal — inventory the project risks';
   await recordStep('Create a persistent task and inspect its visible execution state', async () => {
     await createTask(alphaPage!, alphaPrivateTask);

@@ -70,7 +70,8 @@ export class Store {
         last_hash TEXT, last_status TEXT, error TEXT
       );
       CREATE TABLE IF NOT EXISTS tenant_profiles (
-        tenant_id TEXT PRIMARY KEY REFERENCES tenants(id), name TEXT NOT NULL, shape TEXT NOT NULL, color TEXT NOT NULL
+        tenant_id TEXT PRIMARY KEY REFERENCES tenants(id), name TEXT NOT NULL, shape TEXT NOT NULL, color TEXT NOT NULL,
+        eyes TEXT NOT NULL DEFAULT 'classic', glasses TEXT NOT NULL DEFAULT 'none', accessory TEXT NOT NULL DEFAULT 'none'
       );
       CREATE TABLE IF NOT EXISTS tenant_settings (
         tenant_id TEXT NOT NULL REFERENCES tenants(id), key TEXT NOT NULL, value TEXT NOT NULL,
@@ -118,6 +119,9 @@ export class Store {
     this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
     this.addColumnIfMissing('tasks', 'parent_task_id', 'TEXT');
     this.addColumnIfMissing('page_action_approvals', 'decided_by', 'TEXT REFERENCES users(id)');
+    this.addColumnIfMissing('tenant_profiles', 'eyes', "TEXT NOT NULL DEFAULT 'classic'");
+    this.addColumnIfMissing('tenant_profiles', 'glasses', "TEXT NOT NULL DEFAULT 'none'");
+    this.addColumnIfMissing('tenant_profiles', 'accessory', "TEXT NOT NULL DEFAULT 'none'");
     this.ensurePageApprovalCancellationStatus();
     const oldProfile = this.tableExists('profile');
     if (oldProfile) this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color) SELECT 'legacy',name,shape,color FROM profile WHERE id=1");
@@ -379,7 +383,7 @@ export class Store {
   removeSession(tokenHash: string) { this.db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').run(tokenHash); }
 
   snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false }, tenantId = 'legacy'): Snapshot {
-    const p = this.db.prepare('SELECT name,shape,color FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
+    const p = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
     if (!p) throw new Error('Workspace profile is missing');
     return {
       profile: p,
@@ -749,12 +753,13 @@ export class Store {
     return { id: Number(result.lastInsertRowid), tenantId, taskId, kind, body, createdAt: now };
   }
 
-  setProfile(name: string, shape: string, color: string, tenantId = 'legacy') {
-    this.db.prepare('UPDATE tenant_profiles SET name=?,shape=?,color=? WHERE tenant_id=?').run(name, shape, color, tenantId);
+  setProfile(name: string, shape: string, color: string, tenantId = 'legacy', eyes = 'classic', glasses = 'none', accessory = 'none') {
+    this.db.prepare('UPDATE tenant_profiles SET name=?,shape=?,color=?,eyes=?,glasses=?,accessory=? WHERE tenant_id=?')
+      .run(name, shape, color, eyes, glasses, accessory, tenantId);
   }
 
   getProfile(tenantId = 'legacy') {
-    const profile = this.db.prepare('SELECT name,shape,color FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
+    const profile = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
     if (!profile) throw new Error('Workspace profile is missing');
     return profile;
   }

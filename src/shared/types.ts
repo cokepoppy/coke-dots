@@ -5,6 +5,14 @@ export type TaskStatus = 'queued' | 'working' | 'delegating' | 'waiting' | 'sche
 export type ActionRuleMode = 'without-asking' | 'when-requested' | 'ask-before' | 'hand-off';
 export type { ScheduleSpec } from './scheduling.ts';
 
+export interface DotAppearance {
+  shape: string;
+  color: string;
+  eyes: string;
+  glasses: string;
+  accessory: string;
+}
+
 export interface Task {
   id: string;
   tenantId: string;
@@ -34,7 +42,7 @@ export interface Entry {
 }
 
 export interface Snapshot {
-  profile: { name: string; shape: string; color: string };
+  profile: { name: string } & DotAppearance;
   preferences: { desktopNotifications: boolean };
   tasks: Task[];
   watches: Watch[];

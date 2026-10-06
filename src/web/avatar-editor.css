@@ -1,0 +1,105 @@
+.avatar-editor-backdrop{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:22px;background:#17151a25;backdrop-filter:blur(1px)}
+.avatar-editor{width:min(646px,calc(100vw - 32px));min-height:366px;display:flex;align-items:stretch;color:#29272d;filter:drop-shadow(0 18px 42px #1e172c30)}
+.avatar-editor-controls{width:400px;min-width:0;display:flex;flex-direction:column;padding:13px 15px 15px 4px;background:var(--avatar-editor-base,#fff)}
+.avatar-editor-tabs{height:38px;display:flex;align-items:center;gap:19px;padding:0 4px;margin-bottom:12px;border-bottom:1px solid #eceaee}
+.avatar-editor-tabs button{height:38px;padding:0 4px;border:0;border-bottom:2px solid transparent;background:transparent;color:#89858e;font-size:11px}
+.avatar-editor-tabs button.active{border-color:#a1e6c0;color:#39363e;font-weight:650}
+.avatar-editor-tabs .avatar-editor-back{width:22px;padding:0;color:#75717b;font-size:19px}
+.avatar-editor-options{flex:1;min-height:266px;display:grid;grid-template-columns:repeat(4,1fr);align-content:start;justify-items:center;gap:4px 7px;padding:3px 6px}
+.avatar-editor-options.shape-options{align-content:space-evenly;grid-template-rows:repeat(3,53px)}
+.avatar-option{width:58px;height:53px;display:grid;place-items:center;border:1px solid transparent;border-radius:8px;background:transparent;transition:background .12s ease,border-color .12s ease}
+.avatar-option:hover{background:#f5f3f7}
+.avatar-option.selected{border-color:#b6dcc8;background:#f2fbf5}
+.avatar-shape-swatch{width:35px;height:35px;display:block;border-radius:50%}
+.avatar-shape-swatch.triangle{clip-path:polygon(50% 0,100% 90%,0 90%);border-radius:4px}
+.avatar-shape-swatch.capsule{width:39px;height:27px;border-radius:16px}
+.avatar-shape-swatch.cat{clip-path:polygon(0 24%,21% 24%,29% 0,48% 20%,69% 0,77% 24%,100% 24%,100% 100%,0 100%);border-radius:7px}
+.avatar-shape-swatch.flower{clip-path:polygon(50% 0,62% 14%,80% 8%,83% 27%,100% 39%,88% 54%,96% 73%,76% 77%,68% 97%,50% 86%,32% 97%,24% 77%,4% 73%,12% 54%,0 39%,17% 27%,20% 8%,38% 14%)}
+.avatar-shape-swatch.heart{clip-path:polygon(50% 91%,8% 52%,3% 39%,7% 23%,17% 13%,31% 11%,50% 29%,69% 11%,83% 13%,93% 23%,97% 39%,92% 52%)}
+.avatar-shape-swatch.clover{clip-path:polygon(50% 48%,34% 32%,20% 37%,15% 24%,20% 10%,34% 7%,48% 19%,49% 4%,59% 0,69% 6%,68% 20%,81% 17%,95% 24%,96% 37%,84% 48%,96% 59%,93% 73%,80% 79%,67% 69%,62% 90%,49% 98%,38% 91%,37% 72%,23% 81%,10% 76%,5% 63%,18% 51%)}
+.avatar-shape-swatch.star{clip-path:polygon(50% 0,62% 35%,100% 38%,71% 61%,81% 100%,50% 76%,19% 100%,29% 61%,0 38%,38% 35%)}
+.avatar-shape-swatch.scallop{clip-path:polygon(50% 0,61% 6%,72% 2%,81% 11%,92% 14%,95% 26%,100% 36%,95% 48%,100% 60%,94% 70%,91% 83%,79% 86%,68% 97%,56% 93%,44% 100%,34% 92%,21% 93%,16% 81%,5% 76%,7% 63%,0 52%,6% 41%,2% 30%,12% 21%,15% 9%,29% 11%,39% 2%)}
+.avatar-shape-swatch.blob{border-radius:45% 55% 62% 38%/42% 41% 59% 58%;transform:rotate(-14deg)}
+.avatar-shape-swatch.diamond{width:30px;height:30px;border-radius:5px;transform:rotate(45deg)}
+.avatar-editor-colors{min-height:51px;display:flex;align-items:center;justify-content:space-around;gap:5px;padding:9px 3px 0;border-top:1px solid #eceaee}
+.avatar-editor-colors>button,.avatar-custom-color{width:22px;height:22px;flex:none;border:0;border-radius:50%;box-shadow:0 0 0 1px #0000000b;cursor:pointer}
+.avatar-editor-colors>button.selected{outline:2px solid #9de2b9;outline-offset:2px}
+.avatar-custom-color{width:24px;height:24px;overflow:hidden;border:1px solid #e8e5e9;background:conic-gradient(#f66,#fd0,#0d8,#09f,#a4f,#f66)}
+.avatar-custom-color input{width:32px;height:32px;margin:-4px;border:0;opacity:.02;cursor:pointer}
+.avatar-editor-preview{position:relative;width:246px;min-height:366px;flex:none;display:flex;flex-direction:column;align-items:center;padding:42px 22px 24px;border-radius:9px;background:#f2fbf4;color:#322e37}
+.avatar-editor-preview>strong{margin:0 0 76px;font-size:25px;line-height:1.15;font-weight:650}
+.avatar-editor-preview>.avatar{width:68px;height:68px;margin:0 auto 53px;filter:none}
+.avatar-editor-close{position:absolute;top:13px;right:14px;width:22px;height:22px;padding:0;border:0;background:transparent;color:#929097;font-size:21px;line-height:18px}
+.avatar-editor-save{width:100%;height:39px;margin-top:auto;border:0;border-radius:22px;background:#a3edc4;color:#29523b;font-size:12px;font-weight:650}
+.avatar-editor-save:hover{background:#91e6b6}
+.avatar-editor-save:disabled{opacity:.6;cursor:wait}
+.avatar-profile-customize{height:35px;padding:0 13px;border:1px solid #e8e4eb;border-radius:8px;background:#fff;color:#55515c;font-size:12px}
+.onboarding-customize{padding:0!important;background:transparent!important}
+.onboarding-customize button{padding:0;border:0;background:transparent;color:#45414b;text-decoration:underline;text-underline-offset:2px;font-size:9px}
+.avatar{overflow:visible}
+.avatar-eyes{position:relative;z-index:2;display:flex;align-items:center;justify-content:center;gap:13px;margin-top:-2px;line-height:1}
+.avatar-eyes i{display:block;width:7px;height:9px;border-radius:50%;background:#342b45}
+.avatar.small .avatar-eyes{gap:5px}
+.avatar.small .avatar-eyes i{width:3px;height:4px}
+.avatar-eyes i:before{content:none}
+.eyes-sleepy .avatar-eyes i{height:4px;transform:translateY(2px)}
+.eyes-sparkle .avatar-eyes i,.eyes-heart .avatar-eyes i{width:12px;height:13px;background:transparent}
+.eyes-sparkle .avatar-eyes i:before,.eyes-heart .avatar-eyes i:before{content:"✦";display:block;color:#342b45;font-size:13px;font-style:normal;line-height:1}
+.eyes-heart .avatar-eyes i:before{content:"♥";font-size:12px}
+.eyes-wink .avatar-eyes i:last-child{height:2px;transform:translateY(2px)}
+.eyes-wide .avatar-eyes i{width:9px;height:12px}
+.eyes-happy .avatar-eyes i{height:6px;border-radius:8px 8px 2px 2px;border:1.5px solid #342b45;border-bottom:0;background:transparent}
+.eyes-dot .avatar-eyes{gap:15px}
+.eyes-dot .avatar-eyes i{width:4px;height:4px}
+.avatar-glasses{position:absolute;z-index:3;top:42%;left:50%;width:68%;display:flex;align-items:center;justify-content:space-between;gap:3px;transform:translateX(-50%)}
+.avatar-glasses i{width:calc(50% - 1px);height:14px;border:1.5px solid #382f3a;border-radius:50%;background:#453741e8}
+.glasses-square .avatar-glasses i{border-radius:4px}
+.glasses-oval .avatar-glasses i{height:11px;border-radius:50%}
+.glasses-thick .avatar-glasses i{height:16px;border:3px solid #302932;border-radius:5px;background:#413842}
+.glasses-winged .avatar-glasses i{height:13px;border-radius:8px 3px 8px 3px}
+.avatar-accessory{position:absolute;z-index:4;top:-16%;left:50%;width:40%;height:22%;transform:translateX(-50%);display:grid;place-items:center;color:#edbd38;font-size:19px;font-weight:700;line-height:1}
+.avatar-accessory:before{content:"✦"}
+.accessory-crown .avatar-accessory:before{content:"♛"}
+.accessory-halo .avatar-accessory{top:-20%;width:36%;height:13%;border:2px solid #efbf42;border-radius:50%}
+.accessory-halo .avatar-accessory:before{content:""}
+.accessory-bow .avatar-accessory:before{content:"🎀";font-size:15px}
+.accessory-flower .avatar-accessory:before{content:"✿"}
+.accessory-leaf .avatar-accessory:before{content:"❧"}
+.accessory-antenna .avatar-accessory:before{content:"⌁"}
+.accessory-cap .avatar-accessory{top:-14%;height:18%;border-radius:10px 10px 2px 2px;background:#7358b0}
+.accessory-cap .avatar-accessory:before{content:""}
+.avatar.small .avatar-glasses{top:41%;width:72%;gap:1px}
+.avatar.small .avatar-glasses i{height:5px;border-width:1px}
+.avatar.small .avatar-accessory{font-size:8px}
+.avatar.small.accessory-halo .avatar-accessory{border-width:1px}
+.avatar.triangle,.avatar.small.triangle{border-radius:50%;clip-path:none}
+.avatar-face{position:absolute;inset:0;z-index:0;border-radius:50%;background:var(--avatar-color)}
+.avatar-face.square{border-radius:24px}
+.avatar.small .avatar-face.square{border-radius:9px}
+.avatar-face.triangle{clip-path:polygon(50% 0,100% 90%,0 90%);border-radius:12px}
+.avatar-face.capsule{border-radius:46%}
+.avatar-face.cat{clip-path:polygon(0 24%,21% 24%,29% 0,48% 20%,69% 0,77% 24%,100% 24%,100% 100%,0 100%);border-radius:18%}
+.avatar-face.flower{clip-path:polygon(50% 0,62% 14%,80% 8%,83% 27%,100% 39%,88% 54%,96% 73%,76% 77%,68% 97%,50% 86%,32% 97%,24% 77%,4% 73%,12% 54%,0 39%,17% 27%,20% 8%,38% 14%)}
+.avatar-face.heart{clip-path:polygon(50% 91%,8% 52%,3% 39%,7% 23%,17% 13%,31% 11%,50% 29%,69% 11%,83% 13%,93% 23%,97% 39%,92% 52%)}
+.avatar-face.clover{clip-path:polygon(50% 48%,34% 32%,20% 37%,15% 24%,20% 10%,34% 7%,48% 19%,49% 4%,59% 0,69% 6%,68% 20%,81% 17%,95% 24%,96% 37%,84% 48%,96% 59%,93% 73%,80% 79%,67% 69%,62% 90%,49% 98%,38% 91%,37% 72%,23% 81%,10% 76%,5% 63%,18% 51%)}
+.avatar-face.star{clip-path:polygon(50% 0,62% 35%,100% 38%,71% 61%,81% 100%,50% 76%,19% 100%,29% 61%,0 38%,38% 35%)}
+.avatar-face.scallop{clip-path:polygon(50% 0,61% 6%,72% 2%,81% 11%,92% 14%,95% 26%,100% 36%,95% 48%,100% 60%,94% 70%,91% 83%,79% 86%,68% 97%,56% 93%,44% 100%,34% 92%,21% 93%,16% 81%,5% 76%,7% 63%,0 52%,6% 41%,2% 30%,12% 21%,15% 9%,29% 11%,39% 2%)}
+.avatar-face.blob{border-radius:45% 55% 62% 38%/42% 41% 59% 58%;transform:rotate(-14deg)}
+.avatar-face.diamond{border-radius:19%;transform:rotate(45deg) scale(.78)}
+.context-avatar.avatar.small{width:34px;height:34px}
+.context-avatar .avatar-eyes{margin-left:0;letter-spacing:0}
+.dots-dark .avatar-editor-backdrop{background:#0008}
+.dots-dark .avatar-editor{color:#ece9ef}
+.dots-dark .avatar-editor-controls{--avatar-editor-base:#0d0d0f}
+.dots-dark .avatar-editor-tabs{border-color:#2b2930}
+.dots-dark .avatar-editor-tabs button{color:#aaa6b0}
+.dots-dark .avatar-editor-tabs button.active{color:#eeeaf2}
+.dots-dark .avatar-option:hover{background:#242227}
+.dots-dark .avatar-option.selected{border-color:#59866d;background:#18241d}
+.dots-dark .avatar-editor-colors{border-color:#2b2930}
+.dots-dark .avatar-editor-preview{background:#10251a;color:#d6f4df}
+.dots-dark .avatar-editor-close{color:#aaa6b0}
+.dots-dark .avatar-profile-customize{border-color:#3a3740;background:#19181c;color:#d4d0d9}
+.dots-dark .onboarding-customize button{color:#e0dce4}
+@media(max-width:700px){.avatar-editor{width:min(590px,calc(100vw - 24px));min-height:330px}.avatar-editor-controls{width:auto;flex:1;padding-right:9px}.avatar-editor-preview{width:190px;min-height:330px;padding:38px 15px 18px}.avatar-editor-preview>strong{font-size:21px;margin-bottom:52px}.avatar-editor-preview>.avatar{width:62px;height:62px;margin-bottom:35px}.avatar-editor-tabs{gap:8px}.avatar-editor-tabs button{font-size:10px}.avatar-editor-options{min-height:235px;gap:1px}.avatar-editor-options.shape-options{grid-template-rows:repeat(3,48px)}.avatar-option{width:46px;height:48px}}
+@media(max-width:500px){.avatar-editor-backdrop{padding:12px}.avatar-editor{width:100%;min-height:0;flex-direction:column}.avatar-editor-controls{padding:10px 12px}.avatar-editor-options{min-height:180px;grid-template-columns:repeat(4,1fr)}.avatar-editor-options.shape-options{grid-template-rows:repeat(3,48px)}.avatar-editor-preview{width:100%;min-height:188px;padding:26px 18px 15px}.avatar-editor-preview>strong{margin-bottom:11px;font-size:18px}.avatar-editor-preview>.avatar{width:58px;height:58px;margin-bottom:12px}.avatar-editor-save{height:34px}}
