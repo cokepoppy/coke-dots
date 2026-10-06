@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash, generateKeyPairSync, randomBytes, sign as signJwt } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { appendFile, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
@@ -28,7 +29,11 @@ const serverLogs: string[] = [];
 const pageErrors: string[] = [];
 let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
+let mockGoogleServer: Server | null = null;
 let mockModelPrompts: string[] = [];
+let mockGoogleOrigin = '';
+let mockGoogleAuthorizationRequests: Record<string, string>[] = [];
+let mockGoogleTokenExchanges = 0;
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
 let pauseModelHeld = false;
@@ -51,6 +56,7 @@ let gammaPage: Page | null = null;
 let baseUrl = '';
 let failure = '';
 let e2ePort = 0;
+const oauthTestState: { alphaSession?: { user: { id: string; email: string }; tenant: { id: string } } } = {};
 
 await mkdir(screenshotsDir, { recursive: true });
 await mkdir(videoDir, { recursive: true });
@@ -148,6 +154,105 @@ async function startMockModel() {
   return `http://127.0.0.1:${address.port}/v1`;
 }
 
+async function startMockGoogleProvider() {
+  mockGoogleAuthorizationRequests = [];
+  mockGoogleTokenExchanges = 0;
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const flows = new Map<string, {
+    state: string;
+    nonce: string;
+    challenge: string;
+    redirectUri: string;
+    clientId: string;
+    account?: 'alpha' | 'unverified';
+  }>();
+  const provider = createHttpServer(async (request, response) => {
+    const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
+    if (request.method === 'GET' && url.pathname === '/authorize') {
+      const params = url.searchParams;
+      const details = Object.fromEntries(params.entries());
+      mockGoogleAuthorizationRequests.push(details);
+      if (!params.get('state') || !params.get('nonce') || !params.get('redirect_uri') || !params.get('code_challenge')) {
+        response.writeHead(400).end('Missing OAuth parameters');
+        return;
+      }
+      const code = randomBytes(24).toString('base64url');
+      flows.set(code, {
+        state: params.get('state')!,
+        nonce: params.get('nonce')!,
+        challenge: params.get('code_challenge')!,
+        redirectUri: params.get('redirect_uri')!,
+        clientId: params.get('client_id') || '',
+      });
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(`<!doctype html><html><head><title>Google account chooser test</title></head><body><main><h1>Choose a Google account</h1><p>Local OAuth test provider</p><a data-testid="mock-google-alpha" href="/approve?code=${encodeURIComponent(code)}&amp;account=alpha">Continue as alpha@example.test</a><a data-testid="mock-google-unverified" href="/approve?code=${encodeURIComponent(code)}&amp;account=unverified">Continue as unverified@example.test</a></main></body></html>`);
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/approve') {
+      const flow = flows.get(url.searchParams.get('code') || '');
+      const account = url.searchParams.get('account');
+      if (!flow || (account !== 'alpha' && account !== 'unverified')) {
+        response.writeHead(400).end('Invalid test authorization code');
+        return;
+      }
+      flow.account = account;
+      const callback = new URL(flow.redirectUri);
+      callback.searchParams.set('code', url.searchParams.get('code')!);
+      callback.searchParams.set('state', flow.state);
+      response.writeHead(302, { location: callback.toString(), 'cache-control': 'no-store' }).end();
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/certs') {
+      response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'public, max-age=3600' });
+      response.end(JSON.stringify({ 'coke-dots-e2e-key': publicKeyPem }));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/token') {
+      let raw = '';
+      for await (const chunk of request) raw += chunk.toString();
+      const params = new URLSearchParams(raw);
+      const code = params.get('code') || '';
+      const flow = flows.get(code);
+      const verifier = params.get('code_verifier') || '';
+      const challenge = createHash('sha256').update(verifier).digest('base64url');
+      const valid = Boolean(flow?.account) &&
+        params.get('grant_type') === 'authorization_code' &&
+        params.get('client_id') === flow?.clientId &&
+        params.get('client_secret') === 'coke-dots-e2e-secret' &&
+        params.get('redirect_uri') === flow?.redirectUri &&
+        challenge === flow?.challenge;
+      if (!flow || !valid) {
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'invalid_grant' }));
+        return;
+      }
+      const identity = flow.account === 'alpha'
+        ? { sub: 'google-e2e-alpha-subject', email: 'alpha@example.test', email_verified: true, name: 'Alpha' }
+        : { sub: 'google-e2e-unverified-subject', email: 'unverified@example.test', email_verified: false, name: 'Unverified Example' };
+      const issuedAt = Math.floor(Date.now() / 1000);
+      const jwtHeader = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: 'coke-dots-e2e-key' })).toString('base64url');
+      const jwtPayload = Buffer.from(JSON.stringify({
+        iss: 'https://accounts.google.com', aud: flow.clientId, ...identity,
+        nonce: flow.nonce, iat: issuedAt, exp: issuedAt + 3600,
+      })).toString('base64url');
+      const unsignedToken = `${jwtHeader}.${jwtPayload}`;
+      const idToken = `${unsignedToken}.${signJwt('RSA-SHA256', Buffer.from(unsignedToken), privateKey).toString('base64url')}`;
+      flows.delete(code);
+      mockGoogleTokenExchanges++;
+      response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({ access_token: randomBytes(24).toString('base64url'), expires_in: 3600, token_type: 'Bearer', scope: 'openid email profile', id_token: idToken }));
+      return;
+    }
+    response.writeHead(404).end('Not found');
+  });
+  await new Promise<void>((resolvePromise, reject) => provider.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  mockGoogleServer = provider;
+  const address = provider.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}`;
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -167,8 +272,11 @@ async function startServer(port: number) {
       DOTS_DATA_DIR: testDataDir,
       DOTS_PORT: String(port),
       DOTS_CHROME_BIN: chromePath,
-      GOOGLE_CLIENT_ID: '',
-      GOOGLE_CLIENT_SECRET: '',
+      GOOGLE_CLIENT_ID: 'coke-dots-e2e-client',
+      GOOGLE_CLIENT_SECRET: 'coke-dots-e2e-secret',
+      GOOGLE_REDIRECT_URI: '',
+      DOTS_APP_URL: baseUrl,
+      DOTS_E2E_GOOGLE_PROVIDER_URL: mockGoogleOrigin,
       DOTS_MODEL_BASE_URL: testModelBaseUrl,
       DOTS_MODEL_API_KEY: testModelApiKey,
       DOTS_MODEL: testModelName,
@@ -297,6 +405,36 @@ async function signIn(page: Page, email: string) {
   await page.locator('.profile-link small').filter({ hasText: email }).waitFor({ state: 'visible' });
 }
 
+async function signInGoogle(page: Page, account: 'alpha' | 'unverified' = 'alpha') {
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('link', { name: '使用 Google 登录' }).click();
+  await page.getByRole('heading', { name: 'Choose a Google account' }).waitFor({ state: 'visible' });
+  const oauthCookie = (await page.context().cookies(`${baseUrl}/auth/google/callback`)).find(cookie => cookie.name === 'coke_dots_oauth_state');
+  assert(oauthCookie, 'Google authorization must set its state cookie');
+  assert.equal(oauthCookie.httpOnly, true, 'OAuth state must be protected from page scripts');
+  assert.equal(oauthCookie.sameSite, 'Lax');
+  assert.equal(oauthCookie.path, '/auth/google/callback');
+  await page.getByTestId(`mock-google-${account}`).click();
+  if (account === 'unverified') {
+    await page.locator('.auth-error').filter({ hasText: 'Google 身份验证未通过。' }).waitFor({ state: 'visible' });
+    return null;
+  }
+  await page.getByTestId('app-shell').waitFor({ state: 'visible', timeout: 15_000 });
+  await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+  await page.locator('.profile-link small').filter({ hasText: 'alpha@example.test' }).waitFor({ state: 'visible' });
+  const sessionCookie = (await page.context().cookies(baseUrl)).find(cookie => cookie.name === 'coke_dots_session');
+  assert(sessionCookie, 'A valid Google identity should create a session cookie');
+  assert.equal(sessionCookie.httpOnly, true);
+  assert.equal(sessionCookie.sameSite, 'Lax');
+  assert.equal(sessionCookie.path, '/');
+  const response = await page.evaluate(async () => {
+    const result = await fetch('/api/auth/me');
+    return { status: result.status, body: await result.json() as { user: { id: string; email: string }; tenant: { id: string } } };
+  });
+  assert.equal(response.status, 200);
+  return response.body;
+}
+
 async function createTask(page: Page, instruction: string, scheduled = false) {
   if (scheduled) {
     await page.getByLabel('定期检查').check();
@@ -340,6 +478,7 @@ async function restartService() {
 try {
   e2ePort = await reservePort();
   baseUrl = `http://127.0.0.1:${e2ePort}`;
+  mockGoogleOrigin = await startMockGoogleProvider();
   server = await startServer(e2ePort);
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
   alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
@@ -357,12 +496,24 @@ try {
 
   await recordStep('Unauthenticated page and E2E-only sign-in control render', async () => {
     await alphaPage!.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByRole('link', { name: '使用 Google 登录' }).waitFor({ state: 'visible' });
     await alphaPage!.getByTestId('e2e-sign-in').waitFor({ state: 'visible' });
     await screenshot(alphaPage!, '01-login');
   });
 
-  await recordStep('Google-style tenant Alpha signs in through the rendered page', async () => {
-    await signIn(alphaPage!, 'alpha@example.test');
+  await recordStep('Google OAuth authorization, PKCE, RSA identity verification, and tenant session work through Chrome', async () => {
+    const authenticated = await signInGoogle(alphaPage!);
+    assert(authenticated);
+    oauthTestState.alphaSession = authenticated;
+    const authorization = mockGoogleAuthorizationRequests[0];
+    assert(authorization, 'The browser did not visit the OAuth authorization endpoint');
+    assert.equal(authorization.client_id, 'coke-dots-e2e-client');
+    assert.deepEqual(authorization.scope.split(' ').sort(), ['email', 'openid', 'profile'], 'Login must request identity scopes only');
+    assert.equal(authorization.response_type, 'code');
+    assert.equal(authorization.code_challenge_method, 'S256', 'Authorization code must use PKCE S256');
+    assert.ok(authorization.code_challenge && authorization.nonce && authorization.state);
+    assert.equal(authorization.prompt, 'select_account');
+    assert.equal(mockGoogleTokenExchanges, 1, 'The authorization code should be exchanged exactly once');
     await alphaPage!.getByTestId('app-shell').waitFor();
     await alphaPage!.getByTestId('chat-home').getByRole('heading', { name: 'What’s on your mind today?' }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.icon-rail').evaluate(element => Math.round(element.getBoundingClientRect().width)), 44);
@@ -380,6 +531,21 @@ try {
     assert.equal(await alphaPage!.locator('.main').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(255, 255, 255)');
     assert.equal(await alphaPage!.getByTestId('dot-context-panel').count(), 0, 'A new-dot welcome state should not show the post-setup details panel');
     await screenshot(alphaPage!, '02-alpha-home');
+  });
+
+  await recordStep('Google OAuth rejects unverified email and preserves the same account after relogin', async () => {
+    const original = oauthTestState.alphaSession;
+    assert(original);
+    await alphaPage!.getByRole('button', { name: '退出' }).click();
+    await alphaPage!.getByTestId('e2e-sign-in').waitFor({ state: 'visible' });
+    assert.equal(await signInGoogle(alphaPage!, 'unverified'), null, 'An unverified Google email must not create an app session');
+    assert.equal(await alphaPage!.evaluate(async () => (await fetch('/api/auth/me')).status), 401);
+    const restored = await signInGoogle(alphaPage!);
+    assert(restored);
+    assert.equal(restored.user.id, original.user.id, 'Google sub must resolve to the same application user after relogin');
+    assert.equal(restored.tenant.id, original.tenant.id, 'Relogin must retain the existing personal workspace');
+    assert.equal(mockGoogleTokenExchanges, 3, 'Each one-time authorization code should be exchanged once');
+    assert.equal(mockGoogleAuthorizationRequests.length, 3);
   });
 
   await recordStep('Switch between light and dark themes and restore the account preference after reload', async () => {
@@ -1432,6 +1598,7 @@ try {
   await browser?.close().catch(() => undefined);
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
+  if (mockGoogleServer) await new Promise<void>(resolvePromise => mockGoogleServer!.close(() => resolvePromise()));
   testModelBaseUrl = '';
   testModelApiKey = '';
   testModelName = '';
