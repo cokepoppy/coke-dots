@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ActionRuleMode, Engine, Entry, PageActionApproval, ScheduleSpec, ScratchpadPageAction, Snapshot, Task, TaskStatus, TenantActionRule, VoiceCallSession, Watch, WorkspacePage } from '../shared/types.ts';
+import type { ActionRuleMode, AttachmentSummary, Engine, Entry, PageActionApproval, ScheduleSpec, ScratchpadPageAction, Snapshot, Task, TaskStatus, TenantActionRule, VoiceCallSession, Watch, WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -13,6 +13,7 @@ export interface WorkspaceInvitation { tenantId: string; tenantName?: string; em
 export interface TenantMemory { id: string; tenantId: string; note: string; createdBy: string; createdByName: string; createdAt: string; updatedAt: string }
 export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantSummary; expiresAt: string }
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
+export interface StoredTaskAttachment extends AttachmentSummary { tenantId: string; uploadedBy: string; taskId: string | null; content: Uint8Array; createdAt: string }
 
 export class Store {
   readonly db: DatabaseSync;
@@ -62,7 +63,12 @@ export class Store {
       );
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'legacy', task_id TEXT,
-        kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL
+        kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, attachment_ids_json TEXT NOT NULL DEFAULT '[]'
+      );
+      CREATE TABLE IF NOT EXISTS task_attachments (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), uploaded_by TEXT NOT NULL REFERENCES users(id),
+        task_id TEXT REFERENCES tasks(id), name TEXT NOT NULL, media_type TEXT NOT NULL, size INTEGER NOT NULL CHECK(size > 0),
+        content BLOB NOT NULL, created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS voice_calls (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
@@ -118,6 +124,7 @@ export class Store {
     // are claimed only when the first Google account signs in on this local instance.
     this.addColumnIfMissing('tasks', 'tenant_id', "TEXT NOT NULL DEFAULT 'legacy'");
     this.addColumnIfMissing('entries', 'tenant_id', "TEXT NOT NULL DEFAULT 'legacy'");
+    this.addColumnIfMissing('entries', 'attachment_ids_json', "TEXT NOT NULL DEFAULT '[]'");
     this.addColumnIfMissing('watches', 'tenant_id', "TEXT NOT NULL DEFAULT 'legacy'");
     this.addColumnIfMissing('oauth_flows', 'handoff_hash', 'TEXT');
     this.addColumnIfMissing('oauth_flows', 'return_to', 'TEXT');
@@ -147,6 +154,8 @@ export class Store {
       CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(tenant_id, parent_task_id, created_at);
       CREATE INDEX IF NOT EXISTS entries_task ON entries(tenant_id, task_id, id);
       CREATE INDEX IF NOT EXISTS entries_timeline ON entries(tenant_id, id DESC);
+      CREATE INDEX IF NOT EXISTS task_attachments_pending ON task_attachments(tenant_id, uploaded_by, task_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS task_attachments_task ON task_attachments(tenant_id, task_id, created_at);
       CREATE INDEX IF NOT EXISTS watches_due ON watches(status, next_check_at);
       CREATE INDEX IF NOT EXISTS watches_tenant ON watches(tenant_id, status, next_check_at);
     `);
@@ -409,7 +418,12 @@ export class Store {
       },
       tasks: (this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? ORDER BY priority DESC,created_at DESC').all(tenantId) as Record<string, unknown>[]).map(toTask),
       watches: (this.db.prepare('SELECT * FROM watches WHERE tenant_id=? ORDER BY rowid DESC').all(tenantId) as Record<string, unknown>[]).map(toWatch),
-      entries: (this.db.prepare('SELECT id,tenant_id,task_id,kind,body,created_at FROM entries WHERE tenant_id=? ORDER BY id DESC LIMIT 150').all(tenantId) as Record<string, unknown>[]).map(toEntry).reverse(),
+      entries: (this.db.prepare('SELECT id,tenant_id,task_id,kind,body,created_at,attachment_ids_json FROM entries WHERE tenant_id=? ORDER BY id DESC LIMIT 150').all(tenantId) as Record<string, unknown>[]).map(row => {
+        const entry = toEntry(row);
+        let ids: string[] = [];
+        try { ids = JSON.parse(String(row.attachment_ids_json || '[]')) as string[]; } catch { /* Old malformed rows have no attachments. */ }
+        return { ...entry, attachments: this.attachmentSummaries(ids, tenantId) };
+      }).reverse(),
       configured, availableEngines, modelSettings,
     };
   }
@@ -652,17 +666,69 @@ export class Store {
     return this.tenantPage(tenantId, id)!;
   }
 
-  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null): Task {
+  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], uploaderId = ''): Task {
     const now = new Date().toISOString();
     const id = randomUUID();
     const title = instruction.trim().split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
     const taskSchedule = scheduleForTask(scheduleSpec, scheduleMinutes);
     const scheduleMinutesValue = taskSchedule?.frequency === 'interval' ? taskSchedule.intervalMinutes : null;
-    this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null);
-    this.addEntry('user', instruction.trim(), id, tenantId);
-    this.addEntry('system', taskSchedule ? `已安排：${describeSchedule(taskSchedule)}。` : '已加入工作队列。', id, tenantId);
-    return this.getTask(id, tenantId)!;
+    if (attachmentIds.length > 5 || new Set(attachmentIds).size !== attachmentIds.length) throw new Error('附件数量或列表无效');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (attachmentIds.length) {
+        if (!uploaderId) throw new Error('上传附件的用户无效');
+        const placeholders = attachmentIds.map(() => '?').join(',');
+        const owned = this.db.prepare(`SELECT id FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).all(tenantId, uploaderId, ...attachmentIds) as { id: string }[];
+        if (owned.length !== attachmentIds.length) throw new Error('一个或多个附件已失效或不属于当前工作区');
+        const total = this.db.prepare(`SELECT COALESCE(SUM(size),0) AS total FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).get(tenantId, uploaderId, ...attachmentIds) as { total: number };
+        if (total.total > 512 * 1024) throw new Error('附件总大小不能超过 512 KB');
+      }
+      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null);
+      if (attachmentIds.length) {
+        const placeholders = attachmentIds.map(() => '?').join(',');
+        this.db.prepare(`UPDATE task_attachments SET task_id=? WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`)
+          .run(id, tenantId, uploaderId, ...attachmentIds);
+      }
+      this.addEntry('user', instruction.trim(), id, tenantId, attachmentIds);
+      this.addEntry('system', taskSchedule ? `已安排：${describeSchedule(taskSchedule)}。` : '已加入工作队列。', id, tenantId);
+      this.db.exec('COMMIT');
+      return this.getTask(id, tenantId)!;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  addPendingAttachment(tenantId: string, uploaderId: string, name: string, mediaType: string, content: Uint8Array): AttachmentSummary {
+    if (!content.byteLength || content.byteLength > 256 * 1024) throw new Error('单个文本附件不能超过 256 KB');
+    const quota = this.db.prepare('SELECT COUNT(*) AS count,COALESCE(SUM(size),0) AS total FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL').get(tenantId, uploaderId) as { count: number; total: number };
+    if (quota.count >= 5) throw new Error('一次任务最多添加 5 个附件');
+    if (quota.total + content.byteLength > 512 * 1024) throw new Error('待发送附件总大小不能超过 512 KB');
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    this.db.prepare('INSERT INTO task_attachments(id,tenant_id,uploaded_by,task_id,name,media_type,size,content,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(id, tenantId, uploaderId, null, name, mediaType, content.byteLength, content, createdAt);
+    return { id, name, mediaType, size: content.byteLength };
+  }
+
+  pendingAttachments(tenantId: string, uploaderId: string): AttachmentSummary[] {
+    return this.db.prepare('SELECT id,name,media_type AS mediaType,size FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL ORDER BY created_at,id')
+      .all(tenantId, uploaderId) as unknown as AttachmentSummary[];
+  }
+
+  deletePendingAttachment(tenantId: string, uploaderId: string, id: string): boolean {
+    return Number(this.db.prepare('DELETE FROM task_attachments WHERE id=? AND tenant_id=? AND uploaded_by=? AND task_id IS NULL').run(id, tenantId, uploaderId).changes) === 1;
+  }
+
+  taskAttachments(taskId: string, tenantId: string): StoredTaskAttachment[] {
+    return this.db.prepare('SELECT id,tenant_id AS tenantId,uploaded_by AS uploadedBy,task_id AS taskId,name,media_type AS mediaType,size,content,created_at AS createdAt FROM task_attachments WHERE task_id=? AND tenant_id=? ORDER BY created_at,id')
+      .all(taskId, tenantId) as unknown as StoredTaskAttachment[];
+  }
+
+  private attachmentSummaries(ids: string[], tenantId: string): AttachmentSummary[] {
+    if (!ids.length) return [];
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db.prepare(`SELECT id,name,media_type AS mediaType,size FROM task_attachments WHERE tenant_id=? AND task_id IS NOT NULL AND id IN (${placeholders})`).all(tenantId, ...ids) as unknown as AttachmentSummary[];
+    const byId = new Map(rows.map(row => [row.id, row]));
+    return ids.flatMap(id => byId.has(id) ? [byId.get(id)!] : []);
   }
 
   createDelegatedTasks(parentId: string, tenantId: string, delegations: { title: string; instruction: string; engine?: Engine }[], summaryMessage: string, sessionId?: string): Task[] {
@@ -786,10 +852,10 @@ export class Store {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
-  addEntry(kind: Entry['kind'], body: string, taskId: string | null = null, tenantId = 'legacy'): Entry {
+  addEntry(kind: Entry['kind'], body: string, taskId: string | null = null, tenantId = 'legacy', attachmentIds: string[] = []): Entry {
     const now = new Date().toISOString();
-    const result = this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)').run(tenantId, taskId, kind, body, now);
-    return { id: Number(result.lastInsertRowid), tenantId, taskId, kind, body, createdAt: now };
+    const result = this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,?)').run(tenantId, taskId, kind, body, now, JSON.stringify(attachmentIds));
+    return { id: Number(result.lastInsertRowid), tenantId, taskId, kind, body, createdAt: now, attachments: this.attachmentSummaries(attachmentIds, tenantId) };
   }
 
   setProfile(name: string, shape: string, color: string, tenantId = 'legacy', eyes = 'dot', glasses = 'none', accessory = 'none', character = 'ring', pet = 'moss', completeSetup = false, completeOnboarding = false) {
