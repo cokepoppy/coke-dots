@@ -286,6 +286,19 @@ const server = createServer(async (req, res) => {
       publish(); void worker.tick();
       return reply(res, 201, task);
     }
+    if (path === '/api/calls/end' && req.method === 'POST') {
+      const durationSeconds = Number(body.durationSeconds);
+      const taskId = body.taskId == null ? null : String(body.taskId);
+      if (!Number.isInteger(durationSeconds) || durationSeconds < 0 || durationSeconds > 86_400) return reply(res, 400, { error: 'Invalid call duration' });
+      if (taskId && !store.getTask(taskId, session.tenant.id)) return reply(res, 404, { error: 'Task not found' });
+      const hours = Math.floor(durationSeconds / 3600);
+      const minutes = Math.floor((durationSeconds % 3600) / 60);
+      const seconds = durationSeconds % 60;
+      const duration = hours ? `${hours}h ${minutes}m ${String(seconds).padStart(2, '0')}s` : `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+      const entry = store.addEntry('system', `${duration} · Call ended`, taskId, session.tenant.id);
+      publish();
+      return reply(res, 201, entry);
+    }
     if (path === '/api/watches' && req.method === 'POST') {
       const intervalMinutes = Number(body.intervalMinutes);
       if (!Number.isInteger(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 10080) return reply(res, 400, { error: '检查间隔需为 5–10080 分钟' });

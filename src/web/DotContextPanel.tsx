@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import { DotAvatar } from './DotAvatar.tsx';
+import type { DotVoiceCall } from './dot-voice-call.ts';
+import { VoiceCallControls } from './VoiceCallControls.tsx';
 import './context-panel.css';
 
 interface ComputerState { ready: boolean; owner: 'agent' | 'user'; url: string; title: string }
@@ -9,13 +11,17 @@ const statusLabel: Record<TaskStatus, string> = {
   queued: 'Queued', working: 'Working', delegating: 'Parallel work', waiting: 'Needs you', scheduled: 'Scheduled', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
 };
 
-export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSelectTask }: {
+export function DotContextPanel({ profile, state, tenantId, call, onStartCall, onOpenComputer, onSelectTask }: {
   profile: Snapshot['profile'];
   state: Snapshot;
   tenantId: string;
+  call: DotVoiceCall;
+  onStartCall: () => void;
   onOpenComputer: () => void;
   onSelectTask: (taskId: string) => void;
 }) {
+  const callActive = call.active;
+  const callStatus = call.status === 'listening' ? 'Active' : call.status === 'speaking' ? 'Speaking…' : call.status === 'muted' ? 'Muted' : 'Connecting…';
   const [computer, setComputer] = useState<ComputerState | null>(null);
   const tasks = [...state.tasks].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const outputs = tasks.filter(task => task.result).slice(0, 3);
@@ -33,16 +39,18 @@ export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSe
     return () => { current = false; window.clearInterval(timer); };
   }, [tenantId]);
 
-  return <aside className="dot-context-panel" aria-label={`${profile.name} details`} data-testid="dot-context-panel" data-tenant-id={tenantId}>
+  return <aside className={`dot-context-panel ${callActive ? 'call-active' : ''}`} aria-label={`${profile.name} details`} data-testid="dot-context-panel" data-tenant-id={tenantId}>
+    {callActive && <VoiceCallControls call={call} dotName={profile.name} showLauncher={false} />}
     <div className="context-agent">
       <DotAvatar appearance={profile} small className="context-avatar" />
-      <strong>{profile.name}</strong>
+      <span className="context-agent-copy"><strong>{profile.name}</strong>{callActive && <small className="context-call-status" role="status">{callStatus || 'Connecting…'}</small>}</span>
     </div>
 
     <div className="context-quick-actions">
-      <button type="button" disabled title="Voice calling is not connected in this build" aria-label="Call, not connected"><span aria-hidden="true">☎</span>Call</button>
+      <button type="button" disabled={callActive} title={callActive ? 'Call in progress' : `Call ${profile.name}`} aria-label={callActive ? 'Call in progress' : 'Call'} onClick={onStartCall}><span aria-hidden="true">☎</span>Call</button>
       <button type="button" disabled title="Slack is not connected in this build" aria-label="Slack, not connected"><span className="slack-mark" aria-hidden="true">✣</span>Slack</button>
     </div>
+    {!callActive && call.error && <p className="context-call-error" role="alert">{call.error}</p>}
 
     <ContextSection title="Computers" testId="context-computers">
       <button className="context-computer-row" data-testid="dot-computer-row" onClick={onOpenComputer}>

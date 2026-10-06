@@ -13,6 +13,7 @@ import './activity.css';
 import './scheduled.css';
 import './recurrence.css';
 import './pages.css';
+import './voice-call.css';
 import { ComputerView } from './ComputerView.tsx';
 import { DotContextPanel } from './DotContextPanel.tsx';
 import { ScheduledView } from './ScheduledView.tsx';
@@ -23,6 +24,8 @@ import { DotAvatar } from './DotAvatar.tsx';
 import { DotAvatarEditor } from './DotAvatarEditor.tsx';
 import { DotSetupEditor } from './DotSetupEditor.tsx';
 import { DotComputerChoice } from './DotComputerChoice.tsx';
+import { VoiceCallControls } from './VoiceCallControls.tsx';
+import { useDotVoiceCall } from './dot-voice-call.ts';
 import './shell-replica.css';
 import './onboarding-replica.css';
 import './computer-choice.css';
@@ -59,6 +62,10 @@ function MessageBody({ body, onOpenPage }: { body: string; onOpenPage: (id: stri
   }
   if (cursor < body.length) content.push(<React.Fragment key={`text-${cursor}`}>{body.slice(cursor)}</React.Fragment>);
   return <p className="message-body">{content}</p>;
+}
+
+function CallEndedIcon() {
+  return <svg aria-hidden="true" viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 11.8a12.7 12.7 0 0 1 15 0l-1.9 3a.8.8 0 0 1-1.1.2l-2.1-1.3a.9.9 0 0 1-.4-.8v-.8a8.3 8.3 0 0 0-4 0v.8a.9.9 0 0 1-.4.8l-2.1 1.3a.8.8 0 0 1-1.1-.2l-1.9-3Z"/></svg>;
 }
 
 function App() {
@@ -141,6 +148,45 @@ function App() {
   const selectedTask = state.tasks.find(t => t.id === selected) || null;
   const entries = useMemo(() => selected ? state.entries.filter(e => e.taskId === selected) : state.entries, [state.entries, selected]);
   const active = state.tasks.filter(t => ['queued', 'working', 'waiting', 'scheduled'].includes(t.status));
+  const voiceCallTaskId = useRef<string | null>(null);
+  const voiceCallTenantId = useRef<string | null>(null);
+  async function startVoiceTask(instruction: string) {
+    const clean = instruction.trim();
+    if (!clean || !authContext) return;
+    try {
+      const task = await request('/tasks', 'POST', { instruction: clean, scheduleSpec: null, scheduleMinutes: null, engine }) as Task;
+      if (voiceCallTenantId.current === authContext.tenant.id && voiceCallTaskId.current === null) voiceCallTaskId.current = task.id;
+      setSelected(task.id); setSelectedPageId(null); setView('chat');
+    } catch (reason) { setError(String(reason)); }
+  }
+  async function logVoiceCallEnd(durationSeconds: number) {
+    const tenantId = voiceCallTenantId.current;
+    const taskId = voiceCallTaskId.current;
+    voiceCallTenantId.current = null;
+    voiceCallTaskId.current = null;
+    if (!authContext || tenantId !== authContext.tenant.id) return;
+    try { await request('/calls/end', 'POST', { durationSeconds, taskId }); }
+    catch (reason) { setError(String(reason)); }
+  }
+  const voiceCall = useDotVoiceCall(text => { void startVoiceTask(text); }, seconds => { void logVoiceCallEnd(seconds); });
+  function startVoiceCall() {
+    voiceCallTenantId.current = authContext?.tenant.id || null;
+    voiceCallTaskId.current = selectedTask?.id || null;
+    voiceCall.start();
+  }
+  useEffect(() => {
+    if (voiceCall.active && voiceCallTenantId.current !== authContext?.tenant.id) voiceCall.end();
+  }, [authContext?.tenant.id, voiceCall.active, voiceCall.end]);
+  const lastSpokenEntryId = useRef(0);
+  useEffect(() => {
+    if (!voiceCall.active) {
+      lastSpokenEntryId.current = Math.max(lastSpokenEntryId.current, ...state.entries.map(entry => entry.id), 0);
+      return;
+    }
+    const incoming = state.entries.filter(entry => entry.kind === 'dot' && entry.id > lastSpokenEntryId.current).sort((a, b) => a.id - b.id);
+    for (const entry of incoming) voiceCall.speak(entry.body);
+    lastSpokenEntryId.current = Math.max(lastSpokenEntryId.current, ...state.entries.map(entry => entry.id), 0);
+  }, [state.entries, voiceCall.active, voiceCall.speak]);
 
   function openPage(pageId: string, taskId: string | null = null) {
     setSelectedPageId(pageId);
@@ -272,17 +318,23 @@ function App() {
     </aside>
     <main className="main">
       <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
+      {!contextMode && (view === 'home' || view === 'chat' || voiceCall.active) && <VoiceCallControls call={{ ...voiceCall, start: startVoiceCall }} dotName={state.profile.name} showLauncher={view === 'home' || view === 'chat'} />}
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {computerConnectedToast && <div className="computer-connected-toast" data-testid="computer-connected-toast" role="status"><span className="computer-connected-icon" aria-hidden="true">✓</span><span>The computer is connected to your dot</span><button type="button" aria-label="Dismiss notification" onClick={() => setComputerConnectedToast(false)}>×</button></div>}
       {(view === 'home' || view === 'chat') && <div className="chat-layout"><section className="chat-panel">
         {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What’s on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} computerAccess={state.computerAccess} onComputerAccess={saveComputerAccess} onEditSetup={openDotCustomizer} /> : <div className="timeline">
           {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
-          {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={entry.body} onOpenPage={id => openPage(id, entry.taskId)} /></div></article>)}
+          {entries.map(entry => {
+            const callEnded = entry.kind === 'system' ? entry.body.match(/^(.+?) · Call ended$/) : null;
+            return <article key={entry.id} className={`message ${entry.kind} ${callEnded ? 'call-ended' : ''}`} data-testid={callEnded ? 'call-ended-entry' : undefined} aria-label={callEnded ? `Call ended after ${callEnded[1]}` : undefined}>
+              {callEnded ? <div className="call-ended-message"><div className="call-ended-bubble"><CallEndedIcon /><span>{callEnded[1]} · Call ended</span></div><span className="call-ended-delivery">Delivered</span></div> : <><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={entry.body} onOpenPage={id => openPage(id, entry.taskId)} /></div></>}
+            </article>;
+          })}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
         </div>}
         <div className="composer-wrap"><div className="composer"><textarea data-testid="task-composer" ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder={view === 'home' ? 'Ask ChatGPT' : 'Type a message'} /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="send" disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
-      </section>{view === 'chat' && selectedPageId ? <div className="scratchpad-page-split" data-testid="scratchpad-page-split"><ScratchpadNavigationPane tenantId={authContext.tenant.id} selectedPageId={selectedPageId} refreshKey={pageIndexVersion} onOpen={setSelectedPageId} onBack={() => { setSelectedPageId(null); setView('pages'); }} /><PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => { setSelectedPageId(null); setView('pages'); }} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /></div> : view === 'chat' && (selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
+      </section>{view === 'chat' && selectedPageId ? <div className="scratchpad-page-split" data-testid="scratchpad-page-split"><ScratchpadNavigationPane tenantId={authContext.tenant.id} selectedPageId={selectedPageId} refreshKey={pageIndexVersion} onOpen={setSelectedPageId} onBack={() => { setSelectedPageId(null); setView('pages'); }} /><PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => { setSelectedPageId(null); setView('pages'); }} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /></div> : view === 'chat' && (selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} call={voiceCall} onStartCall={startVoiceCall} onOpenComputer={() => setView('computer')} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
       {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
       {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
