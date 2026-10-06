@@ -207,6 +207,42 @@ test('activity feed pages in descending order and stays tenant scoped', () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('text attachments persist with tasks and are isolated by tenant and uploader', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-attachments-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'attachment-alpha', email: 'attachment-alpha@example.test', name: 'Attachment Alpha' });
+    const beta = store.signInGoogle({ subject: 'attachment-beta', email: 'attachment-beta@example.test', name: 'Attachment Beta' });
+    const workspace = store.createWorkspace(alpha.user.id, 'Attachment Team');
+    const invitation = store.addWorkspaceMember(workspace.id, alpha.user.id, beta.user.email, 'member');
+    assert.equal(invitation.ok, true);
+    if (!invitation.ok || invitation.kind !== 'invitation') throw new Error('Expected an attachment workspace invitation');
+    const betaSession = 'attachment-beta-workspace-session';
+    store.createSession(betaSession, beta.user.id, beta.tenant.id, new Date(Date.now() + 60_000).toISOString());
+    assert.ok(store.acceptWorkspaceInvitation(workspace.id, betaSession, beta.user.id, beta.user.email));
+
+    const content = new TextEncoder().encode('Quarterly plan: review supplier risk before Friday.');
+    const attachment = store.addPendingAttachment(workspace.id, alpha.user.id, 'plan.md', 'text/markdown', content);
+    assert.deepEqual(store.pendingAttachments(workspace.id, alpha.user.id).map(item => ({ ...item })), [attachment]);
+    assert.deepEqual(store.pendingAttachments(workspace.id, beta.user.id), [], 'A workspace member must not see another user’s unsent uploads');
+    assert.deepEqual(store.pendingAttachments(beta.tenant.id, alpha.user.id), [], 'A different tenant must not see the pending upload');
+    assert.equal(store.deletePendingAttachment(workspace.id, beta.user.id, attachment.id), false);
+    assert.throws(() => store.createTask('Review the attached plan', null, 'model', workspace.id, null, null, [attachment.id], beta.user.id), /不属于当前工作区/);
+
+    const task = store.createTask('Review the attached plan', null, 'model', workspace.id, null, null, [attachment.id], alpha.user.id);
+    assert.deepEqual(store.pendingAttachments(workspace.id, alpha.user.id), [], 'Task-bound files must leave the pending queue');
+    assert.equal(new TextDecoder().decode(store.taskAttachments(task.id, workspace.id)[0]?.content), 'Quarterly plan: review supplier risk before Friday.');
+    const alphaSnapshot = store.snapshot(false, [], undefined, workspace.id);
+    assert.deepEqual(alphaSnapshot.entries.find(entry => entry.taskId === task.id && entry.kind === 'user')?.attachments?.map(item => ({ ...item })), [attachment]);
+    assert.equal(store.taskAttachments(task.id, beta.tenant.id).length, 0, 'A different tenant must not retrieve the task file');
+
+    store.close(); store = new Store(directory);
+    assert.deepEqual(store.snapshot(false, [], undefined, workspace.id).entries.find(entry => entry.taskId === task.id && entry.kind === 'user')?.attachments?.map(item => ({ ...item })), [attachment]);
+    assert.equal(new TextDecoder().decode(store.taskAttachments(task.id, workspace.id)[0]?.content), 'Quarterly plan: review supplier risk before Friday.');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('workspace memories persist, are tenant scoped, and can only be edited by their creator or an admin', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-memory-'));
   try {

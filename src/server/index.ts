@@ -149,6 +149,36 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, { user: updated.user, tenant: updated.tenant, tenants: store.tenantsForUser(updated.user.id) });
     }
 
+    if (path === '/api/attachments' && req.method === 'GET') return reply(res, 200, store.pendingAttachments(session.tenant.id, session.user.id));
+    if (path === '/api/attachments' && req.method === 'POST') {
+      const rawName = req.headers['x-attachment-name'];
+      let name = '';
+      try { name = decodeURIComponent(Array.isArray(rawName) ? rawName[0] || '' : rawName || ''); }
+      catch { return reply(res, 400, { error: '附件文件名无效' }); }
+      name = name.replaceAll('\\', '/').split('/').at(-1)?.replace(/[\x00-\x1f\x7f]/g, '').trim() || '';
+      if (!name || name.length > 128) return reply(res, 400, { error: '附件文件名无效' });
+      const mediaType = textAttachmentType(extname(name).toLowerCase());
+      if (!mediaType) return reply(res, 415, { error: '暂时只支持纯文本、Markdown、CSV、JSON 和常见代码文件' });
+      let content: Buffer;
+      try { content = await readBytes(req, 256 * 1024); }
+      catch (error) {
+        if (error instanceof Error && error.message === 'ATTACHMENT_TOO_LARGE') return reply(res, 413, { error: '单个文本附件不能超过 256 KB' });
+        throw error;
+      }
+      if (!content.length) return reply(res, 400, { error: '附件不能为空' });
+      let decoded: string;
+      try { decoded = new TextDecoder('utf-8', { fatal: true }).decode(content); }
+      catch { return reply(res, 415, { error: '附件必须是 UTF-8 文本文件' }); }
+      if (decoded.includes('\0')) return reply(res, 415, { error: '附件必须是 UTF-8 文本文件' });
+      try { return reply(res, 201, store.addPendingAttachment(session.tenant.id, session.user.id, name, mediaType, content)); }
+      catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法保存附件' }); }
+    }
+    const attachmentMatch = path.match(/^\/api\/attachments\/([a-f0-9-]+)$/i);
+    if (attachmentMatch && req.method === 'DELETE') {
+      const removed = store.deletePendingAttachment(session.tenant.id, session.user.id, attachmentMatch[1]);
+      return removed ? reply(res, 200, { ok: true }) : reply(res, 404, { error: '待发送附件不存在' });
+    }
+
     const body = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT' ? await readJson(req) : {};
     if (path === '/api/voice-calls' && req.method === 'POST') {
       return reply(res, 201, store.createVoiceCall(session.tenant.id, session.user.id));
@@ -315,10 +345,16 @@ const server = createServer(async (req, res) => {
       const minutes = scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null;
       const engine = String(body.engine || 'model') as Engine;
       if (!(engine in adapters)) return reply(res, 400, { error: 'Invalid engine' });
+      const attachmentIds = body.attachmentIds === undefined ? [] : body.attachmentIds;
+      if (!Array.isArray(attachmentIds) || attachmentIds.length > 5 || attachmentIds.some(id => typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id)) || new Set(attachmentIds).size !== attachmentIds.length) {
+        return reply(res, 400, { error: '附件列表无效' });
+      }
       const now = new Date();
       const firstRunAt = scheduleSpec && scheduleSpec.frequency !== 'interval' ? nextScheduleOccurrence(scheduleSpec, now) : now.toISOString();
       if (scheduleSpec && !firstRunAt) return reply(res, 400, { error: 'No future run falls on or before the schedule end date' });
-      const task = store.createTask(instruction, minutes, engine, session.tenant.id, scheduleSpec, firstRunAt);
+      let task;
+      try { task = store.createTask(instruction, minutes, engine, session.tenant.id, scheduleSpec, firstRunAt, attachmentIds, session.user.id); }
+      catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法创建任务' }); }
       publish(); void worker.tick();
       return reply(res, 201, task);
     }
@@ -492,6 +528,31 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     if (raw.length > 32_000) throw new Error('Request too large');
   }
   return raw ? JSON.parse(raw) as Record<string, unknown> : {};
+}
+
+async function readBytes(req: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let tooLarge = false;
+  for await (const chunk of req) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += bytes.byteLength;
+    if (size > limit) { tooLarge = true; chunks.length = 0; }
+    else if (!tooLarge) chunks.push(bytes);
+  }
+  if (tooLarge) throw new Error('ATTACHMENT_TOO_LARGE');
+  return Buffer.concat(chunks, size);
+}
+
+function textAttachmentType(extension: string): string | null {
+  const types: Record<string, string> = {
+    '.txt': 'text/plain', '.md': 'text/markdown', '.markdown': 'text/markdown', '.csv': 'text/csv', '.tsv': 'text/tab-separated-values',
+    '.json': 'application/json', '.yaml': 'text/yaml', '.yml': 'text/yaml', '.xml': 'application/xml', '.html': 'text/html', '.htm': 'text/html',
+    '.css': 'text/css', '.js': 'text/javascript', '.jsx': 'text/javascript', '.ts': 'text/typescript', '.tsx': 'text/typescript',
+    '.py': 'text/x-python', '.go': 'text/x-go', '.rs': 'text/x-rust', '.java': 'text/x-java', '.sql': 'text/x-sql', '.sh': 'text/x-shellscript',
+    '.toml': 'text/toml', '.ini': 'text/plain', '.log': 'text/plain', '.c': 'text/x-c', '.h': 'text/x-c', '.cpp': 'text/x-c++', '.hpp': 'text/x-c++',
+  };
+  return types[extension] || null;
 }
 
 function reply(res: ServerResponse, status: number, value: unknown) {

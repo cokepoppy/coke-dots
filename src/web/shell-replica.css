@@ -36,11 +36,30 @@
 .home-mode .chat-panel{position:relative}
 .home-mode .chat-home{position:absolute;top:39.5%;left:50%;transform:translateX(-50%);width:min(620px,100%);max-width:none;margin:0;padding:0 20px}
 .home-mode .composer-wrap{position:absolute;top:43%;left:50%;transform:translateX(-50%);width:min(480px,calc(100% - 32px));margin:0;padding:0}
+.composer-wrap{position:relative}
+.pending-attachments{position:absolute;left:0;right:0;bottom:calc(100% + 8px);display:flex;flex-wrap:wrap;gap:6px;margin:0;padding:0;list-style:none}
+.pending-attachments li,.message-attachments li{display:flex;align-items:center;gap:6px;max-width:100%;height:28px;padding:0 8px;border:1px solid #e8e7ea;border-radius:8px;background:#fff;color:#58565f;font-size:11px}
+.pending-attachments .attachment-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pending-attachments li>button{width:18px;height:18px;padding:0;border:0;border-radius:50%;background:transparent;color:#777;font-size:16px;line-height:16px}
+.pending-attachments li>button:hover{background:#eee;color:#222}
+.attachment-input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;clip-path:inset(50%)}
+.attachment-button{width:30px;height:30px;flex:none;display:grid;place-items:center;padding:0;border:0;border-radius:50%;background:transparent;color:#696771}
+.attachment-button:hover{background:#f0eff2;color:#27262c}
+.attachment-button:disabled{opacity:.45;cursor:default}
+.dot-chat-mode:not(.home-mode) .composer{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:9px 13px}
+.dot-chat-mode:not(.home-mode) .composer:focus-within{align-items:flex-end}
+.dot-chat-mode:not(.home-mode) .composer textarea{flex:1;width:0;height:24px;min-height:24px;margin:0;padding:0;resize:none;line-height:24px;overflow-y:auto}
+.dot-chat-mode:not(.home-mode) .composer textarea:focus{height:68px;min-height:68px}
+.dot-chat-mode:not(.home-mode) .composer-bottom{flex:none;gap:8px;margin:0}
+.dot-chat-mode:not(.home-mode) .schedule-details{flex:1 0 100%}
+.message-attachments{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0;padding:0;list-style:none}
+.message-attachments li{background:#f8f8fa}
 .home-mode .composer{display:flex;align-items:center;gap:8px;width:100%;min-height:40px;padding:4px 9px 4px 16px;border-radius:25px;box-shadow:0 4px 18px #10101012}
 .home-mode .composer:focus-within{align-items:flex-end}
 .home-mode .composer textarea{flex:1;width:0;height:24px;min-height:24px;margin:0;padding:0;resize:none;line-height:24px;overflow-y:auto}
 .home-mode .composer textarea:focus{height:68px;min-height:68px}
 .home-mode .composer-bottom{flex:none;align-items:center;gap:6px;justify-content:flex-end;margin:0}
+.home-mode .attachment-button{width:28px;height:28px;margin-left:-6px}
 .home-mode .composer-bottom label,.home-mode .hint{display:none}
 .home-mode .voice-call-launch{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:50%;background:#1888f5;color:#fff;font-size:15px}
 .home-mode .voice-call-launch:hover{background:#0878e8;color:#fff}
@@ -49,6 +68,11 @@
 .dots-dark.home-mode .composer{border-color:#424245;background:#3a3a3d;box-shadow:none}
 .dots-dark.home-mode .composer textarea{color:#f1eff4}
 .dots-dark.home-mode .composer textarea::placeholder{color:#b3b0b8}
+.dots-dark .pending-attachments li,.dots-dark .message-attachments li{border-color:#414047;background:#222126;color:#d4d1da}
+.dots-dark .pending-attachments li>button{color:#b7b3bd}
+.dots-dark .pending-attachments li>button:hover,.dots-dark .attachment-button:hover{background:#38363c;color:#f0edf4}
+.dots-dark .attachment-button{color:#bab6c0}
+.dots-dark .message-attachments li{background:#242329}
 .dots-dark.home-mode .voice-call-launch,.dots-dark.home-mode .send{background:#1888f5;color:#fff}
 .page-open-mode .sidebar{display:none;width:0;padding:0;border:0}
 .page-open-mode .icon-rail{width:44px}
@@ -81,5 +105,6 @@
 .dots-dark .message.user p{color:#15161a}
 .dots-dark .message.system{align-self:center;min-width:0;padding:4px 10px;background:transparent}
 .dots-dark .message.system p{color:#aaa7af}
+.dots-dark .dot-onboarding-mode .message-attachments li{background:#18281e}
 @media(max-width:800px){.icon-rail{width:42px;padding-right:4px;padding-left:4px}.sidebar{width:194px}.topbar{padding:0 10px}.topbar-title{max-width:15%}.surface-switcher button{min-width:61px;padding:0 9px}.top-status{display:none}.workspace-switcher label>span,.workspace-switcher .new-workspace{display:none}}
 @media(max-width:620px){.sidebar{width:54px;padding-right:5px;padding-left:5px}.sidebar-heading{justify-content:center;padding:0}.sidebar-heading strong,.sidebar-heading>span,.sidebar-heading button,.sidebar .nav span,.sidebar .side-caption,.sidebar-item>span,.sidebar .task-links,.sidebar .profile-link>span{display:none}.sidebar .nav{justify-content:center;padding:0}.sidebar-item{justify-content:center;padding:0}.sidebar .profile-link{justify-content:center}.icon-rail{gap:5px}.topbar-title,.surface-switcher{display:none}.top-actions{gap:5px}.theme-toggle{height:29px;padding:0 7px}.workspace-switcher select{max-width:80px}.logout-button{display:none}}

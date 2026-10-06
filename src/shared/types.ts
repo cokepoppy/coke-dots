@@ -41,6 +41,14 @@ export interface Entry {
   kind: 'user' | 'dot' | 'system';
   body: string;
   createdAt: string;
+  attachments?: AttachmentSummary[];
+}
+
+export interface AttachmentSummary {
+  id: string;
+  name: string;
+  mediaType: string;
+  size: number;
 }
 
 export interface VoiceCallSession {
