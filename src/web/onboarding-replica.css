@@ -16,16 +16,13 @@
 .dot-conversation-identity{display:flex;flex:none;flex-direction:column;align-items:center;gap:1px;margin:31px auto 0;padding:0;border:0;background:transparent;color:#28272c;font-size:10px;line-height:1.1}
 .dot-conversation-identity:hover .dot-conversation-avatar{transform:scale(1.04)}
 .dot-conversation-identity .dot-conversation-avatar{width:52px;height:52px;margin:0;border-radius:50%;filter:none;transition:transform .12s ease}
-.dot-conversation-time{align-self:center;margin-top:32px;color:#87858d;font-size:9px;line-height:1.2}
+.dot-conversation-status{align-self:center;margin-top:4px;color:#77757d;font-size:8px;line-height:1.2}
+.dot-conversation-time{align-self:center;margin-top:17px;color:#87858d;font-size:9px;line-height:1.2}
 .dot-onboarding-messages{width:min(620px,100%);flex:1;min-height:0;overflow:auto;margin:18px auto 0;padding:0 24px 10px}
 .dot-onboarding-messages .message{display:block;width:fit-content;max-width:min(84%,650px);min-width:92px;padding:6px 10px;margin:0 0 5px;border:0;border-radius:14px;background:#f0efed}
 .dot-onboarding-messages .message p{margin:0;color:#414148;font-size:9px;line-height:1.42;white-space:pre-wrap}
 .dot-onboarding-messages .message.user{margin-left:auto;background:#84a9dd}
 .dot-onboarding-messages .message.user p{color:#15161a}
-.dot-onboarding-messages .onboarding-long-message{padding:7px 10px}
-.dot-onboarding-messages .onboarding-long-message ul{margin:5px 0 0;padding-left:17px;color:#414148;font-size:9px;line-height:1.4}
-.dot-onboarding-messages .onboarding-long-message li+li{margin-top:4px}
-.dot-onboarding-messages .onboarding-scratchpad-link{display:block;min-width:0;margin:0 0 9px;padding:6px 10px;color:#414148;text-align:left;text-decoration:underline;font-size:9px;line-height:1.4;cursor:pointer}
 .dot-onboarding-mode .composer-wrap{width:min(560px,100%);padding:8px 24px 20px}
 .dot-onboarding-mode .composer{min-height:54px;padding:9px 13px 7px;border-radius:28px}
 .dot-onboarding-mode .composer textarea{height:25px;min-height:25px;resize:none;font-size:12px}
@@ -34,10 +31,9 @@
 .dot-onboarding-mode .send{width:28px;height:28px;background:#77777d;color:#fff;font-size:18px}
 .dots-dark .dot-conversation-identity{color:#efedf1}
 .dots-dark .dot-onboarding-messages .message{background:#303033}
-.dots-dark .dot-onboarding-messages .message p,.dots-dark .dot-onboarding-messages .onboarding-long-message ul{color:#e5e4e8}
+.dots-dark .dot-onboarding-messages .message p{color:#e5e4e8}
 .dots-dark .dot-onboarding-messages .message.user{background:#84a9dd}
 .dots-dark .dot-onboarding-messages .message.user p{color:#15161a}
-.dots-dark .dot-onboarding-messages .onboarding-scratchpad-link{color:#e5e4e8}
 .dots-dark.dot-onboarding-mode .composer{border-color:#424245;background:#3a3a3d;box-shadow:none}
 .dots-dark.dot-onboarding-mode .composer textarea{color:#f1eff4}
 .dots-dark.dot-onboarding-mode .composer textarea::placeholder{color:#b3b0b8}

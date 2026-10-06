@@ -309,9 +309,11 @@ const server = createServer(async (req, res) => {
         eyes: body.eyes === undefined ? current.eyes : String(body.eyes),
         glasses: body.glasses === undefined ? current.glasses : String(body.glasses),
         accessory: body.accessory === undefined ? current.accessory : String(body.accessory),
+        character: body.character === undefined ? current.character : String(body.character),
+        pet: body.pet === undefined ? current.pet : String(body.pet),
       };
       if (!name || !isDotAppearance(appearance)) return reply(res, 400, { error: 'Invalid profile' });
-      store.setProfile(name, appearance.shape, appearance.color, session.tenant.id, appearance.eyes, appearance.glasses, appearance.accessory);
+      store.setProfile(name, appearance.shape, appearance.color, session.tenant.id, appearance.eyes, appearance.glasses, appearance.accessory, appearance.character, appearance.pet);
       publish();
       return reply(res, 200, snapshot(session.tenant.id).profile);
     }

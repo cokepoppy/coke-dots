@@ -13,7 +13,7 @@ const labels: Record<EditorTab, Record<string, string>> = {
 };
 
 export function DotAvatarEditor({ profile, onClose, onSave }: { profile: { name: string } & DotAppearance; onClose: () => void; onSave: (appearance: DotAppearance) => Promise<void> }) {
-  const [appearance, setAppearance] = useState<DotAppearance>({ shape: profile.shape, color: profile.color, eyes: profile.eyes, glasses: profile.glasses, accessory: profile.accessory });
+  const [appearance, setAppearance] = useState<DotAppearance>({ shape: profile.shape, color: profile.color, eyes: profile.eyes, glasses: profile.glasses, accessory: profile.accessory, character: profile.character, pet: profile.pet });
   const [activeTab, setActiveTab] = useState<EditorTab>('Shape');
   const [saving, setSaving] = useState(false);
   const options = activeTab === 'Shape' ? dotAppearanceOptions.shape
@@ -21,7 +21,7 @@ export function DotAvatarEditor({ profile, onClose, onSave }: { profile: { name:
       : activeTab === 'Glasses' ? dotAppearanceOptions.glasses : dotAppearanceOptions.accessory;
   const key = activeTab === 'Accessories' ? 'accessory' : activeTab.toLowerCase() as 'shape' | 'eyes' | 'glasses';
   const selected = appearance[key];
-  function select(value: string) { setAppearance(current => ({ ...current, [key]: value })); }
+  function select(value: string) { setAppearance(current => ({ ...current, [key]: value, character: 'custom' })); }
   async function save() {
     setSaving(true);
     try { await onSave(appearance); } finally { setSaving(false); }
@@ -53,6 +53,8 @@ export function DotAvatarEditor({ profile, onClose, onSave }: { profile: { name:
                 eyes: activeTab === 'Eyes' ? value : 'classic',
                 glasses: activeTab === 'Glasses' ? value : 'none',
                 accessory: activeTab === 'Accessories' ? value : 'none',
+                character: 'custom',
+                pet: 'none',
               }} small />}
           </button>)}
         </div>

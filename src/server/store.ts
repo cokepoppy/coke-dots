@@ -71,7 +71,8 @@ export class Store {
       );
       CREATE TABLE IF NOT EXISTS tenant_profiles (
         tenant_id TEXT PRIMARY KEY REFERENCES tenants(id), name TEXT NOT NULL, shape TEXT NOT NULL, color TEXT NOT NULL,
-        eyes TEXT NOT NULL DEFAULT 'classic', glasses TEXT NOT NULL DEFAULT 'none', accessory TEXT NOT NULL DEFAULT 'none'
+        eyes TEXT NOT NULL DEFAULT 'dot', glasses TEXT NOT NULL DEFAULT 'none', accessory TEXT NOT NULL DEFAULT 'none',
+        character TEXT NOT NULL DEFAULT 'ring', pet TEXT NOT NULL DEFAULT 'moss'
       );
       CREATE TABLE IF NOT EXISTS tenant_settings (
         tenant_id TEXT NOT NULL REFERENCES tenants(id), key TEXT NOT NULL, value TEXT NOT NULL,
@@ -122,10 +123,13 @@ export class Store {
     this.addColumnIfMissing('tenant_profiles', 'eyes', "TEXT NOT NULL DEFAULT 'classic'");
     this.addColumnIfMissing('tenant_profiles', 'glasses', "TEXT NOT NULL DEFAULT 'none'");
     this.addColumnIfMissing('tenant_profiles', 'accessory', "TEXT NOT NULL DEFAULT 'none'");
+    this.addColumnIfMissing('tenant_profiles', 'character', "TEXT NOT NULL DEFAULT 'custom'");
+    this.addColumnIfMissing('tenant_profiles', 'pet', "TEXT NOT NULL DEFAULT 'moss'");
+    this.db.exec("UPDATE tenant_profiles SET character='custom' WHERE character='classic'");
     this.ensurePageApprovalCancellationStatus();
     const oldProfile = this.tableExists('profile');
     if (oldProfile) this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color) SELECT 'legacy',name,shape,color FROM profile WHERE id=1");
-    this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color) VALUES ('legacy','Dot','circle','#ba9af7')");
+    this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color,eyes,character,pet) VALUES ('legacy','Dot','circle','#c8cbd5','dot','ring','moss')");
     if (this.tableExists('settings')) this.db.exec("INSERT OR IGNORE INTO tenant_settings(tenant_id,key,value) SELECT 'legacy',key,value FROM settings");
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS tasks_due ON tasks(status, next_run_at, priority);
@@ -242,7 +246,7 @@ export class Store {
         } else {
           tenantId = randomUUID();
           this.db.prepare('INSERT INTO tenants(id,name,kind,created_at) VALUES (?,?,?,?)').run(tenantId, `${identity.name || 'My'} workspace`, 'personal', now);
-          this.db.prepare('INSERT INTO tenant_profiles(tenant_id,name,shape,color) VALUES (?,?,?,?)').run(tenantId, 'Dot', 'circle', '#ba9af7');
+          this.db.prepare('INSERT INTO tenant_profiles(tenant_id,name,shape,color,eyes,character,pet) VALUES (?,?,?,?,?,?,?)').run(tenantId, 'Dot', 'circle', '#c8cbd5', 'dot', 'ring', 'moss');
         }
         this.db.prepare('INSERT OR IGNORE INTO memberships(tenant_id,user_id,role,created_at) VALUES (?,?,?,?)').run(tenantId, row.id, 'owner', now);
         tenant = this.db.prepare('SELECT t.id,t.name,t.kind,m.role FROM memberships m JOIN tenants t ON t.id=m.tenant_id WHERE m.tenant_id=? AND m.user_id=?').get(tenantId, row.id) as unknown as TenantSummary;
@@ -297,7 +301,7 @@ export class Store {
     try {
       this.db.prepare('INSERT INTO tenants(id,name,kind,created_at) VALUES (?,?,?,?)').run(tenantId, name, 'workspace', now);
       this.db.prepare('INSERT INTO memberships(tenant_id,user_id,role,created_at) VALUES (?,?,?,?)').run(tenantId, userId, 'owner', now);
-      this.db.prepare('INSERT INTO tenant_profiles(tenant_id,name,shape,color) VALUES (?,?,?,?)').run(tenantId, 'Dot', 'circle', '#ba9af7');
+      this.db.prepare('INSERT INTO tenant_profiles(tenant_id,name,shape,color,eyes,character,pet) VALUES (?,?,?,?,?,?,?)').run(tenantId, 'Dot', 'circle', '#c8cbd5', 'dot', 'ring', 'moss');
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return this.db.prepare('SELECT t.id,t.name,t.kind,m.role FROM memberships m JOIN tenants t ON t.id=m.tenant_id WHERE m.user_id=? AND t.id=?').get(userId, tenantId) as unknown as TenantSummary;
@@ -383,7 +387,7 @@ export class Store {
   removeSession(tokenHash: string) { this.db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').run(tokenHash); }
 
   snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false }, tenantId = 'legacy'): Snapshot {
-    const p = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
+    const p = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory,character,pet FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
     if (!p) throw new Error('Workspace profile is missing');
     return {
       profile: p,
@@ -753,13 +757,13 @@ export class Store {
     return { id: Number(result.lastInsertRowid), tenantId, taskId, kind, body, createdAt: now };
   }
 
-  setProfile(name: string, shape: string, color: string, tenantId = 'legacy', eyes = 'classic', glasses = 'none', accessory = 'none') {
-    this.db.prepare('UPDATE tenant_profiles SET name=?,shape=?,color=?,eyes=?,glasses=?,accessory=? WHERE tenant_id=?')
-      .run(name, shape, color, eyes, glasses, accessory, tenantId);
+  setProfile(name: string, shape: string, color: string, tenantId = 'legacy', eyes = 'dot', glasses = 'none', accessory = 'none', character = 'ring', pet = 'moss') {
+    this.db.prepare('UPDATE tenant_profiles SET name=?,shape=?,color=?,eyes=?,glasses=?,accessory=?,character=?,pet=? WHERE tenant_id=?')
+      .run(name, shape, color, eyes, glasses, accessory, character, pet, tenantId);
   }
 
   getProfile(tenantId = 'legacy') {
-    const profile = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
+    const profile = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory,character,pet FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
     if (!profile) throw new Error('Workspace profile is missing');
     return profile;
   }

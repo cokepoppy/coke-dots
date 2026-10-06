@@ -11,6 +11,8 @@ export interface DotAppearance {
   eyes: string;
   glasses: string;
   accessory: string;
+  character: string;
+  pet: string;
 }
 
 export interface Task {

@@ -32,14 +32,14 @@ test('dot appearance is durable and isolated to its tenant', () => {
     let store = new Store(directory);
     const alpha = store.signInGoogle({ subject: 'appearance-alpha', email: 'appearance-alpha@example.test', name: 'Alpha' });
     const beta = store.signInGoogle({ subject: 'appearance-beta', email: 'appearance-beta@example.test', name: 'Beta' });
-    store.setProfile('Roger', 'heart', '#f58e70', alpha.tenant.id, 'sparkle', 'round', 'crown');
-    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'Roger', shape: 'heart', color: '#f58e70', eyes: 'sparkle', glasses: 'round', accessory: 'crown' });
-    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#ba9af7', eyes: 'classic', glasses: 'none', accessory: 'none' });
+    store.setProfile('Roger', 'heart', '#f58e70', alpha.tenant.id, 'sparkle', 'round', 'crown', 'blue', 'moss');
+    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'Roger', shape: 'heart', color: '#f58e70', eyes: 'sparkle', glasses: 'round', accessory: 'crown', character: 'blue', pet: 'moss' });
+    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss' });
     store.close();
 
     store = new Store(directory);
-    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'Roger', shape: 'heart', color: '#f58e70', eyes: 'sparkle', glasses: 'round', accessory: 'crown' });
-    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#ba9af7', eyes: 'classic', glasses: 'none', accessory: 'none' });
+    assert.deepEqual({ ...store.getProfile(alpha.tenant.id) }, { name: 'Roger', shape: 'heart', color: '#f58e70', eyes: 'sparkle', glasses: 'round', accessory: 'crown', character: 'blue', pet: 'moss' });
+    assert.deepEqual({ ...store.getProfile(beta.tenant.id) }, { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss' });
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

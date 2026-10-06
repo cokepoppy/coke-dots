@@ -20,10 +20,11 @@ import { PermissionRules } from './PermissionRules.tsx';
 import { DotOnboarding } from './DotOnboarding.tsx';
 import { DotAvatar } from './DotAvatar.tsx';
 import { DotAvatarEditor } from './DotAvatarEditor.tsx';
+import { DotSetupEditor } from './DotSetupEditor.tsx';
 import './shell-replica.css';
 import './onboarding-replica.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#ba9af7', eyes: 'classic', glasses: 'none', accessory: 'none' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
@@ -67,6 +68,7 @@ function App() {
   const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
   const [state, setState] = useState<Snapshot>(initial);
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
+  const [avatarSetupOpen, setAvatarSetupOpen] = useState(false);
   const [view, setView] = useState<'home' | 'chat' | 'activity' | 'scheduled' | 'computer' | 'profile' | 'pages'>('home');
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
@@ -143,11 +145,12 @@ function App() {
     }
   }
 
-  async function saveAvatarAppearance(appearance: DotAppearance) {
+  async function saveAvatarAppearance(appearance: DotAppearance, name?: string) {
     try {
-      const profile = await request('/profile', 'PATCH', appearance) as Snapshot['profile'];
+      const profile = await request('/profile', 'PATCH', { ...appearance, ...(name === undefined ? {} : { name }) }) as Snapshot['profile'];
       setState(current => ({ ...current, profile }));
       setAvatarEditorOpen(false);
+      setAvatarSetupOpen(false);
     } catch (error) { setError(String(error)); }
   }
 
@@ -247,7 +250,7 @@ function App() {
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {(view === 'home' || view === 'chat') && <div className="chat-layout"><section className="chat-panel">
-        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What’s on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} onCustomize={() => setView('profile')} onEditAppearance={() => setAvatarEditorOpen(true)} onOpenScratchpad={() => { setSelectedPageId(null); setView('pages'); }} /> : <div className="timeline">
+        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What’s on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} onCustomize={() => setView('profile')} onEditSetup={() => setAvatarSetupOpen(true)} /> : <div className="timeline">
           {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
           {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={entry.body} onOpenPage={id => openPage(id, entry.taskId)} /></div></article>)}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
@@ -265,6 +268,7 @@ function App() {
       {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onEditAppearance={() => setAvatarEditorOpen(true)} />}
       {view === 'computer' && <ComputerView dotName={state.profile.name} onError={setError} />}
     </main>
+    {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={saveAvatarAppearance} />}
     {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={saveAvatarAppearance} />}
   </div>;
 }

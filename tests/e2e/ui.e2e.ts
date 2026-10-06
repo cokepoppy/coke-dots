@@ -379,7 +379,7 @@ try {
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-theme') === 'light');
   });
 
-  await recordStep('First-run Dot conversation matches the video and opens settings and Scratchpad', async () => {
+  await recordStep('First-run Dot conversation opens the observed Colors, Characters, and Pets customizer', async () => {
     await clickNav(alphaPage!, '你的 dot');
     const onboarding = alphaPage!.getByTestId('dot-onboarding');
     await onboarding.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
@@ -395,12 +395,35 @@ try {
     await clickNav(alphaPage!, '你的 dot');
     await onboarding.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'onboarding-first-run');
+    await onboarding.getByRole('button', { name: 'Customize your dot' }).click();
+    const setupEditor = alphaPage!.getByTestId('dot-setup-backdrop');
+    await setupEditor.getByRole('heading', { name: 'Customize your dot' }).waitFor({ state: 'visible' });
+    for (const row of ['Colors', 'Characters', 'Pets']) await setupEditor.getByRole('region', { name: row }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, 'dot-setup-editor-light');
+    await setupEditor.getByRole('button', { name: 'Color #f18ac0' }).click();
+    await setupEditor.getByRole('button', { name: 'Triangle character' }).click();
+    await setupEditor.getByRole('button', { name: 'Green pet' }).click();
+    const setupPreview = setupEditor.locator('.dot-setup-avatar-preview .avatar');
+    assert.match(await setupPreview.getAttribute('class') || '', /triangle/);
+    assert.match(await setupPreview.getAttribute('class') || '', /pet-moss/);
+    assert.equal(await setupPreview.evaluate(element => getComputedStyle(element).getPropertyValue('--avatar-color').trim()), '#f18ac0');
+    await screenshot(alphaPage!, 'dot-setup-preview-light');
+    await setupEditor.getByRole('button', { name: 'Save', exact: true }).click();
+    await setupEditor.waitFor({ state: 'hidden' });
+    await alphaPage!.getByTestId('theme-toggle').click();
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
+    await onboarding.getByRole('button', { name: 'Customize your dot' }).click();
+    await setupEditor.waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, 'dot-setup-editor-dark');
+    await setupEditor.getByRole('button', { name: 'Close customizer' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
+    await alphaPage!.waitForFunction(() => document.querySelector('.profile-link .avatar')?.classList.contains('triangle'));
+    assert.match(await alphaPage!.locator('.profile-link .avatar').getAttribute('class') || '', /pet-moss/);
     await onboarding.getByRole('button', { name: '打开你的 dot 设置' }).click();
     await alphaPage!.getByRole('heading', { name: '你的 dot' }).waitFor({ state: 'visible' });
-    assert.equal(await alphaPage!.getByLabel('名字').inputValue(), 'Dot');
-    await clickNav(alphaPage!, '你的 dot');
-    await onboarding.waitFor({ state: 'visible' });
-    await onboarding.getByRole('button', { name: 'Your Personal Scratchpad' }).click();
+    assert.equal(await alphaPage!.getByLabel('名字').inputValue(), 'dot');
+    await clickNav(alphaPage!, 'Scratchpad');
     await alphaPage!.getByRole('heading', { name: 'Your Personal Scratchpad' }).waitFor({ state: 'visible' });
     await clickNav(alphaPage!, '你的 dot');
     const composer = alphaPage!.getByTestId('task-composer');
@@ -409,10 +432,9 @@ try {
   });
 
   await recordStep('Customize the Dot appearance in both themes and restore it from tenant storage', async () => {
-    await clickNav(alphaPage!, '你的 dot');
-    const onboarding = alphaPage!.getByTestId('dot-onboarding');
+    await openProfile(alphaPage!);
     const editor = alphaPage!.getByRole('dialog', { name: 'Customize your dot' });
-    await onboarding.getByRole('button', { name: 'Customize your dot' }).click();
+    await alphaPage!.getByRole('button', { name: 'Customize your dot' }).click();
     await editor.waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
     await screenshot(alphaPage!, 'avatar-customizer-light');
@@ -454,6 +476,7 @@ try {
 
     await alphaPage!.getByTestId('theme-toggle').click();
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
+    await openProfile(alphaPage!);
     await alphaPage!.getByRole('button', { name: 'Customize your dot' }).click();
     await editor.waitFor({ state: 'visible' });
     assert.equal(await editor.locator('.avatar-editor-preview').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(16, 37, 26)');
@@ -461,6 +484,7 @@ try {
     await editor.getByRole('button', { name: 'Close customizer' }).click();
     await alphaPage!.getByTestId('theme-toggle').click();
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
+    await clickNav(alphaPage!, '你的 dot');
   });
 
   const alphaPrivateTask = 'E2E alpha private goal — inventory the project risks';
