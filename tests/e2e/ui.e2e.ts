@@ -101,6 +101,7 @@ async function startMockModel() {
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
         const isParallelTask = prompt.includes('E2E parallel work —');
+        const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
         const isDelegationAggregate = prompt.includes('E2E delegation goal — build a launch packet') && prompt.includes('Delegated task results:');
         const delegatedChild = ['Market scan', 'Competitor scan', 'Launch risks'].find(title => prompt.includes(`E2E delegated child — ${title.toLowerCase()}`));
@@ -125,13 +126,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
+        const isComplete = hasReply || isRecurringCheck || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isParallelTask || isAutomationIdeas || Boolean(delegatedChild) || isDelegationAggregate;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'claude' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isParallelTask ? 'Parallel task complete.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -919,6 +920,26 @@ try {
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
   });
 
+  await recordStep('Automation ideas remain chat proposals until the user schedules work', async () => {
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    await clickNav(alphaPage!, '你的 dot');
+    const request = 'E2E automation ideas — ten ideas only';
+    await createTask(alphaPage!, request);
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    const reply = alphaPage!.locator('.timeline .message.dot p');
+    await reply.filter({ hasText: 'Morning operator brief' }).waitFor({ state: 'visible', timeout: 10_000 });
+    const replyText = await reply.last().innerText();
+    assert.match(replyText, /1\. Morning operator brief/);
+    assert.match(replyText, /10\. Admin and renewal radar/);
+    await screenshot(alphaPage!, '07d-automation-ideas-chat');
+    await clickNav(alphaPage!, 'Scheduled');
+    await alphaPage!.getByTestId('scheduled-hub').waitFor({ state: 'visible' });
+    await alphaPage!.getByText('No scheduled tasks yet').first().waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.locator('.scheduled-item').count(), 0, 'A conversational suggestion created a recurring task without an explicit user action');
+    await screenshot(alphaPage!, '07e-automation-ideas-not-scheduled');
+    await clickNav(alphaPage!, '新聊天');
+  });
+
   await recordStep('A user reply resumes a waiting task while retaining the original goal', async () => {
     await selectTenant(alphaPage!, 'Alpha workspace');
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id'), 'legacy');
@@ -931,8 +952,9 @@ try {
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: 'Use Friday.' }).waitFor({ state: 'visible' });
     await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
     await (await taskNavigationItem(alphaPage!, originalGoal)).waitFor({ state: 'visible' });
-    assert.equal(mockModelPrompts.length, 2, 'The model did not receive both the original task and the reply');
-    assert.match(mockModelPrompts[1], /Task: Prepare the project launch plan\n\nUser reply: Use Friday\./);
+    const launchPlanPrompts = mockModelPrompts.filter(prompt => prompt.includes('Task: Prepare the project launch plan'));
+    assert.equal(launchPlanPrompts.length, 2, 'The model did not receive both the original task and the reply');
+    assert.match(launchPlanPrompts[1], /Task: Prepare the project launch plan\n\nUser reply: Use Friday\./);
     await screenshot(alphaPage!, '17-waiting-task-resumed');
     await selectTenant(alphaPage!, 'Alpha Shared');
   });
