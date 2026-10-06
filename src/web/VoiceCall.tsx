@@ -23,7 +23,7 @@ type SpeechWindow = Window & { SpeechRecognition?: RecognitionConstructor; webki
 export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   dotName: string;
   appearance: DotAppearance;
-  onTranscript: (text: string) => Promise<Task>;
+  onTranscript: (text: string, waitingTaskId?: string) => Promise<Task>;
   onClose: () => void;
 }) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -45,6 +45,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   const speechGenerationRef = useRef(0);
   const startedAtRef = useRef(Date.now());
   const onTranscriptRef = useRef(onTranscript);
+  const waitingTaskIdRef = useRef<string | null>(null);
   onTranscriptRef.current = onTranscript;
   mutedRef.current = muted;
   speakerRef.current = speakerOn;
@@ -83,14 +84,19 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
           if (!text || !activeRef.current) return;
           setTranscript(text);
           setTaskStatus('正在交给 Dot…');
+          const waitingTaskId = waitingTaskIdRef.current;
+          if (waitingTaskId) waitingTaskIdRef.current = null;
           void (async () => {
+            let accepted = false;
             try {
-              const task = await onTranscriptRef.current(text);
+              const task = await onTranscriptRef.current(text, waitingTaskId || undefined);
+              accepted = true;
               if (!activeRef.current) return;
-              setTaskStatus('已加入工作队列：' + task.title);
-              speak('收到，已加入工作队列。');
+              setTaskStatus(waitingTaskId ? '已回复并继续：' + task.title : '已加入工作队列：' + task.title);
+              speak(waitingTaskId ? '收到，我会接着处理。' : '收到，已加入工作队列。');
               await followTask(task);
             } catch (error) {
+              if (!accepted && waitingTaskId && !waitingTaskIdRef.current) waitingTaskIdRef.current = waitingTaskId;
               if (activeRef.current) setTaskStatus(error instanceof Error ? error.message : '任务创建失败');
             }
           })();
@@ -148,16 +154,19 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
         if (!task) throw new Error('找不到刚提交的任务');
         const latestDotMessage = [...snapshot.entries].reverse().find(entry => entry.taskId === task.id && entry.kind === 'dot')?.body || '';
         if (task.status === 'done') {
+          if (waitingTaskIdRef.current === task.id) waitingTaskIdRef.current = null;
           setTaskStatus('已完成：' + task.title);
           speak(task.result || latestDotMessage || '任务已完成。');
           return;
         }
         if (task.status === 'waiting') {
+          waitingTaskIdRef.current = task.id;
           setTaskStatus('等待你的回复');
           if (latestDotMessage) speak(latestDotMessage);
           return;
         }
         if (task.status === 'failed' || task.status === 'stopped' || task.status === 'paused') {
+          if (waitingTaskIdRef.current === task.id) waitingTaskIdRef.current = null;
           const message = task.error || (task.status === 'failed' ? '任务执行失败。' : task.status === 'stopped' ? '任务已停止。' : '任务已暂停。');
           setTaskStatus(message);
           speak(message);

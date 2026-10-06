@@ -992,6 +992,49 @@ try {
     await delay(1100);
     assert.notEqual(await call.getByTestId('voice-call-timer').innerText(), '00:00', 'The call timer should advance while connected');
 
+    let speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+    const clarification = 'E2E voice clarification — ask which launch date to use';
+    const clarificationPromptStart = mockModelPrompts.length;
+    await alphaPage!.evaluate((text: string) => {
+      const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
+      pageWindow.__dotsFakeRecognition?.emit(text);
+    }, clarification);
+    await call.getByText(clarification, { exact: true }).waitFor({ state: 'visible' });
+    await call.getByText('等待你的回复', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(async () => {
+      speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+      return speechOutput.includes('What launch date should I use?');
+    }, 10_000);
+    await screenshot(alphaPage!, 'voice-call-waiting-for-clarification');
+    const waitingVoiceTask = await alphaPage!.evaluate(async (text: string) => {
+      const snapshot = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string; status: string }[] };
+      return snapshot.tasks.find(task => task.instruction === text);
+    }, clarification);
+    assert(waitingVoiceTask, 'The voice question should have one persisted task to resume');
+    assert.equal(waitingVoiceTask.status, 'waiting');
+
+    await alphaPage!.evaluate((text: string) => {
+      const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
+      pageWindow.__dotsFakeRecognition?.emit(text);
+    }, 'Use Friday.');
+    await call.getByText('Use Friday.', { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: 'Use Friday.' }).waitFor({ state: 'visible' });
+    await waitFor(async () => {
+      speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+      return speechOutput.includes('The launch plan now uses Friday.');
+    }, 15_000);
+    const resumedVoiceState = await alphaPage!.evaluate(async ({ id, text }: { id: string; text: string }) => {
+      const snapshot = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string; status: string; result: string | null }[] };
+      return snapshot.tasks.filter(task => task.id === id && task.instruction.includes(text));
+    }, { id: waitingVoiceTask.id, text: clarification });
+    assert.equal(resumedVoiceState.length, 1, 'A spoken answer must resume the same task instead of creating another');
+    assert.equal(resumedVoiceState[0]?.status, 'done');
+    assert.equal(resumedVoiceState[0]?.result, 'The launch plan now uses Friday.');
+    await screenshot(alphaPage!, 'voice-call-spoken-clarification-resumed');
+    const clarificationPrompts = mockModelPrompts.slice(clarificationPromptStart).filter(prompt => prompt.includes(clarification));
+    assert.equal(clarificationPrompts.length, 2, 'The original voice task and its spoken reply should use one task lifecycle');
+    assert.match(clarificationPrompts[1] || '', /Task: E2E voice clarification — ask which launch date to use\n\nUser reply: Use Friday\./);
+
     const instruction = 'E2E voice request — finish after the call ends';
     await alphaPage!.evaluate((text: string) => {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
@@ -1001,14 +1044,14 @@ try {
     await waitFor(() => Boolean(heldVoiceModelRelease), 10_000);
     await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
     await screenshot(alphaPage!, 'voice-call-task-running');
-    let speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+    speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
     assert(speechOutput.includes('收到，已加入工作队列。'), 'The call should speak its queue acknowledgement when speaker output is enabled');
     const responseInstruction = 'E2E voice response — speak actual task result';
     await alphaPage!.evaluate((text: string) => {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, responseInstruction);
-    await alphaPage!.getByText(responseInstruction, { exact: true }).waitFor({ state: 'visible' });
+    await call.getByText(responseInstruction, { exact: true }).waitFor({ state: 'visible' });
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
       return speechOutput.includes('Voice response returned from the model.');
