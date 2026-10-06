@@ -108,6 +108,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot(session.tenant.id));
+    if (path === '/api/voice-calls' && req.method === 'GET') return reply(res, 200, store.voiceCalls(session.tenant.id, session.user.id));
     if (path === '/api/activity' && req.method === 'GET') {
       const limit = Number(url.searchParams.get('limit') || 50);
       const beforeValue = url.searchParams.get('before');
@@ -136,6 +137,18 @@ const server = createServer(async (req, res) => {
     }
 
     const body = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT' ? await readJson(req) : {};
+    if (path === '/api/voice-calls' && req.method === 'POST') {
+      return reply(res, 201, store.createVoiceCall(session.tenant.id, session.user.id));
+    }
+    const voiceCallMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)$/);
+    if (voiceCallMatch && req.method === 'PATCH') {
+      const durationSeconds = Number(body.durationSeconds);
+      if (body.action !== 'end' || !Number.isSafeInteger(durationSeconds) || durationSeconds < 0 || durationSeconds > 86_400) {
+        return reply(res, 400, { error: 'Invalid voice call end request' });
+      }
+      const call = store.endVoiceCall(session.tenant.id, session.user.id, voiceCallMatch[1], durationSeconds);
+      return call ? reply(res, 200, call) : reply(res, 404, { error: 'Voice call not found' });
+    }
     if (path === '/api/action-rule' && req.method === 'PUT') {
       if (!store.isWorkspaceAdmin(session.tenant.id, session.user.id)) return reply(res, 403, { error: '只有工作区所有者或管理员可以修改权限规则' });
       try {
