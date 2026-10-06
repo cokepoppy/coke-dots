@@ -244,6 +244,9 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, { ok: true });
     }
 
+    if ((path === '/api/computer' || path.startsWith('/api/computer/')) && store.getSetting('localComputerEnabled', session.tenant.id) === 'false') {
+      return reply(res, 403, { error: '当前工作区尚未授权 Dot 使用本机 Chrome 工作区' });
+    }
     const computer = computerFor(session.tenant.id);
     if (path === '/api/computer' && req.method === 'GET') return reply(res, 200, await computer.state());
     if (path === '/api/computer/screenshot' && req.method === 'GET') {
@@ -322,6 +325,14 @@ const server = createServer(async (req, res) => {
       store.setSetting('desktopNotifications', String(body.desktopNotifications), session.tenant.id);
       publish();
       return reply(res, 200, snapshot(session.tenant.id).preferences);
+    }
+    if (path === '/api/computer-access' && req.method === 'PATCH') {
+      if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以修改电脑访问设置' });
+      if (typeof body.localComputer !== 'boolean') return reply(res, 400, { error: 'Invalid computer access preference' });
+      store.setSetting('localComputerEnabled', String(body.localComputer), session.tenant.id);
+      store.setSetting('computerChoiceConfigured', 'true', session.tenant.id);
+      publish();
+      return reply(res, 200, snapshot(session.tenant.id).computerAccess);
     }
     if (path === '/api/model-settings' && req.method === 'PATCH') {
       const baseUrl = String(body.baseUrl || '').trim().replace(/\/$/, '');

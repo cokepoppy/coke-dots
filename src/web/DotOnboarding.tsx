@@ -1,8 +1,10 @@
 import React from 'react';
 import type { Snapshot } from '../shared/types.ts';
 import { DotAvatar } from './DotAvatar.tsx';
+import { DotComputerChoice } from './DotComputerChoice.tsx';
 
-export function DotOnboarding({ profile, onCustomize, onEditSetup }: { profile: Snapshot['profile']; onCustomize: () => void; onEditSetup: () => void }) {
+export function DotOnboarding({ profile, computerAccess, onComputerAccess, onCustomize, onEditSetup }: { profile: Snapshot['profile']; computerAccess: Snapshot['computerAccess']; onComputerAccess: (enabled: boolean) => Promise<void>; onCustomize: () => void; onEditSetup: () => void }) {
+  if (!computerAccess.configured) return <DotComputerChoice localComputer={computerAccess.localComputer} mode="onboarding" onSave={onComputerAccess} />;
   const dotName = profile.name.trim() && profile.name !== 'Dot' ? profile.name.trim() : 'dot';
 
   return <div className="dot-onboarding" data-testid="dot-onboarding">

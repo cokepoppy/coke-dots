@@ -379,9 +379,25 @@ try {
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-theme') === 'light');
   });
 
-  await recordStep('First-run Dot conversation opens the observed Colors, Characters, and Pets customizer', async () => {
+  await recordStep('Choose Dot computer access and continue into the evidence-matched first-run conversation', async () => {
     await clickNav(alphaPage!, '你的 dot');
     const onboarding = alphaPage!.getByTestId('dot-onboarding');
+    const computerChoice = alphaPage!.getByTestId('computer-choice');
+    await computerChoice.getByRole('heading', { name: 'Choose where your dot can work' }).waitFor({ state: 'visible' });
+    await computerChoice.getByText('Your dot has its own computer, but you can also let it use yours. You can change this anytime.').waitFor({ state: 'visible' });
+    assert.equal(await computerChoice.getByRole('radio', { name: 'Your dot’s computer' }).getAttribute('aria-checked'), 'true');
+    const localComputerToggle = computerChoice.getByRole('switch', { name: 'Your local computer' });
+    assert.equal(await localComputerToggle.isChecked(), true, 'The local-computer switch starts in the observed enabled state');
+    await screenshot(alphaPage!, 'computer-choice-light');
+    await alphaPage!.getByTestId('theme-toggle').click();
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
+    assert.equal(await computerChoice.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(9, 9, 11)');
+    await screenshot(alphaPage!, 'computer-choice-dark');
+    await alphaPage!.getByTestId('theme-toggle').click();
+    await localComputerToggle.uncheck();
+    assert.equal(await localComputerToggle.isChecked(), false);
+    await localComputerToggle.check();
+    await computerChoice.getByRole('button', { name: 'Continue' }).click();
     await onboarding.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
     await onboarding.getByText('Message or call me anytime. I’ll keep things moving, even when we’re not talking, and check in with updates or questions.').waitFor({ state: 'visible' });
     await onboarding.getByText('Want to give me a name?').waitFor({ state: 'visible' });
@@ -439,6 +455,35 @@ try {
     await onboarding.getByRole('button', { name: '打开你的 dot 设置' }).click();
     await alphaPage!.getByRole('heading', { name: '你的 dot' }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.getByLabel('名字').inputValue(), 'dot');
+    await alphaPage!.getByRole('button', { name: '更改电脑访问' }).click();
+    const computerAccessDialog = alphaPage!.getByTestId('computer-access-dialog');
+    const settingsToggle = computerAccessDialog.getByRole('switch', { name: 'Your local computer' });
+    await settingsToggle.waitFor({ state: 'visible' });
+    await settingsToggle.uncheck();
+    await computerAccessDialog.getByRole('button', { name: 'Save', exact: true }).click();
+    await computerAccessDialog.waitFor({ state: 'hidden' });
+    assert.equal(await alphaPage!.getByText('已关闭本机 Chrome 工作区访问。').isVisible(), true);
+    await clickNav(alphaPage!, '电脑');
+    await alphaPage!.getByTestId('computer-access-disabled').waitFor({ state: 'visible' });
+    const blockedComputerOpen = await alphaPage!.evaluate(async () => {
+      const response = await fetch('/api/computer/open', { method: 'POST' });
+      return { status: response.status, body: await response.json() };
+    });
+    assert.equal(blockedComputerOpen.status, 403, 'The server must enforce the local-computer choice');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByRole('button', { name: '更改电脑访问' }).click();
+    assert.equal(await alphaPage!.getByTestId('computer-access-dialog').getByRole('switch', { name: 'Your local computer' }).isChecked(), false, 'Computer access settings persist across opening the editor');
+    await alphaPage!.getByTestId('computer-access-dialog').getByRole('switch', { name: 'Your local computer' }).check();
+    await alphaPage!.getByTestId('computer-access-dialog').getByRole('button', { name: 'Save', exact: true }).click();
+    await alphaPage!.getByTestId('computer-access-dialog').waitFor({ state: 'hidden' });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByRole('button', { name: '更改电脑访问' }).click();
+    assert.equal(await alphaPage!.getByTestId('computer-access-dialog').getByRole('switch', { name: 'Your local computer' }).isChecked(), true, 'Computer settings survive a browser reload');
+    await alphaPage!.getByTestId('computer-access-dialog').getByRole('button', { name: 'Cancel' }).click();
+    await alphaPage!.getByTestId('computer-access-dialog').waitFor({ state: 'hidden' });
     await clickNav(alphaPage!, 'Scratchpad');
     await alphaPage!.getByRole('heading', { name: 'Your Personal Scratchpad' }).waitFor({ state: 'visible' });
     await clickNav(alphaPage!, '你的 dot');
@@ -549,6 +594,8 @@ try {
     await signIn(betaPage!, 'beta@example.test');
     assert.equal(await betaPage!.locator('.task-links button').count(), 0, 'Beta inherited Alpha task links');
     assert.equal(await betaPage!.getByTestId('dot-context-panel').count(), 0, 'Beta personal onboarding inherited Alpha conversation context');
+    const betaState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    assert.deepEqual(betaState.computerAccess, { dotComputer: true, localComputer: true, configured: false }, 'A different account must receive its own unconfigured computer-access choice');
     await assertNoVisibleText(betaPage!, alphaPrivateTask);
     await screenshot(betaPage!, '04-beta-isolated');
   });
@@ -666,6 +713,10 @@ try {
     assert.equal(await alphaPage!.getByLabel('桌面通知').isChecked(), false, 'A new tenant inherited personal notification preferences');
     await alphaPage!.locator('.profile-link strong').filter({ hasText: 'Dot' }).waitFor({ state: 'visible' });
     await clickNav(alphaPage!, '你的 dot');
+    const sharedComputerChoice = alphaPage!.getByTestId('computer-choice');
+    await sharedComputerChoice.getByRole('heading', { name: 'Choose where your dot can work' }).waitFor({ state: 'visible' });
+    assert.equal(await sharedComputerChoice.getByRole('switch', { name: 'Your local computer' }).isChecked(), true, 'A new workspace starts with its own first-run choice');
+    await sharedComputerChoice.getByRole('button', { name: 'Continue' }).click();
     await createTask(alphaPage!, 'E2E shared workspace task — prepare the team review');
     await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
     await openProfile(alphaPage!);
@@ -695,6 +746,12 @@ try {
     await openProfile(betaPage!);
     await betaPage!.locator('.member-row').filter({ hasText: 'alpha@example.test' }).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.getByRole('button', { name: '添加工作区成员' }).isDisabled(), true, 'A regular member received workspace-admin controls');
+    assert.equal(await betaPage!.getByRole('button', { name: '更改电脑访问' }).isDisabled(), true, 'A regular member cannot change shared computer access');
+    const memberComputerWrite = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/computer-access', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ localComputer: false }) });
+      return { status: response.status, body: await response.json() };
+    });
+    assert.equal(memberComputerWrite.status, 403, 'The server must enforce workspace-admin access for shared computer settings');
     await screenshot(betaPage!, '10-beta-shared-member');
 
     await signIn(gammaPage!, 'gamma@example.test');

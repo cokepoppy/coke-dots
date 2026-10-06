@@ -44,6 +44,26 @@ test('dot appearance is durable and isolated to its tenant', () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('computer access onboarding is durable and isolated to its workspace', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-computer-choice-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'computer-choice-alpha', email: 'computer-choice-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'computer-choice-beta', email: 'computer-choice-beta@example.test', name: 'Beta' });
+    assert.deepEqual(store.snapshot(false, [], undefined, alpha.tenant.id).computerAccess, { dotComputer: true, localComputer: true, configured: false });
+    store.setSetting('localComputerEnabled', 'false', alpha.tenant.id);
+    store.setSetting('computerChoiceConfigured', 'true', alpha.tenant.id);
+    assert.deepEqual(store.snapshot(false, [], undefined, alpha.tenant.id).computerAccess, { dotComputer: true, localComputer: false, configured: true });
+    assert.deepEqual(store.snapshot(false, [], undefined, beta.tenant.id).computerAccess, { dotComputer: true, localComputer: true, configured: false });
+    store.close();
+
+    store = new Store(directory);
+    assert.deepEqual(store.snapshot(false, [], undefined, alpha.tenant.id).computerAccess, { dotComputer: true, localComputer: false, configured: true });
+    assert.deepEqual(store.snapshot(false, [], undefined, beta.tenant.id).computerAccess, { dotComputer: true, localComputer: true, configured: false });
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('delegated tasks persist, recover after restart, and aggregate only inside their tenant', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-delegation-'));
   try {

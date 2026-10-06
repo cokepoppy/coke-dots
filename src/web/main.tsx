@@ -21,10 +21,12 @@ import { DotOnboarding } from './DotOnboarding.tsx';
 import { DotAvatar } from './DotAvatar.tsx';
 import { DotAvatarEditor } from './DotAvatarEditor.tsx';
 import { DotSetupEditor } from './DotSetupEditor.tsx';
+import { DotComputerChoice } from './DotComputerChoice.tsx';
 import './shell-replica.css';
 import './onboarding-replica.css';
+import './computer-choice.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss' }, preferences: { desktopNotifications: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss' }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
@@ -69,6 +71,7 @@ function App() {
   const [state, setState] = useState<Snapshot>(initial);
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [avatarSetupOpen, setAvatarSetupOpen] = useState(false);
+  const [computerAccessOpen, setComputerAccessOpen] = useState(false);
   const [view, setView] = useState<'home' | 'chat' | 'activity' | 'scheduled' | 'computer' | 'profile' | 'pages'>('home');
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
@@ -154,6 +157,12 @@ function App() {
     } catch (error) { setError(String(error)); }
   }
 
+  async function saveComputerAccess(localComputer: boolean) {
+    const computerAccess = await request('/computer-access', 'PATCH', { localComputer }) as Snapshot['computerAccess'];
+    setState(current => ({ ...current, computerAccess }));
+    setComputerAccessOpen(false);
+  }
+
   async function submit() {
     if (!draft.trim() || busy) return;
     setBusy(true); setError('');
@@ -224,8 +233,9 @@ function App() {
 
   const workSurface = ['activity', 'scheduled', 'computer', 'pages'].includes(view);
   const onboardingMode = view === 'chat' && !selectedTask && entries.length === 0;
+  const computerChoiceMode = onboardingMode && !state.computerAccess.configured;
   const contextMode = view === 'chat' && Boolean(selectedTask || entries.length > 0);
-  return <div className={`shell ${theme === 'dark' ? 'dots-dark' : ''} ${view === 'home' ? 'home-mode' : ''} ${view === 'chat' ? 'dot-chat-mode' : ''} ${contextMode ? 'dot-context-mode' : ''} ${onboardingMode ? 'dot-onboarding-mode' : ''} ${view === 'scheduled' ? 'scheduled-mode' : ''} ${view === 'chat' && selectedPageId ? 'page-open-mode' : ''}`} data-testid="app-shell" data-theme={theme} data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
+  return <div className={`shell ${theme === 'dark' ? 'dots-dark' : ''} ${view === 'home' ? 'home-mode' : ''} ${view === 'chat' ? 'dot-chat-mode' : ''} ${contextMode ? 'dot-context-mode' : ''} ${onboardingMode ? 'dot-onboarding-mode' : ''} ${computerChoiceMode ? 'dot-computer-choice-mode' : ''} ${view === 'scheduled' ? 'scheduled-mode' : ''} ${view === 'chat' && selectedPageId ? 'page-open-mode' : ''}`} data-testid="app-shell" data-theme={theme} data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
     <aside className="icon-rail" aria-label="主导航">
       <button className={`rail-button ${view === 'home' ? 'selected' : ''}`} aria-label="新聊天" title="新聊天" onClick={() => { setSelectedPageId(null); setSelected(null); setView('home'); }}>⌂</button>
       <button className={`rail-button ${view === 'pages' ? 'selected' : ''}`} aria-label="Scratchpad" title="Scratchpad" onClick={() => { setSelectedPageId(null); setView('pages'); }}>▱</button>
@@ -250,7 +260,7 @@ function App() {
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {(view === 'home' || view === 'chat') && <div className="chat-layout"><section className="chat-panel">
-        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What’s on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} onCustomize={() => setView('profile')} onEditSetup={() => setAvatarSetupOpen(true)} /> : <div className="timeline">
+        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What’s on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} computerAccess={state.computerAccess} onComputerAccess={saveComputerAccess} onCustomize={() => setView('profile')} onEditSetup={() => setAvatarSetupOpen(true)} /> : <div className="timeline">
           {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
           {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={entry.body} onOpenPage={id => openPage(id, entry.taskId)} /></div></article>)}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
@@ -265,10 +275,11 @@ function App() {
         onOpenTask={task => { setSelected(task.id); setView('chat'); }}
         onNewTask={() => { setSchedule(true); setView('chat'); requestAnimationFrame(() => composerRef.current?.focus()); }}
         onAddWatch={addScheduledWatch} />}
-      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onEditAppearance={() => setAvatarEditorOpen(true)} />}
-      {view === 'computer' && <ComputerView dotName={state.profile.name} onError={setError} />}
+      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} />}
+      {view === 'computer' && <ComputerView dotName={state.profile.name} localComputerEnabled={state.computerAccess.localComputer} onManageAccess={() => setComputerAccessOpen(true)} onError={setError} />}
     </main>
     {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={saveAvatarAppearance} />}
+    {computerAccessOpen && <DotComputerChoice localComputer={state.computerAccess.localComputer} mode="settings" onSave={saveComputerAccess} onCancel={() => setComputerAccessOpen(false)} />}
     {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={saveAvatarAppearance} />}
   </div>;
 }
@@ -492,7 +503,7 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
   </div>;
 }
 
-function Profile({ state, auth, onError, onEditAppearance }: { state: Snapshot; auth: AuthContext; onError: (s: string) => void; onEditAppearance: () => void }) {
+function Profile({ state, auth, onError, onEditAppearance, onManageComputerAccess }: { state: Snapshot; auth: AuthContext; onError: (s: string) => void; onEditAppearance: () => void; onManageComputerAccess: () => void }) {
   const [name, setName] = useState(state.profile.name);
   const [baseUrl, setBaseUrl] = useState(state.modelSettings.baseUrl || 'https://api.openai.com/v1');
   const [model, setModel] = useState(state.modelSettings.model);
@@ -567,6 +578,13 @@ function Profile({ state, auth, onError, onEditAppearance }: { state: Snapshot; 
       <button type="button" className="avatar-profile-customize" onClick={onEditAppearance}>Customize your dot</button>
       <label>名字<input maxLength={40} value={name} onChange={e => setName(e.target.value)} /></label>
       <button className="primary" onClick={async () => { try { await request('/profile', 'PATCH', { name }); } catch (e) { onError(String(e)); } }}>保存更改</button>
+    </div>
+    <div className="section-heading model-heading"><h2>电脑访问</h2><p>管理 Dot 是否可以使用本机上的隔离 Chrome 工作区。</p></div>
+    <div className="profile-card model-card computer-access-card">
+      <p>{state.computerAccess.localComputer ? '已允许 Dot 使用本机隔离 Chrome 工作区。' : '已关闭本机 Chrome 工作区访问。'}</p>
+      <small>当前版本不连接 Mac 文件或其他应用。</small>
+      <button className="primary" disabled={!['owner', 'admin'].includes(auth.tenant.role)} onClick={onManageComputerAccess}>更改电脑访问</button>
+      {!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以更改此设置。</small>}
     </div>
     <div className="section-heading model-heading"><h2>通知</h2><p>后台工作需要你处理或完成时，在这台 Mac 上提醒你。</p></div>
     <div className="profile-card model-card notification-card">

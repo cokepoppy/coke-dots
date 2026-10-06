@@ -46,6 +46,7 @@ export interface Entry {
 export interface Snapshot {
   profile: { name: string } & DotAppearance;
   preferences: { desktopNotifications: boolean };
+  computerAccess: { dotComputer: true; localComputer: boolean; configured: boolean };
   tasks: Task[];
   watches: Watch[];
   entries: Entry[];

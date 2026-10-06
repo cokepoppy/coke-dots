@@ -392,6 +392,11 @@ export class Store {
     return {
       profile: p,
       preferences: { desktopNotifications: this.getSetting('desktopNotifications', tenantId) === 'true' },
+      computerAccess: {
+        dotComputer: true,
+        localComputer: this.getSetting('localComputerEnabled', tenantId) !== 'false',
+        configured: this.getSetting('computerChoiceConfigured', tenantId) === 'true',
+      },
       tasks: (this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? ORDER BY priority DESC,created_at DESC').all(tenantId) as Record<string, unknown>[]).map(toTask),
       watches: (this.db.prepare('SELECT * FROM watches WHERE tenant_id=? ORDER BY rowid DESC').all(tenantId) as Record<string, unknown>[]).map(toWatch),
       entries: (this.db.prepare('SELECT id,tenant_id,task_id,kind,body,created_at FROM entries WHERE tenant_id=? ORDER BY id DESC LIMIT 150').all(tenantId) as Record<string, unknown>[]).map(toEntry).reverse(),
