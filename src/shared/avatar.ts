@@ -11,7 +11,7 @@ export const dotCharacters = ['ring', 'smile', 'triangle', 'blue', 'yellow', 'he
 export const dotPets = ['none', 'moss', 'sky', 'aqua', 'ember', 'sun'] as const;
 
 export const dotAvatarPalette = [
-  '#f18ac0', '#d174d7', '#9168e5', '#5e81eb', '#18a6da', '#22aaa3', '#9dba24', '#f4c12d', '#f58e70', '#716b68', '#b9794a',
+  '#f090b5', '#dc8cdb', '#a978f7', '#5983f7', '#4dabf8', '#4fafa9', '#c1cf42', '#f7cf53', '#f19b74',
 ] as const;
 
 export function isDotAppearance(value: DotAppearance) {

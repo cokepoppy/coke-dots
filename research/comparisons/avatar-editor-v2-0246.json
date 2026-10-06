@@ -1,0 +1,9 @@
+{
+  "id": "avatar-editor-v2-0246",
+  "reference": "../frames/john-aspinall-v2-0246-chrome-live.png",
+  "referenceRect": { "x": 205, "y": 765, "width": 920, "height": 555 },
+  "implementationRect": { "x": 420, "y": 315, "width": 600, "height": 370 },
+  "output": "../../artifacts/reference-comparison/avatar-editor-v2-0246",
+  "threshold": 32,
+  "note": "The reference is a compressed YouTube player capture. The crop targets the visible editor only; resampling is for visual alignment, not a claim about the original CSS-pixel viewport. Treat the overlay and metrics as diagnostic evidence because the product state and video compression differ."
+}

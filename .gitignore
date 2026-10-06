@@ -10,6 +10,6 @@ data/
 *.db-*
 .DS_Store
 coverage/
-artifacts/e2e/
+artifacts/
 research/frames/
 research/videos/

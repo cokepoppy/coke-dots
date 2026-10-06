@@ -1,5 +1,6 @@
 import React from 'react';
 import type { DotAppearance } from '../shared/types.ts';
+import { dotShapePath } from '../shared/avatar-shapes.ts';
 
 export function DotAvatar({ appearance, small = false, className = '' }: { appearance: DotAppearance; small?: boolean; className?: string }) {
   const sizeClass = small ? 'small' : '';
@@ -9,11 +10,19 @@ export function DotAvatar({ appearance, small = false, className = '' }: { appea
     style={{ '--avatar-color': appearance.color } as React.CSSProperties}
     aria-hidden="true"
   >
-    {usesCharacterArt ? <CharacterArt character={appearance.character} /> : <span className={`avatar-face ${appearance.shape}`} />}
+    {usesCharacterArt ? <CharacterArt character={appearance.character} /> : appearance.character === 'ring'
+      ? <span className={`avatar-face ${appearance.shape}`} />
+      : <ShapeSilhouette shape={appearance.shape} className={`avatar-face avatar-face-svg ${appearance.shape}`} />}
     {appearance.character === 'custom' && <span className="avatar-eyes"><i /><i /></span>}
     {appearance.glasses !== 'none' && <span className="avatar-glasses"><i /><i /></span>}
     {appearance.accessory !== 'none' && <span className="avatar-accessory" />}
   </div>;
+}
+
+export function ShapeSilhouette({ shape, color, className = '' }: { shape: string; color?: string; className?: string }) {
+  return <svg className={className} style={color ? { '--avatar-color': color } as React.CSSProperties : undefined} viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+    <path d={dotShapePath(shape)} fill="var(--avatar-color)" />
+  </svg>;
 }
 
 function CharacterArt({ character }: { character: string }) {

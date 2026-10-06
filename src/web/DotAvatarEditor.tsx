@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import type { DotAppearance } from '../shared/types.ts';
 import { dotAppearanceOptions, dotAvatarPalette } from '../shared/avatar.ts';
-import { DotAvatar } from './DotAvatar.tsx';
+import { DotAvatar, ShapeSilhouette } from './DotAvatar.tsx';
 
 type EditorTab = 'Shape' | 'Eyes' | 'Glasses' | 'Accessories';
 const tabs: EditorTab[] = ['Shape', 'Eyes', 'Glasses', 'Accessories'];
 const labels: Record<EditorTab, Record<string, string>> = {
-  Shape: { circle: 'Circle', triangle: 'Triangle', capsule: 'Capsule', cat: 'Cat ears', flower: 'Flower', heart: 'Heart', clover: 'Clover', star: 'Star', scallop: 'Scallop', blob: 'Rounded shape', diamond: 'Diamond' },
+  Shape: { circle: 'Circle', triangle: 'Triangle', capsule: 'Capsule', cat: 'Rounded ears', flower: 'Flower', heart: 'Heart', clover: 'Cloud', star: 'Droplet', scallop: 'Burst', blob: 'Rounded polygon', diamond: 'Diamond' },
   Eyes: { classic: 'Classic eyes', sleepy: 'Sleepy eyes', sparkle: 'Sparkle eyes', wink: 'Wink', wide: 'Wide eyes', happy: 'Happy eyes', heart: 'Heart eyes', dot: 'Dot eyes' },
   Glasses: { none: 'No glasses', round: 'Round glasses', square: 'Square glasses', oval: 'Oval glasses', thick: 'Thick glasses', winged: 'Winged glasses' },
   Accessories: { none: 'No accessory', crown: 'Crown', halo: 'Halo', bow: 'Bow', flower: 'Flower accessory', leaf: 'Leaf', sparkle: 'Sparkle accessory', antenna: 'Antenna', cap: 'Cap' },
@@ -46,7 +46,7 @@ export function DotAvatarEditor({ profile, onClose, onSave }: { profile: { name:
             onClick={() => select(value)}
           >
             {activeTab === 'Shape'
-              ? <span className={`avatar-shape-swatch ${value}`} style={{ backgroundColor: appearance.color }} />
+              ? <ShapeSilhouette shape={value} color={appearance.color} className={`avatar-shape-swatch ${value}`} />
               : <DotAvatar appearance={{
                 ...appearance,
                 shape: 'heart',
