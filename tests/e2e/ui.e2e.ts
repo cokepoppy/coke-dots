@@ -245,6 +245,28 @@ async function screenshot(page: Page, name: string) {
   screenshotNames.push(`screenshots/${name}.png`);
 }
 
+async function waitForComputerScreenshot(page: Page) {
+  await page.waitForFunction(() => {
+    const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
+    return Boolean(screenshot?.complete && screenshot.naturalWidth === 1280 && screenshot.naturalHeight === 820);
+  }, null, { timeout: 20_000 });
+}
+
+async function clickComputerScreen(page: Page, x: number, y: number) {
+  const image = page.getByAltText('独立浏览器画面');
+  await waitForComputerScreenshot(page);
+  const measurements = await image.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    const screenshot = element as HTMLImageElement;
+    return { left: box.left, top: box.top, width: box.width, height: box.height, naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight };
+  });
+  assert(measurements.width > 0 && measurements.height > 0 && measurements.naturalWidth > 0 && measurements.naturalHeight > 0, 'Computer screenshot has no measurable image area');
+  const scale = Math.min(measurements.width / measurements.naturalWidth, measurements.height / measurements.naturalHeight);
+  const offsetX = (measurements.width - measurements.naturalWidth * scale) / 2;
+  const offsetY = (measurements.height - measurements.naturalHeight * scale) / 2;
+  await page.mouse.click(measurements.left + offsetX + x * scale, measurements.top + offsetY + y * scale);
+}
+
 async function clickNav(page: Page, label: string) {
   const target = page.getByRole('button', { name: label, exact: true }).first();
   if (label === '你的 dot' && !(await target.isVisible())) await page.getByRole('button', { name: '新聊天', exact: true }).click();
@@ -1280,29 +1302,44 @@ try {
 
   await recordStep('Alpha shared-workspace computer opens under the shared Dot identity', async () => {
     await clickNav(alphaPage!, '电脑');
-    await alphaPage!.getByRole('heading', { name: 'Shared Dot 的电脑' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('region', { name: 'Shared Dot 的电脑' }).waitFor({ state: 'visible' });
     await alphaPage!.getByRole('button', { name: '打开电脑' }).click();
-    await alphaPage!.getByRole('button', { name: '接管' }).waitFor({ state: 'visible', timeout: 20_000 });
-    await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot 正在控制' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('button', { name: 'Take over' }).waitFor({ state: 'visible', timeout: 20_000 });
+    await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot has control' }).waitFor({ state: 'visible' });
+    const welcomeState = await alphaPage!.evaluate(async () => {
+      const response = await fetch('/api/computer');
+      return await response.json() as { title: string; owner: string };
+    });
+    assert.equal(welcomeState.title, 'Welcome back, Shared Dot', 'The isolated browser did not open the observed welcome screen');
+    assert.equal(welcomeState.owner, 'agent');
+    assert.equal(await alphaPage!.locator('.computer-dock span').count(), 3, 'The source computer view shows three dock icons');
+    assert.equal(await alphaPage!.locator('.computer-controlbar.is-user-control').count(), 0, 'The agent-owned screen must keep the takeover affordance');
+    await waitForComputerScreenshot(alphaPage!);
+    const screenAspect = await alphaPage!.getByAltText('独立浏览器画面').evaluate(element => {
+      const image = element as HTMLImageElement;
+      return image.naturalWidth / image.naturalHeight;
+    });
+    assert.ok(Math.abs(screenAspect - 1280 / 820) < 0.001, 'The replicated remote screen aspect ratio changed');
     await screenshot(alphaPage!, '14-computer-dot-control');
   });
 
   await recordStep('Beta personal computer remains isolated from Alpha shared computer', async () => {
     await clickNav(betaPage!, '电脑');
-    await betaPage!.getByRole('heading', { name: 'Dot 的电脑' }).waitFor({ state: 'visible' });
+    await betaPage!.getByRole('region', { name: 'Dot 的电脑' }).waitFor({ state: 'visible' });
     await betaPage!.getByRole('button', { name: '打开电脑' }).waitFor({ state: 'visible' });
-    assert.equal(await betaPage!.locator('.browser-frame').count(), 0, 'Beta inherited another tenant’s already-open computer');
+    assert.equal(await betaPage!.locator('.computer-browser-window').count(), 0, 'Beta inherited another tenant’s already-open computer');
     await betaPage!.getByRole('button', { name: '打开电脑' }).click();
-    await betaPage!.getByRole('status').filter({ hasText: 'Dot 正在控制' }).waitFor({ state: 'visible', timeout: 20_000 });
-    assert.equal(await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot 正在控制' }).count(), 1, 'Opening Beta’s computer changed Alpha’s control owner');
+    await betaPage!.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible', timeout: 20_000 });
+    assert.equal(await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot has control' }).count(), 1, 'Opening Beta’s computer changed Alpha’s control owner');
     await screenshot(betaPage!, '14-beta-private-computer');
   });
 
   await recordStep('Computer user input stays disabled until explicit takeover', async () => {
     const addressBar = alphaPage!.locator('.browser-toolbar input');
     assert.equal(await addressBar.isDisabled(), true, 'Browser navigation is enabled before takeover');
-    await alphaPage!.getByRole('button', { name: '接管' }).click();
-    await alphaPage!.getByRole('status').filter({ hasText: '你正在控制' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('button', { name: 'Take over' }).click();
+    await alphaPage!.getByRole('status').filter({ hasText: 'You have control' }).waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.locator('.computer-controlbar.is-user-control').count(), 1, 'Take over must switch to the observed user-control ribbon');
     await screenshot(alphaPage!, '14-computer-takeover');
   });
 
@@ -1312,23 +1349,17 @@ try {
     await addressBar.press('Enter');
     await alphaPage!.getByText('Dot E2E Computer Fixture', { exact: true }).waitFor({ state: 'visible', timeout: 20_000 });
     const image = alphaPage!.getByAltText('独立浏览器画面');
-    await alphaPage!.waitForFunction(() => {
-      const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
-      return Boolean(screenshot?.complete && screenshot.naturalWidth >= 1200 && screenshot.naturalHeight >= 650);
-    }, null, { timeout: 20_000 });
-    const box = await image.boundingBox();
-    assert(box && box.width > 0 && box.height > 0, 'Computer screenshot did not have a visible image box');
-    await image.click({ position: { x: (112 + 165) * box.width / 1280, y: (82 + 32) * box.height / 720 } });
+    await waitForComputerScreenshot(alphaPage!);
+    await clickComputerScreen(alphaPage!, 112 + 165, 82 + 32);
     await alphaPage!.getByText('Dot E2E Clicked', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 });
-    const refreshedBox = await image.boundingBox();
-    assert(refreshedBox, 'Computer screenshot disappeared after click');
-    await image.click({ position: { x: (112 + 165) * refreshedBox.width / 1280, y: (180 + 32) * refreshedBox.height / 720 } });
-    await alphaPage!.locator('.computer-footer input').fill('typed by takeover');
-    await alphaPage!.getByRole('button', { name: '输入' }).click();
+    await clickComputerScreen(alphaPage!, 112 + 165, 180 + 32);
+    await image.focus();
+    await alphaPage!.keyboard.type('typed by takeover', { delay: 20 });
     await alphaPage!.getByText('Dot E2E Typed: typed by takeover', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 });
     await screenshot(alphaPage!, '15-computer-typed');
-    await alphaPage!.getByRole('button', { name: '交还控制' }).click();
-    await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot 正在控制' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('button', { name: 'Return control' }).click();
+    await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot has control' }).waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.locator('.computer-controlbar.is-user-control').count(), 0, 'Return control did not restore the agent-control presentation');
     assert.equal(await alphaPage!.locator('.browser-toolbar input').isDisabled(), true, 'Navigation remained enabled after control was returned');
     await screenshot(alphaPage!, '16-computer-returned');
   });

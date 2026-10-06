@@ -255,12 +255,13 @@ const server = createServer(async (req, res) => {
       res.end(bytes);
       return;
     }
-    if (path === '/api/computer/open' && req.method === 'POST') return reply(res, 200, await computer.open());
+    if (path === '/api/computer/open' && req.method === 'POST') return reply(res, 200, await computer.open(String(body.dotName || 'Dot')));
     if (path === '/api/computer/take-over' && req.method === 'POST') { computer.takeOver(); return reply(res, 200, await computer.state()); }
     if (path === '/api/computer/return-control' && req.method === 'POST') { computer.returnControl(); return reply(res, 200, await computer.state()); }
     if (path === '/api/computer/navigate' && req.method === 'POST') return reply(res, 200, await computer.navigate(String(body.url || '')));
     if (path === '/api/computer/click' && req.method === 'POST') return reply(res, 200, await computer.click(Number(body.x), Number(body.y)));
     if (path === '/api/computer/type' && req.method === 'POST') return reply(res, 200, await computer.type(String(body.text || '')));
+    if (path === '/api/computer/press' && req.method === 'POST') return reply(res, 200, await computer.press(String(body.key || '')));
 
     if (path === '/api/tasks' && req.method === 'POST') {
       const instruction = String(body.instruction || '').trim();
