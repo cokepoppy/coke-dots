@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -96,7 +97,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     const firstId = '11111111-1111-4111-8111-111111111111';
     const secondId = '22222222-2222-4222-8222-222222222222';
     const [first, second] = await Promise.all([submit(firstId, 'first'), submit(secondId, 'second')]);
-    assert.deepEqual([first.status, second.status], [200, 200]);
+    assert.deepEqual([first.status, second.status], [200, 200], JSON.stringify([first, second]));
     assert.equal(first.body.status, 'done');
     assert.equal(first.body.message, 'runtime token isolated');
     assert.equal(second.body.message, 'runtime token isolated');
@@ -115,12 +116,128 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     assert.match(held.body.message || '', /接管电脑/);
     assert.doesNotMatch(stderr, /agent-test-token-never-print/);
     owner = 'agent';
+
+    const stoppedId = '55555555-5555-4555-8555-555555555555';
+    const stoppedPromise = submit(stoppedId, 'hold');
+    await waitFor(async () => (await readFile(markerPath, 'utf8').catch(() => '')).includes(`start ${stoppedId}`));
+    const stopResponse = await fetch(`${runtimeUrl}/v1/tasks/stop`, {
+      method: 'POST', headers: { authorization: 'Bearer agent-test-token-never-print', 'content-type': 'application/json' },
+      body: JSON.stringify({ taskId: stoppedId }),
+    });
+    assert.equal((await stopResponse.json() as { stopped?: boolean }).stopped, true, 'The tenant task stop endpoint must interrupt the named task');
+    const stopped = await stoppedPromise;
+    assert.equal(stopped.status, 400);
+    assert.match(stopped.body.error || '', /stopped by the user/i);
+    assert.doesNotMatch(await readFile(markerPath, 'utf8'), new RegExp(`end ${stoppedId}`), 'A stopped adapter must not finish in the background');
   } finally {
     if (child && child.exitCode === null) {
       child.kill('SIGTERM');
       await new Promise<void>(resolvePromise => child!.once('exit', () => resolvePromise()));
     }
     await new Promise<void>(resolvePromise => worker.close(() => resolvePromise()));
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('cloud Agent runtime finishes disconnected work and replays the persisted result after a runtime restart', { timeout: 20_000 }, async () => {
+  const temporary = await mkdtemp(join(tmpdir(), 'coke-dots-agent-recovery-'));
+  const workspace = join(temporary, 'workspace');
+  const adapterPath = join(temporary, 'adapter.mjs');
+  const markerPath = join(temporary, 'adapter-events.log');
+  let owner: 'agent' | 'user' = 'agent';
+  let worker: Server | null = null;
+  let workerPort = 0;
+  let child: ChildProcess | null = null;
+  const startRuntime = async () => {
+    const port = await freePort();
+    const processChild = spawn(process.execPath, [runtimePath], {
+      cwd: projectRoot,
+      env: {
+        ...process.env,
+        DOTS_AGENT_RUNTIME_TOKEN: 'recovery-agent-token', DOTS_AGENT_RUNTIME_PORT: String(port), DOTS_AGENT_WORKSPACE: workspace,
+        DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: process.execPath, args: [adapterPath] } }),
+        DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh', DOTS_TEST_MARKER: markerPath,
+        LINUX_DESKTOP_WORKER_PORT: String(workerPort), LINUX_DESKTOP_WORKER_TOKEN: 'worker-recovery-token',
+      },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    processChild.stderr?.on('data', chunk => { stderr += String(chunk).slice(-1200); });
+    const url = `http://127.0.0.1:${port}`;
+    await waitFor(async () => { try { return (await fetch(`${url}/healthz`)).ok; } catch { return false; } });
+    return { process: processChild, url };
+  };
+  let stderr = '';
+  const stopRuntime = async () => {
+    if (!child || child.exitCode !== null) return;
+    const current = child;
+    const exited = new Promise<void>(resolvePromise => current.once('exit', () => resolvePromise()));
+    current.kill('SIGTERM');
+    await exited;
+    child = null;
+  };
+  const request = async (url: string, taskId: string, prompt: string, options: { signal?: AbortSignal; executionId?: string } = {}) => {
+    const response = await fetch(`${url}/v1/tasks/run`, {
+      method: 'POST', headers: { authorization: 'Bearer recovery-agent-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ engine: 'dsh', taskId, executionId: options.executionId || `run:${taskId}`, prompt, sessionId: null, cwd: `tasks/${taskId}` }), signal: options.signal,
+    });
+    return { status: response.status, body: await response.json() as { status?: string; message?: string; error?: string } };
+  };
+  try {
+    worker = createServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/v1/control') {
+        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ owner })); return;
+      }
+      res.writeHead(404); res.end();
+    });
+    workerPort = await listen(worker);
+    await writeFile(adapterPath, [
+      "import { appendFile } from 'node:fs/promises';",
+      "let raw = ''; for await (const chunk of process.stdin) raw += chunk;",
+      'const input = JSON.parse(raw);',
+      "await appendFile(process.env.DOTS_TEST_MARKER, `start ${input.taskId} ${input.prompt}\\n`);",
+      "await new Promise(resolve => setTimeout(resolve, 250));",
+      "await appendFile(process.env.DOTS_TEST_MARKER, `end ${input.taskId} ${input.prompt}\\n`);",
+      "process.stdout.write(JSON.stringify({ status: 'done', message: `completed ${input.prompt}` }));",
+    ].join('\n'));
+    const taskId = '44444444-4444-4444-8444-444444444444';
+    let runtime = await startRuntime();
+    child = runtime.process;
+    const disconnect = new AbortController();
+    const firstRequest = request(runtime.url, taskId, 'recover after control-plane restart', { signal: disconnect.signal, executionId: 'run-one' });
+    await waitFor(async () => (await readFile(markerPath, 'utf8').catch(() => '')).includes(`start ${taskId}`));
+    disconnect.abort();
+    await assert.rejects(firstRequest, /aborted|abort/i, 'The simulated control-plane connection should close');
+    await waitFor(async () => (await readFile(markerPath, 'utf8').catch(() => '')).includes(`end ${taskId}`));
+
+    const resultFile = join(workspace, '.coke-dots', 'agent-runtime', `${createHash('sha256').update(taskId).digest('hex')}.json`);
+    await waitFor(async () => {
+      try {
+        const saved = JSON.parse(await readFile(resultFile, 'utf8')) as { result?: { status?: string; message?: string } };
+        return saved.result?.status === 'done' && saved.result.message === 'completed recover after control-plane restart';
+      } catch {
+        return false;
+      }
+    });
+
+    await stopRuntime();
+    runtime = await startRuntime();
+    child = runtime.process;
+    const recovered = await request(runtime.url, taskId, 'recover after control-plane restart', { executionId: 'run-one' });
+    assert.equal(recovered.status, 200);
+    assert.deepEqual(recovered.body, { taskId, status: 'done', message: 'completed recover after control-plane restart', engine: 'dsh', sessionId: null });
+    assert.equal((await readFile(markerPath, 'utf8')).match(new RegExp(`start ${taskId}`, 'g'))?.length, 1, 'Retry must reuse the completed result rather than run the adapter twice');
+
+    const redirected = await request(runtime.url, taskId, 'continue with the updated goal', { executionId: 'run-two' });
+    assert.equal(redirected.status, 200);
+    assert.equal(redirected.body.message, 'completed continue with the updated goal', 'A redirected task must not receive a stale cached result');
+    assert.equal((await readFile(markerPath, 'utf8')).match(new RegExp(`start ${taskId}`, 'g'))?.length, 2);
+    const nextScheduledRun = await request(runtime.url, taskId, 'continue with the updated goal', { executionId: 'run-three' });
+    assert.equal(nextScheduledRun.body.message, 'completed continue with the updated goal');
+    assert.equal((await readFile(markerPath, 'utf8')).match(new RegExp(`start ${taskId}`, 'g'))?.length, 3, 'A later run with unchanged instructions must not replay an earlier recurring result');
+    assert.doesNotMatch(stderr, /recovery-agent-token|worker-recovery-token/);
+  } finally {
+    await stopRuntime();
+    await new Promise<void>(resolvePromise => worker?.close(() => resolvePromise()) || resolvePromise());
     await rm(temporary, { recursive: true, force: true });
   }
 });

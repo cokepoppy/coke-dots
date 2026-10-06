@@ -264,7 +264,10 @@ async function screenshot(page: Page, name: string) {
 async function waitForComputerScreenshot(page: Page) {
   await page.waitForFunction(() => {
     const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
-    return Boolean(screenshot?.complete && screenshot.naturalWidth === 1280 && screenshot.naturalHeight === 820);
+    if (!screenshot?.complete || screenshot.naturalWidth !== 1280 || screenshot.naturalHeight !== 820) return false;
+    const box = screenshot.getBoundingClientRect();
+    const style = getComputedStyle(screenshot);
+    return box.width > 100 && box.height > 80 && style.display !== 'none' && style.visibility !== 'hidden';
   }, null, { timeout: 20_000 });
 }
 
@@ -276,7 +279,7 @@ async function clickComputerScreen(page: Page, x: number, y: number) {
     const screenshot = element as HTMLImageElement;
     return { left: box.left, top: box.top, width: box.width, height: box.height, naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight };
   });
-  assert(measurements.width > 0 && measurements.height > 0 && measurements.naturalWidth > 0 && measurements.naturalHeight > 0, 'Computer screenshot has no measurable image area');
+  assert(measurements.width > 100 && measurements.height > 80 && measurements.naturalWidth > 0 && measurements.naturalHeight > 0, `Computer screenshot has no measurable image area: ${JSON.stringify(measurements)}`);
   const scale = Math.min(measurements.width / measurements.naturalWidth, measurements.height / measurements.naturalHeight);
   const offsetX = (measurements.width - measurements.naturalWidth * scale) / 2;
   const offsetY = (measurements.height - measurements.naturalHeight * scale) / 2;

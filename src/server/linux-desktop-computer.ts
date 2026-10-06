@@ -44,7 +44,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     const response = await this.request('/v1/state');
     if (!response.ok) throw new Error(`Linux 云电脑状态查询失败（HTTP ${response.status}）`);
     const remote = await response.json() as { ready?: boolean; url?: string; title?: string; owner?: 'agent' | 'user' };
-    return { ready: remote.ready === true, owner: remote.owner === 'user' ? 'user' : this.owner, url: remote.url || '', title: remote.title || '', backend: 'linux-desktop', width: 1440, height: 900 };
+    return { ready: remote.ready === true, owner: remote.owner === 'user' ? 'user' : this.owner, url: remote.url || '', title: remote.title || '', backend: 'linux-desktop', width: 1440, height: 1080 };
   }
 
   async takeOver() {
@@ -69,7 +69,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
 
   async click(x: number, y: number) {
     this.assertUserControl();
-    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 1440 || y > 900) throw new Error('点击坐标超出画面');
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 1440 || y > 1080) throw new Error('点击坐标超出画面');
     await this.command({ action: 'click', x, y, actor: 'user' });
     return this.state();
   }
@@ -100,21 +100,44 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     return this.connection ? this.connection.novncUrl : null;
   }
 
-  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; signal?: AbortSignal }) {
+  async runAgentTask(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; signal?: AbortSignal }) {
     await this.ensureConnection();
     const owner = await this.request('/v1/control');
     if (!owner.ok || (await owner.json() as { owner?: string }).owner !== 'agent') throw new Error('用户正在接管这台电脑，Agent 已暂停');
+    if (input.signal?.aborted) throw input.signal.reason || new Error('Agent task was cancelled');
     const url = endpointUrl(this.connection!.agentUrl, 'v1/tasks/run');
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ engine: input.engine, taskId: input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
-      signal: input.signal ? AbortSignal.any([AbortSignal.timeout(15 * 60_000), input.signal]) : AbortSignal.timeout(15 * 60_000),
-    });
-    const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] };
-    if (!response.ok) throw new Error(result.error || `Linux Agent 运行时返回 HTTP ${response.status}`);
-    if (typeof result.status !== 'string' || typeof result.message !== 'string') throw new Error('Linux Agent 运行时返回了无效结果');
-    return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }) };
+    const requestAbort = new AbortController();
+    let cancelRequested = false;
+    const cancelRemoteTask = async () => {
+      if (cancelRequested) return;
+      cancelRequested = true;
+      const reason = String((input.signal?.reason as Error | undefined)?.message || input.signal?.reason || '');
+      const action = /paus/i.test(reason) ? 'pause' : 'stop';
+      await fetch(endpointUrl(this.connection!.agentUrl, `v1/tasks/${action}`), {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ taskId: input.taskId }),
+        signal: AbortSignal.timeout(2000),
+      }).catch(() => undefined);
+      requestAbort.abort(input.signal?.reason);
+    };
+    const onAbort = () => { void cancelRemoteTask(); };
+    input.signal?.addEventListener('abort', onAbort, { once: true });
+    if (input.signal?.aborted) onAbort();
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ engine: input.engine, taskId: input.taskId, executionId: input.executionId || input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
+        signal: AbortSignal.any([AbortSignal.timeout(15 * 60_000), requestAbort.signal]),
+      });
+      const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] };
+      if (!response.ok) throw new Error(result.error || `Linux Agent 运行时返回 HTTP ${response.status}`);
+      if (typeof result.status !== 'string' || typeof result.message !== 'string') throw new Error('Linux Agent 运行时返回了无效结果');
+      return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }) };
+    } finally {
+      input.signal?.removeEventListener('abort', onAbort);
+    }
   }
 
   async close() {
@@ -244,7 +267,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
               env: [
                 { name: 'LINUX_DESKTOP_WORKER_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'LINUX_DESKTOP_WORKER_TOKEN' } } },
                 { name: 'DOTS_AGENT_RUNTIME_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'DOTS_AGENT_RUNTIME_TOKEN' } } },
-                { name: 'COKE_DESKTOP_RESOLUTION', value: '1440x900' },
+                { name: 'COKE_DESKTOP_RESOLUTION', value: '1440x1080' },
                 { name: 'COKE_DESKTOP_VNC_AUTH_MODE', value: 'gateway' },
                 { name: 'COKE_DESKTOP_CHROME_NO_SANDBOX', value: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX === '1' ? '1' : '0' },
                 { name: 'DOTS_DESKTOP_AGENT_ADAPTERS', value: agentEngines },

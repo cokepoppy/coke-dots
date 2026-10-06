@@ -24,6 +24,8 @@ const machines = new Map<string, { owner: 'agent' | 'user'; url: string; title: 
 const workerTokens = new Map<string, string>();
 const agentTokens = new Map<string, string>();
 const agentCalls: Record<string, unknown>[] = [];
+const agentTaskExecutions = new Map<string, Promise<{ status: string; message: string; sessionId: string }>>();
+const agentExecutionCount = new Map<string, number>();
 const browserActions: { hash: string; action: string }[] = [];
 const remoteHttpPaths: string[] = [];
 const remoteUpgradePaths: string[] = [];
@@ -38,12 +40,17 @@ let appPort = 0;
 let remotePort = 0;
 let baseUrl = '';
 const logs: string[] = [];
+const recoveryInstruction = 'E2E cloud task survives a control-plane restart';
+let signalRecoveryStarted: () => void = () => undefined;
+const recoveryStarted = new Promise<void>(resolvePromise => { signalRecoveryStarted = resolvePromise; });
+let releaseRecovery: () => void = () => undefined;
+const recoveryRelease = new Promise<void>(resolvePromise => { releaseRecovery = resolvePromise; });
 
 await writeFile(envFile, '');
 await mkdir(artifacts, { recursive: true });
 
 function makeScreen() {
-  const png = new PNG({ width: 1440, height: 900 });
+  const png = new PNG({ width: 1440, height: 1080 });
   for (let y = 0; y < png.height; y += 1) for (let x = 0; x < png.width; x += 1) {
     const offset = (png.width * y + x) << 2;
     png.data[offset] = 215 + (x % 28);
@@ -63,7 +70,21 @@ async function freePort() {
   return address.port;
 }
 
+async function delay(milliseconds: number) {
+  await new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds));
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await delay(25);
+  }
+  throw new Error('Timed out waiting for the cloud computer E2E condition');
+}
+
 function content(res: import('node:http').ServerResponse, status: number, type: string, value: Buffer | string) {
+  if (res.destroyed || res.writableEnded) return;
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
   res.writeHead(status, { 'content-type': type, 'content-length': bytes.length, 'cache-control': 'no-store' });
   res.end(bytes);
@@ -116,7 +137,22 @@ async function startRemote() {
         if (route === '/v1/tasks/run' && req.method === 'POST') {
           const body = await readJson(req);
           agentCalls.push(body);
-          return content(res, 200, 'application/json', JSON.stringify({ status: 'done', message: `Cloud task completed in ${body.engine}`, sessionId: 'cloud-session-1' }));
+          const taskId = String(body.taskId || '');
+          const executionId = String(body.executionId || taskId);
+          const key = `${hash}:${executionId}`;
+          let execution = agentTaskExecutions.get(key);
+          if (!execution) {
+            agentExecutionCount.set(key, (agentExecutionCount.get(key) || 0) + 1);
+            execution = (async () => {
+              if (String(body.prompt || '').includes(recoveryInstruction)) {
+                signalRecoveryStarted?.();
+                await recoveryRelease;
+              }
+              return { status: 'done', message: `Cloud task completed in ${body.engine}`, sessionId: 'cloud-session-1' };
+            })();
+            agentTaskExecutions.set(key, execution);
+          }
+          return content(res, 200, 'application/json', JSON.stringify(await execution));
         }
       }
       content(res, 404, 'text/plain', 'not found');
@@ -173,6 +209,22 @@ async function startApp() {
   throw new Error(`Cloud computer E2E service did not start.\n${logs.join('')}`);
 }
 
+async function stopApp(child: ChildProcess | null) {
+  if (!child || child.exitCode !== null) return;
+  const exited = new Promise<void>(resolvePromise => child.once('exit', () => resolvePromise()));
+  child.kill('SIGTERM');
+  await Promise.race([exited, delay(5000)]);
+  if (child.exitCode === null) {
+    child.kill('SIGKILL');
+    await exited;
+  }
+}
+
+async function restartApp() {
+  await stopApp(appServer);
+  appServer = await startApp();
+}
+
 async function signIn(target: Page, email: string) {
   await target.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await target.locator('#e2e-email').fill(email);
@@ -193,7 +245,7 @@ async function chooseComputer(target: Page) {
   await target.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible', timeout: 20_000 });
   await target.waitForFunction(() => {
     const image = document.querySelector<HTMLImageElement>('img[alt="Linux 云桌面画面"]');
-    return Boolean(image?.complete && image.naturalWidth === 1440 && image.naturalHeight === 900);
+    return Boolean(image?.complete && image.naturalWidth === 1440 && image.naturalHeight === 1080);
   }, null, { timeout: 20_000 });
 }
 
@@ -222,7 +274,7 @@ try {
   await page.getByTestId('linux-desktop-stage').waitFor({ state: 'visible' });
   await page.waitForFunction(() => {
     const image = document.querySelector<HTMLImageElement>('img[alt="Linux 云桌面画面"]');
-    return Boolean(image?.complete && image.naturalWidth === 1440 && image.naturalHeight === 900);
+    return Boolean(image?.complete && image.naturalWidth === 1440 && image.naturalHeight === 1080);
   }, null, { timeout: 20_000 });
   assert.equal(await page.locator('[data-testid="computer-access-disabled"]').count(), 0, 'Turning off local Chrome access must leave the tenant’s cloud computer available');
   const alphaHash = [...machines.keys()][0];
@@ -283,6 +335,39 @@ try {
   assert.equal((agentCalls[0].computer as { baseUrl: string }).baseUrl, 'http://127.0.0.1:8082');
   await page.screenshot({ path: join(artifacts, '03-agent-task-done.png') });
 
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  await page.locator('.composer select').selectOption('dsh');
+  await page.getByTestId('task-composer').fill(recoveryInstruction);
+  await page.locator('button.send').click();
+  await Promise.race([recoveryStarted, delay(20_000).then(() => { throw new Error('Chrome-created recovery task never reached the cloud Agent runtime'); })]);
+  const recoveryTask = await page.evaluate(async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction) || null;
+  }, recoveryInstruction);
+  assert(recoveryTask, 'The Chrome composer click must create the recovery task');
+  assert.equal(recoveryTask.status, 'working');
+
+  await restartApp();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByTestId('app-shell').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  await page.waitForFunction(async id => {
+    const response = await fetch('/api/state');
+    const state = await response.json() as { tasks: { id: string; status: string }[] };
+    return state.tasks.find(task => task.id === id)?.status === 'working';
+  }, recoveryTask.id);
+  await waitFor(() => agentCalls.filter(call => call.taskId === recoveryTask.id).length === 2, 15_000);
+  const recoveryExecutionId = String(agentCalls.find(call => call.taskId === recoveryTask.id)?.executionId || '');
+  assert(recoveryExecutionId, 'The cloud Agent dispatch must carry a durable execution identity');
+  const recoveryKey = `${alphaHash}:${recoveryExecutionId}`;
+  assert.equal(agentExecutionCount.get(recoveryKey), 1, 'A recovered dispatch must attach to the original cloud Agent execution');
+  releaseRecovery();
+  await page.getByRole('button', { name: 'Activity' }).click();
+  const recoveredCard = page.locator('.task-card').filter({ hasText: recoveryInstruction });
+  await recoveredCard.locator('.pill.done').waitFor({ state: 'visible', timeout: 20_000 });
+  assert.equal(agentExecutionCount.get(recoveryKey), 1, 'The cloud Agent task must execute once across the Coke Dots service restart');
+  await page.screenshot({ path: join(artifacts, '03b-agent-task-recovered-after-control-plane-restart.png') });
+
   const betaContext = await browser.newContext({ viewport: { width: 1440, height: 980 }, deviceScaleFactor: 1 });
   const betaPage = await betaContext.newPage();
   await signIn(betaPage, 'cloud-beta@example.test');
@@ -303,17 +388,15 @@ try {
   await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });
   await betaContext.close();
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'tenant token and runtime separation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
 } finally {
+  releaseRecovery();
   await page?.context().close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
-  if (appServer && appServer.exitCode === null) {
-    appServer.kill('SIGTERM');
-    await new Promise(resolvePromise => appServer!.once('exit', resolvePromise));
-  }
+  await stopApp(appServer);
   for (const socket of remoteSockets) socket.destroy();
   await new Promise<void>(resolvePromise => remoteServer?.close(() => resolvePromise()) || resolvePromise());
   await rm(tempRoot, { recursive: true, force: true });

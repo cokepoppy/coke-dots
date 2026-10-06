@@ -69,7 +69,7 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
   try {
     const computer = new LinuxDesktopComputer('tenant-alpha', connector);
     const [firstState, concurrentState] = await Promise.all([computer.state(), computer.state()]);
-    assert.deepEqual(firstState, { ready: true, owner: 'agent', url: 'https://example.test/', title: 'Example', backend: 'linux-desktop', width: 1440, height: 900 });
+    assert.deepEqual(firstState, { ready: true, owner: 'agent', url: 'https://example.test/', title: 'Example', backend: 'linux-desktop', width: 1440, height: 1080 });
     assert.deepEqual(concurrentState, firstState);
     assert.equal(connectionCount, 1, 'Concurrent status requests must share one tenant desktop provisioning operation');
     const opened = await computer.open('Dot');
@@ -89,6 +89,7 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     assert.equal(result.message, 'remote task finished');
     assert.equal(result.sessionId, 'remote-session');
     assert.equal(agentInput[0].cwd, 'tasks/task-1');
+    assert.equal(agentInput[0].executionId, 'task-1', 'Remote tasks need a stable execution identity for safe replay');
     assert.equal('signal' in agentInput[0], false, 'AbortSignal must control the HTTP request, not leak into the runtime payload');
     assert.equal((agentInput[0].computer as { workerToken: string }).workerToken, 'scoped-worker-token');
     await computer.close();

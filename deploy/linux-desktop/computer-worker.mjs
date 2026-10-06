@@ -4,20 +4,27 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
+import { computerWelcomePage } from './computer-home.mjs';
 
 const exec = promisify(execFile);
 const token = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
 const port = Number(process.env.COKE_DESKTOP_WORKER_PORT || 8082);
-const resolution = String(process.env.COKE_DESKTOP_RESOLUTION || '1440x900').split('x').map(Number);
+const resolution = String(process.env.COKE_DESKTOP_RESOLUTION || '1440x1080').split('x').map(Number);
 let owner = 'agent';
 let browser;
+let initialized = false;
 
 if (!token) throw new Error('LINUX_DESKTOP_WORKER_TOKEN is required');
 
 async function page() {
   if (!browser) browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
   const context = browser.contexts()[0];
-  return context.pages()[0] || context.newPage();
+  const browserPage = context.pages()[0] || await context.newPage();
+  if (!initialized) {
+    initialized = true;
+    if (browserPage.url() === 'about:blank') await browserPage.setContent(computerWelcomePage('Dot'), { waitUntil: 'domcontentloaded' });
+  }
+  return browserPage;
 }
 
 function send(res, status, value, type = 'application/json; charset=utf-8') {
@@ -52,8 +59,8 @@ async function command(input) {
   if (action === 'open') {
     const browserPage = await page();
     const dotName = String(input.dotName || 'Dot').slice(0, 80);
-    await browserPage.title().catch(() => '');
-    return { ready: true };
+    await browserPage.setContent(computerWelcomePage(dotName), { waitUntil: 'domcontentloaded' });
+    return { ready: true, url: browserPage.url(), title: await browserPage.title() };
   }
   if (action === 'navigate') {
     const url = new URL(String(input.url || ''));
@@ -84,6 +91,7 @@ http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/readyz') {
       try {
         await page();
+        if (process.env.COKE_DESKTOP_CHROME_NO_SANDBOX === '1') await fs.access('/tmp/dots-chrome-startup-ready');
         await exec('xdpyinfo', ['-display', process.env.DISPLAY || ':1'], { timeout: 1500 });
         const agent = await fetch(`http://127.0.0.1:${process.env.DOTS_AGENT_RUNTIME_PORT || 8083}/healthz`, { signal: AbortSignal.timeout(1500) });
         if (!agent.ok) return send(res, 503, { ok: false });

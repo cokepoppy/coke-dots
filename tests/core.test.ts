@@ -13,11 +13,13 @@ test('tasks, redirects and profile survive database reopen', () => {
   try {
     let store = new Store(directory);
     const task = store.createTask('Track the design review');
+    const executionId = task.nextRunAt;
     store.setProfile('Alfred', 'triangle', '#aabbcc');
     store.updateTask(task.id, { instruction: 'Track the updated design review', priority: 2, status: 'working' });
     store.close();
     store = new Store(directory);
     assert.equal(store.getTask(task.id)?.status, 'queued');
+    assert.equal(store.getTask(task.id)?.nextRunAt, executionId, 'Restart recovery must preserve the scheduled execution identity for idempotent cloud dispatch');
     assert.equal(store.getTask(task.id)?.priority, 2);
     assert.equal(store.getTask(task.id)?.instruction, 'Track the updated design review');
     assert.equal(store.snapshot(false).profile.name, 'Alfred');

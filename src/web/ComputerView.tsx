@@ -9,6 +9,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
   const [frame, setFrame] = useState(0);
   const [busy, setBusy] = useState(false);
   const keyboardQueue = useRef<Promise<void>>(Promise.resolve());
+  const syncedDesktopName = useRef<string | null>(null);
 
   async function refresh() {
     try {
@@ -17,9 +18,13 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
       const next = await response.json() as ComputerState;
       setState(next);
       if (next.ready) setFrame(Date.now());
+      if (next.backend === 'linux-desktop' && next.ready && next.title === 'Welcome back, Dot' && dotName !== 'Dot' && syncedDesktopName.current !== dotName) {
+        syncedDesktopName.current = dotName;
+        await action('open', { dotName });
+      }
     } catch { /* The main UI reports service connectivity. */ }
   }
-  useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 2000); return () => clearInterval(timer); }, []);
+  useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 2000); return () => clearInterval(timer); }, [dotName]);
 
   async function action(path: string, body: object = {}) {
     setBusy(true);
@@ -66,7 +71,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
   if (!localComputerEnabled && state.backend !== 'linux-desktop') return <section className="computer-view"><div className="computer-empty" data-testid="computer-access-disabled"><div className="computer-icon">▣</div><h2>本机 Chrome 工作区已关闭</h2><p>此工作区尚未允许 Dot 使用本机上的隔离 Chrome 浏览器。</p><button onClick={onManageAccess}>更改电脑访问</button></div></section>;
 
   return <section className="computer-view" aria-label={`${dotName} 的电脑`}>
-    {!state.ready ? <div className="computer-empty"><div className="computer-icon">▣</div><h2>打开独立电脑</h2><p>{state.backend === 'linux-desktop' ? '这台 Debian 云电脑和 Agent 运行时在独立工作区内持续运行。' : '工作区会话保存在 Coke Dots 专用 Chrome 配置中。'}</p><button disabled={busy} onClick={() => void action('open', { dotName })}>打开电脑</button></div> : <div className={`computer-workspace${state.owner === 'user' ? ' has-user-control' : ''}`} data-testid="computer-workspace">
+      {!state.ready ? <div className="computer-empty"><div className="computer-icon">▣</div><h2>打开独立电脑</h2><p>{state.backend === 'linux-desktop' ? '这台 Debian 云电脑和 Agent 运行时在独立工作区内持续运行。' : '工作区会话保存在 Coke Dots 专用 Chrome 配置中。'}</p><button disabled={busy} onClick={() => void action('open', { dotName })}>打开电脑</button></div> : <div className={`computer-workspace${state.owner === 'user' ? ' has-user-control' : ''}${state.backend === 'linux-desktop' ? ' is-linux-desktop-workspace' : ''}`} data-testid="computer-workspace">
       {state.backend === 'linux-desktop' ? <div className="computer-stage is-linux-desktop" data-testid="linux-desktop-stage">
         {state.owner === 'user'
           ? <iframe title="Linux 云桌面" data-testid="linux-desktop-view" src="/api/computer/novnc/vnc_lite.html?scale=1&autoconnect=1&path=api/computer/novnc/websockify" />

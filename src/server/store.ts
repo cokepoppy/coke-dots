@@ -160,7 +160,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS watches_tenant ON watches(tenant_id, status, next_check_at);
     `);
     const now = new Date().toISOString();
-    this.db.prepare("UPDATE tasks SET status='queued', next_run_at=?, updated_at=? WHERE status='working'").run(now, now);
+    this.db.prepare("UPDATE tasks SET status='queued', next_run_at=COALESCE(next_run_at,?), updated_at=? WHERE status='working'").run(now, now);
     this.db.prepare('DELETE FROM auth_sessions WHERE expires_at <= ?').run(now);
     this.db.prepare('DELETE FROM oauth_flows WHERE expires_at <= ?').run(now);
     this.db.prepare('DELETE FROM desktop_handoffs WHERE expires_at <= ?').run(now);

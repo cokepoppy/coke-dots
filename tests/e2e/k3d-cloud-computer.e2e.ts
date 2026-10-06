@@ -152,22 +152,46 @@ try {
   await remoteImage.waitFor({ state: 'visible', timeout: 240_000 });
   await page.waitForFunction(() => {
     const image = document.querySelector<HTMLImageElement>('img[alt="Linux 云桌面画面"]');
-    return Boolean(image?.complete && image.naturalWidth === 1440 && image.naturalHeight === 900);
+    return Boolean(image?.complete && image.naturalWidth === 1440 && image.naturalHeight === 1080);
   }, null, { timeout: 60_000 });
   console.log('Debian 13 desktop Pod is ready and the screenshot is rendered');
   const state = await page.evaluate(async () => await (await fetch('/api/computer')).json()) as { backend: string; owner: string; title: string };
   assert.equal(state.backend, 'linux-desktop');
   assert.equal(state.owner, 'agent');
+  assert.equal(state.title, 'Welcome back, Dot', 'The live Debian desktop must start on the video-observed Dot welcome screen');
   const screenshot = Buffer.from(await page.evaluate(async () => Array.from(new Uint8Array(await (await fetch('/api/computer/screenshot')).arrayBuffer()))));
   await writeFile(join(artifacts, '01-api-screenshot.png'), screenshot);
   const frame = PNG.sync.read(screenshot);
-  assert.deepEqual([frame.width, frame.height], [1440, 900]);
+  assert.deepEqual([frame.width, frame.height], [1440, 1080]);
+  const sample = (x: number, y: number) => {
+    const offset = (frame.width * y + x) * 4;
+    return [...frame.data.subarray(offset, offset + 3)];
+  };
+  const wallpaper = sample(20, 20);
+  assert(wallpaper[0] > 220 && wallpaper[1] > 100 && wallpaper[1] < 190 && wallpaper[2] < 170, `The desktop margin must show the coral reference wallpaper; saw ${wallpaper}`);
+  let chromeWarningTextPixels = 0;
+  for (let y = 205; y <= 217; y++) for (let x = 250; x <= 1190; x++) {
+    const offset = (frame.width * y + x) * 4;
+    if (frame.data[offset] < 160 && frame.data[offset + 1] < 160 && frame.data[offset + 2] < 160) chromeWarningTextPixels++;
+  }
+  assert(chromeWarningTextPixels < 100, `The Chromium --no-sandbox startup banner must not cover the observed welcome-screen layout (found ${chromeWarningTextPixels} dark banner pixels)`);
+  const browserChrome = sample(100, 100);
+  assert(browserChrome[2] > 220 && browserChrome[1] > 200, `The browser window must sit inside the coral desktop at the measured inset; saw ${browserChrome}`);
+  const dock = sample(720, 1020);
+  assert(dock[0] > 230 && dock[1] > 210 && dock[2] > 200, `The centered launcher dock must appear along the desktop's bottom edge; saw ${dock}`);
   const samples = new Set<string>();
   for (let y = 40; y < frame.height; y += 97) for (let x = 40; x < frame.width; x += 113) {
     const offset = (frame.width * y + x) * 4;
     samples.add(`${frame.data[offset]},${frame.data[offset + 1]},${frame.data[offset + 2]}`);
   }
   assert(samples.size > 4, `The live K3D screenshot must contain a rendered desktop, not a blank placeholder (sampled ${samples.size} colors)`);
+  const stage = await page.getByTestId('linux-desktop-stage').boundingBox();
+  const ownerControl = await page.getByRole('status').boundingBox();
+  const takeOverControl = await page.getByRole('button', { name: 'Take over' }).boundingBox();
+  assert(stage && ownerControl && takeOverControl, 'The live computer canvas and both ownership controls must be visible');
+  assert(Math.abs(stage.width / stage.height - 4 / 3) < 0.02, 'The cloud screen must preserve the observed 4:3 desktop shape');
+  const controlGroupCenter = (ownerControl.x + takeOverControl.x + takeOverControl.width) / 2;
+  assert(Math.abs(controlGroupCenter - (stage.x + stage.width / 2)) < 4, 'The observed owner status and takeover action must share the desktop centerline');
   await page.screenshot({ path: join(artifacts, '01-agent-desktop.png'), fullPage: true });
 
   const agentPort = await freePort();
@@ -200,12 +224,18 @@ try {
   console.log('Live Agent runtime executed its configured adapter and kept the runtime token out of the child process');
 
   await page.getByRole('button', { name: 'Take over' }).click();
+  const userControl = await page.getByRole('status').filter({ hasText: 'You have control' }).boundingBox();
+  const returnControl = await page.getByRole('button', { name: 'Return control' }).boundingBox();
+  const takenOverStage = await page.getByTestId('linux-desktop-stage').boundingBox();
+  assert(userControl && returnControl && takenOverStage, 'The live takeover row must remain visible with the desktop canvas');
+  const userGroupCenter = (userControl.x + returnControl.x + returnControl.width) / 2;
+  assert(Math.abs(userGroupCenter - (takenOverStage.x + takenOverStage.width / 2)) < 4, 'The takeover/return controls must stay centered when ownership changes');
   const vncCanvas = page.frameLocator('[data-testid="linux-desktop-view"]').locator('canvas').first();
   await vncCanvas.waitFor({ state: 'visible', timeout: 60_000 });
   const canvasSize = await vncCanvas.evaluate(element => ({ width: (element as HTMLCanvasElement).width, height: (element as HTMLCanvasElement).height }));
-  assert.deepEqual(canvasSize, { width: 1440, height: 900 }, 'The live noVNC canvas must match the remote desktop resolution');
+  assert.deepEqual(canvasSize, { width: 1440, height: 1080 }, 'The live noVNC canvas must match the remote desktop resolution');
   await vncCanvas.screenshot({ path: join(artifacts, '02-novnc-canvas.png') });
-  console.log('Live noVNC canvas connected at 1440x900');
+  console.log('Live noVNC canvas connected at 1440x1080');
 
   const actions = await page.evaluate(async () => {
     const results: { status: number; url?: string }[] = [];
@@ -233,7 +263,7 @@ try {
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The tenant workspace artifact must survive a desktop Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'browser navigate/click/type', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'browser navigate/click/type', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
