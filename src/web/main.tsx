@@ -198,8 +198,10 @@ function App() {
     catch (e) { setError(String(e)); }
   }
 
-  async function submitVoiceTranscript(instruction: string) {
-    const task = await request('/tasks', 'POST', { instruction, scheduleSpec: null, scheduleMinutes: null, engine }) as Task;
+  async function submitVoiceTranscript(instruction: string, waitingTaskId?: string) {
+    const task = waitingTaskId
+      ? await request(`/tasks/${waitingTaskId}`, 'PATCH', { action: 'reply', message: instruction }) as Task
+      : await request('/tasks', 'POST', { instruction, scheduleSpec: null, scheduleMinutes: null, engine }) as Task;
     setSelected(task.id); setSelectedPageId(null); setView('chat');
     return task;
   }
