@@ -72,6 +72,7 @@ function App() {
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [avatarSetupOpen, setAvatarSetupOpen] = useState(false);
   const [computerAccessOpen, setComputerAccessOpen] = useState(false);
+  const [computerConnectedToast, setComputerConnectedToast] = useState(false);
   const [view, setView] = useState<'home' | 'chat' | 'activity' | 'scheduled' | 'computer' | 'profile' | 'pages'>('home');
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
@@ -119,6 +120,12 @@ function App() {
   }, [authContext?.user.id]);
 
   useEffect(() => {
+    if (!computerConnectedToast) return;
+    const timer = window.setTimeout(() => setComputerConnectedToast(false), 5000);
+    return () => window.clearTimeout(timer);
+  }, [computerConnectedToast]);
+
+  useEffect(() => {
     if (!authContext) return;
     setStateLoaded(false);
     const stream = new EventSource('/api/events');
@@ -158,8 +165,10 @@ function App() {
   }
 
   async function saveComputerAccess(localComputer: boolean) {
+    const shouldShowConnectedToast = localComputer && (!state.computerAccess.localComputer || !state.computerAccess.configured);
     const computerAccess = await request('/computer-access', 'PATCH', { localComputer }) as Snapshot['computerAccess'];
     setState(current => ({ ...current, computerAccess }));
+    if (shouldShowConnectedToast) setComputerConnectedToast(true);
     setComputerAccessOpen(false);
   }
 
@@ -259,6 +268,7 @@ function App() {
       <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
+      {computerConnectedToast && <div className="computer-connected-toast" data-testid="computer-connected-toast" role="status"><span className="computer-connected-icon" aria-hidden="true">✓</span><span>The computer is connected to your dot</span><button type="button" aria-label="Dismiss notification" onClick={() => setComputerConnectedToast(false)}>×</button></div>}
       {(view === 'home' || view === 'chat') && <div className="chat-layout"><section className="chat-panel">
         {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What’s on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} computerAccess={state.computerAccess} onComputerAccess={saveComputerAccess} onCustomize={() => setView('profile')} onEditSetup={() => setAvatarSetupOpen(true)} /> : <div className="timeline">
           {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
