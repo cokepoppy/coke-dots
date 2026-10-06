@@ -342,9 +342,9 @@ try {
   baseUrl = `http://127.0.0.1:${e2ePort}`;
   server = await startServer(e2ePort);
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
-  alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
-  betaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
-  gammaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
+  alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, colorScheme: 'dark', recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
+  betaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, colorScheme: 'dark', recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
+  gammaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, colorScheme: 'dark', recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   await alphaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
   await betaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
   await gammaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
@@ -376,6 +376,7 @@ try {
     await alphaPage!.getByTestId('chat-home').waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.profile-link small').innerText(), 'alpha@example.test');
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
+    assert.equal(await alphaPage!.getByTestId('app-shell').evaluate(element => getComputedStyle(element).colorScheme), 'light');
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(247, 247, 248)');
     assert.equal(await alphaPage!.locator('.main').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(255, 255, 255)');
     assert.equal(await alphaPage!.getByTestId('dot-context-panel').count(), 0, 'A new-dot welcome state should not show the post-setup details panel');
@@ -387,6 +388,7 @@ try {
     const themeToggle = alphaPage!.getByTestId('theme-toggle');
     await themeToggle.click();
     assert.equal(await shell.getAttribute('data-theme'), 'dark');
+    assert.equal(await shell.evaluate(element => getComputedStyle(element).colorScheme), 'dark');
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(37, 37, 38)');
     assert.equal(await alphaPage!.locator('.main').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(28, 28, 29)');
     await screenshot(alphaPage!, 'theme-dark');
