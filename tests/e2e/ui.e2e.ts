@@ -246,7 +246,22 @@ async function screenshot(page: Page, name: string) {
 }
 
 async function clickNav(page: Page, label: string) {
+  const target = page.getByRole('button', { name: label, exact: true }).first();
+  if (label === '你的 dot' && !(await target.isVisible())) await page.getByRole('button', { name: '新聊天', exact: true }).click();
   await page.getByRole('button', { name: label, exact: true }).first().click();
+}
+
+async function openProfile(page: Page) {
+  await page.getByRole('button', { name: '你的 dot 设置', exact: true }).click();
+}
+
+async function taskNavigationItem(page: Page, title: string) {
+  const item = page.locator('.task-links button').filter({ hasText: title }).first();
+  if (!(await item.isVisible())) {
+    const newChat = page.getByRole('button', { name: '新聊天', exact: true });
+    if (await newChat.isVisible()) await newChat.click();
+  }
+  return page.locator('.task-links button').filter({ hasText: title }).first();
 }
 
 async function signIn(page: Page, email: string) {
@@ -266,7 +281,7 @@ async function createTask(page: Page, instruction: string, scheduled = false) {
     await page.getByLabel('重复频率').selectOption('interval');
     await page.locator('input.minutes').fill('60');
   }
-  await page.getByPlaceholder('告诉 dot 接下来要负责什么…').fill(instruction);
+  await page.getByTestId('task-composer').fill(instruction);
   await page.locator('button.send').click();
   await page.locator('.timeline .message.user p').filter({ hasText: instruction }).waitFor({ state: 'visible', timeout: 10_000 });
   if (scheduled) await page.waitForFunction(() => document.querySelector<HTMLInputElement>('.schedule-toggle input[type="checkbox"]')?.checked === false);
@@ -364,23 +379,33 @@ try {
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-theme') === 'light');
   });
 
-  await recordStep('First-run greeting opens Dot customization and focuses the task composer', async () => {
+  await recordStep('First-run Dot conversation matches the video and opens settings and Scratchpad', async () => {
     await clickNav(alphaPage!, '你的 dot');
     const onboarding = alphaPage!.getByTestId('dot-onboarding');
     await onboarding.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
     await onboarding.getByText('Message or call me anytime. I’ll keep things moving, even when we’re not talking, and check in with updates or questions.').waitFor({ state: 'visible' });
-    const surfaceSwitcher = alphaPage!.getByTestId('surface-switcher');
-    await surfaceSwitcher.getByRole('button', { name: 'Work' }).click();
-    await surfaceSwitcher.getByRole('button', { name: 'Chat' }).click();
+    await onboarding.getByText('What do you want to call me?').waitFor({ state: 'visible' });
+    await onboarding.getByText('I’ll just call you dot').waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.locator('.dot-conversation-avatar').evaluate(element => Math.round(element.getBoundingClientRect().width)), 52);
+    assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => Math.round(element.getBoundingClientRect().width)), 0);
+    assert.equal(await alphaPage!.getByTestId('surface-switcher').isVisible(), false);
+    await alphaPage!.getByRole('button', { name: 'Activity', exact: true }).first().click();
+    await alphaPage!.getByRole('heading', { name: 'Activity', exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('button', { name: '新聊天', exact: true }).click();
+    await clickNav(alphaPage!, '你的 dot');
     await onboarding.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'onboarding-first-run');
-    await alphaPage!.getByTestId('onboarding-customize').click();
+    await onboarding.getByRole('button', { name: '打开你的 dot 设置' }).click();
     await alphaPage!.getByRole('heading', { name: '你的 dot' }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.getByLabel('名字').inputValue(), 'Dot');
     await clickNav(alphaPage!, '你的 dot');
     await onboarding.waitFor({ state: 'visible' });
-    await alphaPage!.getByTestId('onboarding-start').click();
-    assert.equal(await alphaPage!.getByPlaceholder('告诉 dot 接下来要负责什么…').evaluate(element => document.activeElement === element), true, 'The start action should put the task composer in focus');
+    await onboarding.getByRole('button', { name: 'Your Personal Scratchpad' }).click();
+    await alphaPage!.getByRole('heading', { name: 'Your Personal Scratchpad' }).waitFor({ state: 'visible' });
+    await clickNav(alphaPage!, '你的 dot');
+    const composer = alphaPage!.getByTestId('task-composer');
+    await composer.click();
+    assert.equal(await composer.evaluate(element => document.activeElement === element), true, 'The chat composer should receive focus on click');
   });
 
   const alphaPrivateTask = 'E2E alpha private goal — inventory the project risks';
@@ -466,7 +491,7 @@ try {
     await alphaPage!.getByLabel('HTTPS URL').waitFor({ state: 'visible' });
     await alphaPage!.getByRole('button', { name: 'Close monitor form' }).click();
     await detail.getByRole('button', { name: 'Open conversation' }).click();
-    await alphaPage!.locator('.topbar > span').filter({ hasText: scheduledTask }).waitFor({ state: 'visible' });
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: scheduledTask }).waitFor({ state: 'visible' });
     await clickNav(alphaPage!, 'Scheduled');
     await alphaPage!.getByTestId('scheduled-detail').getByRole('button', { name: 'Cancel schedule' }).click();
     await alphaPage!.getByText('No scheduled tasks yet').first().waitFor({ state: 'visible' });
@@ -480,7 +505,7 @@ try {
     await alphaPage!.getByLabel('结束日期').fill(scheduleEndDate);
     await screenshot(alphaPage!, '07b-weekly-schedule-editor');
     const weeklyTask = 'E2E weekly schedule — summarize the Monday planning changes';
-    await alphaPage!.getByPlaceholder('告诉 dot 接下来要负责什么…').fill(weeklyTask);
+    await alphaPage!.getByTestId('task-composer').fill(weeklyTask);
     await alphaPage!.locator('button.send').click();
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: weeklyTask }).waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => document.querySelector<HTMLInputElement>('.schedule-toggle input[type="checkbox"]')?.checked === false);
@@ -494,7 +519,7 @@ try {
   });
 
   await recordStep('Dot appearance changes persist within Alpha personal workspace', async () => {
-    await alphaPage!.locator('.profile-link').click();
+    await openProfile(alphaPage!);
     await alphaPage!.getByLabel('桌面通知').check();
     await alphaPage!.getByText('此工作区已开启任务和网页监控提醒。', { exact: true }).waitFor({ state: 'visible' });
     await alphaPage!.getByLabel('名字').fill('Alpha Dot');
@@ -514,8 +539,8 @@ try {
     await alphaPage!.locator('.profile-link strong').filter({ hasText: 'Dot' }).waitFor({ state: 'visible' });
     await clickNav(alphaPage!, '你的 dot');
     await createTask(alphaPage!, 'E2E shared workspace task — prepare the team review');
-    await alphaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
-    await alphaPage!.locator('.profile-link').click();
+    await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
+    await openProfile(alphaPage!);
     await alphaPage!.getByLabel('名字').fill('Shared Dot');
     await alphaPage!.getByRole('button', { name: '保存更改' }).click();
     await alphaPage!.locator('.profile-link strong').filter({ hasText: 'Shared Dot' }).waitFor({ state: 'visible' });
@@ -537,9 +562,9 @@ try {
     await betaPage!.getByRole('button', { name: '接受并打开工作区' }).click();
     await betaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).waitFor({ state: 'attached' });
     await selectTenant(betaPage!, 'Alpha Shared');
-    await betaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
+    await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.locator('.profile-link strong').innerText(), 'Shared Dot');
-    await betaPage!.locator('.profile-link').click();
+    await openProfile(betaPage!);
     await betaPage!.locator('.member-row').filter({ hasText: 'alpha@example.test' }).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.getByRole('button', { name: '添加工作区成员' }).isDisabled(), true, 'A regular member received workspace-admin controls');
     await screenshot(betaPage!, '10-beta-shared-member');
@@ -549,9 +574,9 @@ try {
     assert.equal(await gammaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).count(), 0, 'A pending invitation exposed the workspace before acceptance');
     await screenshot(gammaPage!, '10b-gamma-pending-invitation');
     await gammaPage!.getByRole('button', { name: '接受并打开工作区' }).click();
-    await gammaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
+    await (await taskNavigationItem(gammaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
     assert.equal(await gammaPage!.locator('.profile-link strong').innerText(), 'Shared Dot');
-    await gammaPage!.locator('.profile-link').click();
+    await openProfile(gammaPage!);
     await gammaPage!.locator('.member-row').filter({ hasText: 'gamma@example.test' }).waitFor({ state: 'visible' });
     await screenshot(gammaPage!, '10c-gamma-accepted-workspace');
   });
@@ -559,7 +584,7 @@ try {
   await recordStep('Owner can revoke an unexpired pending invitation and an accepted member session', async () => {
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
-    await alphaPage!.locator('.profile-link').click();
+    await openProfile(alphaPage!);
     await alphaPage!.getByPlaceholder('teammate@example.com').fill('delta@example.test');
     await alphaPage!.getByRole('button', { name: '添加工作区成员' }).click();
     const deltaInvitation = alphaPage!.getByRole('region', { name: '待接受邀请' }).getByText('delta@example.test');
@@ -577,7 +602,7 @@ try {
   await recordStep('Tenant switch hides shared data from Beta personal workspace', async () => {
     await clickNav(betaPage!, '你的 dot');
     await selectTenant(betaPage!, 'Beta workspace');
-    await betaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'detached' });
+    await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
     await assertNoVisibleText(betaPage!, 'E2E shared workspace task — prepare the team review');
     assert.equal(await betaPage!.locator('.task-links button').count(), 0);
     await screenshot(betaPage!, '11-beta-personal-isolation');
@@ -601,19 +626,19 @@ try {
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
     await betaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
     await selectTenant(alphaPage!, 'Alpha Shared');
-    await alphaPage!.locator('.profile-link').click();
+    await openProfile(alphaPage!);
     assert.equal(await alphaPage!.getByLabel('桌面通知').isChecked(), false, 'Alpha Shared lost its independent notification preference after restart');
     await selectTenant(alphaPage!, 'Alpha workspace');
     assert.equal(await alphaPage!.getByLabel('桌面通知').isChecked(), true, 'Alpha personal notification preference did not survive service restart');
     await selectTenant(alphaPage!, 'Alpha Shared');
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
+    await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
     await selectTenant(betaPage!, 'Alpha Shared');
-    await betaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
+    await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, '12-alpha-after-service-restart');
     await screenshot(betaPage!, '13-beta-after-service-restart');
     await selectTenant(betaPage!, 'Beta workspace');
-    await betaPage!.locator('.task-links button').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'detached' });
+    await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
   });
 
   await recordStep('A user reply resumes a waiting task while retaining the original goal', async () => {
@@ -627,7 +652,7 @@ try {
     await alphaPage!.getByRole('button', { name: '回复并继续' }).click();
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: 'Use Friday.' }).waitFor({ state: 'visible' });
     await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
-    await alphaPage!.locator('.task-links button').filter({ hasText: originalGoal }).waitFor({ state: 'visible' });
+    await (await taskNavigationItem(alphaPage!, originalGoal)).waitFor({ state: 'visible' });
     assert.equal(mockModelPrompts.length, 2, 'The model did not receive both the original task and the reply');
     assert.match(mockModelPrompts[1], /Task: Prepare the project launch plan\n\nUser reply: Use Friday\./);
     await screenshot(alphaPage!, '17-waiting-task-resumed');
@@ -636,7 +661,7 @@ try {
 
   await recordStep('Workspace memory is user managed, reaches the agent prompt, and stays tenant isolated', async () => {
     await selectTenant(alphaPage!, 'Alpha workspace');
-    await alphaPage!.locator('.profile-link').click();
+    await openProfile(alphaPage!);
     const memoryManager = alphaPage!.getByTestId('memory-manager');
     await memoryManager.waitFor({ state: 'visible' });
     await memoryManager.getByTestId('empty-memory-list').waitFor({ state: 'visible' });
@@ -661,18 +686,18 @@ try {
     await screenshot(alphaPage!, '18b-agent-used-workspace-memory');
 
     await selectTenant(alphaPage!, 'Alpha Shared');
-    await alphaPage!.locator('.profile-link').click();
+    await openProfile(alphaPage!);
     await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.getByTestId('memory-row').count(), 0, 'Alpha personal memory appeared in Alpha Shared');
 
     await selectTenant(betaPage!, 'Beta workspace');
-    await betaPage!.locator('.profile-link').click();
+    await openProfile(betaPage!);
     await betaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
     assert.equal(await betaPage!.getByTestId('memory-row').count(), 0, 'Alpha personal memory appeared in Beta personal workspace');
     await screenshot(betaPage!, '18c-beta-memory-isolation');
 
     await selectTenant(alphaPage!, 'Alpha workspace');
-    await alphaPage!.locator('.profile-link').click();
+    await openProfile(alphaPage!);
     const savedMemory = alphaPage!.getByTestId('memory-row').filter({ hasText: 'Alpha prefers concise Mandarin updates.' });
     await savedMemory.waitFor({ state: 'visible' });
     await savedMemory.getByRole('button', { name: '删除' }).click();
@@ -681,7 +706,7 @@ try {
 
   await recordStep('Workspace admins set a tenant rule and members can review its scope', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
-    await alphaPage!.locator('.profile-link').click();
+    await openProfile(alphaPage!);
     const ruleManager = alphaPage!.getByTestId('action-rule-manager');
     await ruleManager.waitFor({ state: 'visible' });
     await ruleManager.getByRole('button', { name: 'Add rule' }).click();
@@ -692,7 +717,7 @@ try {
     await screenshot(alphaPage!, '18d-alpha-shared-scratchpad-rule');
 
     await selectTenant(betaPage!, 'Alpha Shared');
-    await betaPage!.locator('.profile-link').click();
+    await openProfile(betaPage!);
     const memberRuleManager = betaPage!.getByTestId('action-rule-manager');
     await memberRuleManager.getByTestId('custom-action-rule').waitFor({ state: 'visible' });
     assert.equal(await memberRuleManager.getByRole('button', { name: 'Edit rule' }).count(), 0, 'A regular workspace member received rule-management controls');
@@ -925,7 +950,7 @@ try {
     await alphaPage!.getByLabel('定期检查').check();
     await alphaPage!.getByLabel('重复频率').selectOption('interval');
     await alphaPage!.locator('input.minutes').fill('1');
-    await alphaPage!.getByPlaceholder('告诉 dot 接下来要负责什么…').fill(instruction);
+    await alphaPage!.getByTestId('task-composer').fill(instruction);
     await alphaPage!.locator('button.send').click();
     await alphaPage!.locator('.timeline .message.dot p').filter({ hasText: 'The recurring check completed.' }).waitFor({ state: 'visible', timeout: 15_000 });
     await alphaPage!.locator('.timeline .pill.scheduled').waitFor({ state: 'visible', timeout: 15_000 });
