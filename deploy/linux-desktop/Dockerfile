@@ -1,4 +1,4 @@
-FROM node:22.23.1-bookworm-slim
+FROM node:22.23.1-trixie-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -9,7 +9,7 @@ ENV LANG=en_US.UTF-8 \
     COKE_DESKTOP_RESOLUTION=1440x900 \
     COKE_DESKTOP_START_URL=https://example.com
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       ca-certificates chromium curl dbus-x11 fonts-dejavu-core fonts-noto-cjk locales \
       novnc scrot tini websockify x11-utils x11vnc xdotool xfce4 xfce4-terminal xvfb \
     && locale-gen en_US.UTF-8 \

@@ -129,7 +129,7 @@ try {
   console.log('Test tenant signed in and first-run setup completed');
 
   kubectlNamespaceCreated = true;
-  console.log(`Opening isolated Debian desktop namespace ${namespace}`);
+  console.log(`Opening isolated Debian 13 desktop namespace ${namespace}`);
   console.log(`Computer navigation button count: ${await page.getByRole('button', { name: '电脑', exact: true }).count()}`);
   await page.getByRole('button', { name: '电脑', exact: true }).click({ timeout: 10_000 });
   console.log('Computer navigation clicked');
@@ -143,17 +143,18 @@ try {
   assert(desktopPod, `The tenant namespace ${namespace} must contain its desktop Pod`);
   const osRelease = command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', '/etc/os-release']);
   assert.match(osRelease, /^ID=debian$/m, 'The running cloud computer must identify itself as Debian');
-  assert.match(osRelease, /^VERSION_CODENAME=bookworm$/m, 'The running cloud computer must be Debian Bookworm');
+  assert.match(osRelease, /^VERSION_ID="13"$/m, 'The running cloud computer must be Debian 13');
+  assert.match(osRelease, /^VERSION_CODENAME=trixie$/m, 'The running cloud computer must be Debian 13 Trixie');
   const nodeVersion = command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'node', '--version']);
   assert.match(nodeVersion, /^v22\./, 'The desktop image must include the configured Node.js Agent runtime');
-  console.log(`Verified live tenant desktop OS: Debian Bookworm (${nodeVersion})`);
+  console.log(`Verified live tenant desktop OS: Debian 13 Trixie (${nodeVersion})`);
   const remoteImage = page.locator('img[alt="Linux 云桌面画面"]');
   await remoteImage.waitFor({ state: 'visible', timeout: 240_000 });
   await page.waitForFunction(() => {
     const image = document.querySelector<HTMLImageElement>('img[alt="Linux 云桌面画面"]');
     return Boolean(image?.complete && image.naturalWidth === 1440 && image.naturalHeight === 900);
   }, null, { timeout: 60_000 });
-  console.log('Debian desktop Pod is ready and the screenshot is rendered');
+  console.log('Debian 13 desktop Pod is ready and the screenshot is rendered');
   const state = await page.evaluate(async () => await (await fetch('/api/computer')).json()) as { backend: string; owner: string; title: string };
   assert.equal(state.backend, 'linux-desktop');
   assert.equal(state.owner, 'agent');
@@ -185,13 +186,13 @@ try {
   const runtimeResponse = await fetch(`http://127.0.0.1:${agentPort}/v1/tasks/run`, {
     method: 'POST',
     headers: { authorization: `Bearer ${agentToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ engine: 'dsh', taskId: runtimeTaskId, prompt: 'real Debian runtime smoke', sessionId: null, cwd: 'tasks/runtime-smoke' }),
+    body: JSON.stringify({ engine: 'dsh', taskId: runtimeTaskId, prompt: 'real Debian 13 runtime smoke', sessionId: null, cwd: 'tasks/runtime-smoke' }),
   });
   const runtimeResult = await runtimeResponse.json() as { status?: string; message?: string; engine?: string };
   assert.equal(runtimeResponse.status, 200, `The live Agent runtime must execute its configured adapter: ${JSON.stringify(runtimeResult)}`);
   assert.equal(runtimeResult.status, 'done');
   assert.equal(runtimeResult.engine, 'dsh');
-  assert.match(runtimeResult.message || '', /Adapter completed: real Debian runtime smoke; runtime token visible to child: false/);
+  assert.match(runtimeResult.message || '', /Adapter completed: real Debian 13 runtime smoke; runtime token visible to child: false/);
   const workspacePath = `/workspace/tasks/runtime-smoke/runtime-persistence.txt`;
   assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The real Agent runtime must leave its task artifact in the tenant workspace PVC');
   agentPortForward.kill('SIGTERM');
@@ -231,8 +232,8 @@ try {
   const restartedPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The tenant workspace artifact must survive a desktop Pod restart');
-  console.log('Tenant Agent artifact survived recreation of the Debian desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian Bookworm desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'browser navigate/click/type', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'browser navigate/click/type', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
