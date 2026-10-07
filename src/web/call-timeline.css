@@ -1,0 +1,6 @@
+.message.voice-call-ended{align-self:flex-end;display:grid;justify-items:center;gap:4px;width:max-content;min-width:0;max-width:100%;padding:0;margin:0 0 15px auto;background:transparent}
+.voice-call-ended-chip{min-width:132px;height:29px;display:flex;align-items:center;justify-content:center;gap:6px;padding:0 11px;border-radius:8px;background:#a761e7;color:#fff;font-size:11px;font-weight:600;line-height:1;box-shadow:0 1px 2px #39214a1c}
+.voice-call-ended-chip svg{width:12px;height:12px;flex:none}
+.voice-call-ended>small{color:#77747d;font-size:10px;line-height:1.2}
+.dots-dark .voice-call-ended-chip{background:#8b63cf}
+.dots-dark .voice-call-ended>small{color:#aaa6b0}
