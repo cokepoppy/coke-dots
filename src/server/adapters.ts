@@ -1,8 +1,11 @@
-import { accessSync, chmodSync, constants, mkdirSync, realpathSync } from 'node:fs';
+import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 import { Type } from 'typebox';
 import type { PersonalDotMemory, PersonalDotMemoryUpdate, ReasoningEffort, ScratchpadPageAction, TenantActionRule } from '../shared/types.ts';
+import { startDshPublicPageBridge, writeDshPublicPagePatch } from './dsh-browser-bridge.ts';
 import { configuredWorkspaceModelConfig, effectiveModelConfig } from './model-settings.ts';
 
 const require = createRequire(import.meta.url);
@@ -438,36 +441,66 @@ export const adapters: Record<Engine, AgentAdapter> = {
     id: 'dsh',
     available: tenantId => {
       const id = tenantId || 'legacy';
-      const installed = Boolean(process.env.DOTS_DSH_READ_ONLY_CONFIG && process.env.DOTS_DSH_BIN && packageAvailable('@deepseek-ai/dsh-sdk-client'));
+      const profile = process.env.DOTS_DSH_PROFILE?.trim();
+      const installed = Boolean(process.env.DOTS_DSH_BIN && (profile || process.env.DOTS_DSH_READ_ONLY_CONFIG) && packageAvailable('@deepseek-ai/dsh-sdk-client'));
       return installed && (canUseHostKernel(id) || Boolean(configuredWorkspaceModelConfig(id)));
     },
     async run(input) {
       const tenantId = input.tenantId || 'legacy';
       const config = process.env.DOTS_DSH_READ_ONLY_CONFIG;
       const bin = process.env.DOTS_DSH_BIN;
-      if (!config || !bin) throw new Error('DeepSeek Harness 需要显式配置只读 profile 与运行程序');
+      const profile = process.env.DOTS_DSH_PROFILE?.trim();
+      if (!bin || (!profile && !config)) throw new Error('DeepSeek Harness 需要配置运行程序和只读 profile');
+      if (profile && !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profile)) throw new Error('DeepSeek Harness profile 名称无效');
       const modelConfig = canUseHostKernel(tenantId) ? effectiveModelConfig(tenantId) : configuredWorkspaceModelConfig(tenantId);
       if (!canUseHostKernel(tenantId) && !modelConfig) throw new Error('请先在当前工作区配置模型 API 密钥和模型名称');
-      accessSync(config, constants.R_OK);
-      const moduleName = '@deepseek-ai/dsh-sdk-client';
-      const sdk = await import(moduleName) as { DeepSeekHarness: new (options: Record<string, unknown>) => { run: (prompt: string, options: { sessionId?: string; onNotification: (row: { method: string }) => void }) => Promise<{ finalResponse: string; sessionId: string }>; close: () => Promise<void> } };
+      if (config) accessSync(config, constants.R_OK);
       const privateHome = modelConfig ? resolveTenantAgentDirectory(tenantId, 'dsh') : null;
-      const launchEnvironment = modelConfig && privateHome ? createTenantDshEnvironment(privateHome, modelConfig) : process.env;
-      const harness = new sdk.DeepSeekHarness({
-        launch: { command: bin, args: [config], cwd: input.workspace, env: launchEnvironment },
-        cwd: input.workspace,
-        ...(modelConfig ? { provider: 'deepseek-official', model: modelConfig.model } : {}),
-      });
+      let bridge: Awaited<ReturnType<typeof startDshPublicPageBridge>> | null = null;
+      let temporaryPluginDirectory: string | null = null;
+      let pluginFiles: ReturnType<typeof writeDshPublicPagePatch> | null = null;
+      let harness: { run: (prompt: string, options: { sessionId?: string; onNotification: (row: { method: string }) => void }) => Promise<{ finalResponse: string; sessionId: string }>; close: () => Promise<void> } | null = null;
       let closePromise: Promise<void> | null = null;
-      const closeHarness = () => closePromise ||= harness.close();
-      const abortHarness = () => { void closeHarness().catch(() => undefined); };
-      if (input.signal?.aborted) abortHarness();
-      else input.signal?.addEventListener('abort', abortHarness, { once: true });
+      let abortHarness: (() => void) | null = null;
       try {
         if (input.signal?.aborted) throw new Error('任务已停止');
+        const moduleName = '@deepseek-ai/dsh-sdk-client';
+        const sdk = await import(moduleName) as { DeepSeekHarness: new (options: Record<string, unknown>) => NonNullable<typeof harness> };
+        if (input.signal?.aborted) throw new Error('任务已停止');
+        if (profile) {
+          temporaryPluginDirectory = privateHome || mkdtempSync(join(tmpdir(), 'coke-dots-dsh-browser-'));
+          if (input.openPublicPage) bridge = await startDshPublicPageBridge(input.openPublicPage);
+          pluginFiles = writeDshPublicPagePatch(temporaryPluginDirectory, randomUUID().replaceAll('-', ''), Boolean(input.openPublicPage));
+        }
+        const launchEnvironment = modelConfig && privateHome ? createTenantDshEnvironment(privateHome, modelConfig) : { ...process.env };
+        if (bridge) {
+          launchEnvironment.COKE_DOTS_PUBLIC_PAGE_BRIDGE_URL = bridge.url;
+          launchEnvironment.COKE_DOTS_PUBLIC_PAGE_BRIDGE_TOKEN = bridge.token;
+        }
+        const args = profile
+          ? ['--profile', profile, ...(config ? ['--patch', config] : []), ...(pluginFiles ? ['--patch', pluginFiles.patchPath] : [])]
+          : [config!];
+        harness = new sdk.DeepSeekHarness({
+          launch: { command: bin, args, cwd: input.workspace, env: launchEnvironment },
+          cwd: input.workspace,
+          ...(modelConfig ? { provider: 'deepseek-official', model: modelConfig.model } : {}),
+        });
+        const closeHarness = () => closePromise ||= harness!.close();
+        abortHarness = () => { void closeHarness().catch(() => undefined); };
+        if (input.signal?.aborted) throw new Error('任务已停止');
+        input.signal?.addEventListener('abort', abortHarness, { once: true });
         const result = await harness.run(formatAgentPrompt(input), { sessionId: input.sessionId || undefined, onNotification: row => { if (row.method === 'session.event') input.onEvent('DeepSeek Harness 正在处理任务。'); } });
         return parseDecision(result.finalResponse, result.sessionId, agentDecisionOptions(input));
-      } finally { input.signal?.removeEventListener('abort', abortHarness); await closeHarness(); }
+      } finally {
+        if (abortHarness) input.signal?.removeEventListener('abort', abortHarness);
+        if (harness) await (closePromise || harness.close());
+        if (bridge) await bridge.close();
+        if (pluginFiles) {
+          if (pluginFiles.pluginPath) rmSync(pluginFiles.pluginPath, { force: true });
+          rmSync(pluginFiles.patchPath, { force: true });
+        }
+        if (temporaryPluginDirectory && !privateHome) rmSync(temporaryPluginDirectory, { recursive: true, force: true });
+      }
     },
   },
 };

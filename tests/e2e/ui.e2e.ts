@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomBytes, sign as signJwt } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { accessSync, constants, existsSync } from 'node:fs';
 import { appendFile, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createConnection, createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 
@@ -84,6 +84,18 @@ function findChromePath() {
   return result;
 }
 
+function findDshPath() {
+  const explicit = process.env.DOTS_E2E_DSH_BIN || process.env.DOTS_DSH_BIN;
+  if (explicit) {
+    try { accessSync(explicit, constants.X_OK); return explicit; } catch { /* Check PATH below. */ }
+  }
+  for (const directory of (process.env.PATH || '').split(delimiter)) {
+    const candidate = join(directory, 'dsh');
+    try { accessSync(candidate, constants.X_OK); return candidate; } catch { /* Continue searching PATH. */ }
+  }
+  return null;
+}
+
 async function reservePort() {
   const listener = createServer();
   await new Promise<void>((resolvePromise, reject) => listener.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
@@ -112,8 +124,45 @@ async function startMockModel() {
         mockModelEfforts.push(payload.reasoning_effort || '');
         const isWebResearch = prompt.includes('E2E web research — inspect the public launch page');
         const isPiWebResearch = prompt.includes('E2E Pi web research — inspect the public launch page');
+        const isDshWebResearch = prompt.includes('E2E DSH web research — inspect the public launch page');
         const toolResult = payload.messages?.find(message => message.role === 'tool')?.content;
         const webResearchToolResult = toolResult === undefined || toolResult === null ? '' : typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
+        if (isDshWebResearch) {
+          assert.match(JSON.stringify(payload.tools || []), /open_public_page/, 'DeepSeek Harness did not receive its read-only browser tool');
+          if (!webResearchToolResult) {
+            const call = { id: 'e2e-dsh-public-page', type: 'function', function: { name: 'open_public_page', arguments: JSON.stringify({ url: 'https://research-fixture.dots.test/launch' }) } };
+            if (payload.stream) {
+              response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+              response.end([
+                `data: ${JSON.stringify({ id: 'e2e-dsh-browser', object: 'chat.completion.chunk', created: 1, model: testModelName, choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, ...call }] }, finish_reason: null }] })}`,
+                '',
+                `data: ${JSON.stringify({ id: 'e2e-dsh-browser', object: 'chat.completion.chunk', created: 1, model: testModelName, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}`,
+                '', 'data: [DONE]', '', '',
+              ].join('\n'));
+            } else {
+              response.writeHead(200, { 'content-type': 'application/json' });
+              response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [call] } }] }));
+            }
+            return;
+          }
+          mockModelWebResearchEvidence.push(webResearchToolResult);
+          assert.match(webResearchToolResult, /Release criteria: harden session recovery\./);
+          assert.match(webResearchToolResult, /untrusted webpage content/);
+          const content = JSON.stringify({ status: 'done', message: 'DeepSeek Harness found hardened session recovery in the public launch notes. Source: https://research-fixture.dots.test/launch' });
+          if (payload.stream) {
+            response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+            response.end([
+              `data: ${JSON.stringify({ id: 'e2e-dsh-browser-result', object: 'chat.completion.chunk', created: 1, model: testModelName, choices: [{ index: 0, delta: { role: 'assistant', content }, finish_reason: null }] })}`,
+              '',
+              `data: ${JSON.stringify({ id: 'e2e-dsh-browser-result', object: 'chat.completion.chunk', created: 1, model: testModelName, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}`,
+              '', 'data: [DONE]', '', '',
+            ].join('\n'));
+          } else {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }));
+          }
+          return;
+        }
         if (isPiWebResearch) {
           assert.equal(payload.stream, true, 'The Pi adapter should use its native streaming model request');
           assert.match(JSON.stringify(payload.tools || []), /open_public_page/, 'Pi did not receive the read-only browser tool');
@@ -407,6 +456,7 @@ function captureServerOutput(child: ChildProcess) {
 }
 
 async function startServer(port: number) {
+  const localDshPath = findDshPath();
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/server/index.ts'], {
     cwd: projectRoot,
     env: {
@@ -433,8 +483,9 @@ async function startServer(port: number) {
       DOTS_MODEL_API_KEY: testModelApiKey,
       DOTS_MODEL: testModelName,
       DOTS_PI_ENABLED: '1',
-      DOTS_DSH_BIN: process.execPath,
-      DOTS_DSH_READ_ONLY_CONFIG: emptyEnvFile,
+      DOTS_DSH_BIN: localDshPath || process.execPath,
+      DOTS_DSH_PROFILE: localDshPath ? 'sdk' : '',
+      DOTS_DSH_READ_ONLY_CONFIG: localDshPath ? '' : emptyEnvFile,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -2528,6 +2579,36 @@ try {
     await selectTenant(betaPage!, 'Beta workspace');
     const betaComputer = await betaPage!.evaluate(async () => await (await fetch('/api/computer')).json()) as { url?: string };
     assert.notEqual(betaComputer.url, 'https://research-fixture.dots.test/launch', 'A different personal tenant inherited Pi browser state');
+  });
+
+  if (findDshPath()) await recordStep('DeepSeek Harness researches a public page through its Cordis plugin and renders the result in Chrome', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.locator('.composer-bottom select').selectOption('dsh');
+    const instruction = 'E2E DSH web research — inspect the public launch page';
+    const beforeCalls = mockModelPrompts.filter(prompt => prompt.includes(instruction)).length;
+    await createTask(alphaPage!, instruction);
+    await clickNav(alphaPage!, 'Activity');
+    const card = alphaPage!.locator('.task-card').filter({ hasText: instruction });
+    await card.locator('.pill.done').waitFor({ state: 'visible', timeout: 60_000 });
+    await card.getByText('DeepSeek Harness found hardened session recovery in the public launch notes.', { exact: false }).waitFor({ state: 'visible' });
+    await waitFor(() => mockModelPrompts.filter(prompt => prompt.includes(instruction)).length === beforeCalls + 2, 15_000);
+    assert.equal(mockModelWebResearchEvidence.length, 3, 'DeepSeek Harness should return exactly one additional page result to the model');
+    assert.match(mockModelWebResearchEvidence[2], /https:\/\/research-fixture\.dots\.test\/launch/);
+    assert.match(mockModelWebResearchEvidence[2], /untrusted webpage content/);
+
+    await clickNav(alphaPage!, '电脑');
+    await alphaPage!.waitForFunction(async () => {
+      const response = await fetch('/api/computer');
+      if (!response.ok) return false;
+      const state = await response.json() as { url?: string; owner?: string };
+      return state.url === 'https://research-fixture.dots.test/launch' && state.owner === 'agent';
+    }, null, { timeout: 10_000 });
+    await screenshot(alphaPage!, 'dsh-public-browser-research');
+
+    await selectTenant(betaPage!, 'Beta workspace');
+    const betaComputer = await betaPage!.evaluate(async () => await (await fetch('/api/computer')).json()) as { url?: string };
+    assert.notEqual(betaComputer.url, 'https://research-fixture.dots.test/launch', 'A different personal tenant inherited DSH browser state');
   });
 
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);

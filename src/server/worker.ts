@@ -118,7 +118,8 @@ export class Worker {
           this.onChange();
         },
       };
-      const browserResearchEnabled = !useDesktopRuntime && (task.engine === 'model' || task.engine === 'pi') && Boolean(computer?.openPublicPageForAgent) &&
+      const hasLocalBrowserResearchAdapter = task.engine === 'model' || task.engine === 'pi' || (task.engine === 'dsh' && Boolean(process.env.DOTS_DSH_PROFILE?.trim()));
+      const browserResearchEnabled = !useDesktopRuntime && hasLocalBrowserResearchAdapter && Boolean(computer?.openPublicPageForAgent) &&
         (process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' || this.store.getSetting('localComputerEnabled', task.tenantId) !== 'false');
       let browserResearchUsed = false;
       let browserResearchInterrupted = false;
