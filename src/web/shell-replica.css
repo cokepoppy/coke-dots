@@ -61,6 +61,9 @@
 .home-mode .composer-bottom{flex:none;align-items:center;gap:6px;justify-content:flex-end;margin:0}
 .home-mode .attachment-button{width:28px;height:28px;margin-left:-6px}
 .home-mode .composer-bottom label,.home-mode .hint{display:none}
+.reasoning-picker{display:flex;align-items:center;gap:1px;flex:none;color:#7d7a83;font-size:11px;white-space:nowrap}
+.reasoning-picker select{width:auto;max-width:82px;padding:0;border:0;outline:0;appearance:none;background:transparent;color:inherit;font-size:11px;cursor:pointer}
+.reasoning-picker span{font-size:12px;line-height:1}
 .home-mode .voice-call-launch{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:50%;background:#1888f5;color:#fff;font-size:15px}
 .home-mode .voice-call-launch:hover{background:#0878e8;color:#fff}
 .home-mode .send{flex:none;width:30px;height:30px;margin-left:0;background:#1888f5;color:#fff;font-size:18px}
@@ -68,6 +71,8 @@
 .dots-dark.home-mode .composer{border-color:#424245;background:#3a3a3d;box-shadow:none}
 .dots-dark.home-mode .composer textarea{color:#f1eff4}
 .dots-dark.home-mode .composer textarea::placeholder{color:#b3b0b8}
+.dots-dark .reasoning-picker{color:#c5c2ca}
+.dots-dark .reasoning-picker select{color:inherit}
 .dots-dark .pending-attachments li,.dots-dark .message-attachments li{border-color:#414047;background:#222126;color:#d4d1da}
 .dots-dark .pending-attachments li>button{color:#b7b3bd}
 .dots-dark .pending-attachments li>button:hover,.dots-dark .attachment-button:hover{background:#38363c;color:#f0edf4}

@@ -1,6 +1,11 @@
 import type { ScheduleSpec } from './scheduling.ts';
 
 export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
+export type ReasoningEffort = 'medium' | 'high' | 'xhigh';
+export const reasoningEfforts: ReasoningEffort[] = ['medium', 'high', 'xhigh'];
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return typeof value === 'string' && reasoningEfforts.includes(value as ReasoningEffort);
+}
 export type TaskStatus = 'queued' | 'working' | 'delegating' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused' | 'stopped';
 export type ActionRuleMode = 'without-asking' | 'when-requested' | 'ask-before' | 'hand-off';
 export type { ScheduleSpec } from './scheduling.ts';
@@ -20,6 +25,7 @@ export interface Task {
   tenantId: string;
   parentTaskId: string | null;
   engine: Engine;
+  reasoningEffort: ReasoningEffort;
   executionMode: 'standard' | 'read-only';
   agentSessionId: string | null;
   title: string;
@@ -63,7 +69,7 @@ export interface VoiceCallSession {
 export interface Snapshot {
   profile: { name: string; avatarSetupCompletedAt: string | null; onboardingCompletedAt: string | null; onboardingCompletedName: string | null } & DotAppearance;
   dotPaused: boolean;
-  preferences: { desktopNotifications: boolean };
+  preferences: { desktopNotifications: boolean; reasoningEffort: ReasoningEffort };
   computerAccess: { dotComputer: true; localComputer: boolean; configured: boolean };
   tasks: Task[];
   watches: Watch[];

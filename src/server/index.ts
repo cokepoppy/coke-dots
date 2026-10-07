@@ -5,7 +5,7 @@ import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
-import type { ActionRuleMode, DotAppearance, Engine, ScheduleSpec } from '../shared/types.ts';
+import { isReasoningEffort, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
@@ -383,6 +383,8 @@ const server = createServer(async (req, res) => {
       const minutes = scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null;
       const engine = String(body.engine || 'model') as Engine;
       if (!(engine in adapters)) return reply(res, 400, { error: 'Invalid engine' });
+      const reasoningEffort = body.reasoningEffort === undefined ? store.getSetting('reasoningEffort', session.tenant.id) || 'high' : body.reasoningEffort;
+      if (!isReasoningEffort(reasoningEffort)) return reply(res, 400, { error: 'Invalid reasoning effort' });
       const attachmentIds = body.attachmentIds === undefined ? [] : body.attachmentIds;
       if (!Array.isArray(attachmentIds) || attachmentIds.length > 5 || attachmentIds.some(id => typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id)) || new Set(attachmentIds).size !== attachmentIds.length) {
         return reply(res, 400, { error: '附件列表无效' });
@@ -391,7 +393,7 @@ const server = createServer(async (req, res) => {
       const firstRunAt = scheduleSpec && scheduleSpec.frequency !== 'interval' ? nextScheduleOccurrence(scheduleSpec, now) : now.toISOString();
       if (scheduleSpec && !firstRunAt) return reply(res, 400, { error: 'No future run falls on or before the schedule end date' });
       let task;
-      try { task = store.createTask(instruction, minutes, engine, session.tenant.id, scheduleSpec, firstRunAt, attachmentIds, session.user.id); }
+      try { task = store.createTask(instruction, minutes, engine, session.tenant.id, scheduleSpec, firstRunAt, attachmentIds, session.user.id, 'standard', reasoningEffort); }
       catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法创建任务' }); }
       publish(); void worker.tick();
       return reply(res, 201, task);
@@ -434,8 +436,15 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, snapshot(session.tenant.id).profile);
     }
     if (path === '/api/preferences' && req.method === 'PATCH') {
-      if (typeof body.desktopNotifications !== 'boolean') return reply(res, 400, { error: 'Invalid notification preference' });
-      store.setSetting('desktopNotifications', String(body.desktopNotifications), session.tenant.id);
+      if (body.desktopNotifications !== undefined) {
+        if (typeof body.desktopNotifications !== 'boolean') return reply(res, 400, { error: 'Invalid notification preference' });
+        store.setSetting('desktopNotifications', String(body.desktopNotifications), session.tenant.id);
+      }
+      if (body.reasoningEffort !== undefined) {
+        if (!isReasoningEffort(body.reasoningEffort)) return reply(res, 400, { error: 'Invalid reasoning effort' });
+        store.setSetting('reasoningEffort', body.reasoningEffort, session.tenant.id);
+      }
+      if (body.desktopNotifications === undefined && body.reasoningEffort === undefined) return reply(res, 400, { error: 'No preference supplied' });
       publish();
       return reply(res, 200, snapshot(session.tenant.id).preferences);
     }

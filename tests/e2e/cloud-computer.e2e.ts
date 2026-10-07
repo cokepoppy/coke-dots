@@ -345,7 +345,7 @@ try {
   await page.screenshot({ path: join(artifacts, '03-agent-task-done.png') });
 
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
-  await page.locator('.composer select').selectOption('dsh');
+  await page.locator('.composer-bottom select').selectOption('dsh');
   await page.getByTestId('task-composer').fill(recoveryInstruction);
   await page.locator('button.send').click();
   await Promise.race([recoveryStarted, delay(20_000).then(() => { throw new Error('Chrome-created recovery task never reached the cloud Agent runtime'); })]);

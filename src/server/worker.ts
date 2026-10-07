@@ -98,6 +98,7 @@ export class Worker {
         actionRule: this.store.tenantActionRule(task.tenantId),
         allowDelegation: task.executionMode !== 'read-only' && !task.parentTaskId && children.length === 0,
         executionMode: task.executionMode,
+        reasoningEffort: task.reasoningEffort,
         context: this.store.taskContext(task.id, task.tenantId),
         availableEngines,
         delegatedResults: children.map(child => ({ title: child.title, status: child.status, result: child.result, error: child.error })),

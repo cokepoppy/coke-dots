@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { accessSync, chmodSync, constants, mkdirSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { ScratchpadPageAction, TenantActionRule } from '../shared/types.ts';
+import type { ReasoningEffort, ScratchpadPageAction, TenantActionRule } from '../shared/types.ts';
 import { effectiveModelConfig } from './model-settings.ts';
 
 const require = createRequire(import.meta.url);
@@ -19,6 +19,7 @@ export interface AgentRequest {
   availableEngines?: Engine[];
   delegatedResults?: { title: string; status: string; result: string | null; error: string | null }[];
   executionMode?: 'standard' | 'read-only';
+  reasoningEffort?: ReasoningEffort;
   context?: string;
   priorResult: string | null;
   sessionId: string | null;
@@ -162,6 +163,12 @@ export function parseDecision(raw: string, sessionId?: string, options: { allowD
   return { status: value.status!, message: value.message.trim(), nextMinutes: value.nextMinutes, sessionId, pageAction, delegations, notifyUser: value.notifyUser };
 }
 
+export function providerReasoningEffort(baseUrl: string, model: string, effort: ReasoningEffort): string {
+  const hostname = new URL(baseUrl).hostname.toLowerCase();
+  const isDeepSeek = hostname === 'api.deepseek.com' || hostname.endsWith('.deepseek.com') || model.toLowerCase().startsWith('deepseek-');
+  return isDeepSeek && effort === 'xhigh' ? 'max' : effort;
+}
+
 export const adapters: Record<Engine, AgentAdapter> = {
   model: {
     id: 'model',
@@ -175,7 +182,7 @@ export const adapters: Record<Engine, AgentAdapter> = {
         const response = await fetch(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` },
-          body: JSON.stringify({ model: config.model, temperature: 0.2, messages: [{ role: 'system', content: instruction }, { role: 'user', content: formatAgentPrompt(input) }] }),
+          body: JSON.stringify({ model: config.model, reasoning_effort: providerReasoningEffort(config.baseUrl, config.model, input.reasoningEffort || 'high'), temperature: 0.2, messages: [{ role: 'system', content: instruction }, { role: 'user', content: formatAgentPrompt(input) }] }),
           signal: input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal,
         });
         if (!response.ok) throw new Error(`模型服务返回 HTTP ${response.status}`);

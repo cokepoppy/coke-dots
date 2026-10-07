@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { adapters, agentDecisionOptions, formatAgentPrompt, parseDecision, type AgentRequest } from '../src/server/adapters.ts';
+import { adapters, agentDecisionOptions, formatAgentPrompt, parseDecision, providerReasoningEffort, type AgentRequest } from '../src/server/adapters.ts';
 import { Store } from '../src/server/store.ts';
 
 test('agent output must specify a real task state', () => {
@@ -20,6 +20,12 @@ test('agent may suppress routine notifications only with a boolean choice', () =
   const prompt = formatAgentPrompt({ prompt: 'Check the supplied source.', priorResult: null, sessionId: null, workspace: '/tmp/coke-dots-notification-test', onEvent: () => {} });
   assert.match(prompt, /Set it to false only when the user asked for quiet or conditional updates/);
   assert.match(prompt, /Never suppress a notification when you need a user reply, approval, hand-off, or when work fails/);
+});
+
+test('reasoning effort uses provider-specific values for the model API', () => {
+  assert.equal(providerReasoningEffort('https://api.openai.com/v1', 'gpt-5.6', 'medium'), 'medium');
+  assert.equal(providerReasoningEffort('https://api.deepseek.com/v1', 'deepseek-v4-pro', 'xhigh'), 'max');
+  assert.equal(providerReasoningEffort('https://gateway.example.test/v1', 'deepseek-v4-pro', 'xhigh'), 'max');
 });
 
 test('read-only reviews mark source content untrusted and reject writes, delegation, and follow-up schedules', () => {

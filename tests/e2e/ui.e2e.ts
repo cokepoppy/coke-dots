@@ -42,6 +42,7 @@ let mockGoogleTokenExchanges = 0;
 let mockGoogleTokenAttempts = 0;
 let mockGoogleCertRequests = 0;
 let mockGoogleProxyTunnels = 0;
+let mockModelEfforts: string[] = [];
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
 let pauseModelHeld = false;
@@ -101,6 +102,7 @@ async function reservePort() {
 
 async function startMockModel() {
   mockModelPrompts = [];
+  mockModelEfforts = [];
   mockModelServer = createHttpServer((request, response) => {
     let raw = '';
     request.setEncoding('utf8');
@@ -109,15 +111,17 @@ async function startMockModel() {
       try {
         assert.equal(request.method, 'POST');
         assert.equal(request.url, '/v1/chat/completions');
-        const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+        const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[]; reasoning_effort?: string };
         const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
         mockModelPrompts.push(prompt);
+        mockModelEfforts.push(payload.reasoning_effort || '');
         const hasReply = prompt.includes('User reply: Use Friday.');
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
         const isMemoryCheck = prompt.includes('E2E memory prompt — apply the saved workspace preference');
         const isQuietNotificationCheck = prompt.includes('E2E notification criteria — routine success');
         const isDecisionNotificationCheck = prompt.includes('E2E notification criteria — ask the user');
+        const isReasoningEffortTask = prompt.includes('E2E reasoning effort — extra high');
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
         const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
         const isPageChangeReview = prompt.includes('E2E page-change review');
@@ -166,13 +170,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'claude' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isDecisionNotificationCheck) Object.assign(decision, { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false });
         const content = JSON.stringify(decision);
@@ -1316,6 +1320,41 @@ try {
     await screenshot(betaPage!, '13-beta-after-service-restart');
     await selectTenant(betaPage!, 'Beta workspace');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
+  });
+
+  await recordStep('Composer reasoning control persists by workspace and reaches the selected model request', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    const picker = alphaPage!.getByTestId('reasoning-effort');
+    await picker.waitFor({ state: 'visible' });
+    assert.equal(await picker.inputValue(), 'high', 'A fresh workspace should use the observed High default');
+    await picker.selectOption('xhigh');
+    await alphaPage!.waitForFunction(async () => {
+      const state = await fetch('/api/state').then(response => response.json()) as { preferences: { reasoningEffort: string } };
+      return state.preferences.reasoningEffort === 'xhigh';
+    });
+    await screenshot(alphaPage!, '14-reasoning-effort-composer');
+
+    const instruction = 'E2E reasoning effort — extra high';
+    await createTask(alphaPage!, instruction);
+    await alphaPage!.waitForFunction(async (taskInstruction: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string; reasoningEffort: string }[] };
+      return state.tasks.some(task => task.instruction === taskInstruction && task.status === 'done' && task.reasoningEffort === 'xhigh');
+    }, instruction, { timeout: 15_000 });
+    const requestIndex = mockModelPrompts.findIndex(prompt => prompt.includes(instruction));
+    assert.notEqual(requestIndex, -1, 'The selected task never reached the configured model');
+    assert.equal(mockModelEfforts[requestIndex], 'xhigh', 'The real model request did not carry the selected reasoning effort');
+
+    await selectTenant(betaPage!, 'Alpha Shared');
+    assert.equal(await betaPage!.getByTestId('reasoning-effort').inputValue(), 'xhigh', 'A shared workspace member did not see its workspace setting');
+    await selectTenant(betaPage!, 'Beta workspace');
+    assert.equal(await betaPage!.getByTestId('reasoning-effort').inputValue(), 'high', 'The Alpha workspace setting leaked into Beta personal workspace');
+
+    await picker.selectOption('high');
+    await alphaPage!.waitForFunction(async () => {
+      const state = await fetch('/api/state').then(response => response.json()) as { preferences: { reasoningEffort: string } };
+      return state.preferences.reasoningEffort === 'high';
+    });
   });
 
   await recordStep('A monitored page change creates a read-only review that can be opened from Scheduled', async () => {

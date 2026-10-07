@@ -100,13 +100,34 @@ test('computer access onboarding is durable and isolated to its workspace', () =
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('reasoning-effort preference and task selection persist separately per workspace', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-reasoning-effort-'));
+  let store = new Store(directory);
+  try {
+    const alpha = store.signInGoogle({ subject: 'reasoning-alpha', email: 'reasoning-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'reasoning-beta', email: 'reasoning-beta@example.test', name: 'Beta' });
+    assert.equal(store.snapshot(false, [], undefined, alpha.tenant.id).preferences.reasoningEffort, 'high');
+    store.setSetting('reasoningEffort', 'xhigh', alpha.tenant.id);
+    const task = store.createTask('Use the extra reasoning level', null, 'model', alpha.tenant.id, null, null, [], '', 'standard', 'xhigh');
+    assert.equal(task.reasoningEffort, 'xhigh');
+    assert.equal(store.snapshot(false, [], undefined, alpha.tenant.id).preferences.reasoningEffort, 'xhigh');
+    assert.equal(store.snapshot(false, [], undefined, beta.tenant.id).preferences.reasoningEffort, 'high', 'A different workspace inherited the Alpha preference');
+    store.close();
+
+    store = new Store(directory);
+    assert.equal(store.getTask(task.id, alpha.tenant.id)?.reasoningEffort, 'xhigh', 'The selected effort did not survive reopening the database');
+    assert.equal(store.snapshot(false, [], undefined, alpha.tenant.id).preferences.reasoningEffort, 'xhigh');
+    assert.equal(store.snapshot(false, [], undefined, beta.tenant.id).preferences.reasoningEffort, 'high');
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('delegated tasks persist, recover after restart, and aggregate only inside their tenant', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-delegation-'));
   try {
     let store = new Store(directory);
     const owner = store.signInGoogle({ subject: 'delegation-owner', email: 'delegate@example.test', name: 'Delegate' });
     const other = store.signInGoogle({ subject: 'delegation-other', email: 'other@example.test', name: 'Other' });
-    const parent = store.createTask('Prepare a research brief', null, 'model', owner.tenant.id);
+    const parent = store.createTask('Prepare a research brief', null, 'model', owner.tenant.id, null, null, [], '', 'standard', 'xhigh');
     store.updateTask(parent.id, { status: 'working' }, owner.tenant.id);
     const children = store.createDelegatedTasks(parent.id, owner.tenant.id, [
       { title: 'Market sizing', instruction: 'Estimate market size from supplied material.' },
@@ -114,6 +135,7 @@ test('delegated tasks persist, recover after restart, and aggregate only inside 
       { title: 'Risk list', instruction: 'Identify the main risks.' },
     ], 'I split the research into three parallel questions.');
     assert.deepEqual(children.map(task => task.engine), ['model', 'claude', 'model'], 'Children must retain a selected engine or inherit the parent engine');
+    assert.deepEqual(children.map(task => task.reasoningEffort), ['xhigh', 'xhigh', 'xhigh'], 'Delegated work must inherit the parent reasoning selection');
     assert.throws(() => store.createDelegatedTasks(parent.id, owner.tenant.id, [{ title: 'Invalid engine', instruction: 'Do not insert this task.', engine: 'unknown' as never }], 'Invalid engine test'), /内核无效/);
     assert.equal(store.getTask(parent.id, owner.tenant.id)?.status, 'delegating');
     assert.equal(store.getTask(children[0].id, other.tenant.id), null, 'A different tenant read a child task by guessing its ID');
@@ -486,12 +508,14 @@ test('Scratchpad write rules enforce no-ask, explicit-request, and hand-off mode
 test('background worker stores real model result and schedules a future run', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
   let receivedPrompt = '';
+  let receivedReasoningEffort = '';
   const modelServer = createServer(async (req, res) => {
     assert.equal(req.url, '/chat/completions');
     let raw = '';
     for await (const chunk of req) raw += String(chunk);
-    const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+    const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[]; reasoning_effort?: string };
     receivedPrompt = payload.messages?.find(message => message.role === 'user')?.content || '';
+    receivedReasoningEffort = payload.reasoning_effort || '';
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'Checked the supplied information.' }) } }] }));
   });
@@ -504,7 +528,7 @@ test('background worker stores real model result and schedules a future run', as
   const store = new Store(directory);
   const user = store.signInGoogle({ subject: 'worker-memory', email: 'worker-memory@example.test', name: 'Worker Memory' });
   store.addTenantMemory(user.tenant.id, user.user.id, 'Use short Mandarin summaries.');
-  const task = store.createTask('Check supplied information', 60);
+  const task = store.createTask('Check supplied information', 60, 'model', 'legacy', null, null, [], '', 'standard', 'xhigh');
   store.setSetting('desktopNotifications', 'true');
   const notifications: { title: string; body: string }[] = [];
   const worker = new Worker(store, () => {}, undefined, (title, body) => notifications.push({ title, body }));
@@ -513,6 +537,7 @@ test('background worker stores real model result and schedules a future run', as
     await waitFor(() => store.getTask(task.id)?.status === 'scheduled');
     const completed = store.getTask(task.id)!;
     assert.equal(completed.result, 'Checked the supplied information.');
+    assert.equal(receivedReasoningEffort, 'xhigh', 'The worker did not send the task-specific reasoning selection to the model');
     assert.match(receivedPrompt, /User-approved workspace notes[\s\S]*1\. Use short Mandarin summaries\./, 'The worker failed to include the current tenant\'s approved memory');
     assert.match(receivedPrompt, /When the user asks for automation ideas, keep them as inactive proposals and choose done; do not schedule them unless the user chooses an idea and asks to set it up with its sources, timing, and review requirements\./, 'The model prompt must keep automation brainstorming separate from active schedules');
     assert.ok(completed.nextRunAt && completed.nextRunAt > new Date().toISOString());
