@@ -29,6 +29,7 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
   let owner: 'agent' | 'user' = 'agent';
   const commands: Record<string, unknown>[] = [];
   let connectionCount = 0;
+  let researchRequests = 0;
   const png = Buffer.from('mock-desktop-frame');
   const agentInput: Record<string, unknown>[] = [];
   const server = createServer(async (req, res) => {
@@ -48,6 +49,12 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ready: true, owner, url: 'https://example.test/', title: 'Example' })); return;
     }
     if (req.url === '/v1/screenshot') { res.writeHead(200, { 'content-type': 'image/png' }); res.end(png); return; }
+    if (req.url === '/v1/research/open-public-page' && req.method === 'POST') {
+      researchRequests += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ url: value.url, title: 'Public launch notes', text: 'Release criteria: harden session recovery.' }));
+      return;
+    }
     res.writeHead(404); res.end();
   });
   const agentServer = createServer(async (req, res) => {
@@ -66,6 +73,10 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
   const connector: DesktopConnector = {
     async connect() { connectionCount += 1; return { workerUrl: new URL(`http://127.0.0.1:${workerAddress.port}/`), novncUrl: new URL(`http://127.0.0.1:${workerAddress.port}/`), agentUrl: new URL(`http://127.0.0.1:${agentAddress.port}/`), workerToken: 'scoped-worker-token', agentToken: 'scoped-agent-token' }; },
   };
+  const priorEnvironment = { nodeEnv: process.env.NODE_ENV, auth: process.env.DOTS_E2E_AUTH, fixture: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL };
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_E2E_AUTH = '1';
+  process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL = 'https://research-fixture.dots.test/launch';
   try {
     const computer = new LinuxDesktopComputer('tenant-alpha', connector);
     const [firstState, concurrentState] = await Promise.all([computer.state(), computer.state()]);
@@ -85,6 +96,13 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     assert.equal((await computer.screenshot()).toString(), png.toString());
     await assert.rejects(computer.runAgentTask({ engine: 'dsh', taskId: 'task-1', prompt: 'continue', sessionId: null }), /用户正在接管/);
     await computer.returnControl();
+    const page = await computer.openPublicPageForAgent('https://research-fixture.dots.test/launch');
+    assert.deepEqual(page, { url: 'https://research-fixture.dots.test/launch', title: 'Public launch notes', text: 'Release criteria: harden session recovery.' });
+    assert.equal(researchRequests, 1);
+    await computer.takeOver();
+    await assert.rejects(computer.openPublicPageForAgent('https://research-fixture.dots.test/launch'), /你控制/);
+    assert.equal(researchRequests, 1, 'The browser research endpoint must not run during user takeover');
+    await computer.returnControl();
     const result = await computer.runAgentTask({ engine: 'dsh', taskId: 'task-1', prompt: 'continue', sessionId: null });
     assert.equal(result.message, 'remote task finished');
     assert.equal(result.sessionId, 'remote-session');
@@ -94,6 +112,9 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     assert.equal((agentInput[0].computer as { workerToken: string }).workerToken, 'scoped-worker-token');
     await computer.close();
   } finally {
+    if (priorEnvironment.nodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorEnvironment.nodeEnv;
+    if (priorEnvironment.auth === undefined) delete process.env.DOTS_E2E_AUTH; else process.env.DOTS_E2E_AUTH = priorEnvironment.auth;
+    if (priorEnvironment.fixture === undefined) delete process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL; else process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL = priorEnvironment.fixture;
     await new Promise<void>(resolve => server.close(() => resolve()));
     await new Promise<void>(resolve => agentServer.close(() => resolve()));
   }

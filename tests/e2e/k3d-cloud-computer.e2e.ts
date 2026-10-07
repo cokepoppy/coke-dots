@@ -9,7 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { PNG } from 'pngjs';
-import { desktopResourceIdentity } from '../../src/server/linux-desktop-computer.ts';
+import { desktopResourceIdentity, LinuxDesktopComputer, type DesktopConnector } from '../../src/server/linux-desktop-computer.ts';
 import { compareRasters, cropRaster, resizeRaster } from '../../src/shared/reference-visual.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -21,9 +21,14 @@ const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `k3d-cloud-computer-$
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
 const tokenSecret = randomBytes(32).toString('base64url');
+const researchFixtureUrl = 'https://research-fixture.dots.test/launch';
+process.env.NODE_ENV = 'test';
+process.env.DOTS_E2E_AUTH = '1';
+process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL = researchFixtureUrl;
 const agentAdapterSource = "const fs=require('node:fs');let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const task=JSON.parse(input);fs.writeFileSync('runtime-persistence.txt',task.taskId);console.log(JSON.stringify({status:'done',message:'Adapter completed: '+task.prompt+'; runtime token visible to child: '+Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)}))})";
 let appServer: ChildProcess | null = null;
 let agentPortForward: ChildProcess | null = null;
+let workerPortForward: ChildProcess | null = null;
 let browser: Browser | null = null;
 let page: Page | null = null;
 let appPort = 0;
@@ -50,7 +55,7 @@ async function startApp(): Promise<ChildProcess> {
     cwd: projectRoot,
     env: {
       ...process.env,
-      NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(appPort),
+      NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL: researchFixtureUrl, DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(appPort),
       DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.e2e-k3d-${randomUUID()}`,
       DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_LINUX_DESKTOP_TOKEN_SECRET: tokenSecret,
       DOTS_LINUX_DESKTOP_IMAGE: process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev',
@@ -383,13 +388,47 @@ try {
   await page.screenshot({ path: join(artifacts, '04-agent-control-restored.png'), fullPage: true });
   console.log('Real noVNC address-bar click/text entry, runtime Enter submission, visible navigation, and control hand-back passed');
 
+  const workerPort = await freePort();
+  workerPortForward = spawn('kubectl', ['-n', namespace, 'port-forward', '--address', '127.0.0.1', 'svc/desktop', `${workerPort}:8082`], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let workerPortForwardOutput = '';
+  workerPortForward.stdout?.on('data', chunk => { workerPortForwardOutput += String(chunk); });
+  workerPortForward.stderr?.on('data', chunk => { workerPortForwardOutput += String(chunk); });
+  const workerForwardDeadline = Date.now() + 15_000;
+  while (!workerPortForwardOutput.includes(`127.0.0.1:${workerPort}`) && Date.now() < workerForwardDeadline) {
+    if (workerPortForward.exitCode !== null) throw new Error(`Computer worker port-forward exited early: ${workerPortForwardOutput}`);
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+  }
+  assert(workerPortForwardOutput.includes(`127.0.0.1:${workerPort}`), `Computer worker port-forward did not become ready: ${workerPortForwardOutput}`);
+  const workerToken = createHmac('sha256', tokenSecret).update(`worker:${tenantId}`).digest('base64url');
+  const researchConnector: DesktopConnector = {
+    async connect() {
+      return {
+        workerUrl: new URL(`http://127.0.0.1:${workerPort}`), novncUrl: new URL(`http://127.0.0.1:${workerPort}`), agentUrl: new URL(`http://127.0.0.1:${workerPort}`),
+        workerToken, agentToken: 'unused-research-agent-token',
+      };
+    },
+  };
+  const liveComputer = new LinuxDesktopComputer(tenantId, researchConnector);
+  assert.equal((await liveComputer.state()).ready, true, 'The tenant cloud browser must be initialized before an Agent request');
+  const publicPage = await liveComputer.openPublicPageForAgent(researchFixtureUrl);
+  assert.deepEqual(publicPage, { url: researchFixtureUrl, title: 'Dot public research fixture', text: 'Public launch notes\n\nRelease criteria: harden session recovery.' });
+  const pageState = await liveComputer.state();
+  assert.equal(pageState.url, researchFixtureUrl, 'The live Debian computer must display the fetched source URL');
+  assert.equal(pageState.owner, 'agent', 'Read-only browser research must not take over the computer');
+  const researchScreenshot = await liveComputer.screenshot();
+  await writeFile(join(artifacts, '05-public-research-page.png'), researchScreenshot);
+  await liveComputer.close();
+  workerPortForward.kill('SIGTERM');
+  workerPortForward = null;
+  console.log('Live Debian browser displayed the sanitized public-page fixture through its authenticated research endpoint');
+
   command(['kubectl', '-n', namespace, 'delete', 'pod', desktopPod, '--wait=true', '--timeout=90s']);
   command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', 'pod', '-l', 'app=desktop', '--timeout=120s']);
   const restartedPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The tenant workspace artifact must survive a desktop Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
   logs.push(`Failure diagnostics: appServerExit=${appServer?.exitCode ?? 'running'} health=${health} page=${page?.url() ?? 'unavailable'}`);
@@ -397,6 +436,7 @@ try {
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
 } finally {
   agentPortForward?.kill('SIGTERM');
+  workerPortForward?.kill('SIGTERM');
   await page?.context().close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
   if (appServer && appServer.exitCode === null) {

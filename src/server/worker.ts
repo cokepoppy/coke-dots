@@ -16,6 +16,7 @@ export class Worker {
   private activeTaskTenants = new Map<string, string>();
   private abortControllers = new Map<string, AbortController>();
   private activeByTenant = new Map<string, number>();
+  private browserResearchQueues = new Map<string, Promise<void>>();
   private stopped = false;
 
   constructor(private store: Store, private onChange: () => void, private workspaceRoot = join(process.cwd(), 'data', 'workspaces'), private notify: DesktopNotifier = sendDesktopNotification, private computerFor?: (tenantId: string) => ComputerRuntime) {}
@@ -112,11 +113,45 @@ export class Worker {
           this.onChange();
         },
       };
+      const browserResearchEnabled = task.engine === 'model' && Boolean(computer?.openPublicPageForAgent) &&
+        (process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' || this.store.getSetting('localComputerEnabled', task.tenantId) !== 'false');
+      let browserResearchUsed = false;
+      let browserResearchInterrupted = false;
+      if (browserResearchEnabled && computer?.openPublicPageForAgent) {
+        input.openPublicPage = async (url, toolSignal) => {
+          try {
+            return await this.withTenantBrowserResearch(task.tenantId, async () => {
+              const activeSignal = toolSignal || signal;
+              if (activeSignal.aborted) throw activeSignal.reason || new Error('任务已停止');
+              let state = await computer.state();
+              if (state.owner === 'user') throw new Error('电脑目前由你控制；交还电脑后，Agent 才能继续浏览。');
+              if (!state.ready) state = await computer.open('Dot');
+              if (state.owner === 'user') throw new Error('电脑目前由你控制；交还电脑后，Agent 才能继续浏览。');
+              const page = await computer.openPublicPageForAgent!(url, activeSignal);
+              browserResearchUsed = true;
+              const latest = await computer.state();
+              if (latest.owner === 'user') throw new Error('电脑由你接管了；我已暂停网页研究，交还后可以继续。');
+              return page;
+            });
+          } catch (error) {
+            if (error instanceof Error && /电脑目前由你控制|电脑由你接管/.test(error.message)) browserResearchInterrupted = true;
+            throw error;
+          }
+        };
+      }
       const decision = useDesktopRuntime
         ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, signal })), task.agentSessionId || undefined, agentDecisionOptions(input))
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
+      if (browserResearchInterrupted || (browserResearchUsed && computer && (await computer.state()).owner === 'user')) {
+        const message = '电脑目前由你控制，我已暂停网页研究。交还电脑后，可以在这里告诉我继续。';
+        this.store.updateTask(task.id, { status: 'waiting', nextRunAt: null, error: null }, task.tenantId);
+        this.store.addEntry('dot', message, task.id, task.tenantId);
+        this.store.addEntry('system', '网页研究在用户接管电脑后暂停；没有继续操作。', task.id, task.tenantId);
+        this.onChange();
+        return;
+      }
       if (task.parentTaskId && decision.status === 'scheduled') throw new Error('子任务不能创建周期安排');
       if (decision.status === 'delegating') {
         const delegated = this.store.createDelegatedTasks(task.id, task.tenantId, decision.delegations || [], decision.message, decision.sessionId);
@@ -189,6 +224,19 @@ export class Worker {
     if (this.store.getSetting('desktopNotifications', tenantId) !== 'true') return;
     try { this.notify(this.store.getProfile(tenantId).name, body); }
     catch { /* A desktop notification must never stop background work. */ }
+  }
+
+  private async withTenantBrowserResearch<T>(tenantId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.browserResearchQueues.get(tenantId) || Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    this.browserResearchQueues.set(tenantId, current);
+    await previous.catch(() => undefined);
+    try { return await operation(); }
+    finally {
+      release();
+      if (this.browserResearchQueues.get(tenantId) === current) this.browserResearchQueues.delete(tenantId);
+    }
   }
 }
 

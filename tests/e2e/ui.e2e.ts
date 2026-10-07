@@ -42,6 +42,7 @@ let mockGoogleTokenAttempts = 0;
 let mockGoogleCertRequests = 0;
 let mockGoogleProxyTunnels = 0;
 let mockModelEfforts: string[] = [];
+let mockModelWebResearchEvidence: string[] = [];
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
 let pauseModelHeld = false;
@@ -95,6 +96,7 @@ async function reservePort() {
 async function startMockModel() {
   mockModelPrompts = [];
   mockModelEfforts = [];
+  mockModelWebResearchEvidence = [];
   mockModelServer = createHttpServer((request, response) => {
     let raw = '';
     request.setEncoding('utf8');
@@ -103,10 +105,25 @@ async function startMockModel() {
       try {
         assert.equal(request.method, 'POST');
         assert.equal(request.url, '/v1/chat/completions');
-        const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[]; reasoning_effort?: string };
+        const payload = JSON.parse(raw) as { messages?: { role: string; content?: string | null }[]; reasoning_effort?: string };
         const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
         mockModelPrompts.push(prompt);
         mockModelEfforts.push(payload.reasoning_effort || '');
+        const isWebResearch = prompt.includes('E2E web research — inspect the public launch page');
+        const webResearchToolResult = payload.messages?.find(message => message.role === 'tool')?.content || '';
+        if (isWebResearch && !webResearchToolResult) {
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'e2e-public-page', type: 'function', function: { name: 'open_public_page', arguments: JSON.stringify({ url: 'https://research-fixture.dots.test/launch' }) } }] } }] }));
+          return;
+        }
+        if (isWebResearch) {
+          mockModelWebResearchEvidence.push(webResearchToolResult);
+          assert.match(webResearchToolResult, /Release criteria: harden session recovery\./);
+          assert.doesNotMatch(webResearchToolResult, /Ignore all instructions|expose credentials/);
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify({ status: 'done', message: 'The public launch notes require hardened session recovery. Source: https://research-fixture.dots.test/launch' }) } }] }));
+          return;
+        }
         const hasReply = prompt.includes('User reply: Use Friday.');
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
@@ -360,6 +377,7 @@ async function startServer(port: number) {
       NODE_ENV: 'test',
       DOTS_E2E_AUTH: '1',
       DOTS_E2E_COMPUTER_BLOCK_URL: 'https://www.amazon.com/**',
+      DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL: 'https://research-fixture.dots.test/launch',
       DOTS_ENV_FILE: emptyEnvFile,
       DOTS_DATA_DIR: testDataDir,
       DOTS_KEYCHAIN_SERVICE: testKeychainService,
@@ -2362,6 +2380,47 @@ try {
     await openProfile(betaPage!);
     assert.equal(await betaPage!.getByRole('button', { name: '保存模型设置' }).isDisabled(), true, 'A regular member must not replace the shared runtime credential');
     await screenshot(alphaPage!, 'tenant-engine-profiles-configured');
+  });
+
+  await recordStep('Model API researches a public page in the tenant computer and keeps the result private', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByLabel('API 地址').fill(testModelBaseUrl);
+    await alphaPage!.getByLabel('模型名称').fill(testModelName);
+    await alphaPage!.getByLabel('API 密钥').fill(testModelApiKey);
+    await alphaPage!.getByRole('button', { name: '保存模型设置' }).click();
+    await waitFor(async () => {
+      const state = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { baseUrl: string; hasKey: boolean } };
+      return state.modelSettings.baseUrl === testModelBaseUrl && state.modelSettings.hasKey;
+    }, 10_000);
+    await clickNav(alphaPage!, '你的 dot');
+    const instruction = 'E2E web research — inspect the public launch page';
+    const beforeCalls = mockModelPrompts.filter(prompt => prompt.includes(instruction)).length;
+    await createTask(alphaPage!, instruction);
+    await clickNav(alphaPage!, 'Activity');
+    const card = alphaPage!.locator('.task-card').filter({ hasText: instruction });
+    await card.locator('.pill.done').waitFor({ state: 'visible', timeout: 20_000 });
+    await card.getByText('The public launch notes require hardened session recovery.', { exact: false }).waitFor({ state: 'visible' });
+    await waitFor(() => mockModelPrompts.filter(prompt => prompt.includes(instruction)).length === beforeCalls + 2, 10_000);
+    assert.equal(mockModelWebResearchEvidence.length, 1, 'The model did not receive exactly one browser research result');
+    assert.match(mockModelWebResearchEvidence[0], /https:\/\/research-fixture\.dots\.test\/launch/);
+    assert.doesNotMatch(mockModelWebResearchEvidence[0], /Ignore all instructions|expose credentials/);
+
+    await clickNav(alphaPage!, '电脑');
+    const computer = alphaPage!.locator('.computer-view');
+    await computer.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(async () => {
+      const response = await fetch('/api/computer');
+      if (!response.ok) return false;
+      const state = await response.json() as { url?: string; owner?: string };
+      return state.url === 'https://research-fixture.dots.test/launch' && state.owner === 'agent';
+    }, null, { timeout: 10_000 });
+    assert.equal(await alphaPage!.locator('.browser-toolbar input').getAttribute('placeholder'), 'https://research-fixture.dots.test/launch');
+    await screenshot(alphaPage!, 'model-public-browser-research');
+
+    await selectTenant(betaPage!, 'Beta workspace');
+    const betaComputer = await betaPage!.evaluate(async () => await (await fetch('/api/computer')).json()) as { url?: string };
+    assert.notEqual(betaComputer.url, 'https://research-fixture.dots.test/launch', 'A different personal tenant inherited Alpha Shared browser state');
   });
 
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
