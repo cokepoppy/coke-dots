@@ -48,6 +48,15 @@ export function effectiveModelConfig(tenantId = 'legacy') {
   return apiKey && model ? { apiKey, model, baseUrl: baseUrl.replace(/\/$/, '') } : null;
 }
 
+/** Explicit Keychain-backed configuration only; never inherit process or E2E fixture credentials. */
+export function configuredWorkspaceModelConfig(tenantId: string) {
+  const apiKey = readTenantKey(tenantId);
+  const settings = stored.get(tenantId);
+  const model = settings?.model || '';
+  const baseUrl = settings?.baseUrl || 'https://api.openai.com/v1';
+  return apiKey && model ? { apiKey, model, baseUrl: baseUrl.replace(/\/$/, '') } : null;
+}
+
 function readTenantKey(tenantId: string): string | null {
   try {
     const scoped = keychainFor(tenantId).getPassword();

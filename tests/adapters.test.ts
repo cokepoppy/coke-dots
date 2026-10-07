@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { adapters, agentDecisionOptions, formatAgentPrompt, parseDecision, providerReasoningEffort, type AgentRequest } from '../src/server/adapters.ts';
+import { Entry } from '@napi-rs/keyring';
+import { adapters, agentDecisionOptions, createPiWorkspaceModelRuntime, createTenantDshEnvironment, formatAgentPrompt, parseDecision, providerReasoningEffort, resolveTenantAgentDirectory, type AgentRequest } from '../src/server/adapters.ts';
+import { loadModelSettings, saveModelKey } from '../src/server/model-settings.ts';
 import { Store } from '../src/server/store.ts';
+
+const testKeychainEntry = (tenantId: string) => new Entry(process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots', `tenant-${tenantId}-model-api-key`);
 
 test('agent output must specify a real task state', () => {
   assert.equal(parseDecision('{"status":"waiting","message":"Need access"}').status, 'waiting');
@@ -112,4 +117,177 @@ test('Pi availability recognizes the installed ESM-only SDK', { skip: !import.me
     if (previous === undefined) delete process.env.DOTS_PI_ENABLED;
     else process.env.DOTS_PI_ENABLED = previous;
   }
+});
+
+test('Pi workspace model runtime keeps the workspace key in memory and binds only its endpoint and model', () => {
+  const registered: { provider?: string; config?: Record<string, unknown> } = {};
+  const runtimeKey: { provider?: string; value?: string } = {};
+  const authStorage = { setRuntimeApiKey(provider: string, value: string) { runtimeKey.provider = provider; runtimeKey.value = value; } };
+  const modelRegistry = {
+    registerProvider(provider: string, config: Record<string, unknown>) { registered.provider = provider; registered.config = config; },
+    find(provider: string, model: string) { return { provider, id: model }; },
+  };
+  const runtime = createPiWorkspaceModelRuntime({
+    AuthStorage: { inMemory: () => authStorage },
+    ModelRegistry: { inMemory: value => { assert.equal(value, authStorage); return modelRegistry; } },
+  }, { apiKey: 'tenant-key-never-persist', baseUrl: 'https://tenant.example.test/v1', model: 'tenant-model' });
+  assert.equal(runtimeKey.provider, 'coke-dots-workspace');
+  assert.equal(runtimeKey.value, 'tenant-key-never-persist');
+  assert.equal(registered.provider, 'coke-dots-workspace');
+  assert.equal(registered.config?.baseUrl, 'https://tenant.example.test/v1');
+  assert.equal((registered.config?.models as { id: string }[])[0].id, 'tenant-model');
+  assert.equal(JSON.stringify(registered.config).includes('tenant-key-never-persist'), false, 'The Pi model registry must not persist or embed the API key');
+  assert.deepEqual(runtime.model, { provider: 'coke-dots-workspace', id: 'tenant-model' });
+});
+
+test('DeepSeek Harness receives a private home and no unrelated host credentials', () => {
+  const environment = createTenantDshEnvironment('/private/tenant/dsh', {
+    apiKey: 'tenant-dsh-key', baseUrl: 'https://tenant.deepseek.example/v1', model: 'tenant-model',
+  }, {
+    PATH: '/usr/bin', HOME: '/host/home', DSH_HOME: '/host/dsh', DEEPSEEK_API_KEY: 'host-deepseek-key',
+    OPENAI_API_KEY: 'host-openai-key', GOOGLE_CLIENT_SECRET: 'host-google-secret', HTTPS_PROXY: 'http://127.0.0.1:7890',
+  });
+  assert.equal(environment.DSH_HOME, '/private/tenant/dsh');
+  assert.equal(environment.HOME, '/private/tenant/dsh');
+  assert.equal(environment.DEEPSEEK_API_KEY, 'tenant-dsh-key');
+  assert.equal(environment.DEEPSEEK_BASE_URL, 'https://tenant.deepseek.example/v1');
+  assert.equal(environment.DSH_MODEL, 'tenant-model');
+  assert.equal(environment.PATH, '/usr/bin');
+  assert.equal(environment.HTTPS_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(environment.OPENAI_API_KEY, undefined);
+  assert.equal(environment.GOOGLE_CLIENT_SECRET, undefined);
+});
+
+test('Pi and DSH require an explicit workspace key outside the local bootstrap tenant', { skip: !import.meta.resolve('@mariozechner/pi-coding-agent').startsWith('file:') || !import.meta.resolve('@deepseek-ai/dsh-sdk-client').startsWith('file:') }, () => {
+  const previous = {
+    pi: process.env.DOTS_PI_ENABLED, dshBin: process.env.DOTS_DSH_BIN, dshConfig: process.env.DOTS_DSH_READ_ONLY_CONFIG,
+    nodeEnv: process.env.NODE_ENV, e2eAuth: process.env.DOTS_E2E_AUTH,
+  };
+  const alpha = `engine-alpha-${randomUUID()}`;
+  const beta = `engine-beta-${randomUUID()}`;
+  process.env.DOTS_PI_ENABLED = '1'; process.env.DOTS_DSH_BIN = process.execPath; process.env.DOTS_DSH_READ_ONLY_CONFIG = '/read-only-profile';
+  process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '1';
+  try {
+    loadModelSettings('https://api.deepseek.com/v1', 'deepseek-flash', alpha);
+    loadModelSettings('https://api.deepseek.com/v1', 'deepseek-flash', beta);
+    saveModelKey('alpha-only-key', alpha);
+    assert.equal(adapters.pi.available(alpha), true);
+    assert.equal(adapters.dsh.available(alpha), true);
+    assert.equal(adapters.pi.available(beta), false);
+    assert.equal(adapters.dsh.available(beta), false);
+  } finally {
+    testKeychainEntry(alpha).deletePassword();
+    for (const [key, value] of [['DOTS_PI_ENABLED', previous.pi], ['DOTS_DSH_BIN', previous.dshBin], ['DOTS_DSH_READ_ONLY_CONFIG', previous.dshConfig], ['NODE_ENV', previous.nodeEnv], ['DOTS_E2E_AUTH', previous.e2eAuth]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('DeepSeek Harness SDK launches with one workspace credential and the selected model route', { skip: !import.meta.resolve('@deepseek-ai/dsh-sdk-client').startsWith('file:'), timeout: 20_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'coke-dots-dsh-tenant-runtime-'));
+  const tenantId = `dsh-tenant-${randomUUID()}`;
+  const dataDirectory = join(root, 'data');
+  const workspace = join(root, 'workspace');
+  const runtimeProfile = join(root, 'read-only-profile.mjs');
+  const auditFileName = 'dsh-runtime-audit.json';
+  mkdirSync(workspace, { recursive: true });
+  writeFileSync(runtimeProfile, `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    let pending = '';
+    let audit = { cwd: process.cwd(), env: { HOME: process.env.HOME, DSH_HOME: process.env.DSH_HOME, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL: process.env.DEEPSEEK_BASE_URL, DSH_MODEL: process.env.DSH_MODEL, OPENAI_API_KEY: process.env.OPENAI_API_KEY, GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET } };
+    const saveAudit = () => fs.writeFileSync(path.join(process.env.DSH_HOME, ${JSON.stringify(auditFileName)}), JSON.stringify(audit));
+    const send = message => process.stdout.write(JSON.stringify(message) + '\\n');
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', chunk => {
+      pending += chunk;
+      while (pending.includes('\\n')) {
+        const boundary = pending.indexOf('\\n');
+        const message = JSON.parse(pending.slice(0, boundary));
+        pending = pending.slice(boundary + 1);
+        if (message.method === 'initialize') {
+          audit.route = message.params;
+          saveAudit();
+          send({ jsonrpc: '2.0', id: message.id, result: { serverInfo: { name: 'deepseek-harness-sdk-runtime', version: 'test' } } });
+        } else if (message.method === 'session/prompt') {
+          const sessionId = message.params.sessionId;
+          send({ jsonrpc: '2.0', id: message.id, result: { messageId: 'mock-message-id' } });
+          send({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'agent/inbox/spliced', data: { inserted: [{ id: 'mock-message-id' }] } } } });
+          send({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify({ status: 'done', message: 'DSH isolated runtime completed.' }) }] } } } } });
+          send({ jsonrpc: '2.0', method: 'session.status', params: { sessionId, status: 'idle' } });
+        } else if (message.method === 'shutdown') {
+          send({ jsonrpc: '2.0', id: message.id, result: {} });
+          setTimeout(() => process.exit(0), 10);
+        }
+      }
+    });
+  `);
+  const previous = {
+    dshBin: process.env.DOTS_DSH_BIN,
+    dshConfig: process.env.DOTS_DSH_READ_ONLY_CONFIG,
+    dataDirectory: process.env.DOTS_DATA_DIR,
+    openAiKey: process.env.OPENAI_API_KEY,
+    googleSecret: process.env.GOOGLE_CLIENT_SECRET,
+  };
+  process.env.DOTS_DSH_BIN = process.execPath;
+  process.env.DOTS_DSH_READ_ONLY_CONFIG = runtimeProfile;
+  process.env.DOTS_DATA_DIR = dataDirectory;
+  process.env.OPENAI_API_KEY = 'host-openai-must-not-cross-tenant-boundary';
+  process.env.GOOGLE_CLIENT_SECRET = 'host-google-must-not-cross-tenant-boundary';
+  try {
+    loadModelSettings('https://api.deepseek.com/v1', 'tenant-dsh-model', tenantId);
+    saveModelKey('tenant-dsh-only-test-key', tenantId);
+    const result = await adapters.dsh.run({
+      tenantId,
+      prompt: 'run the isolated dsh runtime test',
+      priorResult: null,
+      sessionId: null,
+      workspace,
+      onEvent: () => {},
+    });
+    assert.equal(result.status, 'done');
+    assert.equal(result.message, 'DSH isolated runtime completed.');
+    const runtimeHome = resolveTenantAgentDirectory(tenantId, 'dsh', dataDirectory);
+    const audit = JSON.parse(readFileSync(join(runtimeHome, auditFileName), 'utf8')) as {
+      cwd: string;
+      env: Record<string, string | undefined>;
+      route: { cwd: string; provider: string; model: string };
+    };
+    assert.equal(audit.cwd, realpathSync(workspace));
+    assert.equal(audit.env.HOME, runtimeHome);
+    assert.equal(audit.env.DSH_HOME, runtimeHome);
+    assert.equal(audit.env.DEEPSEEK_API_KEY, 'tenant-dsh-only-test-key');
+    assert.equal(audit.env.DEEPSEEK_BASE_URL, 'https://api.deepseek.com/v1');
+    assert.equal(audit.env.DSH_MODEL, 'tenant-dsh-model');
+    assert.equal(audit.env.OPENAI_API_KEY, undefined);
+    assert.equal(audit.env.GOOGLE_CLIENT_SECRET, undefined);
+    assert.deepEqual(audit.route, { cwd: workspace, provider: 'deepseek-official', model: 'tenant-dsh-model' });
+  } finally {
+    testKeychainEntry(tenantId).deletePassword();
+    for (const [key, value] of [
+      ['DOTS_DSH_BIN', previous.dshBin], ['DOTS_DSH_READ_ONLY_CONFIG', previous.dshConfig],
+      ['DOTS_DATA_DIR', previous.dataDirectory], ['OPENAI_API_KEY', previous.openAiKey], ['GOOGLE_CLIENT_SECRET', previous.googleSecret],
+    ] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('tenant engine directories are private and reject a symlink into another workspace', () => {
+  const root = mkdtempSync(join(tmpdir(), 'coke-dots-tenant-agent-home-'));
+  try {
+    const dataDirectory = join(root, 'data');
+    const alpha = resolveTenantAgentDirectory('tenant-alpha', 'pi', dataDirectory);
+    const beta = resolveTenantAgentDirectory('tenant-beta', 'dsh', dataDirectory);
+    assert.notEqual(alpha, beta);
+    assert.equal(statSync(alpha).mode & 0o777, 0o700);
+    assert.equal(statSync(beta).mode & 0o777, 0o700);
+
+    const tenants = join(dataDirectory, 'tenants');
+    const outside = join(root, 'outside');
+    mkdirSync(outside);
+    symlinkSync(outside, join(tenants, 'tenant-escape'), 'dir');
+    assert.throws(() => resolveTenantAgentDirectory('tenant-escape', 'dsh', dataDirectory), /运行目录超出当前工作区/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

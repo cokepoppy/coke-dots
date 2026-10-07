@@ -2,17 +2,13 @@ import { accessSync, chmodSync, constants, mkdirSync, realpathSync } from 'node:
 import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { ReasoningEffort, ScratchpadPageAction, TenantActionRule } from '../shared/types.ts';
-import { effectiveModelConfig } from './model-settings.ts';
+import { configuredWorkspaceModelConfig, effectiveModelConfig } from './model-settings.ts';
 
 const require = createRequire(import.meta.url);
 const bootstrapTenantId = 'legacy';
 
 function canUseHostKernel(tenantId?: string): boolean {
   return tenantId === bootstrapTenantId;
-}
-
-function requireHostKernelTenant(tenantId?: string) {
-  if (!canUseHostKernel(tenantId)) throw new Error('本机 Agent 内核只对本机引导工作区开放');
 }
 
 export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
@@ -46,6 +42,15 @@ interface PiSessionManager {
   getSessionId(): string;
 }
 interface PiSdk {
+  AuthStorage: {
+    inMemory: () => { setRuntimeApiKey: (provider: string, apiKey: string) => void };
+  };
+  ModelRegistry: {
+    inMemory: (authStorage: unknown) => {
+      registerProvider: (provider: string, config: Record<string, unknown>) => void;
+      find: (provider: string, model: string) => unknown;
+    };
+  };
   SessionManager: {
     create: (cwd: string, sessionDir?: string) => PiSessionManager;
     open: (path: string, sessionDir?: string, cwdOverride?: string) => PiSessionManager;
@@ -60,6 +65,85 @@ interface PiSdk {
     };
   }>;
   createReadOnlyTools: (cwd: string) => unknown[];
+}
+
+export interface WorkspaceModelConfig { apiKey: string; model: string; baseUrl: string }
+
+/** Create a Pi model registry with only this workspace's in-memory credential. */
+export function createPiWorkspaceModelRuntime(sdk: Pick<PiSdk, 'AuthStorage' | 'ModelRegistry'>, config: WorkspaceModelConfig) {
+  const provider = 'coke-dots-workspace';
+  const authStorage = sdk.AuthStorage.inMemory();
+  authStorage.setRuntimeApiKey(provider, config.apiKey);
+  const modelRegistry = sdk.ModelRegistry.inMemory(authStorage);
+  modelRegistry.registerProvider(provider, {
+    name: 'Coke Dots workspace',
+    baseUrl: config.baseUrl,
+    // Pi requires this field during provider registration; AuthStorage's runtime key always takes precedence.
+    apiKey: 'COKE_DOTS_RUNTIME_KEY_REQUIRED',
+    api: 'openai-completions',
+    models: [{
+      id: config.model,
+      name: config.model,
+      reasoning: false,
+      input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 8_192,
+      compat: { supportsDeveloperRole: false, maxTokensField: 'max_tokens' },
+    }],
+  });
+  const model = modelRegistry.find(provider, config.model);
+  if (!model) throw new Error('Pi 无法加载当前工作区的模型配置');
+  return { authStorage, modelRegistry, model };
+}
+
+/** Keep host-only credentials out of a tenant's DeepSeek Harness child process. */
+export function createTenantDshEnvironment(homePath: string, config: WorkspaceModelConfig, parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const home = resolve(homePath);
+  const environment: NodeJS.ProcessEnv = {};
+  for (const key of ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS']) {
+    if (parent[key]) environment[key] = parent[key];
+  }
+  return {
+    ...environment,
+    HOME: home,
+    USERPROFILE: home,
+    DSH_HOME: home,
+    XDG_CONFIG_HOME: join(home, 'config'),
+    XDG_DATA_HOME: join(home, 'data'),
+    XDG_CACHE_HOME: join(home, 'cache'),
+    DEEPSEEK_API_KEY: config.apiKey,
+    DEEPSEEK_BASE_URL: config.baseUrl,
+    DSH_MODEL: config.model,
+  };
+}
+
+/** Store SDK profiles outside task workspaces and reject symlinks into another tenant. */
+export function resolveTenantAgentDirectory(tenantId: string, engine: 'pi' | 'dsh', dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data')) {
+  if (!/^(legacy|[a-z0-9][a-z0-9-]{0,127})$/i.test(tenantId)) throw new Error('工作区 ID 无效');
+  const rootPath = resolve(dataDirectory);
+  mkdirSync(rootPath, { recursive: true, mode: 0o700 });
+  const root = realpathSync(rootPath);
+  const tenantsPath = join(root, 'tenants');
+  mkdirSync(tenantsPath, { recursive: true, mode: 0o700 });
+  const tenants = realpathSync(tenantsPath);
+  if (tenants !== tenantsPath || !isPathInside(root, tenants)) throw new Error('Agent 运行目录超出数据目录');
+  const tenantPath = join(tenants, tenantId);
+  mkdirSync(tenantPath, { recursive: true, mode: 0o700 });
+  const tenant = realpathSync(tenantPath);
+  if (tenant !== tenantPath || !isPathInside(tenants, tenant)) throw new Error('Agent 运行目录超出当前工作区');
+  chmodSync(tenant, 0o700);
+  const agentPath = join(tenant, 'agent-runtime');
+  mkdirSync(agentPath, { recursive: true, mode: 0o700 });
+  const agentRoot = realpathSync(agentPath);
+  if (agentRoot !== agentPath || !isPathInside(tenant, agentRoot)) throw new Error('Agent 运行配置目录无效');
+  chmodSync(agentRoot, 0o700);
+  const runtimePath = join(agentRoot, engine);
+  mkdirSync(runtimePath, { recursive: true, mode: 0o700 });
+  const runtime = realpathSync(runtimePath);
+  if (runtime !== runtimePath || !isPathInside(agentRoot, runtime)) throw new Error('Agent 运行配置目录无效');
+  chmodSync(runtime, 0o700);
+  return runtime;
 }
 
 /** Keep Pi's native conversation under one task workspace, never its shared home directory. */
@@ -203,14 +287,22 @@ export const adapters: Record<Engine, AgentAdapter> = {
   claude: { id: 'claude', available: () => false, async run() { throw new Error('Claude Code 暂未支持'); } },
   pi: {
     id: 'pi',
-    available: tenantId => canUseHostKernel(tenantId) && Boolean(process.env.DOTS_PI_ENABLED === '1' && packageAvailable('@mariozechner/pi-coding-agent')),
+    available: tenantId => {
+      const id = tenantId || 'legacy';
+      const installed = process.env.DOTS_PI_ENABLED === '1' && packageAvailable('@mariozechner/pi-coding-agent');
+      return installed && (canUseHostKernel(id) || Boolean(configuredWorkspaceModelConfig(id)));
+    },
     async run(input) {
-      requireHostKernelTenant(input.tenantId);
+      const tenantId = input.tenantId || 'legacy';
+      const modelConfig = canUseHostKernel(tenantId) ? effectiveModelConfig(tenantId) : configuredWorkspaceModelConfig(tenantId);
+      if (!canUseHostKernel(tenantId) && !modelConfig) throw new Error('请先在当前工作区配置模型 API 密钥和模型名称');
       const moduleName = '@mariozechner/pi-coding-agent';
       const sdk = await import(moduleName) as unknown as PiSdk;
       const sessionManager = await resolvePiSessionManager(sdk, input.workspace, input.sessionId);
+      const workspaceModel = modelConfig ? createPiWorkspaceModelRuntime(sdk, modelConfig) : null;
       const { session } = await sdk.createAgentSession({
         cwd: input.workspace,
+        ...(workspaceModel ? { agentDir: resolveTenantAgentDirectory(tenantId, 'pi'), ...workspaceModel } : {}),
         tools: sdk.createReadOnlyTools(input.workspace),
         sessionManager,
       });
@@ -230,16 +322,28 @@ export const adapters: Record<Engine, AgentAdapter> = {
   },
   dsh: {
     id: 'dsh',
-    available: tenantId => canUseHostKernel(tenantId) && Boolean(process.env.DOTS_DSH_READ_ONLY_CONFIG && process.env.DOTS_DSH_BIN && packageAvailable('@deepseek-ai/dsh-sdk-client')),
+    available: tenantId => {
+      const id = tenantId || 'legacy';
+      const installed = Boolean(process.env.DOTS_DSH_READ_ONLY_CONFIG && process.env.DOTS_DSH_BIN && packageAvailable('@deepseek-ai/dsh-sdk-client'));
+      return installed && (canUseHostKernel(id) || Boolean(configuredWorkspaceModelConfig(id)));
+    },
     async run(input) {
-      requireHostKernelTenant(input.tenantId);
+      const tenantId = input.tenantId || 'legacy';
       const config = process.env.DOTS_DSH_READ_ONLY_CONFIG;
       const bin = process.env.DOTS_DSH_BIN;
       if (!config || !bin) throw new Error('DeepSeek Harness 需要显式配置只读 profile 与运行程序');
+      const modelConfig = canUseHostKernel(tenantId) ? effectiveModelConfig(tenantId) : configuredWorkspaceModelConfig(tenantId);
+      if (!canUseHostKernel(tenantId) && !modelConfig) throw new Error('请先在当前工作区配置模型 API 密钥和模型名称');
       accessSync(config, constants.R_OK);
       const moduleName = '@deepseek-ai/dsh-sdk-client';
       const sdk = await import(moduleName) as { DeepSeekHarness: new (options: Record<string, unknown>) => { run: (prompt: string, options: { sessionId?: string; onNotification: (row: { method: string }) => void }) => Promise<{ finalResponse: string; sessionId: string }>; close: () => Promise<void> } };
-      const harness = new sdk.DeepSeekHarness({ launch: { command: bin, args: [config], cwd: input.workspace, env: process.env }, cwd: input.workspace });
+      const privateHome = modelConfig ? resolveTenantAgentDirectory(tenantId, 'dsh') : null;
+      const launchEnvironment = modelConfig && privateHome ? createTenantDshEnvironment(privateHome, modelConfig) : process.env;
+      const harness = new sdk.DeepSeekHarness({
+        launch: { command: bin, args: [config], cwd: input.workspace, env: launchEnvironment },
+        cwd: input.workspace,
+        ...(modelConfig ? { provider: 'deepseek-official', model: modelConfig.model } : {}),
+      });
       let closePromise: Promise<void> | null = null;
       const closeHarness = () => closePromise ||= harness.close();
       const abortHarness = () => { void closeHarness().catch(() => undefined); };

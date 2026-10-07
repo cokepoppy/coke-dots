@@ -376,8 +376,9 @@ async function startServer(port: number) {
       DOTS_MODEL_BASE_URL: testModelBaseUrl,
       DOTS_MODEL_API_KEY: testModelApiKey,
       DOTS_MODEL: testModelName,
-      DOTS_PI_ENABLED: '0',
-      DOTS_DSH_BIN: '',
+      DOTS_PI_ENABLED: '1',
+      DOTS_DSH_BIN: process.execPath,
+      DOTS_DSH_READ_ONLY_CONFIG: emptyEnvFile,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -2302,6 +2303,36 @@ try {
     assert.equal(await alphaPage!.locator('.computer-controlbar.is-user-control').count(), 0, 'Return control did not restore the agent-control presentation');
     assert.equal(await alphaPage!.locator('.browser-toolbar input').isDisabled(), true, 'Navigation remained enabled after control was returned');
     await screenshot(alphaPage!, '16-computer-returned');
+  });
+
+  await recordStep('Pi and DeepSeek Harness use the selected workspace credential without leaking into another tenant', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByLabel('API 地址').fill('https://api.deepseek.com/v1');
+    await alphaPage!.getByLabel('模型名称').fill('deepseek-flash');
+    await alphaPage!.getByLabel('API 密钥').fill('alpha-shared-runtime-key');
+    await alphaPage!.getByRole('button', { name: '保存模型设置' }).click();
+    await waitFor(async () => {
+      const state = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
+      return state.availableEngines.includes('pi') && state.availableEngines.includes('dsh');
+    }, 10_000);
+    const configuredState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { hasKey: boolean } };
+    assert.equal(configuredState.modelSettings.hasKey, true);
+    assert(configuredState.availableEngines.includes('pi'));
+    assert(configuredState.availableEngines.includes('dsh'));
+
+    await selectTenant(betaPage!, 'Beta workspace');
+    const personalState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
+    assert.equal(personalState.availableEngines.includes('pi'), false, 'Beta inherited Alpha’s Pi credential');
+    assert.equal(personalState.availableEngines.includes('dsh'), false, 'Beta inherited Alpha’s DeepSeek Harness credential');
+
+    await selectTenant(betaPage!, 'Alpha Shared');
+    const memberState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
+    assert(memberState.availableEngines.includes('pi'), 'A workspace member should use the shared workspace runtime');
+    assert(memberState.availableEngines.includes('dsh'), 'A workspace member should use the shared workspace runtime');
+    await openProfile(betaPage!);
+    assert.equal(await betaPage!.getByRole('button', { name: '保存模型设置' }).isDisabled(), true, 'A regular member must not replace the shared runtime credential');
+    await screenshot(alphaPage!, 'tenant-engine-profiles-configured');
   });
 
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);

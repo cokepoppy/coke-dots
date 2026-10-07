@@ -1,15 +1,25 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { test } from 'node:test';
-import { resolvePiSessionManager } from '../src/server/adapters.ts';
+import { Entry } from '@napi-rs/keyring';
+import { adapters, resolvePiSessionManager, resolveTenantAgentDirectory } from '../src/server/adapters.ts';
+import { loadModelSettings, saveModelKey } from '../src/server/model-settings.ts';
 
 let piSdk: Parameters<typeof resolvePiSessionManager>[0] | null = null;
 try {
   piSdk = await import('@mariozechner/pi-coding-agent') as unknown as Parameters<typeof resolvePiSessionManager>[0];
 } catch {
   // Pi is optional; run these persistence checks whenever its adapter package is installed.
+}
+
+async function listen(server: Server) {
+  await new Promise<void>((resolvePromise, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  return address.port;
 }
 
 test('Pi session history survives reopening inside one task workspace and does not cross tenants', { skip: !piSdk }, async () => {
@@ -40,6 +50,68 @@ test('Pi session history survives reopening inside one task workspace and does n
     await assert.rejects(resolvePiSessionManager(piSdk!, otherTenantWorkspace, sessionId), /不存在或不唯一/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Pi adapter routes each workspace API key through its isolated model registry', { skip: !piSdk, timeout: 20_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'coke-dots-pi-tenant-runtime-'));
+  const dataDirectory = join(root, 'data');
+  const tenants = [
+    { id: 'pi-tenant-alpha', key: 'pi-alpha-only-test-key' },
+    { id: 'pi-tenant-beta', key: 'pi-beta-only-test-key' },
+  ];
+  const authHeaders: string[] = [];
+  const modelServer = createServer((request, response) => {
+    authHeaders.push(String(request.headers.authorization || ''));
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/v1/chat/completions');
+      assert.match(body, /tenant runtime smoke task/);
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      response.end([
+        `data: ${JSON.stringify({ id: 'chatcmpl-test', object: 'chat.completion.chunk', created: 1, model: 'tenant-model', choices: [{ index: 0, delta: { role: 'assistant', content: '{"status":"done","message":"Pi tenant runtime completed."}' }, finish_reason: null }] })}`,
+        '',
+        `data: ${JSON.stringify({ id: 'chatcmpl-test', object: 'chat.completion.chunk', created: 1, model: 'tenant-model', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}`,
+        '',
+        'data: [DONE]',
+        '',
+        '',
+      ].join('\n'));
+    });
+  });
+  const previous = { enabled: process.env.DOTS_PI_ENABLED, dataDirectory: process.env.DOTS_DATA_DIR };
+  try {
+    const port = await listen(modelServer);
+    process.env.DOTS_PI_ENABLED = '1';
+    process.env.DOTS_DATA_DIR = dataDirectory;
+    for (const tenant of tenants) {
+      loadModelSettings(`http://127.0.0.1:${port}/v1`, 'tenant-model', tenant.id);
+      saveModelKey(tenant.key, tenant.id);
+      const workspace = join(root, 'workspaces', tenant.id, 'task-1');
+      mkdirSync(workspace, { recursive: true });
+      const result = await adapters.pi.run({
+        tenantId: tenant.id,
+        prompt: 'tenant runtime smoke task',
+        priorResult: null,
+        sessionId: null,
+        workspace,
+        onEvent: () => {},
+      });
+      assert.equal(result.status, 'done');
+      assert.equal(result.message, 'Pi tenant runtime completed.');
+      assert.ok(result.sessionId);
+      assert.equal(statSync(resolveTenantAgentDirectory(tenant.id, 'pi', dataDirectory)).mode & 0o777, 0o700);
+    }
+    assert.deepEqual(authHeaders, tenants.map(tenant => `Bearer ${tenant.key}`));
+  } finally {
+    if (previous.enabled === undefined) delete process.env.DOTS_PI_ENABLED; else process.env.DOTS_PI_ENABLED = previous.enabled;
+    if (previous.dataDirectory === undefined) delete process.env.DOTS_DATA_DIR; else process.env.DOTS_DATA_DIR = previous.dataDirectory;
+    for (const tenant of tenants) new Entry(process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots', `tenant-${tenant.id}-model-api-key`).deletePassword();
+    await new Promise<void>(resolvePromise => modelServer.close(() => resolvePromise()));
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

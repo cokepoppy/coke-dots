@@ -747,7 +747,7 @@ function Profile({ state, auth, onError, onSetDotPaused, onEditAppearance, onMan
       {membersError && <small className="member-error">{membersError}</small>}
       {!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以添加成员。</small>}
     </div>
-    <div className="section-heading model-heading"><h2>模型 API</h2><p>此 API 密钥只用于当前工作区，并保存在 macOS 钥匙串。本机安装的 Pi 和 DeepSeek Harness 使用宿主账户，仅在本机引导工作区开放。</p></div>
+    <div className="section-heading model-heading"><h2>模型 API</h2><p>此 API 密钥只用于当前工作区，并保存在 macOS 钥匙串。已启用的 Pi 和 DeepSeek Harness 使用此工作区凭据，并将运行配置隔离到当前工作区。</p></div>
     <div className="profile-card model-card">
       <label>API 地址<input value={baseUrl} disabled={!canManageDot} onChange={e => setBaseUrl(e.target.value)} /></label>
       <label>模型名称<input value={model} disabled={!canManageDot} onChange={e => setModel(e.target.value)} /></label>
