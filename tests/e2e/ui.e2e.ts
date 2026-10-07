@@ -128,6 +128,9 @@ async function startMockModel() {
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
         const isMemoryCheck = prompt.includes('E2E memory prompt — apply the saved workspace preference');
+        const isPersonalMemoryUpdate = prompt.includes('E2E personal Dot memory — remember my response preferences');
+        const isPersonalMemoryRead = prompt.includes('E2E personal Dot memory — use my saved preferences');
+        const isSharedMemoryIsolation = prompt.includes('E2E shared task — do not receive personal Dot notes');
         const isQuietNotificationCheck = prompt.includes('E2E notification criteria — routine success');
         const isDecisionNotificationCheck = prompt.includes('E2E notification criteria — ask the user');
         const isReasoningEffortTask = prompt.includes('E2E reasoning effort — extra high');
@@ -179,13 +182,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isDecisionNotificationCheck) Object.assign(decision, { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false });
         const content = JSON.stringify(decision);
@@ -1760,16 +1763,53 @@ try {
     assert.match(mockModelPrompts[promptStart], /User-approved workspace notes[\s\S]*Alpha prefers concise Mandarin updates\./, 'Saved note did not reach the actual model request');
     await screenshot(alphaPage!, '18b-agent-used-workspace-memory');
 
+    await openProfile(alphaPage!);
+    const privateMemoryManager = alphaPage!.getByTestId('personal-dot-memory-manager');
+    await privateMemoryManager.getByTestId('empty-personal-dot-memory-list').waitFor({ state: 'visible' });
+    await clickNav(alphaPage!, '你的 dot');
+    const privateMemoryTask = 'E2E personal Dot memory — remember my response preferences';
+    const privateMemoryPromptStart = mockModelPrompts.length;
+    await createTask(alphaPage!, privateMemoryTask);
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.timeline .message.system p').filter({ hasText: 'Dot 记住了：Prefers concise Mandarin updates and uses China Standard Time for milestones.' }).waitFor({ state: 'visible' });
+    await waitFor(() => mockModelPrompts.length === privateMemoryPromptStart + 1, 10_000);
+    assert.match(mockModelPrompts[privateMemoryPromptStart], /Personal Dot memory is enabled for this account's personal workspace/);
+
+    await openProfile(alphaPage!);
+    const privateMemoryRow = privateMemoryManager.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' });
+    await privateMemoryRow.waitFor({ state: 'visible' });
+    await privateMemoryRow.getByText('Dot 从个人对话中更新').waitFor({ state: 'visible' });
+    await privateMemoryRow.scrollIntoViewIfNeeded();
+    await screenshot(alphaPage!, '18c-dot-private-memory-saved');
+    await clickNav(alphaPage!, '你的 dot');
+    const usePrivateMemoryTask = 'E2E personal Dot memory — use my saved preferences';
+    const useMemoryPromptStart = mockModelPrompts.length;
+    await createTask(alphaPage!, usePrivateMemoryTask);
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => mockModelPrompts.length === useMemoryPromptStart + 1, 10_000);
+    assert.match(mockModelPrompts[useMemoryPromptStart], /Prefers concise Mandarin updates and uses China Standard Time for milestones\./, "The private Dot note did not reach the next task in the same user's personal workspace");
+
     await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    const sharedMemoryPromptStart = mockModelPrompts.length;
+    const sharedMemoryTask = 'E2E shared task — do not receive personal Dot notes';
+    await createTask(alphaPage!, sharedMemoryTask);
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => mockModelPrompts.length === sharedMemoryPromptStart + 1, 10_000);
+    assert.doesNotMatch(mockModelPrompts[sharedMemoryPromptStart], /Prefers concise Mandarin updates and uses China Standard Time for milestones\./, 'A personal note leaked into a shared-workspace model prompt');
     await openProfile(alphaPage!);
     await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
-    assert.equal(await alphaPage!.getByTestId('memory-row').count(), 0, 'Alpha personal memory appeared in Alpha Shared');
+    assert.equal(await alphaPage!.getByTestId('memory-row').count(), 0, 'A personal note appeared in shared workspace memory');
+    await alphaPage!.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }).waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.getByTestId('personal-dot-memory-row').count(), 1, 'The signed-in account could not manage its own private note while viewing another workspace');
 
     await selectTenant(betaPage!, 'Beta workspace');
     await openProfile(betaPage!);
     await betaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
-    assert.equal(await betaPage!.getByTestId('memory-row').count(), 0, 'Alpha personal memory appeared in Beta personal workspace');
-    await screenshot(betaPage!, '18c-beta-memory-isolation');
+    assert.equal(await betaPage!.getByTestId('memory-row').count(), 0, 'Alpha workspace notes appeared in Beta personal workspace');
+    await betaPage!.getByTestId('personal-dot-memory-manager').getByTestId('empty-personal-dot-memory-list').waitFor({ state: 'visible' });
+    assert.equal(await betaPage!.getByTestId('personal-dot-memory-row').count(), 0, 'Alpha private Dot note appeared in Beta account');
+    await screenshot(betaPage!, '18d-beta-memory-isolation');
 
     await selectTenant(alphaPage!, 'Alpha workspace');
     await openProfile(alphaPage!);
@@ -1777,6 +1817,10 @@ try {
     await savedMemory.waitFor({ state: 'visible' });
     await savedMemory.getByRole('button', { name: '删除' }).click();
     await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
+    const savedPersonalMemory = alphaPage!.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' });
+    await savedPersonalMemory.waitFor({ state: 'visible' });
+    await savedPersonalMemory.getByRole('button', { name: '删除私有记忆：Prefers concise Mandarin updates and uses China Standard Time for milestones.' }).click();
+    await alphaPage!.getByTestId('personal-dot-memory-manager').getByTestId('empty-personal-dot-memory-list').waitFor({ state: 'visible' });
   });
 
   await recordStep('Workspace admins set a tenant rule and members can review its scope', async () => {
