@@ -49,9 +49,8 @@ export class ComputerManager implements ComputerRuntime {
       });
       this.page = this.context.pages()[0] || await this.context.newPage();
       this.page.on('close', () => { this.page = null; });
-      if (process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1') {
-        await this.page.route('https://www.amazon.com/**', route => route.abort('blockedbyclient'));
-      }
+      const blockedTestPattern = e2eBlockedComputerPattern();
+      if (blockedTestPattern) await this.page.route(blockedTestPattern, route => route.abort('blockedbyclient'));
       await this.page.setContent(computerWelcomePage(dotName), { waitUntil: 'domcontentloaded' });
     }
     return this.state();
@@ -116,4 +115,16 @@ export class ComputerManager implements ComputerRuntime {
 
 function isChromiumClientBlocked(error: unknown) {
   return error instanceof Error && /net::ERR_BLOCKED_BY_CLIENT/.test(error.message);
+}
+
+/** Install a requested browser failure only for an authenticated E2E fixture. */
+export function e2eBlockedComputerPattern(environment: NodeJS.ProcessEnv = process.env): string | null {
+  if (environment.NODE_ENV !== 'test' || environment.DOTS_E2E_AUTH !== '1') return null;
+  const pattern = environment.DOTS_E2E_COMPUTER_BLOCK_URL?.trim();
+  if (!pattern?.endsWith('/**')) return null;
+  try {
+    const url = new URL(pattern.slice(0, -2));
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+    return pattern;
+  } catch { return null; }
 }

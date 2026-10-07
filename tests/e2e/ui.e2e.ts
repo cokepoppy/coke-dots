@@ -359,6 +359,7 @@ async function startServer(port: number) {
       ...process.env,
       NODE_ENV: 'test',
       DOTS_E2E_AUTH: '1',
+      DOTS_E2E_COMPUTER_BLOCK_URL: 'https://www.amazon.com/**',
       DOTS_ENV_FILE: emptyEnvFile,
       DOTS_DATA_DIR: testDataDir,
       DOTS_KEYCHAIN_SERVICE: testKeychainService,
@@ -2260,7 +2261,7 @@ try {
     await screenshot(alphaPage!, '14-computer-takeover');
   });
 
-  await recordStep('Computer takeover shows a Chromium-native blocked-by-client page', async () => {
+  await recordStep('Computer takeover can show a Chromium-native block from its E2E route fixture', async () => {
     const beforeResponse = await alphaContext!.request.get(`${baseUrl}/api/computer/screenshot`);
     assert.equal(beforeResponse.status(), 200, 'The computer screenshot endpoint should return the current welcome page');
     const beforeHash = createHash('sha256').update(await beforeResponse.body()).digest('hex');
@@ -2281,7 +2282,7 @@ try {
     assert.notEqual(blockedHash, beforeHash, 'The blocked browser page should replace the welcome-page screenshot');
     assert.equal(await alphaPage!.locator('.error-banner').count(), 0, 'Chromium’s blocked page should not be replaced by a Coke Dots error banner');
     await waitForComputerScreenshot(alphaPage!);
-    await screenshot(alphaPage!, '14b-computer-amazon-blocked');
+    await screenshot(alphaPage!, '14b-computer-browser-native-blocked');
   });
 
   await recordStep('Computer takeover performs real browser navigation, click, text input, and return', async () => {
