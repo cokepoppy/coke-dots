@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, ReasoningEffort, ScheduleSpec, Snapshot, Task, TaskStatus, VoiceCallSession } from '../shared/types.ts';
+import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, ScheduleSpec, Snapshot, Task, TaskStatus, VoiceCallSession } from '../shared/types.ts';
 import { appFetch, appPath } from './api.ts';
 import './style.css';
 import './chat-theme.css';
@@ -671,6 +671,12 @@ function Profile({ state, auth, onError, onSetDotPaused, onEditAppearance, onMan
   const [editingDraft, setEditingDraft] = useState('');
   const [memoryError, setMemoryError] = useState('');
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const [personalDotMemories, setPersonalDotMemories] = useState<PersonalDotMemory[]>([]);
+  const [personalDotMemoryDraft, setPersonalDotMemoryDraft] = useState('');
+  const [editingPersonalDotMemory, setEditingPersonalDotMemory] = useState<string | null>(null);
+  const [editingPersonalDotMemoryDraft, setEditingPersonalDotMemoryDraft] = useState('');
+  const [personalDotMemoryError, setPersonalDotMemoryError] = useState('');
+  const [personalDotMemoryBusy, setPersonalDotMemoryBusy] = useState(false);
   const [dotMenuOpen, setDotMenuOpen] = useState(false);
   const [dotPauseBusy, setDotPauseBusy] = useState(false);
   const canManageDot = ['owner', 'admin'].includes(auth.tenant.role);
@@ -699,6 +705,16 @@ function Profile({ state, auth, onError, onSetDotPaused, onEditAppearance, onMan
     }).catch(error => { if (active) setMemoryError(String(error)); });
     return () => { active = false; };
   }, [auth.tenant.id]);
+  useEffect(() => {
+    let active = true;
+    setPersonalDotMemories([]); setPersonalDotMemoryDraft(''); setEditingPersonalDotMemory(null); setEditingPersonalDotMemoryDraft(''); setPersonalDotMemoryError('');
+    void appFetch('/api/dot-memories').then(async response => {
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (active) setPersonalDotMemories(data as PersonalDotMemory[]);
+    }).catch(error => { if (active) setPersonalDotMemoryError(String(error)); });
+    return () => { active = false; };
+  }, [auth.user.id]);
   async function addMemory() {
     setMemoryBusy(true); setMemoryError('');
     try {
@@ -724,6 +740,32 @@ function Profile({ state, auth, onError, onSetDotPaused, onEditAppearance, onMan
       setMemories(current => current.filter(item => item.id !== memory.id));
     } catch (error) { setMemoryError(String(error)); }
     finally { setMemoryBusy(false); }
+  }
+  async function addPersonalDotMemory() {
+    setPersonalDotMemoryBusy(true); setPersonalDotMemoryError('');
+    try {
+      const memory = await request('/dot-memories', 'POST', { note: personalDotMemoryDraft }) as PersonalDotMemory;
+      setPersonalDotMemories(current => [memory, ...current]); setPersonalDotMemoryDraft('');
+    } catch (error) { setPersonalDotMemoryError(String(error)); }
+    finally { setPersonalDotMemoryBusy(false); }
+  }
+  async function savePersonalDotMemory(memory: PersonalDotMemory) {
+    setPersonalDotMemoryBusy(true); setPersonalDotMemoryError('');
+    try {
+      const updated = await request(`/dot-memories/${memory.id}`, 'PATCH', { note: editingPersonalDotMemoryDraft }) as PersonalDotMemory;
+      setPersonalDotMemories(current => current.map(item => item.id === updated.id ? updated : item)); setEditingPersonalDotMemory(null); setEditingPersonalDotMemoryDraft('');
+    } catch (error) { setPersonalDotMemoryError(String(error)); }
+    finally { setPersonalDotMemoryBusy(false); }
+  }
+  async function removePersonalDotMemory(memory: PersonalDotMemory) {
+    setPersonalDotMemoryBusy(true); setPersonalDotMemoryError('');
+    try {
+      const response = await appFetch(`/api/dot-memories/${memory.id}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setPersonalDotMemories(current => current.filter(item => item.id !== memory.id));
+    } catch (error) { setPersonalDotMemoryError(String(error)); }
+    finally { setPersonalDotMemoryBusy(false); }
   }
   async function toggleDotPause() {
     if (dotPauseBusy || !canManageDot) return;
@@ -774,6 +816,25 @@ function Profile({ state, auth, onError, onSetDotPaused, onEditAppearance, onMan
       <button className="primary" disabled={memoryBusy || !memoryDraft.trim() || memories.length >= 20} onClick={() => void addMemory()}>添加记忆</button>
       <small>每个工作区最多 20 条，每条最多 1000 个字符。</small>
       {memoryError && <small role="alert" className="member-error">{memoryError}</small>}
+    </div>
+    <div className="section-heading model-heading"><h2>Dot 的私有记忆</h2><p>Dot 可根据你在个人工作区直接表达的长期偏好、决定和持续事项更新这些笔记。它们只属于你的账号，不会加入共享工作区；你可以随时编辑或删除。</p></div>
+    <div className="profile-card model-card memory-card" data-testid="personal-dot-memory-manager">
+      <div className="memory-list" aria-label="Dot 的私有记忆">
+        {personalDotMemories.map(memory => <article className="memory-row" data-testid="personal-dot-memory-row" key={memory.id}>
+          {editingPersonalDotMemory === memory.id ? <>
+            <label>编辑这条私有记忆<textarea aria-label="编辑私有记忆" maxLength={1000} value={editingPersonalDotMemoryDraft} onChange={event => setEditingPersonalDotMemoryDraft(event.target.value)} /></label>
+            <div className="memory-actions"><button className="primary" disabled={personalDotMemoryBusy || !editingPersonalDotMemoryDraft.trim()} onClick={() => void savePersonalDotMemory(memory)}>保存记忆</button><button disabled={personalDotMemoryBusy} onClick={() => { setEditingPersonalDotMemory(null); setEditingPersonalDotMemoryDraft(''); }}>取消</button></div>
+          </> : <>
+            <p>{memory.note}</p><small>{memory.sourceTaskId ? 'Dot 从个人对话中更新' : '你手动保存'}</small>
+            <div className="memory-actions"><button aria-label={`编辑私有记忆：${memory.note}`} disabled={personalDotMemoryBusy} onClick={() => { setEditingPersonalDotMemory(memory.id); setEditingPersonalDotMemoryDraft(memory.note); }}>编辑</button><button aria-label={`删除私有记忆：${memory.note}`} disabled={personalDotMemoryBusy} onClick={() => void removePersonalDotMemory(memory)}>删除</button></div>
+          </>}
+        </article>)}
+        {personalDotMemories.length === 0 && <small data-testid="empty-personal-dot-memory-list">Dot 还没有保存私有记忆。</small>}
+      </div>
+      <label>添加一条只属于你的记忆<textarea aria-label="添加私有记忆" maxLength={1000} value={personalDotMemoryDraft} onChange={event => setPersonalDotMemoryDraft(event.target.value)} placeholder="例如：我偏好简短的中文进展摘要。" /></label>
+      <button className="primary" disabled={personalDotMemoryBusy || !personalDotMemoryDraft.trim() || personalDotMemories.length >= 20} onClick={() => void addPersonalDotMemory()}>添加私有记忆</button>
+      <small>这些记忆只会提供给你个人工作区中的 Dot，每个账号最多 20 条。</small>
+      {personalDotMemoryError && <small role="alert" className="member-error">{personalDotMemoryError}</small>}
     </div>
     <PermissionRules tenantId={auth.tenant.id} role={auth.tenant.role} />
     <div className="section-heading model-heading"><h2>工作区成员</h2><p>所有成员都必须使用对应 Google 账号登录并接受邀请后才能访问。邀请 7 天后过期；Coke Dots 不会代发邮件，请通过其他方式通知对方。当前角色：{auth.tenant.role}。</p></div>

@@ -311,6 +311,56 @@ test('workspace memories persist, are tenant scoped, and can only be edited by t
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('private Dot notes auto-update only for the personal tenant owner and survive a database reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-personal-memory-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'dot-memory-alpha', email: 'dot-memory-alpha@example.test', name: 'Dot Memory Alpha' });
+    const beta = store.signInGoogle({ subject: 'dot-memory-beta', email: 'dot-memory-beta@example.test', name: 'Dot Memory Beta' });
+    const shared = store.createWorkspace(alpha.user.id, 'Private-memory boundary');
+    const context = store.personalDotMemoryContext(alpha.tenant.id);
+    assert.equal(context?.userId, alpha.user.id);
+    assert.deepEqual(context?.memories, []);
+    assert.equal(store.personalDotMemoryContext(shared.id), null, 'Shared workspaces must never receive private Dot notes');
+
+    const task = store.createTask('Remember my response preference', null, 'model', alpha.tenant.id);
+    store.updateTask(task.id, { status: 'working' }, alpha.tenant.id);
+    const created = store.applyPersonalDotMemoryUpdates(alpha.tenant.id, task.id, [
+      { action: 'remember', note: 'Prefers brief Mandarin updates.' },
+    ]);
+    assert.equal(created.length, 1);
+    assert.equal(created[0]?.action, 'remember');
+    assert.equal(store.personalDotMemories(alpha.user.id)[0]?.note, 'Prefers brief Mandarin updates.');
+    assert.deepEqual(store.personalDotMemories(beta.user.id), [], 'Another Google account must not read this note');
+    assert.equal(store.updatePersonalDotMemory(beta.user.id, created[0]!.id, 'Cross-account edit'), null);
+    assert.equal(store.deletePersonalDotMemory(beta.user.id, created[0]!.id), false);
+
+    const sharedTask = store.createTask('Check workspace task boundary', null, 'model', shared.id);
+    store.updateTask(sharedTask.id, { status: 'working' }, shared.id);
+    assert.deepEqual(store.applyPersonalDotMemoryUpdates(shared.id, sharedTask.id, [
+      { action: 'remember', note: 'This cannot enter personal memory.' },
+    ]), []);
+
+    const updateTask = store.createTask('Correct my preference', null, 'model', alpha.tenant.id);
+    store.updateTask(updateTask.id, { status: 'working' }, alpha.tenant.id);
+    const updated = store.applyPersonalDotMemoryUpdates(alpha.tenant.id, updateTask.id, [
+      { action: 'update', memoryId: created[0]!.id, note: 'Prefers concise Mandarin updates.' },
+    ]);
+    assert.deepEqual(updated.map(change => change.action), ['update']);
+    assert.equal(store.personalDotMemories(alpha.user.id)[0]?.note, 'Prefers concise Mandarin updates.');
+    assert.deepEqual(store.applyPersonalDotMemoryUpdates(alpha.tenant.id, updateTask.id, [
+      { action: 'remember', note: 'Prefers concise Mandarin updates.' },
+    ]), [], 'Equivalent notes must not be duplicated');
+
+    store.close(); store = new Store(directory);
+    assert.equal(store.personalDotMemories(alpha.user.id)[0]?.note, 'Prefers concise Mandarin updates.');
+    assert.equal(store.personalDotMemoryContext(beta.tenant.id)?.memories.length, 0);
+    assert.equal(store.deletePersonalDotMemory(alpha.user.id, created[0]!.id), true);
+    assert.deepEqual(store.personalDotMemories(alpha.user.id), []);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('Scratchpad pages persist per tenant and an agent task reuses its page on later runs', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-pages-'));
   try {

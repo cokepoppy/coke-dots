@@ -116,6 +116,26 @@ export interface TenantActionRule {
   updatedAt: string;
 }
 
+/** A private note attached to one signed-in user's Dot, not a shared workspace memory. */
+export interface PersonalDotMemory {
+  id: string;
+  note: string;
+  sourceTaskId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PersonalDotMemoryUpdate =
+  | { action: 'remember'; note: string }
+  | { action: 'update'; memoryId: string; note: string }
+  | { action: 'forget'; memoryId: string };
+
+export interface AppliedPersonalDotMemoryUpdate {
+  action: PersonalDotMemoryUpdate['action'];
+  id: string;
+  note: string;
+}
+
 export type ScratchpadPageAction =
   | { action: 'create'; title: string; content: string }
   | { action: 'update'; pageId: string; title: string; content: string };

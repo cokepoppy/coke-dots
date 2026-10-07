@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isReasoningEffort, type ActionRuleMode, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WorkspacePage } from '../shared/types.ts';
+import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -101,6 +101,12 @@ export class Store {
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS tenant_memories_scope ON tenant_memories(tenant_id,created_at DESC);
+      CREATE TABLE IF NOT EXISTS personal_dot_memories (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), note TEXT NOT NULL,
+        source_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS personal_dot_memories_scope ON personal_dot_memories(user_id,created_at DESC);
       CREATE TABLE IF NOT EXISTS workspace_pages (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
         title TEXT NOT NULL, content TEXT NOT NULL,
@@ -511,6 +517,91 @@ export class Store {
     if (!this.canManageTenantMemory(tenantId, actorUserId, memory.created_by)) return 'forbidden';
     this.db.prepare('DELETE FROM tenant_memories WHERE tenant_id=? AND id=?').run(tenantId, id);
     return true;
+  }
+
+  personalDotMemories(userId: string): PersonalDotMemory[] {
+    return this.db.prepare(`SELECT id,note,source_task_id AS sourceTaskId,created_at AS createdAt,updated_at AS updatedAt
+      FROM personal_dot_memories WHERE user_id=? ORDER BY updated_at DESC,id DESC`).all(userId) as unknown as PersonalDotMemory[];
+  }
+
+  /** Private memory is available to an agent only while it works in the user's personal tenant. */
+  personalDotMemoryContext(tenantId: string): { userId: string; memories: PersonalDotMemory[] } | null {
+    const owners = this.db.prepare(`SELECT m.user_id AS userId FROM tenants t JOIN memberships m ON m.tenant_id=t.id
+      WHERE t.id=? AND t.kind='personal'`).all(tenantId) as unknown as { userId: string }[];
+    if (owners.length !== 1) return null;
+    return { userId: owners[0].userId, memories: this.personalDotMemories(owners[0].userId) };
+  }
+
+  addPersonalDotMemory(userId: string, note: string): PersonalDotMemory {
+    const normalized = normalizePersonalDotMemory(note);
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const count = this.db.prepare('SELECT COUNT(*) AS count FROM personal_dot_memories WHERE user_id=?').get(userId) as { count: number };
+      if (count.count >= 20) throw new Error('每个 Dot 最多保存 20 条个人记忆');
+      this.db.prepare('INSERT INTO personal_dot_memories(id,user_id,note,source_task_id,created_at,updated_at) VALUES (?,?,?,NULL,?,?)')
+        .run(id, userId, normalized, now, now);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.personalDotMemories(userId).find(memory => memory.id === id)!;
+  }
+
+  updatePersonalDotMemory(userId: string, id: string, note: string): PersonalDotMemory | null {
+    const normalized = normalizePersonalDotMemory(note);
+    const result = this.db.prepare('UPDATE personal_dot_memories SET note=?,updated_at=? WHERE user_id=? AND id=?')
+      .run(normalized, new Date().toISOString(), userId, id);
+    return Number(result.changes) ? this.personalDotMemories(userId).find(memory => memory.id === id) || null : null;
+  }
+
+  deletePersonalDotMemory(userId: string, id: string): boolean {
+    return Number(this.db.prepare('DELETE FROM personal_dot_memories WHERE user_id=? AND id=?').run(userId, id).changes) > 0;
+  }
+
+  /** Apply model-proposed changes only to the one user's personal tenant and top-level task. */
+  applyPersonalDotMemoryUpdates(tenantId: string, taskId: string, updates: PersonalDotMemoryUpdate[]): AppliedPersonalDotMemoryUpdate[] {
+    if (!updates.length) return [];
+    if (updates.length > 3) throw new Error('单次 Dot 记忆更新不能超过 3 条');
+    const userId = this.personalDotMemoryContext(tenantId)?.userId;
+    if (!userId) return [];
+    const now = new Date().toISOString();
+    const applied: AppliedPersonalDotMemoryUpdate[] = [];
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const task = this.db.prepare('SELECT status,parent_task_id AS parentTaskId,execution_mode AS executionMode FROM tasks WHERE tenant_id=? AND id=?')
+        .get(tenantId, taskId) as { status: TaskStatus; parentTaskId: string | null; executionMode: string } | undefined;
+      if (!task || task.status !== 'working' || task.parentTaskId || task.executionMode !== 'standard') {
+        this.db.exec('COMMIT');
+        return [];
+      }
+      for (const update of updates) {
+        if (update.action === 'remember') {
+          const note = normalizePersonalDotMemory(update.note);
+          const duplicate = this.db.prepare('SELECT id FROM personal_dot_memories WHERE user_id=? AND lower(note)=lower(?)').get(userId, note) as { id: string } | undefined;
+          if (duplicate) continue;
+          const count = this.db.prepare('SELECT COUNT(*) AS count FROM personal_dot_memories WHERE user_id=?').get(userId) as { count: number };
+          if (count.count >= 20) continue;
+          const id = randomUUID();
+          this.db.prepare('INSERT INTO personal_dot_memories(id,user_id,note,source_task_id,created_at,updated_at) VALUES (?,?,?,?,?,?)')
+            .run(id, userId, note, taskId, now, now);
+          applied.push({ action: update.action, id, note });
+        } else if (update.action === 'update') {
+          const note = normalizePersonalDotMemory(update.note);
+          const existing = this.db.prepare('SELECT note FROM personal_dot_memories WHERE user_id=? AND id=?').get(userId, update.memoryId) as { note: string } | undefined;
+          if (!existing || existing.note === note) continue;
+          this.db.prepare('UPDATE personal_dot_memories SET note=?,source_task_id=?,updated_at=? WHERE user_id=? AND id=?')
+            .run(note, taskId, now, userId, update.memoryId);
+          applied.push({ action: update.action, id: update.memoryId, note });
+        } else if (update.action === 'forget') {
+          const existing = this.db.prepare('SELECT note FROM personal_dot_memories WHERE user_id=? AND id=?').get(userId, update.memoryId) as { note: string } | undefined;
+          if (!existing) continue;
+          this.db.prepare('DELETE FROM personal_dot_memories WHERE user_id=? AND id=?').run(userId, update.memoryId);
+          applied.push({ action: update.action, id: update.memoryId, note: existing.note });
+        }
+      }
+      this.db.exec('COMMIT');
+      return applied;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   private canManageTenantMemory(tenantId: string, actorUserId: string, createdBy: string) {
@@ -1061,4 +1152,10 @@ function toWatch(r: Record<string, unknown>): Watch {
 
 function assertPageContent(title: string, content: string) {
   if (!title || title.length > 120 || !content || content.length > 24000) throw new Error('页面标题需为 1–120 个字符，正文需为 1–24000 个字符');
+}
+
+function normalizePersonalDotMemory(note: string) {
+  const normalized = String(note).trim();
+  if (!normalized || normalized.length > 1000) throw new Error('个人记忆需为 1–1000 个字符');
+  return normalized;
 }
