@@ -51,6 +51,7 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
 
 COPY --chmod=0755 deploy/linux-desktop/start-desktop.sh /usr/local/bin/start-dots-desktop
 COPY --chmod=0644 deploy/linux-desktop/computer-worker.mjs /opt/coke-dots/computer-worker.mjs
+COPY --chmod=0644 src/shared/public-web-policy.mjs /opt/coke-dots/public-web-policy.mjs
 COPY --chmod=0644 src/server/computer-home.mjs /opt/coke-dots/computer-home.mjs
 COPY --chmod=0644 deploy/linux-desktop/agent-runtime.mjs /opt/coke-dots/agent-runtime.mjs
 COPY --chmod=0644 deploy/linux-desktop/coral-wallpaper.svg /opt/coke-dots/coral-wallpaper.svg

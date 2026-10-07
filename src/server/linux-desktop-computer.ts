@@ -2,6 +2,7 @@ import { createHmac, createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import type { ComputerRuntime, ComputerState } from './computer.ts';
+import { validatePublicHttpsUrl } from '../shared/public-web-policy.mjs';
 
 const workerPort = 8082;
 const vncPort = 6080;
@@ -96,6 +97,20 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     return Buffer.from(await response.arrayBuffer());
   }
 
+  async openPublicPageForAgent(value: string, signal?: AbortSignal) {
+    this.assertOpen();
+    const control = await this.request('/v1/control');
+    if (!control.ok || (await control.json() as { owner?: string }).owner !== 'agent') throw new Error('电脑目前由你控制；交还电脑后，Agent 才能继续浏览。');
+    const url = await validatePublicHttpsUrl(value, { signal });
+    const response = await this.request('/v1/research/open-public-page', {
+      method: 'POST', body: JSON.stringify({ url }), ...(signal ? { signal } : {}),
+    });
+    const result = await response.json().catch(() => ({})) as { error?: string; url?: string; title?: string; text?: string };
+    if (!response.ok) throw new Error(result.error || `Linux 云电脑网页研究失败（HTTP ${response.status}）`);
+    if (typeof result.url !== 'string' || typeof result.title !== 'string' || typeof result.text !== 'string') throw new Error('Linux 云电脑返回了无效网页研究结果');
+    return { url: result.url.slice(0, 2048), title: result.title.slice(0, 300), text: result.text.slice(0, 12_000) };
+  }
+
   async novncTarget(): Promise<URL | null> {
     return this.connection ? this.connection.novncUrl : null;
   }
@@ -162,10 +177,11 @@ export class LinuxDesktopComputer implements ComputerRuntime {
 
   private async request(path: string, init: RequestInit = {}) {
     this.assertOpen();
+    const timeout = AbortSignal.timeout(30_000);
     return fetch(endpointUrl(this.connection!.workerUrl, path), {
       ...init,
       headers: { authorization: `Bearer ${this.connection!.workerToken}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
-      signal: AbortSignal.timeout(30_000),
+      signal: init.signal ? AbortSignal.any([timeout, init.signal]) : timeout,
     });
   }
 
@@ -267,6 +283,11 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
               env: [
                 { name: 'LINUX_DESKTOP_WORKER_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'LINUX_DESKTOP_WORKER_TOKEN' } } },
                 { name: 'DOTS_AGENT_RUNTIME_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'DOTS_AGENT_RUNTIME_TOKEN' } } },
+                ...(process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1' && process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL ? [
+                  { name: 'NODE_ENV', value: 'test' },
+                  { name: 'DOTS_E2E_AUTH', value: '1' },
+                  { name: 'DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL },
+                ] : []),
                 { name: 'COKE_DESKTOP_RESOLUTION', value: '1440x1080' },
                 { name: 'COKE_DESKTOP_VNC_AUTH_MODE', value: 'gateway' },
                 { name: 'COKE_DESKTOP_CHROME_NO_SANDBOX', value: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX === '1' ? '1' : '0' },
