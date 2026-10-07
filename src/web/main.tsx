@@ -348,7 +348,15 @@ function App() {
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
         onCancelTask={task => void act(task, 'cancelSchedule')}
         onWatchAction={(watch, action) => void actWatch(watch.id, action)}
-        onOpenTask={task => { setSelected(task.id); setView('chat'); }}
+        onOpenTask={async task => {
+          const response = await appFetch('/api/state');
+          if (!response.ok) throw new Error('Unable to load the latest task state');
+          const latest = await response.json() as Snapshot;
+          if (!latest.tasks.some(item => item.id === task.id)) throw new Error('Task is no longer available');
+          setState(latest);
+          setSelected(task.id);
+          setView('chat');
+        }}
         onNewTask={() => { setSchedule(true); setView('chat'); requestAnimationFrame(() => composerRef.current?.focus()); }}
         onAddWatch={addScheduledWatch} />}
       {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} onStartCall={() => setVoiceCallOpen(true)} />}
