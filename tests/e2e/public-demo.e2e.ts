@@ -65,6 +65,7 @@ try {
     assert.match(config.headers.get('content-type') || '', /^application\/json/i);
     const body = await config.json() as { googleConfigured?: unknown; e2eAuthAvailable?: unknown };
     assert.equal(typeof body.googleConfigured, 'boolean');
+    assert.equal(body.googleConfigured, true, 'The public demo must keep Google sign-in enabled');
     assert.equal(body.e2eAuthAvailable, false, 'Production must not expose the E2E sign-in fixture');
     result.googleConfigured = body.googleConfigured as boolean;
   });
@@ -124,16 +125,16 @@ try {
 
   await check('Chrome presents the auth state without opening an external consent screen', async () => {
     const config = await page!.evaluate(async () => await fetch('api/auth/config').then(response => response.json()) as { googleConfigured: boolean; e2eAuthAvailable: boolean });
+    assert.equal(config.googleConfigured, true, 'The public demo must keep Google sign-in enabled');
     assert.equal(config.e2eAuthAvailable, false);
-    if (config.googleConfigured) await page!.getByRole('link', { name: '使用 Google 登录' }).waitFor({ state: 'visible' });
-    else await page!.getByText('登录暂未开放', { exact: true }).waitFor({ state: 'visible' });
+    await page!.getByRole('link', { name: '使用 Google 登录' }).waitFor({ state: 'visible' });
     await page!.getByText('仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。', { exact: true }).waitFor({ state: 'visible' });
     assert.deepEqual(result.failures, [], `Public browser errors: ${result.failures.join('; ')}`);
   });
 
   await check('Chrome login click starts Google OAuth with the configured callback', async () => {
     const config = await page!.evaluate(async () => await fetch('api/auth/config').then(response => response.json()) as { googleConfigured: boolean });
-    if (!config.googleConfigured) return;
+    assert.equal(config.googleConfigured, true, 'The public demo must keep Google sign-in enabled');
     const googleNavigation = page!.waitForURL(url => url.hostname === 'accounts.google.com', { waitUntil: 'commit', timeout: 20_000 });
     await page!.getByRole('link', { name: '使用 Google 登录' }).click();
     await googleNavigation;
