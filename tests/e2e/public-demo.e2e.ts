@@ -140,6 +140,13 @@ try {
     await googleNavigation;
     const oauth = new URL(page!.url());
     assert.equal(oauth.searchParams.get('redirect_uri'), `${baseUrl.origin}${basePath}auth/google/callback`);
+    const callbackUrl = new URL('auth/google/callback', baseUrl).toString();
+    const stateCookie = (await page!.context().cookies(callbackUrl)).find(cookie => cookie.name === 'coke_dots_oauth_state');
+    assert(stateCookie, 'Chrome must retain the OAuth state cookie for the prefixed callback path');
+    assert.equal(stateCookie.path, `${basePath}auth/google/callback`);
+    assert.equal(stateCookie.httpOnly, true);
+    assert.equal(stateCookie.secure, true);
+    assert.equal(stateCookie.sameSite, 'Lax');
     assert.equal(oauth.searchParams.get('response_type'), 'code');
     assert.equal(oauth.searchParams.get('scope'), 'openid email profile');
     assert.equal(oauth.searchParams.get('code_challenge_method'), 'S256');

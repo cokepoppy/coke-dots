@@ -6,7 +6,6 @@ import { Store, type AuthSession } from './store.ts';
 const cookieName = 'coke_dots_session';
 const oauthCookieName = 'coke_dots_oauth_state';
 const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1000;
-const appPath = normalizePath(process.env.DOTS_BASE_PATH || '');
 
 export class AuthService {
   private clientId = process.env.GOOGLE_CLIENT_ID?.trim() || '';
@@ -125,11 +124,11 @@ export class AuthService {
     const configured = process.env.GOOGLE_REDIRECT_URI?.trim();
     if (configured) return configured;
     const hostname = req.headers.host?.split(':')[0] === 'localhost' ? 'localhost' : '127.0.0.1';
-    return `http://${hostname}:${this.port}${appPath}/auth/google/callback`;
+    return `http://${hostname}:${this.port}${appBasePath()}/auth/google/callback`;
   }
 
   private oauthClient() {
-    const redirectUri = process.env.GOOGLE_REDIRECT_URI?.trim() || `http://127.0.0.1:${this.port}${appPath}/auth/google/callback`;
+    const redirectUri = process.env.GOOGLE_REDIRECT_URI?.trim() || `http://127.0.0.1:${this.port}${appBasePath()}/auth/google/callback`;
     const testProviderOrigin = e2eGoogleProviderOrigin();
     return new OAuth2Client({
       clientId: this.clientId,
@@ -183,13 +182,13 @@ function cookieValue(header: string, name: string) {
 }
 function setSessionCookie(res: ServerResponse, token: string, maxAgeMs: number, secure: boolean) {
   const securePart = secure ? '; Secure' : '';
-  appendCookie(res, `${cookieName}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=${appPath || '/'}; Max-Age=${Math.floor(maxAgeMs / 1000)}${securePart}`);
+  appendCookie(res, `${cookieName}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=${appBasePath() || '/'}; Max-Age=${Math.floor(maxAgeMs / 1000)}${securePart}`);
 }
 function setOAuthCookie(res: ServerResponse, stateHash: string) {
-  appendCookie(res, `${oauthCookieName}=${stateHash}; HttpOnly; SameSite=Lax; Path=${appPath}/auth/google/callback; Max-Age=600${secureCookies() ? '; Secure' : ''}`);
+  appendCookie(res, `${oauthCookieName}=${stateHash}; HttpOnly; SameSite=Lax; Path=${appBasePath()}/auth/google/callback; Max-Age=600${secureCookies() ? '; Secure' : ''}`);
 }
 function clearOAuthCookie(res: ServerResponse) {
-  appendCookie(res, `${oauthCookieName}=; HttpOnly; SameSite=Lax; Path=${appPath}/auth/google/callback; Max-Age=0${secureCookies() ? '; Secure' : ''}`);
+  appendCookie(res, `${oauthCookieName}=; HttpOnly; SameSite=Lax; Path=${appBasePath()}/auth/google/callback; Max-Age=0${secureCookies() ? '; Secure' : ''}`);
 }
 function secureCookies() { return (process.env.GOOGLE_REDIRECT_URI || '').startsWith('https://'); }
 function appendCookie(res: ServerResponse, value: string) {
@@ -202,6 +201,7 @@ function redirect(res: ServerResponse, location: string) {
   res.end();
 }
 function appOrigin(req: IncomingMessage) {
+  const appPath = appBasePath();
   const configured = process.env.DOTS_APP_URL?.trim();
   if (configured) {
     try { const url = new URL(configured); if (['http:', 'https:'].includes(url.protocol)) return url.toString().replace(/\/$/, ''); } catch { /* Use the local request origin. */ }
@@ -225,6 +225,7 @@ function normalizePath(value: string) {
   if (!/^[a-zA-Z0-9/_-]+$/.test(trimmed) || trimmed.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('DOTS_BASE_PATH must be a safe URL path');
   return `/${trimmed}`;
 }
+function appBasePath() { return normalizePath(process.env.DOTS_BASE_PATH || ''); }
 function json(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(value));
