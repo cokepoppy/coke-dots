@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Files
+Comment=Browse the desktop workspace
+Exec=thunar
+Icon=dots-files
+Terminal=false
+StartupNotify=false
+Categories=System;FileManager;

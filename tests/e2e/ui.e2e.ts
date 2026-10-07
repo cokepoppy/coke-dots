@@ -1696,6 +1696,11 @@ try {
     assert.equal(welcomeState.title, 'Welcome back, Shared Dot', 'The isolated browser did not open the observed welcome screen');
     assert.equal(welcomeState.owner, 'agent');
     assert.equal(await alphaPage!.locator('.computer-dock span').count(), 3, 'The source computer view shows three dock icons');
+    const filesIcon = await alphaPage!.locator('.computer-dock .dock-files img').evaluate(element => {
+      const image = element as HTMLImageElement;
+      return { complete: image.complete, width: image.naturalWidth, height: image.naturalHeight };
+    });
+    assert.deepEqual(filesIcon, { complete: true, width: 48, height: 48 }, 'The computer dock should load its reference-backed blue folder icon');
     assert.equal(await alphaPage!.locator('.computer-controlbar.is-user-control').count(), 0, 'The agent-owned screen must keep the takeover affordance');
     await waitForComputerScreenshot(alphaPage!);
     const screenAspect = await alphaPage!.getByAltText('独立浏览器画面').evaluate(element => {

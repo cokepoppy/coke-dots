@@ -51,27 +51,29 @@ kill -0 "$wm_pid"
 xsetroot -solid '#ff9b76'
 feh --no-fehbg --bg-fill /opt/coke-dots/coral-wallpaper.svg
 mkdir -p "$HOME/.config/tint2"
+mkdir -p "$HOME/.local/share/icons/hicolor/48x48/apps"
+cp /opt/coke-dots/icons/dots-files.png "$HOME/.local/share/icons/hicolor/48x48/apps/dots-files.png"
 cat >"$HOME/.config/tint2/tint2rc" <<'TINT2_CONFIG'
 # Background 1: the translucent rounded dock
 rounded = 10
 border_width = 1
-background_color = #f7eee9 94
-border_color = #ffffff 65
-panel_items = L
-panel_size = 208 48
+background_color = #f7eee9 15
+border_color = #ffffff 60
+panel_items = FLF
+panel_size = 224 76
 panel_position = bottom center horizontal
-panel_margin = 0 18
-panel_padding = 5 3 5
+panel_margin = 0 6
+panel_padding = 5 14 5
 panel_dock = 1
 panel_layer = top
 panel_background_id = 1
 launcher_background_id = 0
-launcher_padding = 4 3 4
-launcher_icon_size = 34
+launcher_padding = 0 0 22
+launcher_icon_size = 48
 launcher_tooltip = 1
 launcher_item_app = /usr/share/applications/chromium.desktop
 launcher_item_app = /usr/share/applications/xfce4-terminal.desktop
-launcher_item_app = /usr/share/applications/thunar.desktop
+launcher_item_app = /opt/coke-dots/dots-file-manager.desktop
 TINT2_CONFIG
 tint2 >/tmp/dots-tint2.log 2>&1 &
 tint2_pid=$!

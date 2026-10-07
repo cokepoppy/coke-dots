@@ -211,8 +211,15 @@ try {
   assert(chromeWarningTextPixels < 100, `The Chromium --no-sandbox startup banner must not cover the observed welcome-screen layout (found ${chromeWarningTextPixels} dark banner pixels)`);
   const browserChrome = sample(100, 100);
   assert(browserChrome[0] > 225 && browserChrome[1] > 140 && browserChrome[1] < 215 && browserChrome[2] < 190, `The browser window must use the sampled coral theme at the measured inset; saw ${browserChrome}`);
-  const dock = sample(720, 1020);
-  assert(dock[0] > 230 && dock[1] > 210 && dock[2] > 200, `The centered launcher dock must appear along the desktop's bottom edge; saw ${dock}`);
+  const dock = sample(620, 1020);
+  assert(dock[0] > 220 && dock[1] > 140 && dock[1] < 210 && dock[2] < 190, `The centered launcher dock must keep the source's pale coral fill; saw ${dock}`);
+  let blueFolderPixels = 0;
+  for (let y = 1010; y <= 1050; y++) for (let x = 770; x <= 815; x++) {
+    const offset = (frame.width * y + x) * 4;
+    const [red, green, blue] = frame.data.subarray(offset, offset + 3);
+    if (blue > red + 20 && blue > green - 20 && blue > 120) blueFolderPixels++;
+  }
+  assert(blueFolderPixels > 250, `The third dock icon should match the blue folder visible in the 04:42 source frame; found ${blueFolderPixels} blue pixels`);
   const samples = new Set<string>();
   for (let y = 40; y < frame.height; y += 97) for (let x = 40; x < frame.width; x += 113) {
     const offset = (frame.width * y + x) * 4;

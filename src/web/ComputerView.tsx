@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { appFetch, appPath } from './api.ts';
+import dotsFilesIcon from './assets/dots-files.svg';
 import './computer.css';
 
 interface ComputerState { ready: boolean; owner: 'agent' | 'user'; url: string; title: string; backend?: 'local' | 'linux-desktop'; width?: number; height?: number }
@@ -88,7 +89,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
           </div>
           <div className="browser-page-frame"><img src={appPath(`/api/computer/screenshot?t=${frame}`)} alt="独立浏览器画面" tabIndex={state.owner === 'user' ? 0 : -1} onClick={click} onKeyDown={keyDown} /></div>
         </div>
-        <div className="computer-dock" aria-hidden="true"><span className="dock-chrome">◉</span><span className="dock-terminal">›_</span><span className="dock-files">▰</span></div>
+        <div className="computer-dock" aria-hidden="true"><span className="dock-chrome">◉</span><span className="dock-terminal">›_</span><span className="dock-files"><img src={dotsFilesIcon} alt="" /></span></div>
       </div>}
       <div className={`computer-controlbar${state.owner === 'user' ? ' is-user-control' : ''}`}>
         <span className="computer-owner" role="status"><i />{state.owner === 'user' ? 'You have control' : `${dotName} has control`}</span>
