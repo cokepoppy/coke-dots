@@ -1,0 +1,7 @@
+    location = /dots-demo {
+        return 301 https://$host/dots-demo/;
+    }
+
+    location ^~ /dots-demo/ {
+        return 301 https://$host$request_uri;
+    }

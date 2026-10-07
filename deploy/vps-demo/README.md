@@ -21,11 +21,11 @@ GOOGLE_REDIRECT_URI=https://codex.cokeagent.com/dots-demo/auth/google/callback
 
 Add the Google OAuth client ID and secret to this file before enabling sign-in. The authorized redirect URI must exactly match the callback above. The demo uses its own data directory and must not point at `./data` or another Coke Dots installation.
 
-Install `com.coke.dots.demo.plist` as `~/Library/LaunchAgents/com.coke.dots.demo.plist`. It runs Node from the repository's current `node_modules` and restarts the server if it exits. Logs go to `~/Library/Logs/coke-dots-demo.*.log`.
+Run `sync-demo-app.sh` after `npm run build:demo`; it copies only `src`, `dist`, `node_modules`, and `package.json` into the private Application Support runtime so macOS background processes do not need access to the `Documents` checkout. Then install `com.coke.dots.demo.plist` as `~/Library/LaunchAgents/com.coke.dots.demo.plist`. It restarts the server if it exits. Logs go to `~/Library/Logs/coke-dots-demo.*.log`.
 
 ## Reverse tunnel
 
-Install `com.coke.dots.demo-tunnel.plist` as `~/Library/LaunchAgents/com.coke.dots.demo-tunnel.plist`. It runs:
+Copy the existing VPS key to `~/Library/Application Support/Coke Dots Demo/vps-tunnel.pem` with mode `0600`. Install `com.coke.dots.demo-tunnel.plist` as `~/Library/LaunchAgents/com.coke.dots.demo-tunnel.plist`. It runs:
 
 ```sh
 ssh -N -T -R 127.0.0.1:14317:127.0.0.1:14318 ubuntu@119.29.119.26

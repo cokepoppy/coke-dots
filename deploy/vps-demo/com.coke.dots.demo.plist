@@ -6,13 +6,11 @@
 	<string>com.coke.dots.demo</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/shangguan/.local/bin/node</string>
-		<string>--import</string>
-		<string>tsx</string>
-		<string>src/server/index.ts</string>
+		<string>/bin/sh</string>
+		<string>/Users/shangguan/Library/Application Support/Coke Dots Demo/app/run-demo-server.sh</string>
 	</array>
 	<key>WorkingDirectory</key>
-	<string>/Users/shangguan/Documents/home2026/coke-dots</string>
+	<string>/Users/shangguan/Library/Application Support/Coke Dots Demo/app</string>
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>DOTS_ENV_FILE</key>

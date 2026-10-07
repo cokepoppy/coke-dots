@@ -22,7 +22,7 @@
 		<string>-o</string>
 		<string>StrictHostKeyChecking=yes</string>
 		<string>-i</string>
-		<string>/Users/shangguan/Documents/home2026/coke-tencent-vps/cokecodexapp.pem</string>
+		<string>/Users/shangguan/Library/Application Support/Coke Dots Demo/vps-tunnel.pem</string>
 		<string>-R</string>
 		<string>127.0.0.1:14317:127.0.0.1:14318</string>
 		<string>ubuntu@119.29.119.26</string>
