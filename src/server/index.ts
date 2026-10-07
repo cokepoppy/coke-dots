@@ -127,6 +127,16 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${host}:${port}`);
   const path = routePath(url.pathname);
   if (path === null) return reply(res, 404, { error: 'Not found' });
+  if (path === '/slack/events' && req.method === 'POST') {
+    let rawBody: Buffer;
+    try { rawBody = await readBytes(req, 128 * 1024); }
+    catch { return reply(res, 413, { error: 'Slack event body is too large' }); }
+    const timestamp = typeof req.headers['x-slack-request-timestamp'] === 'string' ? req.headers['x-slack-request-timestamp'] : '';
+    const signature = typeof req.headers['x-slack-signature'] === 'string' ? req.headers['x-slack-signature'] : '';
+    const result = slack.acceptEvent(rawBody, timestamp, signature);
+    if (result.taskCreated) void worker.tick();
+    return reply(res, result.status, result.body);
+  }
   if (!isLocalRequest(req, path)) return reply(res, 403, { error: 'Local access only' });
 
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
@@ -806,12 +816,14 @@ server.listen(port, host, () => {
   console.log(`Coke Dots service listening on http://${host}:${port}`);
   worker.start();
   watchRunner.start();
+  slack.start();
 });
 
 const shutdown = () => {
   clearInterval(sessionHeartbeat);
   worker.stop();
   watchRunner.stop();
+  slack.stop();
   for (const client of clients.keys()) client.end();
   clients.clear();
   server.close(() => store.close());

@@ -1,7 +1,8 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Entry } from '@napi-rs/keyring';
-import type { AuthSession } from './store.ts';
+import type { Task } from '../shared/types.ts';
+import type { AuthSession, SlackDeliveryCandidate, SlackInboundMessage } from './store.ts';
 import { Store } from './store.ts';
 
 const cookieName = 'coke_dots_slack_state';
@@ -12,6 +13,9 @@ export class SlackService {
   private clientId = process.env.SLACK_CLIENT_ID?.trim() || '';
   private clientSecret = process.env.SLACK_CLIENT_SECRET?.trim() || '';
   private redirectUri = process.env.SLACK_REDIRECT_URI?.trim() || '';
+  private signingSecret = process.env.SLACK_SIGNING_SECRET?.trim() || '';
+  private deliveryTimer: NodeJS.Timeout | null = null;
+  private delivering = false;
 
   constructor(private store: Store, private port: number) {}
 
@@ -26,7 +30,7 @@ export class SlackService {
   }
 
   snapshot(tenantId: string) {
-    return { configured: this.configured(), installations: this.store.slackInstallations(tenantId) };
+    return { configured: this.configured(), eventsConfigured: Boolean(this.signingSecret), installations: this.store.slackInstallations(tenantId) };
   }
 
   async begin(req: IncomingMessage, res: ServerResponse, session: AuthSession) {
@@ -44,7 +48,7 @@ export class SlackService {
     setStateCookie(res, stateHash, redirectUri.startsWith('https://'));
     const authorizeUrl = new URL(`${this.slackOrigin()}/oauth/v2/authorize`);
     authorizeUrl.searchParams.set('client_id', this.clientId);
-    authorizeUrl.searchParams.set('scope', 'chat:write');
+    authorizeUrl.searchParams.set('scope', 'chat:write,app_mentions:read,im:history,im:write');
     authorizeUrl.searchParams.set('state', state);
     authorizeUrl.searchParams.set('redirect_uri', redirectUri);
     res.writeHead(302, { Location: authorizeUrl.toString(), 'Cache-Control': 'no-store' });
@@ -77,8 +81,9 @@ export class SlackService {
       const teamId = grant.team?.id?.trim() || '';
       const teamName = grant.team?.name?.trim() || '';
       const accessToken = grant.access_token?.trim() || '';
+      const slackUserId = grant.authed_user?.id?.trim() || '';
       const scopes = (grant.scope || '').split(',').map(scope => scope.trim()).filter(Boolean);
-      if (!response.ok || grant.ok !== true || !/^[A-Z0-9]{2,32}$/.test(teamId) || !teamName || !accessToken) {
+      if (!response.ok || grant.ok !== true || !/^[A-Z0-9]{2,32}$/.test(teamId) || !teamName || !accessToken || !/^[A-Z0-9]{2,32}$/.test(slackUserId)) {
         return redirect(res, `${returnTo}/?slackError=connection_failed`);
       }
       const installation = {
@@ -86,7 +91,10 @@ export class SlackService {
         scopes, installedAt: new Date().toISOString(),
       };
       tokenEntry(flow.tenantId, teamId).setPassword(accessToken);
-      try { this.store.installSlackWorkspace(installation); }
+      try {
+        this.store.installSlackWorkspace(installation);
+        this.store.linkSlackUser(flow.tenantId, teamId, slackUserId, flow.userId);
+      }
       catch (error) { deleteToken(flow.tenantId, teamId); throw error; }
       return redirect(res, `${returnTo}/?slack=connected`);
     } catch (error) {
@@ -105,6 +113,101 @@ export class SlackService {
 
   clearTenant(tenantId: string) {
     for (const installation of this.store.slackInstallations(tenantId)) deleteToken(tenantId, installation.teamId);
+    this.store.clearSlackWorkspace(tenantId);
+  }
+
+  start() {
+    if (this.deliveryTimer) return;
+    this.deliveryTimer = setInterval(() => void this.deliverPendingReplies(), 1_000);
+    void this.deliverPendingReplies();
+  }
+
+  stop() { if (this.deliveryTimer) clearInterval(this.deliveryTimer); this.deliveryTimer = null; }
+
+  acceptEvent(rawBody: Uint8Array, timestamp: string, signature: string): SlackIngressResult {
+    if (!this.signingSecret) return { status: 503, body: { error: 'Slack Events API 尚未配置 signing secret' } };
+    if (!verifySlackSignature(this.signingSecret, rawBody, timestamp, signature)) return { status: 401, body: { error: 'Slack request signature is invalid' } };
+    let envelope: Record<string, unknown>;
+    try { envelope = JSON.parse(Buffer.from(rawBody).toString('utf8')) as Record<string, unknown>; }
+    catch { return { status: 400, body: { error: 'Slack event JSON is invalid' } }; }
+    if (envelope.type === 'url_verification') {
+      const challenge = typeof envelope.challenge === 'string' ? envelope.challenge : '';
+      return challenge && challenge.length <= 200 ? { status: 200, body: { challenge } } : { status: 400, body: { error: 'Slack URL verification challenge is invalid' } };
+    }
+    if (envelope.type !== 'event_callback') return { status: 200, body: { ok: true } };
+    const eventId = typeof envelope.event_id === 'string' ? envelope.event_id : '';
+    const teamId = typeof envelope.team_id === 'string' ? envelope.team_id : '';
+    const event = envelope.event && typeof envelope.event === 'object' ? envelope.event as Record<string, unknown> : {};
+    const eventType = event.type === 'app_mention' ? 'app_mention' : event.type === 'message' && event.channel_type === 'im' ? 'message.im' : '';
+    if (!/^[A-Za-z0-9_-]{4,120}$/.test(eventId) || !/^[A-Z0-9]{2,32}$/.test(teamId) || !eventType) return { status: 200, body: { ok: true } };
+    if (event.subtype || event.bot_id) return { status: 200, body: { ok: true } };
+    const slackUserId = typeof event.user === 'string' ? event.user : '';
+    const channelId = typeof event.channel === 'string' ? event.channel : '';
+    const text = typeof event.text === 'string' ? event.text.replace(/<@[A-Z0-9]+(?:\|[^>]+)?>/g, '').trim() : '';
+    if (!/^[A-Z0-9]{2,32}$/.test(slackUserId) || !/^[A-Z0-9]{2,32}$/.test(channelId) || text.length > 4000) return { status: 200, body: { ok: true } };
+    const message: SlackInboundMessage = {
+      eventId, teamId, slackUserId, sourceChannelId: channelId,
+      replyChannelId: eventType === 'message.im' ? channelId : slackUserId,
+      eventType, text,
+    };
+    try {
+      const accepted = this.store.createSlackInboxTask(message);
+      return { status: 200, body: { ok: true }, taskCreated: accepted.status === 'queued' };
+    } catch (error) {
+      console.error('Slack event could not be queued:', error instanceof Error ? error.message.slice(0, 160) : 'unknown error');
+      return { status: 500, body: { error: 'Slack event could not be queued' } };
+    }
+  }
+
+  private async deliverPendingReplies() {
+    if (this.delivering) return;
+    this.delivering = true;
+    try {
+      for (const candidate of this.store.slackDeliveryCandidates()) {
+        try {
+          const installation = this.store.slackInstallation(candidate.tenantId, candidate.teamId);
+          if (!installation) throw new SlackApiFailure('Slack workspace connection was removed');
+          const token = tokenEntry(candidate.tenantId, candidate.teamId).getPassword();
+          if (!token) throw new SlackApiFailure('Slack bot token is unavailable');
+          const message = replyForTask(candidate.task);
+          if (!message) throw new SlackApiFailure('Slack task produced no reply');
+          let channel = candidate.replyChannelId;
+          if (channel.startsWith('U')) {
+            const openedResponse = await fetch(this.webApiUrl('conversations.open'), {
+              method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+              body: JSON.stringify({ users: channel }), signal: AbortSignal.timeout(10_000),
+            });
+            let opened: { ok?: boolean; error?: string; channel?: { id?: string } } = {};
+            try { opened = await openedResponse.json() as typeof opened; } catch { /* Handle invalid Slack responses as a delivery failure. */ }
+            if (!openedResponse.ok || opened.ok !== true || !opened.channel?.id) {
+              throw new SlackApiFailure(opened.error || `Slack could not open a private DM (HTTP ${openedResponse.status})`, openedResponse.status === 429 ? openedResponse.headers.get('retry-after') : null);
+            }
+            channel = opened.channel.id;
+          }
+          const response = await fetch(this.webApiUrl('chat.postMessage'), {
+            method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ channel, text: message.slice(0, 4000), client_msg_id: candidate.task.id }),
+            signal: AbortSignal.timeout(10_000),
+          });
+          let result: { ok?: boolean; error?: string } = {};
+          try { result = await response.json() as typeof result; } catch { /* Handle invalid Slack responses as a delivery failure. */ }
+          if (!response.ok || result.ok !== true) throw new SlackApiFailure(result.error || `Slack API returned HTTP ${response.status}`, response.status === 429 ? response.headers.get('retry-after') : null);
+          this.store.markSlackDeliverySent(candidate.eventId);
+        } catch (error) {
+          const failure = error instanceof SlackApiFailure ? error : new SlackApiFailure('Slack API request failed');
+          const attempts = candidate.attempts + 1;
+          const backoffSeconds = failure.retryAfterSeconds ?? Math.min(300, 2 ** Math.min(attempts, 8));
+          this.store.markSlackDeliveryFailed(candidate.eventId, failure.message, new Date(Date.now() + backoffSeconds * 1000).toISOString());
+        }
+      }
+    } catch (error) {
+      console.error('Slack delivery queue failed:', error instanceof Error ? error.message.slice(0, 160) : 'unknown error');
+    } finally { this.delivering = false; }
+  }
+
+  private webApiUrl(method: string) {
+    const provider = this.e2eProviderOrigin();
+    return `${provider || 'https://slack.com'}/api/${method}`;
   }
 
   private defaultRedirectUri() {
@@ -143,6 +246,35 @@ function hash(value: string) { return createHash('sha256').update(value).digest(
 function safeEqual(left: string, right: string) {
   const a = Buffer.from(left); const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export interface SlackIngressResult { status: number; body: unknown; taskCreated?: boolean }
+
+export function verifySlackSignature(signingSecret: string, rawBody: Uint8Array, timestamp: string, signature: string, nowSeconds = Math.floor(Date.now() / 1000)) {
+  if (!signingSecret || rawBody.byteLength > 128 * 1024 || !/^\d{1,12}$/.test(timestamp) || !/^v0=[a-f0-9]{64}$/i.test(signature)) return false;
+  const timestampSeconds = Number(timestamp);
+  if (!Number.isSafeInteger(timestampSeconds) || Math.abs(nowSeconds - timestampSeconds) > 300) return false;
+  const base = `v0:${timestamp}:${Buffer.from(rawBody).toString('utf8')}`;
+  const expected = `v0=${createHmac('sha256', signingSecret).update(base).digest('hex')}`;
+  return safeEqual(expected, signature.toLowerCase());
+}
+
+class SlackApiFailure extends Error {
+  constructor(message: string, retryAfter: string | null = null) {
+    super(message.slice(0, 300));
+    const seconds = retryAfter && /^\d{1,5}$/.test(retryAfter) ? Number(retryAfter) : 0;
+    this.retryAfterSeconds = seconds > 0 ? Math.min(3600, seconds) : null;
+  }
+  readonly retryAfterSeconds: number | null;
+}
+
+function replyForTask(task: Task) {
+  const content = task.status === 'failed'
+    ? `Task failed: ${task.error || 'The agent could not complete this task.'}`
+    : task.status === 'waiting'
+      ? task.result || 'I need more information before I can continue.'
+      : task.result || 'The task finished without a text result.';
+  return content.trim().slice(0, 4000);
 }
 function cookieValue(header: string, name: string) {
   const prefix = `${name}=`;
@@ -185,5 +317,5 @@ function json(res: ServerResponse, status: number, value: unknown) {
   res.end(JSON.stringify(value));
 }
 interface SlackOAuthGrant {
-  ok?: boolean; access_token?: string; scope?: string; team?: { id?: string; name?: string };
+  ok?: boolean; access_token?: string; scope?: string; team?: { id?: string; name?: string }; authed_user?: { id?: string };
 }

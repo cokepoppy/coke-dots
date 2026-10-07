@@ -5,7 +5,7 @@ import './slack-setup.css';
 interface SlackInstallation {
   teamId: string; teamName: string; installedAt: string; scopes: string[]; contactEnabled: boolean;
 }
-interface SlackState { configured: boolean; installations: SlackInstallation[] }
+interface SlackState { configured: boolean; eventsConfigured: boolean; installations: SlackInstallation[] }
 
 export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }: { dotName: string; canManage: boolean; onClose: () => void; onConnectSlack: () => void }) {
   const [state, setState] = useState<SlackState | null>(null);
@@ -59,10 +59,13 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
           {state.installations.find(item => item.teamId === selectedTeamId)?.contactEnabled && <span className="slack-setup-connected">Selected</span>}
         </div>
         <p className="slack-setup-description">Choose the workspace to add {dotName} to Slack</p>
-        <p className="slack-setup-readonly">Slack message delivery is not active in this build yet.</p>
+        <p className="slack-setup-readonly">Direct messages and mentions from the Slack account that connected this workspace can create Dot tasks. Mention replies are delivered privately.</p>
+        {state.eventsConfigured
+          ? <p className="slack-setup-readonly" role="status">Message receiver is ready. Subscribe to app_mention and message.im in the Slack app’s Events API and send events to /slack/events.</p>
+          : <p className="slack-setup-readonly" role="status">Message receiving needs SLACK_SIGNING_SECRET and the Slack app’s Events API URL set to /slack/events.</p>}
         {!canManage && <p className="slack-setup-readonly">Ask a workspace owner or admin to change this connection.</p>}
         <button className="slack-setup-primary" type="button" disabled={!canManage || saving || !selectedTeamId} onClick={() => void selectWorkspace()}>{saving ? 'Saving…' : 'Select a workspace'}</button>
-        <button className="slack-setup-secondary" type="button" disabled={!canManage} onClick={connectAnotherWorkspace}>Connect another workspace</button>
+        <button className="slack-setup-secondary" type="button" disabled={!canManage} onClick={connectAnotherWorkspace}>Connect or refresh Slack access</button>
       </> : <>
         <p className="slack-setup-description">Connect a Slack workspace to add {dotName} as a contact method.</p>
         {state?.configured ? <button className="slack-setup-primary" data-testid="slack-connect" type="button" disabled={!canManage} onClick={onConnectSlack}>Connect Slack</button> : <div className="slack-setup-unavailable" role="status">Slack connection is not configured for this build.</div>}
