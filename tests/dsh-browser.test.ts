@@ -144,9 +144,14 @@ test('DeepSeek Harness loads the isolated browser-tool patch and returns page ev
     assert.equal(pageReads, 1, 'The DSH tool must call the tenant browser bridge exactly once');
     assert.equal(requestBodies.length, 2, 'The browser result must reach the follow-up model turn');
     assert.match(requestBodies[0], /open_public_page/, 'The injected tool schema was not sent to the model');
-    const firstTurn = JSON.parse(requestBodies[0]) as { tools?: { function?: { name?: string }; name?: string }[] };
+    const firstTurn = JSON.parse(requestBodies[0]) as { tools?: { function?: { name?: string; parameters?: { type?: string; properties?: Record<string, { type?: string }>; required?: string[]; additionalProperties?: boolean } }; name?: string }[] };
     const exposedToolNames = (firstTurn.tools || []).map(tool => tool.function?.name || tool.name || '');
     assert.ok(exposedToolNames.includes('open_public_page'));
+    const browserTool = firstTurn.tools?.find(tool => tool.function?.name === 'open_public_page')?.function;
+    assert.equal(browserTool?.parameters?.type, 'object', 'DeepSeek API requires a complete JSON Schema object for tool arguments');
+    assert.equal(browserTool?.parameters?.properties?.url?.type, 'string');
+    assert.deepEqual(browserTool?.parameters?.required, ['url']);
+    assert.equal(browserTool?.parameters?.additionalProperties, false);
     assert.ok(!exposedToolNames.some(name => /(?:^|[-_])(?:bash|pwsh|write|edit|web|subagent|workflow)(?:[-_]|$)/i.test(name)),
       `Task-local DSH browser research must not grant general shell, write, web, or delegation tools to the model: ${exposedToolNames.join(', ')}`);
     assert.match(requestBodies[1], /untrusted webpage content/);

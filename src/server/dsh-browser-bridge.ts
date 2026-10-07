@@ -90,7 +90,12 @@ export function apply(ctx) {
     name: 'open_public_page',
     description: 'Open one public HTTPS page in the Dot computer browser and return bounded visible text. Read-only; no login, clicks, form input, downloads, or writes.',
     parameters: {
-      url: { type: 'string', required: true, description: 'A public HTTPS page URL' },
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'A public HTTPS page URL' },
+      },
+      required: ['url'],
+      additionalProperties: false,
     },
     output: {
       schema: {
