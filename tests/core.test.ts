@@ -528,6 +528,62 @@ test('background worker stores real model result and schedules a future run', as
   }
 });
 
+test('routine notification preferences never hide work that needs a user reply', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-notification-criteria-'));
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+  const modelServer = createServer((req, res) => {
+    let raw = '';
+    req.setEncoding('utf8');
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+      const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
+      const needsReply = prompt.includes('E2E notification criteria — ask the user');
+      const decision = needsReply
+        ? { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false }
+        : { status: 'done', message: 'Routine check completed.', notifyUser: false };
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(decision) } }] }));
+    });
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '1';
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'test-model'; process.env.DOTS_MODEL_API_KEY = 'local-test-key';
+  const store = new Store(directory);
+  const user = store.signInGoogle({ subject: 'notification-criteria', email: 'notification-criteria@example.test', name: 'Notification Criteria' });
+  store.setSetting('desktopNotifications', 'true', user.tenant.id);
+  store.setSetting('modelBaseUrl', `http://127.0.0.1:${address.port}`, user.tenant.id);
+  store.setSetting('modelName', 'test-model', user.tenant.id);
+  const quietTask = store.createTask('E2E notification criteria — routine success', null, 'model', user.tenant.id);
+  const replyTask = store.createTask('E2E notification criteria — ask the user', null, 'model', user.tenant.id);
+  const notifications: { title: string; body: string }[] = [];
+  const worker = new Worker(store, () => {}, undefined, (title, body) => notifications.push({ title, body }));
+  try {
+    worker.start();
+    await waitFor(() => ['done', 'waiting'].includes(store.getTask(quietTask.id, user.tenant.id)?.status || '')
+      && ['done', 'waiting'].includes(store.getTask(replyTask.id, user.tenant.id)?.status || ''));
+    const quietResult = store.getTask(quietTask.id, user.tenant.id);
+    const replyResult = store.getTask(replyTask.id, user.tenant.id);
+    assert.equal(quietResult?.status, 'done');
+    assert.equal(quietResult?.result, 'Routine check completed.');
+    assert.equal(replyResult?.status, 'waiting');
+    assert.equal(replyResult?.result, null);
+    assert.deepEqual(notifications, [{ title: 'Dot', body: '“E2E notification criteria — ask the user”正在等待你的回复。' }], 'A conditional quiet preference may suppress routine success, but not a required user reply');
+  } finally {
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('background worker persists the next daily occurrence in the selected time zone', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-calendar-worker-'));
   const modelServer = createServer(async (_req, res) => {

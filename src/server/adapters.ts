@@ -28,7 +28,7 @@ export interface AgentRequest {
 }
 export type AgentPageAction = ScratchpadPageAction;
 export interface AgentDelegation { title: string; instruction: string; engine?: Engine }
-export interface AgentDecision { status: 'done' | 'waiting' | 'scheduled' | 'delegating'; message: string; nextMinutes?: number; sessionId?: string; pageAction?: AgentPageAction; delegations?: AgentDelegation[] }
+export interface AgentDecision { status: 'done' | 'waiting' | 'scheduled' | 'delegating'; message: string; nextMinutes?: number; sessionId?: string; pageAction?: AgentPageAction; delegations?: AgentDelegation[]; notifyUser?: boolean }
 export interface AgentAdapter { id: Engine; available(tenantId?: string): boolean; run(input: AgentRequest): Promise<AgentDecision> }
 
 interface PiSessionManager {
@@ -95,7 +95,7 @@ function isPathInside(root: string, candidate: string): boolean {
   return pathFromRoot === '' || (pathFromRoot !== '..' && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot));
 }
 
-const instruction = 'You are a personal agent. Finish with one JSON object only: {"status":"done|waiting|scheduled|delegating","message":"...","nextMinutes":15,"delegations":[{"title":"...","instruction":"...","engine":"model|claude|pi|dsh (optional)"}]}. Use status delegating only when independent bounded work streams would materially improve the result; create at most 3 children. A child task cannot delegate or schedule more work. Do not split a request into children that need shared mutable state or an ordered handoff. When child results are supplied, synthesize them and finish without creating more children. When a Scratchpad page operation is allowed by the active tenant rule and relevant to the task, create it with "pageAction":{"action":"create","title":"...","content":"..."}; update an existing listed page with "pageAction":{"action":"update","pageId":"...","title":"...","content":"..."}. Use only listed page IDs. Page actions write only to this tenant-scoped local Scratchpad. Do not claim external actions you did not perform. Do not send messages, change external accounts, or edit files. If an action would require that access, choose waiting and explain the needed permission. For an ongoing check, choose scheduled. When the user asks for automation ideas, keep them as inactive proposals and choose done; do not schedule them unless the user chooses an idea and asks to set it up with its sources, timing, and review requirements. Use the user language.';
+const instruction = 'You are a personal agent. Finish with one JSON object only: {"status":"done|waiting|scheduled|delegating","message":"...","nextMinutes":15,"notifyUser":true,"delegations":[{"title":"...","instruction":"...","engine":"model|claude|pi|dsh (optional)"}]}. `notifyUser` is optional; default to true for ordinary completion and progress updates. Set it to false only when the user asked for quiet or conditional updates and this routine success does not meet their notification criteria. This flag can suppress ordinary done or informational delegation notifications only. Never suppress a notification when you need a user reply, approval, hand-off, or when work fails. Use status delegating only when independent bounded work streams would materially improve the result; create at most 3 children. A child task cannot delegate or schedule more work. Do not split a request into children that need shared mutable state or an ordered handoff. When child results are supplied, synthesize them and finish without creating more children. When a Scratchpad page operation is allowed by the active tenant rule and relevant to the task, create it with "pageAction":{"action":"create","title":"...","content":"..."}; update an existing listed page with "pageAction":{"action":"update","pageId":"...","title":"...","content":"..."}. Use only listed page IDs. Page actions write only to this tenant-scoped local Scratchpad. Do not claim external actions you did not perform. Do not send messages, change external accounts, or edit files. If an action would require that access, choose waiting and explain the needed permission. For an ongoing check, choose scheduled. When the user asks for automation ideas, keep them as inactive proposals and choose done; do not schedule them unless the user chooses an idea and asks to set it up with its sources, timing, and review requirements. Use the user language.';
 const actionRuleText = (rule: TenantActionRule | null | undefined) => {
   if (!rule) return '\n\nScratchpad permission: take action when the user explicitly asks to create or update a Scratchpad page. Never infer approval for a page write.';
   const mode = {
@@ -132,6 +132,7 @@ export function parseDecision(raw: string, sessionId?: string, options: { allowD
   if (!match) throw new Error('代理没有返回结构化结果');
   const value = JSON.parse(match[0]) as Partial<AgentDecision>;
   if (!['done', 'waiting', 'scheduled', 'delegating'].includes(String(value.status)) || typeof value.message !== 'string' || !value.message.trim()) throw new Error('代理返回的任务状态无效');
+  if (value.notifyUser !== undefined && typeof value.notifyUser !== 'boolean') throw new Error('代理返回的通知偏好无效');
   if (value.status === 'scheduled' && options.allowScheduling === false) throw new Error('只读任务不能安排后续运行');
   let delegations: AgentDelegation[] | undefined;
   if (value.status === 'delegating') {
@@ -158,7 +159,7 @@ export function parseDecision(raw: string, sessionId?: string, options: { allowD
     else throw new Error('代理返回的 Scratchpad 页面操作无效');
   }
   if (pageAction && (value.status === 'waiting' || value.status === 'delegating')) throw new Error('代理需要先获得补充信息，不能同时写入 Scratchpad 页面');
-  return { status: value.status!, message: value.message.trim(), nextMinutes: value.nextMinutes, sessionId, pageAction, delegations };
+  return { status: value.status!, message: value.message.trim(), nextMinutes: value.nextMinutes, sessionId, pageAction, delegations, notifyUser: value.notifyUser };
 }
 
 export const adapters: Record<Engine, AgentAdapter> = {

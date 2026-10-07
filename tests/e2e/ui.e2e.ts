@@ -116,6 +116,8 @@ async function startMockModel() {
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
         const isMemoryCheck = prompt.includes('E2E memory prompt — apply the saved workspace preference');
+        const isQuietNotificationCheck = prompt.includes('E2E notification criteria — routine success');
+        const isDecisionNotificationCheck = prompt.includes('E2E notification criteria — ask the user');
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
         const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
         const isPageChangeReview = prompt.includes('E2E page-change review');
@@ -164,13 +166,15 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'claude' },
         ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
+        if (isDecisionNotificationCheck) Object.assign(decision, { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false });
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -1454,6 +1458,28 @@ try {
     assert.equal(await alphaPage!.locator('.scheduled-item').count(), 0, 'Discussing ideas must not create a Scheduled entry');
     await screenshot(alphaPage!, '07-automation-proposals-unscheduled');
     await clickNav(alphaPage!, '你的 dot');
+  });
+
+  await recordStep('Conditional notifications stay quiet for routine success but surface decisions in the chat', async () => {
+    const quietInstruction = 'E2E notification criteria — routine success';
+    await createTask(alphaPage!, quietInstruction);
+    await alphaPage!.waitForFunction(async (instruction: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string; result: string | null }[] };
+      return state.tasks.some(task => task.instruction === instruction && task.status === 'done' && task.result === 'Routine check completed.');
+    }, quietInstruction, { timeout: 15_000 });
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible' });
+    await alphaPage!.locator('.timeline .message.dot p').filter({ hasText: 'Routine check completed.' }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '07b-quiet-routine-result');
+
+    const decisionInstruction = 'E2E notification criteria — ask the user';
+    await createTask(alphaPage!, decisionInstruction);
+    await alphaPage!.waitForFunction(async (instruction: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+      return state.tasks.some(task => task.instruction === instruction && task.status === 'waiting');
+    }, decisionInstruction, { timeout: 15_000 });
+    await alphaPage!.locator('.timeline .pill.waiting').waitFor({ state: 'visible' });
+    await alphaPage!.locator('.timeline .message.dot p').filter({ hasText: 'Should I continue or pause?' }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '07c-user-decision-needed');
   });
 
   await recordStep('Voice calls dispatch tenant work, preserve in-call controls, and end without stopping assigned work', async () => {

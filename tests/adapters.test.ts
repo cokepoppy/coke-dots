@@ -12,6 +12,16 @@ test('agent output must specify a real task state', () => {
   assert.throws(() => parseDecision('{"status":"done","message":""}'));
 });
 
+test('agent may suppress routine notifications only with a boolean choice', () => {
+  assert.equal(parseDecision('{"status":"done","message":"Routine check complete."}').notifyUser, undefined);
+  assert.equal(parseDecision('{"status":"done","message":"Routine check complete.","notifyUser":false}').notifyUser, false);
+  assert.equal(parseDecision('{"status":"waiting","message":"Which option should I use?","notifyUser":false}').notifyUser, false);
+  assert.throws(() => parseDecision('{"status":"done","message":"Complete.","notifyUser":"no"}'), /通知偏好无效/);
+  const prompt = formatAgentPrompt({ prompt: 'Check the supplied source.', priorResult: null, sessionId: null, workspace: '/tmp/coke-dots-notification-test', onEvent: () => {} });
+  assert.match(prompt, /Set it to false only when the user asked for quiet or conditional updates/);
+  assert.match(prompt, /Never suppress a notification when you need a user reply, approval, hand-off, or when work fails/);
+});
+
 test('read-only reviews mark source content untrusted and reject writes, delegation, and follow-up schedules', () => {
   const input: AgentRequest = {
     prompt: 'Review this monitored page change.',

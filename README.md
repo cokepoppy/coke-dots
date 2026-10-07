@@ -28,7 +28,7 @@ Scheduled also supports explicit HTTPS page monitors. The first successful check
 
 ## Agent engines
 
-Each task records its selected engine and its own workspace. The adapter contract returns a durable state (`done`, `waiting`, `scheduled`, or `delegating`), message, optional next check time, optional native session ID and up to three bounded child instructions. A child can choose one of the engines currently available to its tenant, or inherit its parent's engine. The UI shows available engines and keeps each task's choice on retries and restarts.
+Each task records its selected engine and its own workspace. The adapter contract returns a durable state (`done`, `waiting`, `scheduled`, or `delegating`), message, optional next check time, optional native session ID, up to three bounded child instructions, and an optional `notifyUser` choice. Routine completion and informational delegation can be quiet when a task's update criteria say no notification is needed; a required user reply, approval, hand-off, or failure remains visible. A child can choose one of the engines currently available to its tenant, or inherit its parent's engine. The UI shows available engines and keeps each task's choice on retries and restarts.
 
 - **Model API:** OpenAI-compatible Chat Completions via profile settings or environment variables. The profile saves only model name and endpoint in SQLite; the API key goes to macOS Keychain. This backend has no tools.
 - **Claude Code:** Set `DOTS_CLAUDE_BIN` to a local `claude` binary or `cli.js`; on this workspace layout, the sibling `coke-codex-app/vendor/claude-code/cli.js` is detected automatically. Runs in plan mode with only read/search tools and no MCP tools. Local authentication must already work.

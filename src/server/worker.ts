@@ -113,7 +113,7 @@ export class Worker {
       if (task.parentTaskId && decision.status === 'scheduled') throw new Error('子任务不能创建周期安排');
       if (decision.status === 'delegating') {
         const delegated = this.store.createDelegatedTasks(task.id, task.tenantId, decision.delegations || [], decision.message, decision.sessionId);
-        this.notifyIfEnabled(task.tenantId, `“${task.title}”已拆分为 ${delegated.length} 项并行工作。`);
+        if (decision.notifyUser !== false) this.notifyIfEnabled(task.tenantId, `“${task.title}”已拆分为 ${delegated.length} 项并行工作。`);
         this.onChange();
         return;
       }
@@ -165,7 +165,7 @@ export class Worker {
       }, task.tenantId);
       this.store.addEntry('dot', outputMessage, task.id, task.tenantId);
       if (decision.status === 'waiting') this.notifyIfEnabled(task.tenantId, `“${task.title}”正在等待你的回复。`);
-      else if (decision.status === 'done') this.notifyIfEnabled(task.tenantId, `“${task.title}”已有新结果。`);
+      else if (decision.status === 'done' && decision.notifyUser !== false) this.notifyIfEnabled(task.tenantId, `“${task.title}”已有新结果。`);
       this.onChange();
     } catch (error) {
       const current = this.store.getTask(task.id, task.tenantId);
