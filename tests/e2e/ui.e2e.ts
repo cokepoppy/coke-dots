@@ -855,8 +855,25 @@ try {
     assert.equal(await alphaPage!.locator('.scheduled-add-watch').getAttribute('aria-expanded'), 'true');
     await alphaPage!.getByLabel('HTTPS URL').waitFor({ state: 'visible' });
     await alphaPage!.getByRole('button', { name: 'Close monitor form' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
+    let failScheduledStateRead = true;
+    await alphaPage!.route('**/api/state', async route => {
+      if (failScheduledStateRead && route.request().method() === 'GET') {
+        failScheduledStateRead = false;
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    });
     await detail.getByRole('button', { name: 'Open conversation' }).click();
+    const openError = alphaPage!.getByTestId('scheduled-chat-open-error');
+    await openError.waitFor({ state: 'visible' });
+    assert.match(await openError.innerText(), /Couldn't open this chat\. Try again\./);
+    await screenshot(alphaPage!, '07-scheduled-open-error');
+    await openError.getByRole('button', { name: 'Try again' }).click();
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: scheduledTask }).waitFor({ state: 'visible' });
+    await alphaPage!.unroute('**/api/state');
+    await alphaPage!.getByTestId('theme-toggle').click();
     await clickNav(alphaPage!, 'Scheduled');
     await alphaPage!.getByTestId('scheduled-detail').getByRole('button', { name: 'Cancel schedule' }).click();
     await alphaPage!.getByText('No scheduled tasks yet').first().waitFor({ state: 'visible' });
