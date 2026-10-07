@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DotAppearance, Snapshot, Task, VoiceCallSession } from '../shared/types.ts';
+import { appFetch } from './api.ts';
 import { DotAvatar } from './DotAvatar.tsx';
 import './voice-call.css';
 
@@ -145,7 +146,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
 
     const followTask = async (submittedTask: Task) => {
       for (let attempt = 0; attempt < 1200 && activeRef.current; attempt += 1) {
-        const response = await fetch('/api/state');
+        const response = await appFetch('/api/state');
         if (!activeRef.current) return;
         if (!response.ok) throw new Error('读取任务进度失败：HTTP ' + response.status);
         const snapshot = await response.json() as Snapshot;
@@ -178,14 +179,14 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       if (activeRef.current) setTaskStatus('仍在后台运行；你可以结束通话。');
     };
 
-    void fetch('/api/voice-calls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    void appFetch('/api/voice-calls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
       .then(async response => {
         const data = await response.json() as VoiceCallSession & { error?: string };
         if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
         sessionRef.current = data;
         if (!activeRef.current) {
           const durationSeconds = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
-          await fetch('/api/voice-calls/' + data.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
+          await appFetch('/api/voice-calls/' + data.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
           return;
         }
         startRecognitionRef.current();
@@ -203,7 +204,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       if (!endedRef.current && sessionRef.current) {
         endedRef.current = true;
         const durationSeconds = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
-        void fetch('/api/voice-calls/' + sessionRef.current.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
+        void appFetch('/api/voice-calls/' + sessionRef.current.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
       }
     };
   }, []);
@@ -245,7 +246,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
     if (session) {
       const durationSeconds = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
       try {
-        const response = await fetch('/api/voice-calls/' + session.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
+        const response = await appFetch('/api/voice-calls/' + session.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
         if (!response.ok) throw new Error('通话记录未能保存');
       } catch (error) { setCallError(error instanceof Error ? error.message : '通话记录未能保存'); }
     }

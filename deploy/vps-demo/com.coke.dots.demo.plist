@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.coke.dots.demo</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/shangguan/.local/bin/node</string>
+		<string>--import</string>
+		<string>tsx</string>
+		<string>src/server/index.ts</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/shangguan/Documents/home2026/coke-dots</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>DOTS_ENV_FILE</key>
+		<string>/Users/shangguan/Library/Application Support/Coke Dots Demo/demo.env</string>
+		<key>NODE_ENV</key>
+		<string>production</string>
+		<key>PATH</key>
+		<string>/Users/shangguan/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/Users/shangguan/Library/Logs/coke-dots-demo.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/shangguan/Library/Logs/coke-dots-demo.err.log</string>
+</dict>
+</plist>

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import { appFetch, appPath } from './api.ts';
 import './style.css';
 import './chat-theme.css';
 import './watch.css';
@@ -40,7 +41,7 @@ const statusText: Record<TaskStatus, string> = {
 const engineText: Record<Engine, string> = { model: '模型 API', claude: 'Claude Code', pi: 'Pi', dsh: 'DeepSeek Harness' };
 
 async function request(path: string, method: 'POST' | 'PATCH', body: object) {
-  const response = await fetch(`/api${path}`, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const response = await appFetch(`/api${path}`, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
@@ -102,14 +103,14 @@ function App() {
   }, [view, selected, selectedPageId]);
 
   useEffect(() => {
-    void fetch('/api/auth/me').then(async response => response.ok ? await response.json() as AuthContext : null)
+    void appFetch('/api/auth/me').then(async response => response.ok ? await response.json() as AuthContext : null)
       .then(setAuthContext).catch(() => setAuthContext(null)).finally(() => setAuthChecked(true));
-    void fetch('/api/auth/config').then(response => response.json()).then(data => { setGoogleConfigured(Boolean(data.googleConfigured)); setE2eAuthAvailable(Boolean(data.e2eAuthAvailable)); }).catch(() => { setGoogleConfigured(false); setE2eAuthAvailable(false); });
+    void appFetch('/api/auth/config').then(response => response.json()).then(data => { setGoogleConfigured(Boolean(data.googleConfigured)); setE2eAuthAvailable(Boolean(data.e2eAuthAvailable)); }).catch(() => { setGoogleConfigured(false); setE2eAuthAvailable(false); });
   }, []);
 
   useEffect(() => {
     if (!authContext) { setInvitations([]); return; }
-    const refresh = () => void fetch('/api/auth/invitations').then(async response => response.ok ? await response.json() as WorkspaceInvitation[] : [])
+    const refresh = () => void appFetch('/api/auth/invitations').then(async response => response.ok ? await response.json() as WorkspaceInvitation[] : [])
       .then(setInvitations).catch(() => setInvitations([]));
     refresh();
     const timer = window.setInterval(refresh, 15_000);
@@ -120,7 +121,7 @@ function App() {
     setPendingAttachments([]);
     if (!authContext) return;
     const controller = new AbortController();
-    void fetch('/api/attachments', { signal: controller.signal })
+    void appFetch('/api/attachments', { signal: controller.signal })
       .then(async response => response.ok ? await response.json() as AttachmentSummary[] : [])
       .then(items => setPendingAttachments(items))
       .catch(error => { if (error instanceof Error && error.name !== 'AbortError') setPendingAttachments([]); });
@@ -145,11 +146,11 @@ function App() {
   useEffect(() => {
     if (!authContext) return;
     setStateLoaded(false);
-    const stream = new EventSource('/api/events');
+    const stream = new EventSource(appPath('/api/events'));
     stream.onmessage = event => { setState(JSON.parse(event.data)); setStateLoaded(true); };
     stream.onerror = () => {
       setError('与本机服务的连接已断开，正在重连。');
-      void fetch('/api/auth/me').then(response => response.ok ? response.json() as Promise<AuthContext> : null).then(next => { if (!next) setAuthContext(null); }).catch(() => setAuthContext(null));
+      void appFetch('/api/auth/me').then(response => response.ok ? response.json() as Promise<AuthContext> : null).then(next => { if (!next) setAuthContext(null); }).catch(() => setAuthContext(null));
     };
     return () => stream.close();
   }, [authContext?.tenant.id]);
@@ -213,7 +214,7 @@ function App() {
     setUploadingAttachments(true); setError('');
     try {
       for (const file of Array.from(files)) {
-        const response = await fetch('/api/attachments', {
+        const response = await appFetch('/api/attachments', {
           method: 'POST',
           headers: { 'content-type': file.type || 'application/octet-stream', 'x-attachment-name': encodeURIComponent(file.name) },
           body: file,
@@ -231,7 +232,7 @@ function App() {
 
   async function removePendingAttachment(attachment: AttachmentSummary) {
     try {
-      const response = await fetch(`/api/attachments/${attachment.id}`, { method: 'DELETE' });
+      const response = await appFetch(`/api/attachments/${attachment.id}`, { method: 'DELETE' });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setPendingAttachments(current => current.filter(item => item.id !== attachment.id));
@@ -265,7 +266,7 @@ function App() {
     if (authContext?.tenant.id === tenantId) return;
     setVoiceCallOpen(false); setPendingAttachments([]);
     try {
-      const response = await fetch('/api/auth/tenant', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId }) });
+      const response = await appFetch('/api/auth/tenant', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setAuthContext(data as AuthContext); setState(initial); setStateLoaded(false); setSelected(null); setSelectedPageId(null); setError('');
@@ -274,24 +275,24 @@ function App() {
 
   async function createTenant(name: string) {
     setVoiceCallOpen(false);
-    const response = await fetch('/api/tenants', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+    const response = await appFetch('/api/tenants', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    const refreshed = await fetch('/api/auth/me');
+    const refreshed = await appFetch('/api/auth/me');
     if (refreshed.ok) setAuthContext(await refreshed.json() as AuthContext);
     setState(initial); setStateLoaded(false); setSelected(null); setSelectedPageId(null);
   }
 
   async function logout() {
     setVoiceCallOpen(false);
-    try { await fetch('/api/auth/logout', { method: 'POST' }); }
+    try { await appFetch('/api/auth/logout', { method: 'POST' }); }
     finally { setAuthContext(null); setState(initial); setPendingAttachments([]); setSelectedPageId(null); }
   }
 
   async function acceptInvitation(invitation: WorkspaceInvitation) {
     try {
       setError('');
-      const response = await fetch(`/api/auth/invitations/${invitation.tenantId}/accept`, { method: 'POST' });
+      const response = await appFetch(`/api/auth/invitations/${invitation.tenantId}/accept`, { method: 'POST' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setAuthContext(data as AuthContext);
@@ -371,7 +372,7 @@ function LoginScreen({ googleConfigured, e2eAuthAvailable }: { googleConfigured:
     setDesktopError(''); setDesktopPending(true);
     const random = new Uint8Array(32); crypto.getRandomValues(random);
     const handoffToken = Array.from(random, byte => byte.toString(16).padStart(2, '0')).join('');
-    const authorization = new URL('/api/auth/desktop/start', window.location.href);
+    const authorization = new URL(appPath('/api/auth/desktop/start'), window.location.href);
     authorization.searchParams.set('handoffToken', handoffToken);
     const popup = window.open(authorization.toString(), '_blank');
     if (!popup && !isElectron) { setDesktopPending(false); setDesktopError('浏览器阻止了登录窗口，请允许弹出窗口后重试。'); return; }
@@ -379,7 +380,7 @@ function LoginScreen({ googleConfigured, e2eAuthAvailable }: { googleConfigured:
       const deadline = Date.now() + 10 * 60_000;
       while (Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 2000));
-        const response = await fetch('/api/auth/desktop/poll', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ handoffToken }) });
+        const response = await appFetch('/api/auth/desktop/poll', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ handoffToken }) });
         const data = await response.json();
         if (response.status === 202) continue;
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
@@ -393,13 +394,13 @@ function LoginScreen({ googleConfigured, e2eAuthAvailable }: { googleConfigured:
   async function signInE2e() {
     setDesktopError('');
     try {
-      const response = await fetch('/api/auth/e2e/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: e2eEmail }) });
+      const response = await appFetch('/api/auth/e2e/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: e2eEmail }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       window.location.reload();
     } catch (error) { setDesktopError(error instanceof Error ? error.message : String(error)); }
   }
-  return <main className="auth-page"><div className="auth-card"><div className="brand"><span className="brand-mark">●</span> Coke Dots</div><h1>让你的个人代理持续推进工作</h1><p>使用 Google 账号登录。每个工作区的任务、记录、模型密钥和浏览器会话相互隔离。</p>{authError && <div className="auth-error">{authErrors[authError] || '登录失败，请重试。'}</div>}{desktopError && <div className="auth-error">{desktopError}</div>}{googleConfigured ? isElectron ? <button className="google-login" disabled={desktopPending} onClick={() => void beginDesktopLogin()}><span>G</span>{desktopPending ? '等待浏览器完成登录…' : '使用 Google 登录'}</button> : <a className="google-login" href="/api/auth/google/start"><span>G</span>使用 Google 登录</a> : <div className="auth-setup"><strong>需要配置 Google OAuth</strong><span>在本机服务环境中设置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET，然后重启服务。</span></div>}{e2eAuthAvailable && <div className="e2e-login"><label htmlFor="e2e-email">E2E 测试账号</label><input id="e2e-email" type="email" value={e2eEmail} onChange={event => setE2eEmail(event.target.value)} /><button data-testid="e2e-sign-in" className="google-login" onClick={() => void signInE2e()}>测试环境登录</button></div>}<small>仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。</small></div></main>;
+  return <main className="auth-page"><div className="auth-card"><div className="brand"><span className="brand-mark">●</span> Coke Dots</div><h1>让你的个人代理持续推进工作</h1><p>使用 Google 账号登录。每个工作区的任务、记录、模型密钥和浏览器会话相互隔离。</p>{authError && <div className="auth-error">{authErrors[authError] || '登录失败，请重试。'}</div>}{desktopError && <div className="auth-error">{desktopError}</div>}{googleConfigured ? isElectron ? <button className="google-login" disabled={desktopPending} onClick={() => void beginDesktopLogin()}><span>G</span>{desktopPending ? '等待浏览器完成登录…' : '使用 Google 登录'}</button> : <a className="google-login" href={appPath('/api/auth/google/start')}><span>G</span>使用 Google 登录</a> : <div className="auth-setup"><strong>需要配置 Google OAuth</strong><span>在本机服务环境中设置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET，然后重启服务。</span></div>}{e2eAuthAvailable && <div className="e2e-login"><label htmlFor="e2e-email">E2E 测试账号</label><input id="e2e-email" type="email" value={e2eEmail} onChange={event => setE2eEmail(event.target.value)} /><button data-testid="e2e-sign-in" className="google-login" onClick={() => void signInE2e()}>测试环境登录</button></div>}<small>仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。</small></div></main>;
 }
 
 function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask, onOpenPage }: { tenantId: string; profileName: string; state: Snapshot; stateLoaded: boolean; onSelectTask: (taskId: string) => void; onOpenPage: (pageId: string, taskId?: string | null) => void }) {
@@ -417,7 +418,7 @@ function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask,
     const generation = ++pageGeneration.current;
     let current = true;
     setLoading(true); setLoadingOlder(false); setError(''); setEntries([]); setNextCursor(null);
-    void fetch('/api/activity?limit=50').then(async response => {
+    void appFetch('/api/activity?limit=50').then(async response => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       return data as { entries: Entry[]; nextCursor: number | null };
@@ -444,7 +445,7 @@ function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask,
     const generation = pageGeneration.current;
     setLoadingOlder(true); setError('');
     try {
-      const response = await fetch(`/api/activity?limit=50&before=${nextCursor}`);
+      const response = await appFetch(`/api/activity?limit=50&before=${nextCursor}`);
       const data = await response.json() as { entries?: Entry[]; nextCursor?: number | null; error?: string };
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       if (requestedTenantId !== tenantIdRef.current || generation !== pageGeneration.current) return;
@@ -534,7 +535,7 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
     let active = true;
     setApproval(null); setApprovalLoaded(false); setApprovalError('');
     if (compact || task.status !== 'waiting') { setApprovalLoaded(true); return () => { active = false; }; }
-    void fetch(`/api/tasks/${task.id}/approval`).then(async response => {
+    void appFetch(`/api/tasks/${task.id}/approval`).then(async response => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       if (active) setApproval(data as PageActionApproval | null);
@@ -598,11 +599,11 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
   const [memoryError, setMemoryError] = useState('');
   const [memoryBusy, setMemoryBusy] = useState(false);
   const refreshMembers = async () => {
-    const response = await fetch(`/api/tenants/${auth.tenant.id}/members`);
+    const response = await appFetch(`/api/tenants/${auth.tenant.id}/members`);
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
     setMembers(await response.json() as TenantMember[]);
     if (['owner', 'admin'].includes(auth.tenant.role)) {
-      const inviteResponse = await fetch(`/api/tenants/${auth.tenant.id}/invitations`);
+      const inviteResponse = await appFetch(`/api/tenants/${auth.tenant.id}/invitations`);
       if (!inviteResponse.ok) throw new Error((await inviteResponse.json()).error || `HTTP ${inviteResponse.status}`);
       setInvitations(await inviteResponse.json() as WorkspaceInvitation[]);
     } else setInvitations([]);
@@ -614,7 +615,7 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
   useEffect(() => {
     let active = true;
     setMemoryDraft(''); setEditingMemory(null); setEditingDraft(''); setMemoryError(''); setMemories([]);
-    void fetch('/api/memories').then(async response => {
+    void appFetch('/api/memories').then(async response => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       if (active) setMemories(data as TenantMemory[]);
@@ -640,7 +641,7 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
   async function removeMemory(memory: TenantMemory) {
     setMemoryBusy(true); setMemoryError('');
     try {
-      const response = await fetch(`/api/memories/${memory.id}`, { method: 'DELETE' });
+      const response = await appFetch(`/api/memories/${memory.id}`, { method: 'DELETE' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setMemories(current => current.filter(item => item.id !== memory.id));
@@ -696,12 +697,12 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
       <div className="member-list">{members.map(member => <div className="member-row" key={member.id}>
         <span><strong>{member.name}</strong><small>{member.email}</small></span>
         <span className="member-role">{member.role === 'owner' ? '所有者' : member.role === 'admin' ? '管理员' : '成员'}</span>
-        {['owner', 'admin'].includes(auth.tenant.role) && member.role !== 'owner' && <button onClick={async () => { try { const response = await fetch(`/api/tenants/${auth.tenant.id}/members/${member.id}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>移除</button>}
+        {['owner', 'admin'].includes(auth.tenant.role) && member.role !== 'owner' && <button onClick={async () => { try { const response = await appFetch(`/api/tenants/${auth.tenant.id}/members/${member.id}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>移除</button>}
       </div>)}</div>
       {invitations.length > 0 && <div className="member-invitations" role="region" aria-label="待接受邀请"><strong>待接受邀请</strong>{invitations.map(invitation => <div className="member-row pending-invitation" key={invitation.email}>
         <span><strong>{invitation.email}</strong><small>有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</small></span>
         <span className="member-role">{invitation.role === 'admin' ? '管理员' : '成员'}</span>
-        <button aria-label={`撤销 ${invitation.email} 的邀请`} onClick={async () => { try { const response = await fetch(`/api/tenants/${auth.tenant.id}/invitations/${encodeURIComponent(invitation.email)}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>撤销</button>
+        <button aria-label={`撤销 ${invitation.email} 的邀请`} onClick={async () => { try { const response = await appFetch(`/api/tenants/${auth.tenant.id}/invitations/${encodeURIComponent(invitation.email)}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>撤销</button>
       </div>)}</div>}
       <label>Google 账号邮箱<input type="email" value={memberEmail} onChange={e => { setMemberEmail(e.target.value); setMemberNotice(''); }} placeholder="teammate@example.com" /></label>
       <button className="primary" disabled={!['owner', 'admin'].includes(auth.tenant.role) || !memberEmail.trim()} onClick={async () => { try { const result = await request(`/tenants/${auth.tenant.id}/members`, 'POST', { email: memberEmail, role: 'member' }) as { invited: boolean }; setMemberEmail(''); setMembersError(''); setMemberNotice(result.invited ? '邀请已创建。对方在 Coke Dots 登录同一 Google 账号后，会看到待接受邀请。' : '成员已加入工作区。'); await refreshMembers(); } catch (e) { onError(String(e)); } }}>添加工作区成员</button>

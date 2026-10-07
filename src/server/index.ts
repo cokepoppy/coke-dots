@@ -21,6 +21,9 @@ if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const port = Number(process.env.DOTS_PORT || 4317);
 const host = '127.0.0.1';
+const basePath = normalizeBasePath(process.env.DOTS_BASE_PATH || '');
+const publicHost = process.env.DOTS_PUBLIC_HOST?.trim().toLowerCase() || '';
+const trustedProxyToken = process.env.DOTS_TRUSTED_PROXY_TOKEN || '';
 const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
 const auth = new AuthService(store, port);
@@ -75,12 +78,13 @@ const watchRunner = new WatchRunner(store, publish);
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-store');
-  if (!isLocalRequest(req)) return reply(res, 403, { error: 'Local access only' });
   const url = new URL(req.url || '/', `http://${host}:${port}`);
-  const path = url.pathname;
+  const path = routePath(url.pathname);
+  if (path === null) return reply(res, 404, { error: 'Not found' });
+  if (!isLocalRequest(req, path)) return reply(res, 403, { error: 'Local access only' });
 
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
-  if (!path.startsWith('/api/')) return serveStatic(req, res);
+  if (!path.startsWith('/api/')) return serveStatic(req, res, path);
   if (path === '/api/health' && req.method === 'GET') return reply(res, 200, { ok: true });
   if (path === '/api/auth/config' && req.method === 'GET') return reply(res, 200, { googleConfigured: auth.configured(), e2eAuthAvailable: auth.e2eAuthAvailable() });
   if (path === '/api/auth/google/start' && req.method === 'GET') return auth.begin(req, res);
@@ -503,29 +507,56 @@ const server = createServer(async (req, res) => {
   }
 });
 
-function isLocalRequest(req: IncomingMessage) {
+function isLocalRequest(req: IncomingMessage, path: string) {
   const remote = req.socket.remoteAddress;
-  const hostname = req.headers.host?.split(':')[0];
+  const hostname = req.headers.host?.split(':')[0]?.toLowerCase();
   const origin = req.headers.origin;
-  const oauthCallback = req.method === 'GET' && req.url?.split('?')[0] === '/auth/google/callback' && origin === 'https://accounts.google.com';
-  const allowedOrigin = !origin || isAllowedLocalOrigin(origin) || oauthCallback;
-  return (remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1') &&
-    (hostname === '127.0.0.1' || hostname === 'localhost') &&
-    allowedOrigin;
+  const loopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+  const localHost = hostname === '127.0.0.1' || hostname === 'localhost';
+  const proxyToken = req.headers['x-dots-proxy-token'];
+  const trustedProxy = Boolean(trustedProxyToken && typeof proxyToken === 'string' && safeEqual(proxyToken, trustedProxyToken));
+  const forwarded = Boolean(publicHost && trustedProxy && hostname === publicHost);
+  const oauthCallback = req.method === 'GET' && path === '/auth/google/callback' && origin === 'https://accounts.google.com';
+  const allowedOrigin = !origin || isAllowedOrigin(origin) || oauthCallback;
+  return loopback && (localHost || forwarded) && allowedOrigin;
 }
 
 function validMutationOrigin(req: IncomingMessage) {
   if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method || '')) return true;
   if (!req.headers.origin) return false;
-  return isAllowedLocalOrigin(req.headers.origin);
+  return isAllowedOrigin(req.headers.origin);
 }
 
-function isAllowedLocalOrigin(value: string) {
+function isAllowedOrigin(value: string) {
   try {
     const origin = new URL(value);
     const allowedPorts = new Set(['5173', String(port)]);
-    return origin.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(origin.hostname) && allowedPorts.has(origin.port) && origin.origin === value;
+    const isLocal = origin.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(origin.hostname) && allowedPorts.has(origin.port);
+    const publicOrigin = process.env.DOTS_PUBLIC_ORIGIN?.trim().replace(/\/$/, '');
+    return (isLocal || Boolean(publicOrigin && origin.origin === publicOrigin)) && origin.origin === value;
   } catch { return false; }
+}
+
+function normalizeBasePath(value: string) {
+  const trimmed = value.trim().replace(/^\/+|\/+$/g, '');
+  if (!trimmed) return '';
+  if (!/^[a-zA-Z0-9/_-]+$/.test(trimmed) || trimmed.split('/').some(part => !part || part === '.' || part === '..')) {
+    throw new Error('DOTS_BASE_PATH must be a safe URL path');
+  }
+  return `/${trimmed}`;
+}
+
+function routePath(pathname: string) {
+  if (!basePath) return pathname;
+  if (pathname === basePath || pathname === `${basePath}/`) return '/';
+  return pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : null;
+}
+
+function safeEqual(left: string, right: string) {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index++) difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  return difference === 0;
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -567,9 +598,8 @@ function reply(res: ServerResponse, status: number, value: unknown) {
   res.end(JSON.stringify(value));
 }
 
-async function serveStatic(req: IncomingMessage, res: ServerResponse) {
+async function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string) {
   if (req.method !== 'GET') return reply(res, 405, { error: 'Method not allowed' });
-  const pathname = new URL(req.url || '/', `http://${host}:${port}`).pathname;
   if (pathname.includes('..')) return reply(res, 404, { error: 'Not found' });
   const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
   const file = join(resolve('./dist'), relative);
@@ -605,8 +635,9 @@ server.on('upgrade', (req, client, head) => {
   void (async () => {
     try {
       const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
+      const path = routePath(requestUrl.pathname);
       const prefix = '/api/computer/novnc/';
-      if (!requestUrl.pathname.startsWith(prefix) || !isLocalRequest(req) || !isAllowedLocalOrigin(req.headers.origin || '')) return client.destroy();
+      if (!path?.startsWith(prefix) || !isLocalRequest(req, path) || !req.headers.origin || !isAllowedOrigin(req.headers.origin)) return client.destroy();
       const session = auth.session(req);
       if (!session || (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop' && store.getSetting('localComputerEnabled', session.tenant.id) === 'false')) return client.destroy();
       const computer = computerFor(session.tenant.id);
@@ -620,7 +651,7 @@ server.on('upgrade', (req, client, head) => {
       client.once('close', discard); upstream.once('close', discard);
       upstream.once('error', () => client.destroy());
       upstream.once('connect', () => {
-        const subPath = `${target.pathname.replace(/\/$/, '')}${requestUrl.pathname.slice('/api/computer/novnc'.length) || '/'}`;
+        const subPath = `${target.pathname.replace(/\/$/, '')}${path.slice('/api/computer/novnc'.length) || '/'}`;
         const headers: string[] = [];
         for (let index = 0; index < req.rawHeaders.length; index += 2) {
           const key = req.rawHeaders[index];
@@ -638,7 +669,9 @@ server.on('upgrade', (req, client, head) => {
 async function proxyNoVnc(req: IncomingMessage, res: ServerResponse, computer: ComputerRuntime) {
   const prefix = '/api/computer/novnc/';
   const current = new URL(req.url || '/', `http://${host}:${port}`);
-  let suffix = current.pathname.slice(prefix.length);
+  const pathname = routePath(current.pathname);
+  if (!pathname?.startsWith(prefix)) return reply(res, 404, { error: 'Not found' });
+  let suffix = pathname.slice(prefix.length);
   try { suffix = suffix.split('/').map(part => decodeURIComponent(part)).join('/'); }
   catch { return reply(res, 400, { error: 'Invalid noVNC path' }); }
   if (!suffix || suffix.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\\'))) return reply(res, 404, { error: 'Not found' });
