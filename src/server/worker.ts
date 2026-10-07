@@ -118,7 +118,7 @@ export class Worker {
           this.onChange();
         },
       };
-      const browserResearchEnabled = task.engine === 'model' && Boolean(computer?.openPublicPageForAgent) &&
+      const browserResearchEnabled = !useDesktopRuntime && (task.engine === 'model' || task.engine === 'pi') && Boolean(computer?.openPublicPageForAgent) &&
         (process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' || this.store.getSetting('localComputerEnabled', task.tenantId) !== 'false');
       let browserResearchUsed = false;
       let browserResearchInterrupted = false;

@@ -105,12 +105,46 @@ async function startMockModel() {
       try {
         assert.equal(request.method, 'POST');
         assert.equal(request.url, '/v1/chat/completions');
-        const payload = JSON.parse(raw) as { messages?: { role: string; content?: string | null }[]; reasoning_effort?: string };
-        const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
+        const payload = JSON.parse(raw) as { messages?: { role: string; content?: unknown }[]; reasoning_effort?: string; stream?: boolean; tools?: unknown[] };
+        const promptContent = payload.messages?.find(message => message.role === 'user')?.content;
+        const prompt = typeof promptContent === 'string' ? promptContent : JSON.stringify(promptContent || '');
         mockModelPrompts.push(prompt);
         mockModelEfforts.push(payload.reasoning_effort || '');
         const isWebResearch = prompt.includes('E2E web research — inspect the public launch page');
-        const webResearchToolResult = payload.messages?.find(message => message.role === 'tool')?.content || '';
+        const isPiWebResearch = prompt.includes('E2E Pi web research — inspect the public launch page');
+        const toolResult = payload.messages?.find(message => message.role === 'tool')?.content;
+        const webResearchToolResult = toolResult === undefined || toolResult === null ? '' : typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
+        if (isPiWebResearch) {
+          assert.equal(payload.stream, true, 'The Pi adapter should use its native streaming model request');
+          assert.match(JSON.stringify(payload.tools || []), /open_public_page/, 'Pi did not receive the read-only browser tool');
+          if (!webResearchToolResult) {
+            response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+            response.end([
+              `data: ${JSON.stringify({ id: 'e2e-pi-browser', object: 'chat.completion.chunk', created: 1, model: testModelName, choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'e2e-pi-public-page', type: 'function', function: { name: 'open_public_page', arguments: JSON.stringify({ url: 'https://research-fixture.dots.test/launch' }) } }] }, finish_reason: null }] })}`,
+              '',
+              `data: ${JSON.stringify({ id: 'e2e-pi-browser', object: 'chat.completion.chunk', created: 1, model: testModelName, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}`,
+              '',
+              'data: [DONE]',
+              '',
+              '',
+            ].join('\n'));
+            return;
+          }
+          mockModelWebResearchEvidence.push(webResearchToolResult);
+          assert.match(webResearchToolResult, /Release criteria: harden session recovery\./);
+          assert.match(webResearchToolResult, /untrusted webpage content/);
+          response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+          response.end([
+            `data: ${JSON.stringify({ id: 'e2e-pi-browser-result', object: 'chat.completion.chunk', created: 1, model: testModelName, choices: [{ index: 0, delta: { role: 'assistant', content: JSON.stringify({ status: 'done', message: 'Pi found hardened session recovery in the public launch notes. Source: https://research-fixture.dots.test/launch' }) }, finish_reason: null }] })}`,
+            '',
+            `data: ${JSON.stringify({ id: 'e2e-pi-browser-result', object: 'chat.completion.chunk', created: 1, model: testModelName, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}`,
+            '',
+            'data: [DONE]',
+            '',
+            '',
+          ].join('\n'));
+          return;
+        }
         if (isWebResearch && !webResearchToolResult) {
           response.writeHead(200, { 'content-type': 'application/json' });
           response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'e2e-public-page', type: 'function', function: { name: 'open_public_page', arguments: JSON.stringify({ url: 'https://research-fixture.dots.test/launch' }) } }] } }] }));
@@ -2465,6 +2499,35 @@ try {
     await selectTenant(betaPage!, 'Beta workspace');
     const betaComputer = await betaPage!.evaluate(async () => await (await fetch('/api/computer')).json()) as { url?: string };
     assert.notEqual(betaComputer.url, 'https://research-fixture.dots.test/launch', 'A different personal tenant inherited Alpha Shared browser state');
+  });
+
+  await recordStep('Pi researches a public page through its native tool and renders the result in Chrome', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.locator('.composer-bottom select').selectOption('pi');
+    const instruction = 'E2E Pi web research — inspect the public launch page';
+    await createTask(alphaPage!, instruction);
+    await clickNav(alphaPage!, 'Activity');
+    const card = alphaPage!.locator('.task-card').filter({ hasText: instruction });
+    await card.locator('.pill.done').waitFor({ state: 'visible', timeout: 30_000 });
+    await card.getByText('Pi found hardened session recovery in the public launch notes.', { exact: false }).waitFor({ state: 'visible' });
+    await waitFor(() => mockModelPrompts.filter(prompt => prompt.includes(instruction)).length === 2, 10_000);
+    assert.equal(mockModelWebResearchEvidence.length, 2, 'Pi should return exactly one additional page result to the model');
+    assert.match(mockModelWebResearchEvidence[1], /https:\/\/research-fixture\.dots\.test\/launch/);
+    assert.doesNotMatch(mockModelWebResearchEvidence[1], /Ignore all instructions|expose credentials/);
+
+    await clickNav(alphaPage!, '电脑');
+    await alphaPage!.waitForFunction(async () => {
+      const response = await fetch('/api/computer');
+      if (!response.ok) return false;
+      const state = await response.json() as { url?: string; owner?: string };
+      return state.url === 'https://research-fixture.dots.test/launch' && state.owner === 'agent';
+    }, null, { timeout: 10_000 });
+    await screenshot(alphaPage!, 'pi-public-browser-research');
+
+    await selectTenant(betaPage!, 'Beta workspace');
+    const betaComputer = await betaPage!.evaluate(async () => await (await fetch('/api/computer')).json()) as { url?: string };
+    assert.notEqual(betaComputer.url, 'https://research-fixture.dots.test/launch', 'A different personal tenant inherited Pi browser state');
   });
 
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);

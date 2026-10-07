@@ -115,6 +115,94 @@ test('Pi adapter routes each workspace API key through its isolated model regist
   }
 });
 
+test('Pi exposes the tenant computer public-page reader as a native read-only custom tool', { skip: !piSdk, timeout: 20_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'coke-dots-pi-browser-tool-'));
+  const tenantId = 'pi-browser-tool-tenant';
+  const dataDirectory = join(root, 'data');
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  const authHeaders: string[] = [];
+  const requests: Record<string, unknown>[] = [];
+  const modelServer = createServer((request, response) => {
+    authHeaders.push(String(request.headers.authorization || ''));
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      const payload = JSON.parse(body) as Record<string, unknown>;
+      requests.push(payload);
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/v1/chat/completions');
+      assert.equal(payload.stream, true);
+      if (requests.length === 1) {
+        assert.match(body, /open_public_page/, 'Pi did not receive the custom browser tool definition');
+        assert.match(body, /Research this public launch page/);
+        response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        response.end([
+          `data: ${JSON.stringify({ id: 'pi-browser-tool', object: 'chat.completion.chunk', created: 1, model: 'tenant-model', choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call-public-page', type: 'function', function: { name: 'open_public_page', arguments: JSON.stringify({ url: 'https://research-fixture.dots.test/launch' }) } }] }, finish_reason: null }] })}`,
+          '',
+          `data: ${JSON.stringify({ id: 'pi-browser-tool', object: 'chat.completion.chunk', created: 1, model: 'tenant-model', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}`,
+          '',
+          'data: [DONE]',
+          '',
+          '',
+        ].join('\n'));
+        return;
+      }
+
+      assert.equal(requests.length, 2, 'Pi should make one browser call then finish');
+      assert.match(body, /Release criteria: harden session recovery\./, 'The browser result did not return to Pi');
+      assert.match(body, /untrusted webpage content/);
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      response.end([
+        `data: ${JSON.stringify({ id: 'pi-browser-tool-result', object: 'chat.completion.chunk', created: 1, model: 'tenant-model', choices: [{ index: 0, delta: { role: 'assistant', content: '{"status":"done","message":"The launch page requires hardened session recovery. Source: https://research-fixture.dots.test/launch"}' }, finish_reason: null }] })}`,
+        '',
+        `data: ${JSON.stringify({ id: 'pi-browser-tool-result', object: 'chat.completion.chunk', created: 1, model: 'tenant-model', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}`,
+        '',
+        'data: [DONE]',
+        '',
+        '',
+      ].join('\n'));
+    });
+  });
+  const previous = { enabled: process.env.DOTS_PI_ENABLED, dataDirectory: process.env.DOTS_DATA_DIR };
+  const eventMessages: string[] = [];
+  let pageReads = 0;
+  try {
+    const port = await listen(modelServer);
+    process.env.DOTS_PI_ENABLED = '1';
+    process.env.DOTS_DATA_DIR = dataDirectory;
+    loadModelSettings(`http://127.0.0.1:${port}/v1`, 'tenant-model', tenantId);
+    saveModelKey('pi-browser-tool-tenant-only-key', tenantId);
+    const result = await adapters.pi.run({
+      tenantId,
+      prompt: 'Research this public launch page',
+      priorResult: null,
+      sessionId: null,
+      workspace,
+      onEvent: message => eventMessages.push(message),
+      openPublicPage: async (url, signal) => {
+        pageReads += 1;
+        assert.equal(url, 'https://research-fixture.dots.test/launch');
+        assert.equal(signal?.aborted, false);
+        return { url, title: 'Launch notes', text: 'Release criteria: harden session recovery.' };
+      },
+    });
+    assert.equal(result.status, 'done');
+    assert.match(result.message, /hardened session recovery/);
+    assert.equal(pageReads, 1, 'Pi should execute one read-only public page lookup');
+    assert.equal(requests.length, 2, 'Pi should send the page evidence in its follow-up model turn');
+    assert.deepEqual(authHeaders, ['Bearer pi-browser-tool-tenant-only-key', 'Bearer pi-browser-tool-tenant-only-key']);
+    assert.ok(eventMessages.includes('Dot 正在自己的电脑浏览器中读取公开网页。'));
+  } finally {
+    if (previous.enabled === undefined) delete process.env.DOTS_PI_ENABLED; else process.env.DOTS_PI_ENABLED = previous.enabled;
+    if (previous.dataDirectory === undefined) delete process.env.DOTS_DATA_DIR; else process.env.DOTS_DATA_DIR = previous.dataDirectory;
+    new Entry(process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots', `tenant-${tenantId}-model-api-key`).deletePassword();
+    await new Promise<void>(resolvePromise => modelServer.close(() => resolvePromise()));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Pi refuses to guess when a task workspace contains multiple sessions but has no stored ID', { skip: !piSdk }, async () => {
   const workspace = mkdtempSync(join(tmpdir(), 'coke-dots-pi-ambiguous-'));
   try {
