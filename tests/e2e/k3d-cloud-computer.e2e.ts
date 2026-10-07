@@ -292,6 +292,25 @@ try {
   await page.screenshot({ path: join(artifacts, '02-user-takeover.png'), fullPage: true });
   const stageCapture = await page.getByTestId('linux-desktop-stage').screenshot({ path: join(artifacts, '02-user-takeover-stage.png') });
   const stageImage = PNG.sync.read(stageCapture);
+  const takeoverFramePath = resolve(projectRoot, 'research/frames/john-aspinall-v2-0450-user-control-replay.png');
+  if (existsSync(takeoverFramePath)) {
+    const comparisonConfig = JSON.parse(await readFile(resolve(projectRoot, 'research/comparisons/cloud-computer-v2-0450.json'), 'utf8')) as {
+      referenceRect: { x: number; y: number; width: number; height: number };
+      threshold: number;
+    };
+    const takeoverFrame = PNG.sync.read(await readFile(takeoverFramePath));
+    const takeoverReference = cropRaster(takeoverFrame, comparisonConfig.referenceRect);
+    const alignedTakeoverReference = resizeRaster(takeoverReference, stageImage.width, stageImage.height);
+    const takeoverReferenceComparison = compareRasters(alignedTakeoverReference, stageImage, comparisonConfig.threshold);
+    assert(
+      takeoverReferenceComparison.meanAbsoluteError < 8 && takeoverReferenceComparison.changedPixelRatio < 0.1,
+      `The takeover desktop must stay close to the 04:50 video frame (MAE ${takeoverReferenceComparison.meanAbsoluteError.toFixed(2)}, changed ${((takeoverReferenceComparison.changedPixelRatio) * 100).toFixed(2)}%)`,
+    );
+    await writeFile(join(artifacts, '02-video-user-control-comparison.json'), `${JSON.stringify({ source: 'john-aspinall-v2 04:50', ...takeoverReferenceComparison }, null, 2)}\n`);
+    console.log(`Takeover-frame comparison passed (MAE ${takeoverReferenceComparison.meanAbsoluteError.toFixed(2)}, changed ${((takeoverReferenceComparison.changedPixelRatio) * 100).toFixed(2)}%)`);
+  } else {
+    console.log('Takeover-frame comparison skipped because the ignored local source frame is not present');
+  }
   let orangeTakeoverPixels = 0;
   for (let offset = 0; offset < stageImage.data.length; offset += 4) {
     const [red, green, blue] = stageImage.data.subarray(offset, offset + 3);

@@ -1,0 +1,9 @@
+{
+  "id": "cloud-computer-v2-0450-user-control",
+  "reference": "../frames/john-aspinall-v2-0450-user-control-replay.png",
+  "referenceRect": { "x": 310, "y": 553, "width": 1060, "height": 795 },
+  "implementationRect": { "x": 0, "y": 0, "width": 900, "height": 675 },
+  "output": "../../artifacts/reference-comparison/cloud-computer-v2-0450",
+  "threshold": 32,
+  "note": "Aligns the active orange user-control frame in the 04:50 John Aspinall YouTube frame with the takeover desktop stage. The source is compressed video; the comparison is diagnostic and does not prove CSS-pixel parity. Keep the original frame local and ignored."
+}
