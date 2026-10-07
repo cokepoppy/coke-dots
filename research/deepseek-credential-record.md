@@ -17,3 +17,5 @@ To rotate the credential, update the API key under **Profile → Model API** for
 On 2026-10-07, the local development database (`./data/dots.db`) was configured for its bootstrap `legacy` workspace with the same DeepSeek endpoint and model. The API key remains only in the macOS Keychain; it is intentionally absent from this file, shell output, task data, and source control.
 
 The saved Keychain configuration was tested with `npm run test:live-model -- --keychain`, which uses the production model adapter and sends one small live request. Result: `status=done`, unique marker present, about 1.17 seconds. The check prints neither the key nor the model response body.
+
+The Chrome-to-worker path was then verified with `npm run test:e2e:live-model`: a disposable account signed in through the local page, submitted a task by clicking the composer, and saw its real result in Activity. The worker returned `status=done` with the unique marker in about 2.17 seconds. Test account and task data were held in a temporary database and removed. Screenshot evidence: `artifacts/e2e/live-model-2026-10-07T13-04-28-700Z/live-model-task-completed.png`.

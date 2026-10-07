@@ -637,7 +637,7 @@ try {
     await alphaPage!.getByTestId('chat-home').getByRole('heading', { name: "What's on your mind today?" }).waitFor({ state: 'visible' });
     const alphaState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
     assert.equal(alphaState.availableEngines.includes('claude'), false, 'Claude Code must remain unavailable until explicitly supported');
-    const engineOptions = await alphaPage!.locator('.composer-bottom select').evaluate(element => [...(element as HTMLSelectElement).options].map(option => option.value));
+    const engineOptions = await alphaPage!.locator('.composer-bottom select').evaluate(element => Array.from((element as HTMLSelectElement).options, option => option.value));
     assert.deepEqual(engineOptions, ['model', 'pi', 'dsh'], 'The UI must offer the Model API, Pi, and DeepSeek Harness only');
     assert.equal(await alphaPage!.locator('.icon-rail').evaluate(element => Math.round(element.getBoundingClientRect().width)), 44);
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => Math.round(element.getBoundingClientRect().width)), 224);
