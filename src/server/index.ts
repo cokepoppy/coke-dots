@@ -12,6 +12,7 @@ import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata 
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { AuthService } from './auth.ts';
+import { SlackService } from './slack.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -27,6 +28,7 @@ const trustedProxyToken = process.env.DOTS_TRUSTED_PROXY_TOKEN || '';
 const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
 const auth = new AuthService(store, port);
+const slack = new SlackService(store, port);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
@@ -128,6 +130,7 @@ const server = createServer(async (req, res) => {
   if (!isLocalRequest(req, path)) return reply(res, 403, { error: 'Local access only' });
 
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
+  if (path === '/auth/slack/callback' && req.method === 'GET') return slack.finish(req, res, url, auth.session(req));
   if (!path.startsWith('/api/')) return serveStatic(req, res, path);
   if (path === '/api/health' && req.method === 'GET') return reply(res, 200, { ok: true });
   if (path === '/api/auth/config' && req.method === 'GET') return reply(res, 200, { googleConfigured: auth.configured(), e2eAuthAvailable: auth.e2eAuthAvailable() });
@@ -159,6 +162,13 @@ const server = createServer(async (req, res) => {
   const session = auth.session(req);
   if (!session) return reply(res, 401, { error: '请先使用 Google 登录' });
   if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+  if (path === '/api/slack' && req.method === 'GET') return reply(res, 200, slack.snapshot(session.tenant.id));
+  if (path === '/api/slack/oauth/start' && req.method === 'GET') return slack.begin(req, res, session);
+  if (path === '/api/slack/contact' && req.method === 'POST') {
+    const body = await readJson(req);
+    const result = slack.setContactWorkspace(session, String(body.teamId || ''));
+    return result.status === 200 ? reply(res, 200, result.value) : reply(res, result.status, { error: result.error });
+  }
   if (worker.isWorkspaceResetting(session.tenant.id) && req.method !== 'GET' && req.method !== 'HEAD' && path !== '/api/dot/reset') {
     return reply(res, 409, { error: 'Dot 正在重置，请稍后重试' });
   }
@@ -186,6 +196,7 @@ const server = createServer(async (req, res) => {
         if (computer?.reset) await computer.reset();
         else await computer?.close();
         computers.delete(tenantId);
+        slack.clearTenant(tenantId);
         await clearTenantRuntimeDirectories(runtimeDirectories);
         const reset = store.resetPersonalDot(tenantId, session.user.id);
         if (reset !== 'ok') return reply(res, 409, { error: 'Dot 工作区状态已改变，请刷新页面后重试。' });
@@ -696,7 +707,8 @@ function isLocalRequest(req: IncomingMessage, path: string) {
   const trustedProxy = Boolean(trustedProxyToken && typeof proxyToken === 'string' && safeEqual(proxyToken, trustedProxyToken));
   const forwarded = Boolean(publicHost && trustedProxy && hostname === publicHost);
   const oauthCallback = req.method === 'GET' && path === '/auth/google/callback' && origin === 'https://accounts.google.com';
-  const allowedOrigin = !origin || isAllowedOrigin(origin) || oauthCallback;
+  const slackCallback = req.method === 'GET' && path === '/auth/slack/callback' && ['https://slack.com', 'https://slack-gov.com'].includes(origin || '');
+  const allowedOrigin = !origin || isAllowedOrigin(origin) || oauthCallback || slackCallback;
   return loopback && (localHost || forwarded) && allowedOrigin;
 }
 

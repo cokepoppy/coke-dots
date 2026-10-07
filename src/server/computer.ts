@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { chromium, type BrowserContext, type Page, type Route } from 'playwright-core';
 import { computerWelcomePage } from './computer-home.mjs';
 import { fetchPublicPageHtml, isE2EBrowserResearchFixture, isE2EWebsiteSignInFixture, validatePublicHttpsUrl } from '../shared/public-web-policy.mjs';
@@ -35,9 +37,12 @@ export interface ComputerRuntime {
   runAgentTask?(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; websiteSignInRequest?: { url: string; reason: string } }>;
 }
 
+const execFileAsync = promisify(execFile);
+
 export class ComputerManager implements ComputerRuntime {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  private profileDirectory: string | null = null;
   private owner: 'agent' | 'user' = 'agent';
   private blockedNavigationUrl: string | null = null;
   private privateSignInFields: { page: Page; url: string; identifier: import('playwright-core').Locator; password: import('playwright-core').Locator } | null = null;
@@ -56,6 +61,7 @@ export class ComputerManager implements ComputerRuntime {
       if (!existsSync(browserPath)) throw new Error('未找到 Chrome。请设置 DOTS_CHROME_BIN。');
       const profile = join(this.dataDirectory, 'computer-chrome');
       mkdirSync(profile, { recursive: true });
+      this.profileDirectory = profile;
       this.context = await chromium.launchPersistentContext(profile, {
         executablePath: browserPath, headless: true,
         viewport: { width: 1280, height: 820 },
@@ -197,7 +203,13 @@ export class ComputerManager implements ComputerRuntime {
     return this.page.screenshot({ type: 'png' });
   }
 
-  async close() { await this.clearPrivateSignInFields(); await this.context?.close(); this.context = null; this.page = null; this.owner = 'agent'; this.blockedNavigationUrl = null; }
+  async close() {
+    await this.clearPrivateSignInFields();
+    const context = this.context;
+    if (context) await closeComputerContext(context, this.profileDirectory);
+    this.context = null; this.page = null; this.owner = 'agent'; this.blockedNavigationUrl = null;
+    this.profileDirectory = null;
+  }
 
   async reset() {
     await this.close();
@@ -221,6 +233,59 @@ export class ComputerManager implements ComputerRuntime {
     await fields.password.fill('').catch(() => undefined);
     await fields.identifier.fill('').catch(() => undefined);
   }
+}
+
+async function closeComputerContext(context: BrowserContext, profileDirectory: string | null) {
+  const closeResult = context.close().then(() => true, () => false);
+  let timeout: NodeJS.Timeout | undefined;
+  const closed = await Promise.race([
+    closeResult,
+    new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), 2_000); }),
+  ]);
+  if (timeout) clearTimeout(timeout);
+  if (closed) return;
+
+  if (!profileDirectory) throw new Error('电脑浏览器未能关闭，无法安全清理其独立配置目录');
+  console.warn('[computer] Isolated Chromium did not close in time; terminating processes for its dedicated profile.');
+  await terminateProfileProcesses(profileDirectory);
+}
+
+async function terminateProfileProcesses(profileDirectory: string) {
+  const processes = await listProfileProcesses(profileDirectory);
+  if (!processes.length) return;
+  const byParent = new Map<number, number[]>();
+  for (const item of processes) byParent.set(item.parent, [...(byParent.get(item.parent) || []), item.pid]);
+  const roots = processes.filter(item => !item.args.includes('--type=')).map(item => item.pid);
+  const ordered: number[] = [];
+  const visit = (pid: number) => {
+    for (const child of byParent.get(pid) || []) visit(child);
+    ordered.push(pid);
+  };
+  for (const pid of roots.length ? roots : processes.map(item => item.pid)) visit(pid);
+  for (const pid of [...new Set(ordered)]) {
+    try { process.kill(pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+  }
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (!(await listProfileProcesses(profileDirectory)).length) return;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error('电脑浏览器进程无法终止，已停止清理其独立配置目录');
+}
+
+async function listProfileProcesses(profileDirectory: string) {
+  // Persistent Playwright contexts do not expose their child process; match only Chrome processes using this isolated profile.
+  const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,args='], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+  const result: { pid: number; parent: number; args: string }[] = [];
+  for (const line of stdout.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+    if (!match) continue;
+    const args = match[3];
+    const profileArgument = `--user-data-dir=${profileDirectory}`;
+    if (![`${profileArgument} `, `--user-data-dir="${profileDirectory}" `, `--user-data-dir='${profileDirectory}' `].some(marker => args.includes(marker))) continue;
+    result.push({ pid: Number(match[1]), parent: Number(match[2]), args });
+  }
+  return result;
 }
 
 function isChromiumClientBlocked(error: unknown) {

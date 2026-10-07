@@ -30,10 +30,12 @@ const pageErrors: string[] = [];
 let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockGoogleServer: Server | null = null;
+let mockSlackServer: Server | null = null;
 let mockGoogleProxyServer: Server | null = null;
 let mockWatchServer: Server | null = null;
 let mockModelPrompts: string[] = [];
 let mockGoogleOrigin = '';
+let mockSlackOrigin = '';
 let mockGoogleProxyOrigin = '';
 let mockWatchProviderOrigin = '';
 let mockWatchContent = '';
@@ -42,6 +44,9 @@ let mockGoogleTokenExchanges = 0;
 let mockGoogleTokenAttempts = 0;
 let mockGoogleCertRequests = 0;
 let mockGoogleProxyTunnels = 0;
+let mockSlackAuthorizationRequests: Record<string, string>[] = [];
+let mockSlackTokenExchanges = 0;
+const mockSlackToken = 'xoxb-coke-dots-e2e-fixture-token';
 let mockModelEfforts: string[] = [];
 let mockModelWebResearchEvidence: string[] = [];
 let heldPauseModelRelease: (() => void) | null = null;
@@ -407,6 +412,63 @@ async function startMockGoogleProvider() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function startMockSlackProvider() {
+  mockSlackAuthorizationRequests = [];
+  mockSlackTokenExchanges = 0;
+  const flows = new Map<string, { state: string; redirectUri: string; clientId: string }>();
+  const provider = createHttpServer(async (request, response) => {
+    const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
+    if (request.method === 'GET' && url.pathname === '/oauth/v2/authorize') {
+      const params = url.searchParams;
+      const details = Object.fromEntries(params.entries());
+      mockSlackAuthorizationRequests.push(details);
+      if (!params.get('state') || !params.get('redirect_uri') || !params.get('client_id') || !params.get('scope')) {
+        response.writeHead(400).end('Missing Slack OAuth parameters');
+        return;
+      }
+      const code = randomBytes(24).toString('base64url');
+      flows.set(code, { state: params.get('state')!, redirectUri: params.get('redirect_uri')!, clientId: params.get('client_id')! });
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(`<!doctype html><html><head><title>Slack install test</title></head><body><main><h1>Allow Coke Dots in ASPI</h1><p>Local Slack OAuth test provider</p><a data-testid="mock-slack-approve" href="/approve?code=${encodeURIComponent(code)}">Allow</a></main></body></html>`);
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/approve') {
+      const code = url.searchParams.get('code') || '';
+      const flow = flows.get(code);
+      if (!flow) { response.writeHead(400).end('Invalid Slack authorization code'); return; }
+      const callback = new URL(flow.redirectUri);
+      callback.searchParams.set('code', code);
+      callback.searchParams.set('state', flow.state);
+      response.writeHead(302, { location: callback.toString(), 'cache-control': 'no-store' }).end();
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/oauth.v2.access') {
+      let raw = '';
+      for await (const chunk of request) raw += chunk.toString();
+      const params = new URLSearchParams(raw);
+      const code = params.get('code') || '';
+      const flow = flows.get(code);
+      const valid = Boolean(flow) && params.get('client_id') === flow?.clientId &&
+        params.get('client_secret') === 'coke-dots-slack-e2e-secret' && params.get('redirect_uri') === flow?.redirectUri;
+      if (!valid) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, error: 'invalid_code' }));
+        return;
+      }
+      flows.delete(code);
+      mockSlackTokenExchanges++;
+      response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({ ok: true, access_token: mockSlackToken, scope: 'chat:write', team: { id: 'TASPIE2E', name: 'ASPI' }, authed_user: { id: 'UINSTALLER1' } }));
+      return;
+    }
+    response.writeHead(404).end('Not found');
+  });
+  await new Promise<void>((resolvePromise, reject) => provider.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  mockSlackServer = provider;
+  const address = provider.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}`;
+}
+
 async function startMockGoogleProxy() {
   const provider = new URL(mockGoogleOrigin);
   const proxy = createHttpServer((_request, response) => response.writeHead(405).end('CONNECT is required'));
@@ -482,6 +544,10 @@ async function startServer(port: number) {
       GOOGLE_CLIENT_ID: 'coke-dots-e2e-client',
       GOOGLE_CLIENT_SECRET: 'coke-dots-e2e-secret',
       GOOGLE_REDIRECT_URI: '',
+      SLACK_CLIENT_ID: 'coke-dots-slack-e2e-client',
+      SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
+      SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
+      DOTS_E2E_SLACK_PROVIDER_URL: mockSlackOrigin,
       DOTS_APP_URL: baseUrl,
       DOTS_E2E_GOOGLE_PROVIDER_URL: mockGoogleOrigin,
       DOTS_E2E_WATCH_PROVIDER_URL: mockWatchProviderOrigin,
@@ -672,6 +738,42 @@ async function signInGoogle(page: Page, account: 'alpha' | 'unverified' | 'token
   return response.body;
 }
 
+async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
+  const panel = page.getByTestId('dot-context-panel');
+  await panel.getByRole('button', { name: 'Slack' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Set up Slack' });
+  await dialog.waitFor({ state: 'visible' });
+  await page.getByTestId('slack-connect').waitFor({ state: 'visible' });
+  await screenshot(page, `${screenshotPrefix}-setup`);
+  const authorizationPage = page.waitForURL(url => url.origin === mockSlackOrigin && url.pathname === '/oauth/v2/authorize', { timeout: 10_000 });
+  await page.getByTestId('slack-connect').click();
+  await authorizationPage;
+  const oauthCookie = (await page.context().cookies(`${baseUrl}/auth/slack/callback`)).find(cookie => cookie.name === 'coke_dots_slack_state');
+  assert(oauthCookie, 'Slack authorization must set its state cookie');
+  assert.equal(oauthCookie.httpOnly, true, 'Slack OAuth state must be protected from page scripts');
+  assert.equal(oauthCookie.sameSite, 'Lax');
+  assert.equal(oauthCookie.path, '/auth/slack/callback');
+  const authorization = mockSlackAuthorizationRequests.at(-1);
+  assert(authorization, 'The browser did not visit the Slack OAuth authorization endpoint');
+  assert.equal(authorization.client_id, 'coke-dots-slack-e2e-client');
+  assert.deepEqual(authorization.scope.split(',').sort(), ['chat:write']);
+  assert.equal(authorization.redirect_uri, `${baseUrl}/auth/slack/callback`);
+  assert.ok(authorization.state);
+  const callbackPage = page.waitForURL(url => url.origin === baseUrl && url.searchParams.get('slack') === 'connected', { timeout: 10_000 });
+  await page.getByTestId('mock-slack-approve').click();
+  await callbackPage;
+  await dialog.waitFor({ state: 'visible' });
+  await dialog.getByLabel('Slack workspace').selectOption('TASPIE2E');
+  const selected = page.waitForResponse(response => response.url().endsWith('/api/slack/contact') && response.request().method() === 'POST');
+  await dialog.getByRole('button', { name: 'Select a workspace' }).click();
+  const selectedResponse = await selected;
+  assert.equal(selectedResponse.status(), 200, 'The workspace selection should be saved to this tenant');
+  await dialog.getByRole('status').filter({ hasText: 'ASPI' }).waitFor({ state: 'visible' });
+  await screenshot(page, `${screenshotPrefix}-connected`);
+  await dialog.getByRole('button', { name: 'Close Slack setup' }).click();
+  await dialog.waitFor({ state: 'hidden' });
+}
+
 async function createTask(page: Page, instruction: string, scheduled = false) {
   if (scheduled) {
     await page.getByLabel('定期检查').check();
@@ -736,6 +838,7 @@ try {
   e2ePort = await reservePort();
   baseUrl = `http://127.0.0.1:${e2ePort}`;
   mockGoogleOrigin = await startMockGoogleProvider();
+  mockSlackOrigin = await startMockSlackProvider();
   mockGoogleProxyOrigin = await startMockGoogleProxy();
   mockWatchProviderOrigin = await startMockWatchProvider();
   server = await startServer(e2ePort);
@@ -1190,7 +1293,7 @@ try {
     await contextPanel.getByRole('region', { name: 'Recent activity' }).getByText(alphaPrivateTask).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.timeline .message.user').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(219, 234, 254)');
     assert.equal(await contextPanel.getByRole('button', { name: 'Call' }).isDisabled(), false);
-    assert.equal(await contextPanel.getByRole('button', { name: 'Slack, not connected' }).isDisabled(), true);
+    assert.equal(await contextPanel.getByRole('button', { name: 'Slack' }).isDisabled(), false);
     assert.equal(await contextPanel.getByRole('region', { name: 'Skills' }).count(), 0, 'The observed details panel ends after Outputs; do not invent an unverified Skills section');
     assert.equal(await alphaPage!.locator('.topbar .top-actions').count(), 0, 'Account controls should not be rendered in the conversation header');
     assert.equal(await alphaPage!.getByTestId('account-menu').count(), 0, 'The account popover should not cover the conversation details panel by default');
@@ -1202,6 +1305,27 @@ try {
     await screenshot(alphaPage!, '03-task-context-dark');
     await toggleAccountTheme(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
+  });
+
+  await recordStep('Slack setup completes OAuth in Chrome, stores the tenant token in Keychain, and links the selected contact workspace', async () => {
+    await connectSlackWorkspace(alphaPage!, 'slack-alpha-personal');
+    assert.equal(mockSlackTokenExchanges, 1, 'The Slack authorization code should be exchanged exactly once');
+    const linked = await alphaPage!.evaluate(async () => await (await fetch('/api/slack')).json()) as { configured: boolean; installations: { tenantId: string; teamId: string; teamName: string; scopes: string[]; contactEnabled: boolean; accessToken?: string }[] };
+    assert.equal(linked.configured, true);
+    assert.equal(linked.installations.length, 1);
+    assert.equal(linked.installations[0]?.tenantId, oauthTestState.alphaSession!.tenant.id);
+    assert.equal(linked.installations[0]?.teamId, 'TASPIE2E');
+    assert.equal(linked.installations[0]?.teamName, 'ASPI');
+    assert.deepEqual(linked.installations[0]?.scopes, ['chat:write']);
+    assert.equal(linked.installations[0]?.contactEnabled, true, 'The selected Slack workspace must be linked only to the active tenant');
+    assert.equal('accessToken' in (linked.installations[0] || {}), false, 'Slack token fields must never be returned to the browser');
+    const database = new DatabaseSync(join(testDataDir, 'dots.db'));
+    try {
+      const row = database.prepare('SELECT team_id,team_name,scopes_json FROM slack_installations WHERE tenant_id=?').get(oauthTestState.alphaSession!.tenant.id) as { team_id: string; team_name: string; scopes_json: string };
+      assert.deepEqual({ ...row }, { team_id: 'TASPIE2E', team_name: 'ASPI', scopes_json: '["chat:write"]' });
+      assert.doesNotMatch(JSON.stringify(row), /xoxb-coke-dots-e2e-fixture-token/, 'Slack access tokens must not be persisted in SQLite');
+    } finally { database.close(); }
+    assert.equal(mockSlackAuthorizationRequests.length, 1);
   });
 
   await recordStep('Dot computer shortcut opens the tenant-isolated browser workspace', async () => {
@@ -1218,6 +1342,8 @@ try {
     assert.equal(await betaPage!.getByTestId('dot-context-panel').count(), 0, 'Beta personal onboarding inherited Alpha conversation context');
     const betaState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; computerAccess: { dotComputer: boolean; localComputer: boolean; configured: boolean }; tasks: unknown[] };
     assert.deepEqual(betaState.computerAccess, { dotComputer: true, localComputer: true, configured: false }, 'A different account must receive its own unconfigured computer-access choice');
+    const betaSlack = await betaPage!.evaluate(async () => await (await fetch('/api/slack')).json()) as { installations: unknown[] };
+    assert.deepEqual(betaSlack.installations, [], 'A different Coke Dots tenant must not see Alpha’s Slack installation');
     assert.equal(betaState.availableEngines.includes('claude'), false, 'Claude Code must remain unavailable in all tenants');
     const rejectedKernelTask = await betaPage!.evaluate(async () => {
       const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'Attempt another tenant’s local kernel', engine: 'claude' }) });
@@ -1371,7 +1497,18 @@ try {
     assert.equal(await sharedComputerChoice.getByRole('switch', { name: 'Your local computer' }).isChecked(), true, 'A new workspace starts with its own first-run choice');
     await sharedComputerChoice.getByRole('button', { name: 'Continue' }).click();
     await createTask(alphaPage!, 'E2E shared workspace task — prepare the team review');
-    await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
+    const sharedTaskLink = await taskNavigationItem(alphaPage!, 'E2E shared workspace task');
+    await sharedTaskLink.waitFor({ state: 'visible' });
+    await sharedTaskLink.click();
+    await alphaPage!.getByTestId('dot-context-panel').waitFor({ state: 'visible' });
+    await connectSlackWorkspace(alphaPage!, 'slack-alpha-shared');
+    assert.equal(mockSlackTokenExchanges, 2, 'Each Coke Dots tenant must finish its own Slack OAuth flow');
+    const installationsByTenant = await alphaPage!.evaluate(async () => {
+      const auth = await (await fetch('/api/auth/me')).json() as { tenant: { id: string } };
+      const integrations = await (await fetch('/api/slack')).json() as { installations: { tenantId: string; teamId: string }[] };
+      return { tenantId: auth.tenant.id, installations: integrations.installations };
+    });
+    assert.deepEqual(installationsByTenant.installations.map(item => [item.tenantId, item.teamId]), [[installationsByTenant.tenantId, 'TASPIE2E']]);
     await openProfile(alphaPage!);
     await alphaPage!.getByLabel('名字').fill('Shared Dot');
     await alphaPage!.getByRole('button', { name: '保存更改' }).click();
@@ -1402,6 +1539,20 @@ try {
     assert.equal(alphaSharedState.availableEngines.includes('claude'), false, 'Claude Code must remain unavailable in shared workspaces');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.locator('.profile-link strong').innerText(), 'Shared Dot');
+    await clickNav(betaPage!, '你的 dot');
+    const memberContext = betaPage!.getByTestId('dot-context-panel');
+    await memberContext.waitFor({ state: 'visible' });
+    await memberContext.getByRole('button', { name: 'Slack' }).click();
+    const memberSlackDialog = betaPage!.getByRole('dialog', { name: 'Set up Slack' });
+    await memberSlackDialog.waitFor({ state: 'visible' });
+    assert.equal(await memberSlackDialog.getByRole('button', { name: 'Select a workspace' }).isDisabled(), true, 'A regular member cannot change a shared Slack contact workspace');
+    await memberSlackDialog.getByRole('button', { name: 'Close Slack setup' }).click();
+    const memberSlackWrite = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/slack/contact', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ teamId: 'TASPIE2E' }) });
+      return { status: response.status, body: await response.json() as { error?: string } };
+    });
+    assert.equal(memberSlackWrite.status, 403, 'The server must prevent a shared-workspace member from changing its Slack contact');
+    assert.match(memberSlackWrite.body.error || '', /只有工作区所有者或管理员/);
     await openProfile(betaPage!);
     await betaPage!.locator('.member-row').filter({ hasText: 'alpha@example.test' }).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.getByRole('button', { name: '添加工作区成员' }).isDisabled(), true, 'A regular member received workspace-admin controls');
@@ -2859,6 +3010,7 @@ try {
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
   if (mockGoogleServer) await new Promise<void>(resolvePromise => mockGoogleServer!.close(() => resolvePromise()));
+  if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
   if (mockGoogleProxyServer) await new Promise<void>(resolvePromise => mockGoogleProxyServer!.close(() => resolvePromise()));
   if (mockWatchServer) await new Promise<void>(resolvePromise => mockWatchServer!.close(() => resolvePromise()));
   testModelBaseUrl = '';

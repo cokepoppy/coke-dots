@@ -13,6 +13,8 @@ export interface WorkspaceInvitation { tenantId: string; tenantName?: string; em
 export interface TenantMemory { id: string; tenantId: string; note: string; createdBy: string; createdByName: string; createdAt: string; updatedAt: string }
 export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantSummary; expiresAt: string }
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
+export interface SlackOAuthFlow { stateHash: string; tenantId: string; userId: string; expiresAt: string; returnTo: string }
+export interface SlackInstallation { tenantId: string; teamId: string; teamName: string; scopes: string[]; installedAt: string; contactEnabled: boolean }
 export interface StoredTaskAttachment extends AttachmentSummary { tenantId: string; uploadedBy: string; taskId: string | null; content: Uint8Array; createdAt: string }
 export type PersonalDotResetResult = 'ok' | 'not-found' | 'not-personal' | 'not-owner' | 'shared';
 
@@ -51,6 +53,16 @@ export class Store {
       CREATE TABLE IF NOT EXISTS oauth_flows (
         state_hash TEXT PRIMARY KEY, nonce TEXT NOT NULL, code_verifier TEXT NOT NULL, expires_at TEXT NOT NULL, handoff_hash TEXT, return_to TEXT
       );
+      CREATE TABLE IF NOT EXISTS slack_oauth_flows (
+        state_hash TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
+        expires_at TEXT NOT NULL, return_to TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS slack_installations (
+        tenant_id TEXT NOT NULL REFERENCES tenants(id), team_id TEXT NOT NULL, team_name TEXT NOT NULL,
+        scopes_json TEXT NOT NULL, installed_at TEXT NOT NULL,
+        contact_enabled INTEGER NOT NULL DEFAULT 0 CHECK(contact_enabled IN (0,1)), PRIMARY KEY(tenant_id,team_id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS slack_one_contact_per_tenant ON slack_installations(tenant_id) WHERE contact_enabled=1;
       CREATE TABLE IF NOT EXISTS desktop_handoffs (
         handoff_hash TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id), tenant_id TEXT REFERENCES tenants(id), expires_at TEXT NOT NULL
       );
@@ -235,6 +247,56 @@ export class Store {
     this.db.prepare('DELETE FROM oauth_flows WHERE state_hash=?').run(stateHash);
     if (!row || row.expires_at <= now) return null;
     return { nonce: row.nonce, codeVerifier: row.code_verifier, expiresAt: row.expires_at, handoffHash: row.handoff_hash, returnTo: row.return_to };
+  }
+
+  createSlackOAuthFlow(flow: SlackOAuthFlow) {
+    this.db.prepare('INSERT INTO slack_oauth_flows(state_hash,tenant_id,user_id,expires_at,return_to) VALUES (?,?,?,?,?)')
+      .run(flow.stateHash, flow.tenantId, flow.userId, flow.expiresAt, flow.returnTo);
+  }
+
+  consumeSlackOAuthFlow(stateHash: string, now = new Date().toISOString()): Omit<SlackOAuthFlow, 'stateHash'> | null {
+    const row = this.db.prepare('SELECT tenant_id,user_id,expires_at,return_to FROM slack_oauth_flows WHERE state_hash=?').get(stateHash) as
+      { tenant_id: string; user_id: string; expires_at: string; return_to: string } | undefined;
+    this.db.prepare('DELETE FROM slack_oauth_flows WHERE state_hash=?').run(stateHash);
+    if (!row || row.expires_at <= now) return null;
+    return { tenantId: row.tenant_id, userId: row.user_id, expiresAt: row.expires_at, returnTo: row.return_to };
+  }
+
+  installSlackWorkspace(installation: Omit<SlackInstallation, 'contactEnabled'>) {
+    this.db.prepare(`INSERT INTO slack_installations(tenant_id,team_id,team_name,scopes_json,installed_at,contact_enabled)
+      VALUES (?,?,?,?,?,0) ON CONFLICT(tenant_id,team_id) DO UPDATE SET
+      team_name=excluded.team_name,scopes_json=excluded.scopes_json,installed_at=excluded.installed_at`)
+      .run(installation.tenantId, installation.teamId, installation.teamName, JSON.stringify(installation.scopes), installation.installedAt);
+  }
+
+  slackInstallations(tenantId: string): SlackInstallation[] {
+    const rows = this.db.prepare(`SELECT tenant_id AS tenantId,team_id AS teamId,team_name AS teamName,
+      scopes_json AS scopesJson,installed_at AS installedAt,contact_enabled AS contactEnabled
+      FROM slack_installations WHERE tenant_id=? ORDER BY team_name COLLATE NOCASE,team_id`).all(tenantId) as unknown as
+      { tenantId: string; teamId: string; teamName: string; scopesJson: string; installedAt: string; contactEnabled: number }[];
+    return rows.map(row => ({ tenantId: row.tenantId, teamId: row.teamId, teamName: row.teamName,
+      installedAt: row.installedAt, scopes: JSON.parse(row.scopesJson) as string[],
+      contactEnabled: row.contactEnabled === 1 }));
+  }
+
+  setSlackContactWorkspace(tenantId: string, teamId: string): boolean {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const exists = this.db.prepare('SELECT 1 FROM slack_installations WHERE tenant_id=? AND team_id=?').get(tenantId, teamId);
+      if (!exists) { this.db.exec('COMMIT'); return false; }
+      this.db.prepare('UPDATE slack_installations SET contact_enabled=0 WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('UPDATE slack_installations SET contact_enabled=1 WHERE tenant_id=? AND team_id=?').run(tenantId, teamId);
+      this.db.exec('COMMIT');
+      return true;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  slackInstallation(tenantId: string, teamId: string) {
+    return this.slackInstallations(tenantId).find(item => item.teamId === teamId) || null;
+  }
+
+  removeSlackInstallation(tenantId: string, teamId: string) {
+    return Number(this.db.prepare('DELETE FROM slack_installations WHERE tenant_id=? AND team_id=?').run(tenantId, teamId).changes) > 0;
   }
 
   createDesktopHandoff(handoffHash: string, expiresAt: string) {
@@ -449,6 +511,8 @@ export class Store {
     try {
       const lockedEligibility = this.personalDotResetEligibility(tenantId, userId);
       if (lockedEligibility !== 'ok') { this.db.exec('COMMIT'); return lockedEligibility; }
+      this.db.prepare('DELETE FROM slack_oauth_flows WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM slack_installations WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM website_sign_in_requests WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM page_action_approvals WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM dot_pause_tasks WHERE tenant_id=?').run(tenantId);
