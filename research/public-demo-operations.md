@@ -37,7 +37,7 @@ The read-only SSH inspection confirmed `/etc/nginx/sites-enabled/coke-openrouter
 
 - The public `/dots-demo/api/auth/config` now returns `googleConfigured: true` and `e2eAuthAvailable: false`.
 - Chrome renders the “使用 Google 登录” button. Clicking it starts Google OAuth with the registered `/dots-demo/auth/google/callback`, `openid email profile`, PKCE S256, state, and nonce.
-- `npm run test:e2e:public-demo` checks that sign-in remains enabled, exercises the public callback redirect, and verifies the existing public routes. The test stops at Google's hosted authorization page; it does not enter account credentials or complete a sign-in.
+- `npm run test:e2e:public-demo` checks that sign-in remains enabled, verifies the state cookie in Chrome, then opens the public callback with the same state and no authorization code. The expected `invalid` response proves the callback accepted its state; `expired` means the cookie or stored flow was missing. The test does not contact Google's token endpoint or complete a real user sign-in.
 - Local development now uses the same OAuth client with the separately registered `http://127.0.0.1:4317/auth/google/callback`. Its ignored `.env` file is mode `0600` and remains outside Git.
 
 ## OAuth expiry fix

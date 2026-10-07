@@ -132,7 +132,7 @@ try {
     assert.deepEqual(result.failures, [], `Public browser errors: ${result.failures.join('; ')}`);
   });
 
-  await check('Chrome login click starts Google OAuth with the configured callback', async () => {
+  await check('Chrome login click preserves OAuth state through the public callback', async () => {
     const config = await page!.evaluate(async () => await fetch('api/auth/config').then(response => response.json()) as { googleConfigured: boolean });
     assert.equal(config.googleConfigured, true, 'The public demo must keep Google sign-in enabled');
     const googleNavigation = page!.waitForURL(url => url.hostname === 'accounts.google.com', { waitUntil: 'commit', timeout: 20_000 });
@@ -150,8 +150,19 @@ try {
     assert.equal(oauth.searchParams.get('response_type'), 'code');
     assert.equal(oauth.searchParams.get('scope'), 'openid email profile');
     assert.equal(oauth.searchParams.get('code_challenge_method'), 'S256');
-    assert(oauth.searchParams.get('state'));
+    const state = oauth.searchParams.get('state');
+    assert(state);
     assert(oauth.searchParams.get('nonce'));
+
+    // Exercise the deployed callback's state lookup without signing in a real account
+    // or contacting Google's token endpoint. With no code, a valid cookie and flow
+    // reach `invalid`; if either is missing, the app instead redirects with `expired`.
+    const syntheticCallback = new URL('auth/google/callback', baseUrl);
+    syntheticCallback.searchParams.set('state', state);
+    await page!.goto(syntheticCallback.toString(), { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    assert.equal(new URL(page!.url()).pathname, basePath);
+    assert.equal(new URL(page!.url()).searchParams.get('authError'), 'invalid', 'A fresh callback must pass state validation before rejecting the missing code');
+    await page!.getByText('登录返回信息无效。', { exact: true }).waitFor({ state: 'visible' });
   });
 } catch (error) {
   result.failures.push(error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error));
