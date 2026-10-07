@@ -1,0 +1,9 @@
+{
+  "id": "computer-takeover-v2-0444",
+  "reference": "../frames/john-aspinall-v2-0444-dot-control-replay.png",
+  "referenceRect": { "x": 308, "y": 552, "width": 1060, "height": 795 },
+  "implementationRect": { "x": 404, "y": 165, "width": 900, "height": 675 },
+  "output": "../../artifacts/reference-comparison/computer-takeover-v2-0444",
+  "threshold": 32,
+  "note": "Compares the app-side coral stage, browser frame, and dock with the 04:44 Chrome/YouTube sample. Playwright separately asserts the browser bounds and centered owner/takeover controls. The Linux guest desktop has a separate 1440x1080 comparison. The video is compressed and its native product viewport is unknown, so this is a diagnostic comparison, not proof of pixel parity."
+}

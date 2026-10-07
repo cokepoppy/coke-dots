@@ -2,10 +2,10 @@
 .computer-boot-stage{position:relative;width:min(100%,900px);aspect-ratio:4/3;overflow:hidden;border-radius:10px;background:linear-gradient(180deg,#240c43 0%,#155dd1 26%,#4d91e8 54%,#d1d1f8 100%);box-shadow:0 12px 34px #4c34251c;display:grid;place-items:center}
 .computer-boot-stage span{width:7px;height:7px;border-radius:50%;background:#ffffffd9;box-shadow:0 0 10px 3px #ffffff80}
 .computer-workspace{width:min(100%,930px);display:grid;justify-items:center;gap:9px;margin:auto}
-.computer-stage{position:relative;width:min(100%,900px);aspect-ratio:4/3;overflow:hidden;border-radius:10px;background:#ffab83;box-shadow:0 12px 34px #4c34251c}
+.computer-stage{position:relative;width:min(100%,900px);aspect-ratio:4/3;overflow:hidden;border-radius:10px;background:radial-gradient(ellipse at 34% 38%,#ffb58d 0%,#ffa77e 56%,#f07a45 100%);box-shadow:0 12px 34px #4c34251c}
 .computer-stage.is-linux-desktop{aspect-ratio:4/3;background:linear-gradient(180deg,#f2ab85,#f19a73);box-shadow:0 12px 34px #4c34251c}
 .computer-stage.is-linux-desktop iframe,.computer-stage.is-linux-desktop>img{display:block;width:100%;height:100%;border:0;object-fit:contain;background:#17191d}
-.computer-browser-window{position:absolute;left:7%;top:9%;width:86%;height:82%;display:grid;grid-template-rows:58px minmax(0,1fr);overflow:hidden;border:1px solid #e8d9d2;border-radius:7px 7px 2px 2px;background:#fbfaf8;box-shadow:0 3px 10px #9a5c3c35}
+.computer-browser-window{position:absolute;left:6.5%;top:8.7%;width:87%;height:82.2%;display:grid;grid-template-rows:58px minmax(0,1fr);overflow:hidden;border:1px solid #e8d9d2;border-radius:7px 7px 2px 2px;background:#fbfaf8;box-shadow:0 3px 10px #9a5c3c35}
 .browser-window-chrome{min-width:0;display:grid;grid-template-rows:28px 30px;background:#f5b69c}
 .browser-tab-strip{display:flex;align-items:center;gap:8px;padding:0 9px;background:#f4b198;color:#68656b}
 .browser-dots{display:flex;align-items:center;gap:5px}.browser-dots i{width:6px;height:6px;border-radius:50%;background:#d88e73}
@@ -17,7 +17,7 @@
 .browser-page-frame{min-height:0;overflow:hidden;background:#fbfaf8}.browser-page-frame img{display:block;width:100%;height:100%;object-fit:contain;outline:none}.browser-page-frame img[tabindex="0"]{cursor:crosshair}
 .computer-dock{position:absolute;left:50%;bottom:.5%;transform:translateX(-50%);box-sizing:border-box;width:140px;height:48px;display:flex;align-items:center;justify-content:center;gap:12px;padding:8px 10px;border:1px solid #ffffff77;border-radius:7px;background:#ffffff26;box-shadow:0 2px 8px #794c362b;backdrop-filter:blur(8px)}
 .computer-dock span{display:grid;place-items:center;width:30px;height:30px;border-radius:6px;font-size:19px}.dock-chrome{color:#4185ef;background:#f8f8f6}.dock-terminal{color:#f6f5ef;background:#77777a;font-size:14px!important}.dock-files{background:transparent}.dock-files img{display:block;width:30px;height:30px}
-.computer-controlbar{width:min(100%,900px);min-height:36px;display:flex;justify-content:space-between;align-items:center;padding:0 6px;gap:16px;color:#68666d}
+.computer-controlbar{width:min(100%,900px);min-height:36px;display:flex;justify-content:center;align-items:center;padding:0 6px;gap:8px;color:#68666d}
 .computer-workspace.is-linux-desktop-workspace .computer-controlbar{justify-content:center;gap:9px}
 .computer-workspace.is-linux-desktop-workspace.has-user-control .computer-stage.is-linux-desktop iframe{outline:4px solid #ec8b3f;outline-offset:-4px}
 .computer-owner{display:flex;align-items:center;gap:7px;font-size:11px}.computer-owner i{width:7px;height:7px;border-radius:50%;background:#76bb78}

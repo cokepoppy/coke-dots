@@ -1788,6 +1788,17 @@ try {
       return image.naturalWidth / image.naturalHeight;
     });
     assert.ok(Math.abs(screenAspect - 1280 / 820) < 0.001, 'The replicated remote screen aspect ratio changed');
+    const stage = await alphaPage!.locator('.computer-stage').boundingBox();
+    const browserWindow = await alphaPage!.locator('.computer-browser-window').boundingBox();
+    const ownerControl = await alphaPage!.locator('.computer-controlbar .computer-owner').boundingBox();
+    const takeoverButton = await alphaPage!.getByRole('button', { name: 'Take over' }).boundingBox();
+    assert(stage && browserWindow && ownerControl && takeoverButton);
+    assert.ok(Math.abs((browserWindow.x - stage.x) / stage.width - 0.065) < 0.01, 'The browser window should retain the video-measured 6.5% left inset');
+    assert.ok(Math.abs((browserWindow.y - stage.y) / stage.height - 0.087) < 0.01, 'The browser window should retain the video-measured 8.7% top inset');
+    assert.ok(Math.abs(browserWindow.width / stage.width - 0.87) < 0.01, 'The browser window should match the video-measured 87% stage width');
+    assert.ok(Math.abs(browserWindow.height / stage.height - 0.822) < 0.01, 'The browser window should match the video-measured 82.2% stage height');
+    const controlCenter = (ownerControl.x + takeoverButton.x + takeoverButton.width) / 2;
+    assert.ok(Math.abs(controlCenter - (stage.x + stage.width / 2)) <= 3, 'The owner label and Take over action should form the centered control group seen in the source frame');
     await screenshot(alphaPage!, '14-computer-dot-control');
   });
 
