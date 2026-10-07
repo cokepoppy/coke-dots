@@ -66,7 +66,7 @@ try {
     const body = await config.json() as { googleConfigured?: unknown; e2eAuthAvailable?: unknown };
     assert.equal(typeof body.googleConfigured, 'boolean');
     assert.equal(body.e2eAuthAvailable, false, 'Production must not expose the E2E sign-in fixture');
-    result.googleConfigured = body.googleConfigured;
+    result.googleConfigured = body.googleConfigured as boolean;
   });
 
   await check('the existing public application routes still respond', async () => {
