@@ -102,3 +102,14 @@ test('Claude Code remains unavailable even when a host binary is configured', as
     await assert.rejects(adapters.claude.run({ tenantId: 'legacy', prompt: 'Review supplied text', priorResult: null, sessionId: null, workspace: '/tmp', onEvent: () => {} }), /Claude Code 暂未支持/);
   } finally { delete process.env.DOTS_CLAUDE_BIN; }
 });
+
+test('Pi availability recognizes the installed ESM-only SDK', { skip: !import.meta.resolve('@mariozechner/pi-coding-agent').startsWith('file:') }, () => {
+  const previous = process.env.DOTS_PI_ENABLED;
+  process.env.DOTS_PI_ENABLED = '1';
+  try {
+    assert.equal(adapters.pi.available('legacy'), true, 'Pi must be available when its ESM-only SDK is installed and enabled');
+  } finally {
+    if (previous === undefined) delete process.env.DOTS_PI_ENABLED;
+    else process.env.DOTS_PI_ENABLED = previous;
+  }
+});

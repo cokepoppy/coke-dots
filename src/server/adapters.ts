@@ -254,4 +254,7 @@ export const adapters: Record<Engine, AgentAdapter> = {
   },
 };
 
-function packageAvailable(name: string) { try { require.resolve(name); return true; } catch { return false; } }
+function packageAvailable(name: string) {
+  try { require.resolve(name); return true; } catch { /* Try ESM-only packages below. */ }
+  try { return import.meta.resolve(name).startsWith('file:'); } catch { return false; }
+}
