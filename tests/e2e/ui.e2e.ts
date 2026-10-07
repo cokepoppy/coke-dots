@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { appendFile, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type Server } from 'node:http';
-import { createServer } from 'node:net';
+import { createConnection, createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,10 +30,15 @@ const pageErrors: string[] = [];
 let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockGoogleServer: Server | null = null;
+let mockGoogleProxyServer: Server | null = null;
 let mockModelPrompts: string[] = [];
 let mockGoogleOrigin = '';
+let mockGoogleProxyOrigin = '';
 let mockGoogleAuthorizationRequests: Record<string, string>[] = [];
 let mockGoogleTokenExchanges = 0;
+let mockGoogleTokenAttempts = 0;
+let mockGoogleCertRequests = 0;
+let mockGoogleProxyTunnels = 0;
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
 let pauseModelHeld = false;
@@ -181,6 +186,9 @@ async function startMockModel() {
 async function startMockGoogleProvider() {
   mockGoogleAuthorizationRequests = [];
   mockGoogleTokenExchanges = 0;
+  mockGoogleTokenAttempts = 0;
+  mockGoogleCertRequests = 0;
+  mockGoogleProxyTunnels = 0;
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
   const flows = new Map<string, {
@@ -189,7 +197,7 @@ async function startMockGoogleProvider() {
     challenge: string;
     redirectUri: string;
     clientId: string;
-    account?: 'alpha' | 'unverified';
+    account?: 'alpha' | 'unverified' | 'token-failure';
   }>();
   const provider = createHttpServer(async (request, response) => {
     const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
@@ -210,17 +218,17 @@ async function startMockGoogleProvider() {
         clientId: params.get('client_id') || '',
       });
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      response.end(`<!doctype html><html><head><title>Google account chooser test</title></head><body><main><h1>Choose a Google account</h1><p>Local OAuth test provider</p><a data-testid="mock-google-alpha" href="/approve?code=${encodeURIComponent(code)}&amp;account=alpha">Continue as alpha@example.test</a><a data-testid="mock-google-unverified" href="/approve?code=${encodeURIComponent(code)}&amp;account=unverified">Continue as unverified@example.test</a><a data-testid="mock-google-tampered-state" href="/approve?code=${encodeURIComponent(code)}&amp;account=tampered-state">Return a modified state</a></main></body></html>`);
+      response.end(`<!doctype html><html><head><title>Google account chooser test</title></head><body><main><h1>Choose a Google account</h1><p>Local OAuth test provider</p><a data-testid="mock-google-alpha" href="/approve?code=${encodeURIComponent(code)}&amp;account=alpha">Continue as alpha@example.test</a><a data-testid="mock-google-unverified" href="/approve?code=${encodeURIComponent(code)}&amp;account=unverified">Continue as unverified@example.test</a><a data-testid="mock-google-token-failure" href="/approve?code=${encodeURIComponent(code)}&amp;account=token-failure">Simulate token endpoint failure</a><a data-testid="mock-google-tampered-state" href="/approve?code=${encodeURIComponent(code)}&amp;account=tampered-state">Return a modified state</a></main></body></html>`);
       return;
     }
     if (request.method === 'GET' && url.pathname === '/approve') {
       const flow = flows.get(url.searchParams.get('code') || '');
       const account = url.searchParams.get('account');
-      if (!flow || (account !== 'alpha' && account !== 'unverified' && account !== 'tampered-state')) {
+      if (!flow || (account !== 'alpha' && account !== 'unverified' && account !== 'token-failure' && account !== 'tampered-state')) {
         response.writeHead(400).end('Invalid test authorization code');
         return;
       }
-      flow.account = account === 'unverified' ? 'unverified' : 'alpha';
+      flow.account = account === 'unverified' ? 'unverified' : account === 'token-failure' ? 'token-failure' : 'alpha';
       const callback = new URL(flow.redirectUri);
       callback.searchParams.set('code', url.searchParams.get('code')!);
       callback.searchParams.set('state', account === 'tampered-state' ? `${flow.state}-modified` : flow.state);
@@ -228,11 +236,13 @@ async function startMockGoogleProvider() {
       return;
     }
     if (request.method === 'GET' && url.pathname === '/certs') {
+      mockGoogleCertRequests++;
       response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'public, max-age=3600' });
       response.end(JSON.stringify({ 'coke-dots-e2e-key': publicKeyPem }));
       return;
     }
     if (request.method === 'POST' && url.pathname === '/token') {
+      mockGoogleTokenAttempts++;
       let raw = '';
       for await (const chunk of request) raw += chunk.toString();
       const params = new URLSearchParams(raw);
@@ -249,6 +259,11 @@ async function startMockGoogleProvider() {
       if (!flow || !valid) {
         response.writeHead(400, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ error: 'invalid_grant' }));
+        return;
+      }
+      if (flow.account === 'token-failure') {
+        response.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        response.end(JSON.stringify({ error: 'temporarily_unavailable' }));
         return;
       }
       const identity = flow.account === 'alpha'
@@ -277,6 +292,37 @@ async function startMockGoogleProvider() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function startMockGoogleProxy() {
+  const provider = new URL(mockGoogleOrigin);
+  const proxy = createHttpServer((_request, response) => response.writeHead(405).end('CONNECT is required'));
+  proxy.on('connect', (request, client: Socket, head) => {
+    const [hostname, portText] = (request.url || '').split(':');
+    const port = Number(portText);
+    if (hostname !== provider.hostname || port !== Number(provider.port)) {
+      client.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      return;
+    }
+    mockGoogleProxyTunnels++;
+    const upstream = createConnection({ host: provider.hostname, port });
+    upstream.once('connect', () => {
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length) upstream.write(head);
+      upstream.pipe(client);
+      client.pipe(upstream);
+    });
+    const closeBoth = () => { client.destroy(); upstream.destroy(); };
+    client.once('error', closeBoth);
+    upstream.once('error', closeBoth);
+    client.once('close', () => upstream.destroy());
+    upstream.once('close', () => client.destroy());
+  });
+  await new Promise<void>((resolvePromise, reject) => proxy.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  mockGoogleProxyServer = proxy;
+  const address = proxy.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}`;
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -301,6 +347,9 @@ async function startServer(port: number) {
       GOOGLE_REDIRECT_URI: '',
       DOTS_APP_URL: baseUrl,
       DOTS_E2E_GOOGLE_PROVIDER_URL: mockGoogleOrigin,
+      DOTS_GOOGLE_OAUTH_PROXY_URL: mockGoogleProxyOrigin,
+      NO_PROXY: '',
+      no_proxy: '',
       DOTS_MODEL_BASE_URL: testModelBaseUrl,
       DOTS_MODEL_API_KEY: testModelApiKey,
       DOTS_MODEL: testModelName,
@@ -444,7 +493,7 @@ async function signIn(page: Page, email: string) {
   await page.locator('.profile-link small').filter({ hasText: email }).waitFor({ state: 'visible' });
 }
 
-async function signInGoogle(page: Page, account: 'alpha' | 'unverified' = 'alpha') {
+async function signInGoogle(page: Page, account: 'alpha' | 'unverified' | 'token-failure' = 'alpha') {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByRole('link', { name: '使用 Google 登录' }).click();
   await page.getByRole('heading', { name: 'Choose a Google account' }).waitFor({ state: 'visible' });
@@ -454,6 +503,10 @@ async function signInGoogle(page: Page, account: 'alpha' | 'unverified' = 'alpha
   assert.equal(oauthCookie.sameSite, 'Lax');
   assert.equal(oauthCookie.path, '/auth/google/callback');
   await page.getByTestId(`mock-google-${account}`).click();
+  if (account === 'token-failure') {
+    await page.locator('.auth-error').filter({ hasText: 'Google 登录失败，请检查配置后重试。' }).waitFor({ state: 'visible', timeout: 5_000 });
+    return null;
+  }
   if (account === 'unverified') {
     await page.locator('.auth-error').filter({ hasText: 'Google 身份验证未通过。' }).waitFor({ state: 'visible' });
     return null;
@@ -518,6 +571,7 @@ try {
   e2ePort = await reservePort();
   baseUrl = `http://127.0.0.1:${e2ePort}`;
   mockGoogleOrigin = await startMockGoogleProvider();
+  mockGoogleProxyOrigin = await startMockGoogleProxy();
   server = await startServer(e2ePort);
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
   alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
@@ -553,6 +607,9 @@ try {
     assert.ok(authorization.code_challenge && authorization.nonce && authorization.state);
     assert.equal(authorization.prompt, 'select_account');
     assert.equal(mockGoogleTokenExchanges, 1, 'The authorization code should be exchanged exactly once');
+    assert.equal(mockGoogleTokenAttempts, 1, 'The mock Google token exchange should make exactly one attempt');
+    assert.ok(mockGoogleProxyTunnels >= 2, 'The token exchange and ID-token certificate fetch should pass through the configured proxy');
+    assert.equal(mockGoogleCertRequests, 1, 'The ID token must be verified against the provider certificate');
     await alphaPage!.getByTestId('app-shell').waitFor();
     await alphaPage!.getByTestId('chat-home').getByRole('heading', { name: "What's on your mind today?" }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.icon-rail').evaluate(element => Math.round(element.getBoundingClientRect().width)), 44);
@@ -610,6 +667,9 @@ try {
     assert.equal(await alphaPage!.evaluate(async () => (await fetch('/api/auth/me')).status), 401, 'A callback with the wrong state must not create a session');
     assert.equal(mockGoogleTokenExchanges, 1, 'A callback with the wrong state must not exchange its authorization code');
     await alphaPage!.getByTestId('e2e-sign-in').waitFor({ state: 'visible' });
+    assert.equal(await signInGoogle(alphaPage!, 'token-failure'), null, 'A token endpoint failure must be reported in the page instead of leaving a spinner');
+    assert.equal(mockGoogleTokenAttempts, 2, 'A failed one-time authorization-code exchange must never be retried');
+    assert.equal(await alphaPage!.evaluate(async () => (await fetch('/api/auth/me')).status), 401, 'A failed token exchange must not create an app session');
     assert.equal(await signInGoogle(alphaPage!, 'unverified'), null, 'An unverified Google email must not create an app session');
     assert.equal(await alphaPage!.evaluate(async () => (await fetch('/api/auth/me')).status), 401);
     const restored = await signInGoogle(alphaPage!);
@@ -617,7 +677,8 @@ try {
     assert.equal(restored.user.id, original.user.id, 'Google sub must resolve to the same application user after relogin');
     assert.equal(restored.tenant.id, original.tenant.id, 'Relogin must retain the existing personal workspace');
     assert.equal(mockGoogleTokenExchanges, 3, 'Only valid OAuth states reach code exchange, and each code is exchanged once');
-    assert.equal(mockGoogleAuthorizationRequests.length, 4);
+    assert.equal(mockGoogleTokenAttempts, 4, 'Each valid state must make one code exchange, including the surfaced failure');
+    assert.equal(mockGoogleAuthorizationRequests.length, 5);
   });
 
   await recordStep('Switch between light and dark themes and restore the account preference after reload', async () => {
@@ -2083,6 +2144,7 @@ try {
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
   if (mockGoogleServer) await new Promise<void>(resolvePromise => mockGoogleServer!.close(() => resolvePromise()));
+  if (mockGoogleProxyServer) await new Promise<void>(resolvePromise => mockGoogleProxyServer!.close(() => resolvePromise()));
   testModelBaseUrl = '';
   testModelApiKey = '';
   testModelName = '';

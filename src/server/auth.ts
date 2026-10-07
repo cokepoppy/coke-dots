@@ -87,6 +87,7 @@ export class AuthService {
     try {
       const redirectUri = this.redirectUri(req);
       const client = this.oauthClient();
+      disableOAuthCodeExchangeRetries(client);
       const { tokens } = await client.getToken({ code, codeVerifier: flow.codeVerifier, redirect_uri: redirectUri });
       if (!tokens.id_token) return redirect(res, `${returnTo}/?authError=missing_identity`);
       const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: this.clientId });
@@ -130,10 +131,12 @@ export class AuthService {
   private oauthClient() {
     const redirectUri = process.env.GOOGLE_REDIRECT_URI?.trim() || `http://127.0.0.1:${this.port}${appBasePath()}/auth/google/callback`;
     const testProviderOrigin = e2eGoogleProviderOrigin();
+    const proxy = googleOAuthProxyUrl();
     return new OAuth2Client({
       clientId: this.clientId,
       clientSecret: this.clientSecret,
       redirectUri,
+      transporterOptions: { timeout: 15_000, ...(proxy ? { proxy } : {}) },
       ...(testProviderOrigin ? {
         endpoints: {
           oauth2AuthBaseUrl: `${testProviderOrigin}/authorize`,
@@ -162,6 +165,28 @@ export class AuthService {
     authorizationUrl.searchParams.set('nonce', nonce);
     return authorizationUrl.toString();
   }
+}
+
+function googleOAuthProxyUrl() {
+  const configured = process.env.DOTS_GOOGLE_OAUTH_PROXY_URL?.trim();
+  if (!configured) return '';
+  try {
+    const proxy = new URL(configured);
+    if (!['http:', 'https:'].includes(proxy.protocol) || proxy.username || proxy.password || proxy.pathname !== '/' || proxy.search || proxy.hash) throw new Error();
+    return proxy.origin;
+  } catch { throw new Error('DOTS_GOOGLE_OAUTH_PROXY_URL must be an HTTP(S) proxy origin without credentials or a path'); }
+}
+
+function disableOAuthCodeExchangeRetries(client: OAuth2Client) {
+  const originalRequest = client.transporter.request.bind(client.transporter);
+  client.transporter.request = options => {
+    if (!options) return originalRequest(options);
+    const requestUrl = options.url ? new URL(String(options.url)) : null;
+    if (options.method?.toUpperCase() === 'POST' && requestUrl?.pathname.endsWith('/token')) {
+      return originalRequest({ ...options, retry: false, retryConfig: { retry: 0, httpMethodsToRetry: [] } });
+    }
+    return originalRequest(options);
+  };
 }
 
 function e2eGoogleProviderOrigin() {

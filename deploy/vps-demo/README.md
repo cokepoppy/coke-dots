@@ -17,9 +17,13 @@ DOTS_PUBLIC_ORIGIN=https://codex.cokeagent.com
 DOTS_APP_URL=https://codex.cokeagent.com/dots-demo
 DOTS_TRUSTED_PROXY_TOKEN=<random 64-character hex value>
 GOOGLE_REDIRECT_URI=https://codex.cokeagent.com/dots-demo/auth/google/callback
+# Set this only when the Mac's direct Google egress is unavailable.
+DOTS_GOOGLE_OAUTH_PROXY_URL=http://127.0.0.1:7890
 ```
 
 Add the Google OAuth client ID and secret to this file before enabling sign-in. The authorized redirect URI must exactly match the callback above. The demo uses its own data directory and must not point at `./data` or another Coke Dots installation.
+
+`DOTS_GOOGLE_OAUTH_PROXY_URL` is optional and applies only to server-side Google token and certificate requests. It does not change Chrome, Nginx, SSH tunneling, or other services. The configured proxy must be reachable from the Mac service; keep the environment file at mode `0600`.
 
 Run `sync-demo-app.sh` after `npm run build:demo`; it copies only `src`, `dist`, `node_modules`, and `package.json` into the private Application Support runtime so macOS background processes do not need access to the `Documents` checkout. Then install `com.coke.dots.demo.plist` as `~/Library/LaunchAgents/com.coke.dots.demo.plist`. It restarts the server if it exits. Logs go to `~/Library/Logs/coke-dots-demo.*.log`.
 
@@ -27,7 +31,7 @@ Run `sync-demo-app.sh` after `npm run build:demo`; it copies only `src`, `dist`,
 
 Run `npm run test:e2e:public-demo` from the Mac after the service is reachable. It opens the public Dots path in headless Chrome, checks the prefixed JavaScript and CSS bundles, verifies health/auth configuration, and probes the existing `/auth/`, `/router/`, `/app/`, `/block-crush/`, `/rpg/`, `/fish-sort/`, `/sandbox/`, gateway, root, and directory-listing routes. Expected unauthenticated gateway responses are 401 JSON; root directory-listing requests remain 403. The browser test never follows the Google sign-in link. Set `DOTS_PUBLIC_DEMO_URL` when the Dots HTTPS path changes.
 
-The 2026-10-07 public route check is recorded in [public-demo-operations.md](../../research/public-demo-operations.md). It confirmed the public page is reachable but Google login is disabled while the OAuth client ID and secret remain empty.
+The 2026-10-07 public route and real Google sign-in checks are recorded in [public-demo-operations.md](../../research/public-demo-operations.md).
 
 ## Reverse tunnel
 

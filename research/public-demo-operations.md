@@ -45,10 +45,18 @@ The read-only SSH inspection confirmed `/etc/nginx/sites-enabled/coke-openrouter
 - The reported post-Google “登录请求已过期” came from the state cookie path. `auth.ts` had cached `DOTS_BASE_PATH` while its static import was evaluated, before `index.ts` loaded the protected environment file. The public callback URI included `/dots-demo`, but Chrome had stored the state cookie at `/auth/google/callback`, so it did not send that cookie to the prefixed callback.
 - The cookie and application paths are now resolved after environment loading. `tests/auth-env-file.test.ts` starts the server with its base path only in `DOTS_ENV_FILE`; it verifies the OAuth cookie has the prefixed callback path and remains `Secure`, `HttpOnly`, and `SameSite=Lax`.
 - The fix was synchronized to the existing private Mac runtime and only the `com.coke.dots.demo` LaunchAgent was restarted. Public Chrome E2E now verifies the cookie at `/dots-demo/auth/google/callback`; all six public smoke checks pass, including the existing service-route probes.
-- Start a fresh Google login after this fix. The automated test follows the OAuth redirect and validates Chrome's cookie, but stops before account selection and does not complete a real user sign-in.
+- The initial cookie-path smoke stopped before account selection; the later token-exchange fix and real Chrome sign-in are recorded below.
+
+## Google token exchange timeout fix
+
+- The user's report of a spinner after Google consent was reproduced from the Mac service logs: OAuth state validation succeeded, but the service's direct connection to `oauth2.googleapis.com:443` timed out. The local HTTP proxy at `127.0.0.1:7890` successfully established outbound HTTPS, while the Coke Dots LaunchAgent had no proxy setting.
+- `src/server/auth.ts` now accepts an origin-only `DOTS_GOOGLE_OAUTH_PROXY_URL`, applies it to OAuth HTTP transport, and sets a 15-second request timeout. It disables retries for the one-use authorization-code POST so a timeout or provider error cannot spend the code again. The callback returns the existing visible sign-in error on transport failure.
+- The private Mac `demo.env` now sets `DOTS_GOOGLE_OAUTH_PROXY_URL=http://127.0.0.1:7890` with mode `0600`. The app build was synced to the existing private runtime and only `com.coke.dots.demo` was restarted; `com.coke.dots.demo-tunnel` stayed running and no VPS or Nginx configuration was changed.
+- Chrome E2E now routes token exchange and ID-token certificate retrieval through a local CONNECT proxy and checks that a simulated 503 returns a visible error with exactly one exchange attempt. `npm run test:e2e` passed all 35 UI steps and the cloud-computer E2E checks; `npm test` passed 53 tests; `npm run test:e2e:public-demo` passed all 6 public route checks.
+- A new real Google sign-in was completed in Chrome after the service restart. The public Dots home rendered with the signed-in account and personal workspace, and opening `/dots-demo/api/auth/me` in the same Chrome session returned HTTP 200 with that user's personal tenant. Chrome was returned to the Dots home afterward.
 
 ## Repeatable browser smoke
 
 Run `npm run test:e2e:public-demo` to check the public redirect, health and auth-config APIs, Chrome-rendered page and prefixed bundles, the enabled Google OAuth redirect, and the expected status/content type for each listed existing route. Set `DOTS_PUBLIC_DEMO_URL` to test another HTTPS Dots base URL. The test requires Google sign-in to be configured and the production E2E fixture to stay disabled. It does not enter account credentials or touch another app's data.
 
-This smoke does not authenticate a Google user, validate OAuth consent, inspect a signed-in tenant, or open the cloud desktop/noVNC socket. Those require their own authorized acceptance flow.
+This smoke does not authenticate a Google user, validate OAuth consent, inspect a signed-in tenant, or open the cloud desktop/noVNC socket. The completed real sign-in was a separate manual Chrome acceptance flow; repeat it when OAuth credentials, callback routing, or outbound proxy configuration changes.
