@@ -1,6 +1,6 @@
 # John Aspinall V2 video observations
 
-Source: [I Tried ChatGPT Dots: Setup, Voice Calls & Real Tasks](https://www.youtube.com/watch?v=Q9tF0R8d_Co), John Aspinall. Reviewed on 2026-10-05 and rechecked in the user's local Chrome session on 2026-10-06. YouTube displayed a duration of 15:58 and the following chapters:
+Source: [I Tried ChatGPT Dots: Setup, Voice Calls & Real Tasks](https://www.youtube.com/watch?v=Q9tF0R8d_Co), John Aspinall. Reviewed on 2026-10-05 and rechecked in the user's local Chrome session on 2026-10-06 and 2026-10-07. YouTube displayed a duration of 15:58 and the following chapters:
 
 - 0:00 OpenAI DevDay and ChatGPT dots
 - 0:44 Where your dot lives: Codex vs ChatGPT

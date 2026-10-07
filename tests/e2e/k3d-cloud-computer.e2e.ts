@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { PNG } from 'pngjs';
 import { desktopResourceIdentity } from '../../src/server/linux-desktop-computer.ts';
+import { compareRasters, resizeRaster } from '../../src/shared/reference-visual.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const cluster = process.env.DOTS_K3D_CLUSTER || 'tp1121-sandbox-dev';
@@ -245,7 +246,19 @@ try {
   assert.equal(await page.frameLocator('[data-testid="linux-desktop-view"]').locator('#top_bar').evaluate(element => getComputedStyle(element).display), 'none', 'The real takeover view must hide the noVNC demo toolbar like the observed Dots desktop');
   const canvasSize = await vncCanvas.evaluate(element => ({ width: (element as HTMLCanvasElement).width, height: (element as HTMLCanvasElement).height }));
   assert.deepEqual(canvasSize, { width: 1440, height: 1080 }, 'The live noVNC canvas must match the remote desktop resolution');
-  await vncCanvas.screenshot({ path: join(artifacts, '02-novnc-canvas.png') });
+  const takeoverCanvasPng = await vncCanvas.screenshot({ path: join(artifacts, '02-novnc-canvas.png') });
+  const takeoverCanvas = PNG.sync.read(takeoverCanvasPng);
+  const takeoverContinuity = compareRasters(
+    resizeRaster(frame, takeoverCanvas.width, takeoverCanvas.height),
+    takeoverCanvas,
+    32,
+  );
+  assert(
+    takeoverContinuity.meanAbsoluteError < 2.5 && takeoverContinuity.changedPixelRatio < 0.04,
+    `Taking over must keep the current remote page visible (MAE ${takeoverContinuity.meanAbsoluteError.toFixed(2)}, changed ${((takeoverContinuity.changedPixelRatio) * 100).toFixed(2)}%)`,
+  );
+  await writeFile(join(artifacts, '02-takeover-continuity.json'), `${JSON.stringify(takeoverContinuity, null, 2)}\n`);
+  console.log(`Remote page continuity after takeover passed (MAE ${takeoverContinuity.meanAbsoluteError.toFixed(2)}, changed ${((takeoverContinuity.changedPixelRatio) * 100).toFixed(2)}%)`);
   await page.screenshot({ path: join(artifacts, '02-user-takeover.png'), fullPage: true });
   const stageCapture = await page.getByTestId('linux-desktop-stage').screenshot({ path: join(artifacts, '02-user-takeover-stage.png') });
   const stageImage = PNG.sync.read(stageCapture);
