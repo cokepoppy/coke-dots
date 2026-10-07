@@ -1763,18 +1763,24 @@ try {
     assert.equal(await betaPage!.locator('.task-card').filter({ hasText: 'Completed launch packet' }).count(), 0, 'A different tenant saw Alpha’s parent result');
   });
 
-  await recordStep('Alpha shared-workspace computer opens under the shared Dot identity', async () => {
+  await recordStep('Alpha computer welcome screen matches the video-observed Roger identity', async () => {
+    await openProfile(alphaPage!);
+    await alphaPage!.getByLabel('名字').fill('Roger');
+    await alphaPage!.getByRole('button', { name: '保存更改' }).click();
+    await alphaPage!.locator('.profile-link strong').filter({ hasText: 'Roger' }).waitFor({ state: 'visible' });
     await clickNav(alphaPage!, '电脑');
-    await alphaPage!.getByRole('region', { name: 'Shared Dot 的电脑' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('region', { name: 'Roger 的电脑' }).waitFor({ state: 'visible' });
     await alphaPage!.getByRole('button', { name: '打开电脑' }).click();
     await alphaPage!.getByRole('button', { name: 'Take over' }).waitFor({ state: 'visible', timeout: 20_000 });
-    await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot has control' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('status').filter({ hasText: 'Roger has control' }).waitFor({ state: 'visible' });
     const welcomeState = await alphaPage!.evaluate(async () => {
       const response = await fetch('/api/computer');
       return await response.json() as { title: string; owner: string };
     });
-    assert.equal(welcomeState.title, 'Welcome back, Shared Dot', 'The isolated browser did not open the observed welcome screen');
+    assert.equal(welcomeState.title, 'Welcome back, Roger', 'The isolated browser did not use the video-observed Dot name on its welcome screen');
     assert.equal(welcomeState.owner, 'agent');
+    assert.equal(await alphaPage!.locator('.browser-tab-title').innerText(), '', 'The 04:44 reference tab has no readable title while the welcome page is open');
+    assert.equal(await alphaPage!.locator('.browser-window-controls i').count(), 3, 'The simulated browser frame must retain the three window controls visible in the source');
     assert.equal(await alphaPage!.locator('.computer-dock span').count(), 3, 'The source computer view shows three dock icons');
     const filesIcon = await alphaPage!.locator('.computer-dock .dock-files img').evaluate(element => {
       const image = element as HTMLImageElement;
@@ -1841,7 +1847,7 @@ try {
       await betaPage!.unroute('**/api/computer');
       await betaPage!.unroute('**/api/computer/open');
     }
-    assert.equal(await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot has control' }).count(), 1, 'Opening Beta’s computer changed Alpha’s control owner');
+    assert.equal(await alphaPage!.getByRole('status').filter({ hasText: 'Roger has control' }).count(), 1, 'Opening Beta’s computer changed Alpha’s control owner');
     await screenshot(betaPage!, '14-beta-private-computer');
   });
 
@@ -1869,7 +1875,7 @@ try {
     await alphaPage!.getByText('Dot E2E Typed: typed by takeover', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 });
     await screenshot(alphaPage!, '15-computer-typed');
     await alphaPage!.getByRole('button', { name: 'Return control' }).click();
-    await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot has control' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('status').filter({ hasText: 'Roger has control' }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.computer-controlbar.is-user-control').count(), 0, 'Return control did not restore the agent-control presentation');
     assert.equal(await alphaPage!.locator('.browser-toolbar input').isDisabled(), true, 'Navigation remained enabled after control was returned');
     await screenshot(alphaPage!, '16-computer-returned');

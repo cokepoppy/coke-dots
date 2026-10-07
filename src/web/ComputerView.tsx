@@ -76,7 +76,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
       </div> : <div className="computer-stage">
         <div className="computer-browser-window">
           <div className="browser-window-chrome">
-            <div className="browser-tab-strip"><span className="browser-dots"><i /><i /><i /></span><span className="browser-tab-title" title={state.title || 'New tab'}>{state.title || 'New tab'}</span><span className="browser-tab-add" aria-hidden="true">＋</span></div>
+            <div className="browser-tab-strip"><span className="browser-tab-menu" aria-hidden="true">⌄</span><span className="browser-tab-favicon" aria-hidden="true" /><span className="browser-tab-title" title={state.title || 'New tab'}>{state.url === 'about:blank' ? '' : state.title || 'New tab'}</span><span className="browser-tab-close" aria-hidden="true">×</span><span className="browser-tab-add" aria-hidden="true">＋</span><span className="browser-window-controls" aria-hidden="true"><i>−</i><i>□</i><i>×</i></span></div>
             <div className="browser-toolbar">
               <button type="button" className="browser-nav-icon" aria-label="后退" disabled>‹</button>
               <button type="button" className="browser-nav-icon" aria-label="前进" disabled>›</button>

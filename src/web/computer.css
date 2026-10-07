@@ -7,10 +7,16 @@
 .computer-stage.is-linux-desktop iframe,.computer-stage.is-linux-desktop>img{display:block;width:100%;height:100%;border:0;object-fit:contain;background:#17191d}
 .computer-browser-window{position:absolute;left:6.5%;top:8.7%;width:87%;height:82.2%;display:grid;grid-template-rows:58px minmax(0,1fr);overflow:hidden;border:1px solid #e8d9d2;border-radius:7px 7px 2px 2px;background:#fbfaf8;box-shadow:0 3px 10px #9a5c3c35}
 .browser-window-chrome{min-width:0;display:grid;grid-template-rows:28px 30px;background:#f5b69c}
-.browser-tab-strip{display:flex;align-items:center;gap:8px;padding:0 9px;background:#f4b198;color:#68656b}
-.browser-dots{display:flex;align-items:center;gap:5px}.browser-dots i{width:6px;height:6px;border-radius:50%;background:#d88e73}
-.browser-tab-title{height:22px;min-width:98px;max-width:210px;display:flex;align-items:center;padding:0 11px;border-radius:7px 7px 0 0;background:#fbfaf8;font-size:9px;color:#5f5d63}
-.browser-tab-add{font-size:15px;color:#7d7474;line-height:1}.browser-toolbar{display:flex;align-items:center;gap:8px;padding:0 10px;background:#fbfaf8}
+.browser-tab-strip{display:flex;align-items:center;gap:6px;padding:0 9px;background:#f4b198;color:#68656b}
+.browser-tab-menu{width:14px;display:grid;place-items:center;font-size:12px;line-height:1;color:#6d6463}
+.browser-tab-favicon{position:relative;width:11px;height:11px;flex:none;border-radius:50%;background:#e76d4d}
+.browser-tab-favicon::after{content:"";position:absolute;inset:3px;border-radius:50%;background:#fff4e9}
+.browser-tab-title{height:22px;width:118px;min-width:118px;max-width:210px;display:flex;align-items:center;padding:0 5px;border-radius:7px 7px 0 0;background:#fbfaf8;font-size:9px;color:#5f5d63;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.browser-tab-close{width:10px;flex:none;text-align:center;color:#777071;font-size:12px;line-height:1}
+.browser-tab-add{flex:none;font-size:15px;color:#7d7474;line-height:1}
+.browser-window-controls{margin-left:auto;display:flex;align-items:center;gap:8px;color:#766c69;font-size:9px;line-height:1}
+.browser-window-controls i{width:9px;display:grid;place-items:center;font-style:normal}
+.browser-toolbar{display:flex;align-items:center;gap:8px;padding:0 10px;background:#fbfaf8}
 .browser-nav-icon{width:15px;height:20px;padding:0;border:0;background:transparent;color:#77747a;font-size:18px;line-height:18px}.browser-nav-icon:disabled{opacity:.5}.browser-refresh-icon{font-size:14px;text-align:center}
 .browser-toolbar form{flex:1;min-width:0}.browser-toolbar input{width:100%;height:19px;padding:0 12px;border:1px solid #dedbd8;border-radius:12px;background:#fff;color:#5e5b60;font:9px Arial,Helvetica,sans-serif;outline:none}.browser-toolbar input:disabled{color:#aaa;background:#fff}
 .browser-toolbar-menu{font-size:16px;color:#767278;line-height:1}
