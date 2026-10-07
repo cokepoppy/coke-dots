@@ -88,6 +88,7 @@ try {
   page.on('requestfailed', request => failedRequests.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText || 'failed'}`));
   await page.goto(`${baseUrl}/dots-demo/`, { waitUntil: 'domcontentloaded' });
   await page.getByTestId('e2e-sign-in').waitFor({ state: 'visible' });
+  await page.getByText('Google 登录配置完成后即可访问工作区。').waitFor({ state: 'visible' });
   assert.equal(await page.locator('script[src]').evaluateAll((nodes, origin) => nodes.every(node => (node as HTMLScriptElement).src.startsWith(`${origin}/dots-demo/`)), baseUrl), true, 'Built assets must use the demo prefix');
   await page.screenshot({ path: join(artifacts, 'demo-login.png'), fullPage: true });
   await page.getByLabel('E2E 测试账号').fill('demo@example.test');
