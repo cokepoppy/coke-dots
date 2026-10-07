@@ -94,7 +94,7 @@ websockify_pid=$!
 chrome_flags=(
   --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check
   --password-store=basic --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
-  --user-data-dir="$HOME/.config/chromium" --window-position="$browser_x,$browser_y"
+  --user-data-dir="$HOME/.config/chromium" --load-extension=/opt/coke-dots/chrome-theme --window-position="$browser_x,$browser_y"
   --window-size="$browser_width,$browser_height"
 )
 if [[ "${COKE_DESKTOP_CHROME_NO_SANDBOX:-0}" == "1" ]]; then chrome_flags+=(--no-sandbox); fi
@@ -104,31 +104,33 @@ node /opt/coke-dots/computer-worker.mjs >/tmp/dots-worker.log 2>&1 &
 worker_pid=$!
 node /opt/coke-dots/agent-runtime.mjs >/tmp/dots-agent-runtime.log 2>&1 &
 agent_pid=$!
-if [[ "${COKE_DESKTOP_CHROME_NO_SANDBOX:-0}" == "1" ]]; then
-  # The sandbox warning is only shown by the disposable local K3D harness.
-  banner_dismissed=0
-  for _ in $(seq 1 45); do
-    chrome_window="$(xdotool search --onlyvisible --name 'Welcome back, Dot' 2>/dev/null | head -n 1 || true)"
-    if [[ -n "$chrome_window" ]] && xdotool getwindowname "$chrome_window" 2>/dev/null | grep -q 'Welcome back, Dot'; then
-      timeout --foreground 2s xdotool windowactivate --sync "$chrome_window" || true
-      sleep 3
-      window_geometry="$(xdotool getwindowgeometry --shell "$chrome_window")"
-      window_left="$(sed -n 's/^X=//p' <<<"$window_geometry")"
-      window_top="$(sed -n 's/^Y=//p' <<<"$window_geometry")"
-      window_width_actual="$(sed -n 's/^WIDTH=//p' <<<"$window_geometry")"
+banner_dismissed=0
+for _ in $(seq 1 45); do
+  chrome_window="$(xdotool search --onlyvisible --name 'Welcome back, Dot' 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$chrome_window" ]] && xdotool getwindowname "$chrome_window" 2>/dev/null | grep -q 'Welcome back, Dot'; then
+    timeout --foreground 2s xdotool windowactivate --sync "$chrome_window" || true
+    # Chromium shows a native "Installed theme" notice when the tenant's
+    # unpacked color theme is first loaded. The local no-sandbox harness also
+    # shows a Chromium warning in this same toolbar notice area. Let both
+    # settle, then close that area before the welcome desktop is presented.
+    sleep 6
+    window_geometry="$(xdotool getwindowgeometry --shell "$chrome_window")"
+    window_left="$(sed -n 's/^X=//p' <<<"$window_geometry")"
+    window_top="$(sed -n 's/^Y=//p' <<<"$window_geometry")"
+    window_width_actual="$(sed -n 's/^WIDTH=//p' <<<"$window_geometry")"
+    for _ in 1 2 3; do
       xdotool mousemove --sync "$((window_left + window_width_actual - 35))" "$((window_top + 115))"
-      sleep 0.5
       xdotool click 1 || true
-      xdotool mousemove --sync 24 24
-      banner_dismissed=1
-      break
-    fi
-    sleep 1
-  done
-  [[ "$banner_dismissed" == "1" ]] || echo "Chromium welcome window did not appear before the banner dismissal deadline" >&2
-else
-  banner_dismissed=1
-fi
+      sleep 0.5
+    done
+    xdotool key Escape 2>/dev/null || true
+    xdotool mousemove --sync 24 24
+    banner_dismissed=1
+    break
+  fi
+  sleep 1
+done
+[[ "$banner_dismissed" == "1" ]] || echo "Chromium welcome window did not appear before the banner dismissal deadline" >&2
 if [[ "$banner_dismissed" == "1" ]]; then touch /tmp/dots-chrome-startup-ready; fi
 
 while true; do

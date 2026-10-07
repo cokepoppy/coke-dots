@@ -112,7 +112,7 @@ async function startRemote() {
       const route = `/${pathParts.join('/')}`;
       const machine = ensureMachine(hash);
       if (service === 'novnc' && req.method === 'GET' && route === '/vnc_lite.html') {
-        const html = `<!doctype html><html><body><main id="mock-vnc" data-state="loading">Mock Debian VNC desktop</main><script>const ws=new WebSocket('ws://'+location.host+'/api/computer/novnc/websockify');ws.onopen=()=>document.querySelector('#mock-vnc').dataset.state='connected';ws.onerror=()=>document.querySelector('#mock-vnc').dataset.state='error';</script></body></html>`;
+        const html = `<!doctype html><html><head><title>Mock noVNC</title></head><body><div id="top_bar">Mock viewer toolbar</div><div id="screen"><main id="mock-vnc" data-state="loading">Mock Debian VNC desktop</main></div><script>const ws=new WebSocket('ws://'+location.host+'/api/computer/novnc/websockify');ws.onopen=()=>document.querySelector('#mock-vnc').dataset.state='connected';ws.onerror=()=>document.querySelector('#mock-vnc').dataset.state='error';</script></body></html>`;
         return content(res, 200, 'text/html; charset=utf-8', html);
       }
       if (service === 'worker') {
@@ -285,6 +285,10 @@ try {
   await page.getByRole('button', { name: 'Take over' }).click();
   const vncFrame = page.getByTestId('linux-desktop-view');
   await vncFrame.waitFor({ state: 'visible' });
+  const viewerToolbarDisplay = await page.frameLocator('[data-testid="linux-desktop-view"]').locator('#top_bar').evaluate(element => getComputedStyle(element).display);
+  assert.equal(viewerToolbarDisplay, 'none', 'The source video shows the desktop canvas without the noVNC example toolbar');
+  const viewerStyle = await page.frameLocator('[data-testid="linux-desktop-view"]').locator('style[data-coke-dots-viewer]').textContent();
+  assert.match(viewerStyle || '', /#screen\{flex:1;min-height:0;width:100%/);
   try {
     await page.waitForFunction(() => {
       const frame = document.querySelector<HTMLIFrameElement>('[data-testid="linux-desktop-view"]');

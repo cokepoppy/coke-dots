@@ -45,6 +45,8 @@ COPY --chmod=0644 deploy/linux-desktop/computer-worker.mjs /opt/coke-dots/comput
 COPY --chmod=0644 src/server/computer-home.mjs /opt/coke-dots/computer-home.mjs
 COPY --chmod=0644 deploy/linux-desktop/agent-runtime.mjs /opt/coke-dots/agent-runtime.mjs
 COPY --chmod=0644 deploy/linux-desktop/coral-wallpaper.svg /opt/coke-dots/coral-wallpaper.svg
+RUN install -d -o node -g node -m 0755 /opt/coke-dots/chrome-theme
+COPY --chmod=0644 deploy/linux-desktop/chrome-theme/manifest.json /opt/coke-dots/chrome-theme/manifest.json
 
 USER 1000:1000
 WORKDIR /workspace

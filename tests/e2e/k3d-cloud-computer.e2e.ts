@@ -95,6 +95,11 @@ async function signIn(target: Page): Promise<string> {
   await target.reload({ waitUntil: 'domcontentloaded' });
   await target.getByTestId('app-shell').waitFor({ state: 'visible' });
   await target.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  const profileStatus = await target.evaluate(async () => (await fetch('/api/profile', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Roger', setupComplete: true, onboardingComplete: true }) })).status);
+  assert.equal(profileStatus, 200, 'The reference tenant must use the Dot name shown in the YouTube frame');
+  await target.reload({ waitUntil: 'domcontentloaded' });
+  await target.getByTestId('app-shell').waitFor({ state: 'visible' });
+  await target.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
   const tenantId = await target.getByTestId('app-shell').getAttribute('data-tenant-id');
   assert(tenantId, 'The signed-in workspace must expose its verified tenant ID to the E2E harness');
   assert.equal(tenantId, workspace.body.id, 'The E2E session must use the unique workspace it just created');
@@ -158,7 +163,7 @@ try {
   const state = await page.evaluate(async () => await (await fetch('/api/computer')).json()) as { backend: string; owner: string; title: string };
   assert.equal(state.backend, 'linux-desktop');
   assert.equal(state.owner, 'agent');
-  assert.equal(state.title, 'Welcome back, Dot', 'The live Debian desktop must start on the video-observed Dot welcome screen');
+  assert.equal(state.title, 'Welcome back, Roger', 'The tenant Dot name must appear on the video-observed welcome screen');
   const screenshot = Buffer.from(await page.evaluate(async () => Array.from(new Uint8Array(await (await fetch('/api/computer/screenshot')).arrayBuffer()))));
   await writeFile(join(artifacts, '01-api-screenshot.png'), screenshot);
   const frame = PNG.sync.read(screenshot);
@@ -169,6 +174,9 @@ try {
   };
   const wallpaper = sample(20, 20);
   assert(wallpaper[0] > 220 && wallpaper[1] > 100 && wallpaper[1] < 190 && wallpaper[2] < 170, `The desktop margin must show the coral reference wallpaper; saw ${wallpaper}`);
+  const wallpaperGlow = sample(20, 600);
+  const wallpaperFarEdge = sample(1395, 600);
+  assert(wallpaperGlow[1] > 185 && wallpaperGlow[1] > wallpaperFarEdge[1] + 20, `The source desktop has a pale coral glow across its left middle; saw left=${wallpaperGlow}, right=${wallpaperFarEdge}`);
   let chromeWarningTextPixels = 0;
   for (let y = 205; y <= 217; y++) for (let x = 250; x <= 1190; x++) {
     const offset = (frame.width * y + x) * 4;
@@ -176,7 +184,7 @@ try {
   }
   assert(chromeWarningTextPixels < 100, `The Chromium --no-sandbox startup banner must not cover the observed welcome-screen layout (found ${chromeWarningTextPixels} dark banner pixels)`);
   const browserChrome = sample(100, 100);
-  assert(browserChrome[2] > 220 && browserChrome[1] > 200, `The browser window must sit inside the coral desktop at the measured inset; saw ${browserChrome}`);
+  assert(browserChrome[0] > 225 && browserChrome[1] > 140 && browserChrome[1] < 215 && browserChrome[2] < 190, `The browser window must use the sampled coral theme at the measured inset; saw ${browserChrome}`);
   const dock = sample(720, 1020);
   assert(dock[0] > 230 && dock[1] > 210 && dock[2] > 200, `The centered launcher dock must appear along the desktop's bottom edge; saw ${dock}`);
   const samples = new Set<string>();
@@ -228,13 +236,25 @@ try {
   const returnControl = await page.getByRole('button', { name: 'Return control' }).boundingBox();
   const takenOverStage = await page.getByTestId('linux-desktop-stage').boundingBox();
   assert(userControl && returnControl && takenOverStage, 'The live takeover row must remain visible with the desktop canvas');
+  const takeoverOutline = await page.getByTestId('linux-desktop-view').evaluate(element => ({ color: getComputedStyle(element).outlineColor, width: getComputedStyle(element).outlineWidth }));
+  assert.deepEqual(takeoverOutline, { color: 'rgb(236, 139, 63)', width: '4px' }, 'The user-owned VNC canvas must carry the video-observed orange outline');
   const userGroupCenter = (userControl.x + returnControl.x + returnControl.width) / 2;
   assert(Math.abs(userGroupCenter - (takenOverStage.x + takenOverStage.width / 2)) < 4, 'The takeover/return controls must stay centered when ownership changes');
   const vncCanvas = page.frameLocator('[data-testid="linux-desktop-view"]').locator('canvas').first();
   await vncCanvas.waitFor({ state: 'visible', timeout: 60_000 });
+  assert.equal(await page.frameLocator('[data-testid="linux-desktop-view"]').locator('#top_bar').evaluate(element => getComputedStyle(element).display), 'none', 'The real takeover view must hide the noVNC demo toolbar like the observed Dots desktop');
   const canvasSize = await vncCanvas.evaluate(element => ({ width: (element as HTMLCanvasElement).width, height: (element as HTMLCanvasElement).height }));
   assert.deepEqual(canvasSize, { width: 1440, height: 1080 }, 'The live noVNC canvas must match the remote desktop resolution');
   await vncCanvas.screenshot({ path: join(artifacts, '02-novnc-canvas.png') });
+  await page.screenshot({ path: join(artifacts, '02-user-takeover.png'), fullPage: true });
+  const stageCapture = await page.getByTestId('linux-desktop-stage').screenshot({ path: join(artifacts, '02-user-takeover-stage.png') });
+  const stageImage = PNG.sync.read(stageCapture);
+  let orangeTakeoverPixels = 0;
+  for (let offset = 0; offset < stageImage.data.length; offset += 4) {
+    const [red, green, blue] = stageImage.data.subarray(offset, offset + 3);
+    if (Math.abs(red - 236) <= 2 && Math.abs(green - 139) <= 2 && Math.abs(blue - 63) <= 2) orangeTakeoverPixels++;
+  }
+  assert(orangeTakeoverPixels > 3000, `The source video shows a visible orange screen frame during user takeover; screenshot contained ${orangeTakeoverPixels} matching pixels`);
   console.log('Live noVNC canvas connected at 1440x1080');
 
   const actions = await page.evaluate(async () => {
@@ -253,7 +273,7 @@ try {
   assert.deepEqual(actions.map(action => action.status), [200, 200, 200]);
   assert.equal(actions[0].url, 'http://127.0.0.1:8082/healthz');
   await page.getByRole('button', { name: 'Return control' }).click();
-  await page.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible' });
+  await page.getByRole('status').filter({ hasText: 'Roger has control' }).waitFor({ state: 'visible' });
   await page.screenshot({ path: join(artifacts, '03-agent-control-restored.png'), fullPage: true });
   console.log('Real cloud-browser navigate/click/type and control hand-back passed');
 

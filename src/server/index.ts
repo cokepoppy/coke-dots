@@ -309,14 +309,21 @@ const server = createServer(async (req, res) => {
       if ((await computer.state()).owner !== 'user') return reply(res, 403, { error: '请先接管电脑再打开交互画面' });
       return proxyNoVnc(req, res, computer);
     }
-    if (path === '/api/computer' && req.method === 'GET') return reply(res, 200, await computer.state());
+    if (path === '/api/computer' && req.method === 'GET') {
+      const state = await computer.state();
+      if (state.backend === 'linux-desktop' && state.ready && state.url === 'about:blank') {
+        const dotName = store.getProfile(session.tenant.id).name;
+        if (state.title !== `Welcome back, ${dotName}`) return reply(res, 200, await computer.open(dotName));
+      }
+      return reply(res, 200, state);
+    }
     if (path === '/api/computer/screenshot' && req.method === 'GET') {
       const bytes = await computer.screenshot();
       res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
       res.end(bytes);
       return;
     }
-    if (path === '/api/computer/open' && req.method === 'POST') return reply(res, 200, await computer.open(String(body.dotName || 'Dot')));
+    if (path === '/api/computer/open' && req.method === 'POST') return reply(res, 200, await computer.open(store.getProfile(session.tenant.id).name));
     if (path === '/api/computer/take-over' && req.method === 'POST') { await computer.takeOver(); return reply(res, 200, await computer.state()); }
     if (path === '/api/computer/return-control' && req.method === 'POST') {
       await computer.returnControl();
@@ -640,11 +647,21 @@ async function proxyNoVnc(req: IncomingMessage, res: ServerResponse, computer: C
   try {
     const upstreamUrl = new URL(`${suffix}${current.search}`, base);
     const upstream = await fetch(upstreamUrl, { signal: AbortSignal.timeout(10_000), redirect: 'manual' });
-    const bytes = Buffer.from(await upstream.arrayBuffer());
+    let bytes = Buffer.from(await upstream.arrayBuffer());
+    const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
+    if (upstream.ok && suffix === 'vnc_lite.html' && contentType.includes('text/html')) {
+      const html = bytes.toString('utf8');
+      const viewerStyle = `<style data-coke-dots-viewer>
+        html,body{width:100%;height:100%;margin:0;overflow:hidden}
+        #top_bar{display:none!important}
+        #screen{flex:1;min-height:0;width:100%;overflow:hidden;background:#17191d}
+      </style>`;
+      bytes = Buffer.from(html.replace(/<\/head>/i, `${viewerStyle}</head>`));
+    }
     res.writeHead(upstream.status, {
-      'Content-Type': upstream.headers.get('content-type') || 'application/octet-stream',
+      'Content-Type': contentType,
       'Cache-Control': 'no-store',
-      ...(upstream.headers.get('content-length') ? { 'Content-Length': upstream.headers.get('content-length')! } : {}),
+      'Content-Length': bytes.length,
     });
     res.end(bytes);
   } catch { reply(res, 502, { error: 'Linux 云电脑画面暂时不可用' }); }

@@ -9,7 +9,6 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
   const [frame, setFrame] = useState(0);
   const [busy, setBusy] = useState(false);
   const keyboardQueue = useRef<Promise<void>>(Promise.resolve());
-  const syncedDesktopName = useRef<string | null>(null);
 
   async function refresh() {
     try {
@@ -18,10 +17,6 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
       const next = await response.json() as ComputerState;
       setState(next);
       if (next.ready) setFrame(Date.now());
-      if (next.backend === 'linux-desktop' && next.ready && next.title === 'Welcome back, Dot' && dotName !== 'Dot' && syncedDesktopName.current !== dotName) {
-        syncedDesktopName.current = dotName;
-        await action('open', { dotName });
-      }
     } catch { /* The main UI reports service connectivity. */ }
   }
   useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 2000); return () => clearInterval(timer); }, [dotName]);

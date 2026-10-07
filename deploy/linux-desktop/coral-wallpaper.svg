@@ -1,9 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1080" viewBox="0 0 1440 1080">
   <defs>
-    <linearGradient id="coral" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f2ab85" />
+    <linearGradient id="coral-base" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f3ad86" />
       <stop offset="1" stop-color="#f19a73" />
     </linearGradient>
+    <radialGradient id="coral-glow" cx="8%" cy="55%" r="78%">
+      <stop offset="0" stop-color="#f6c9ad" stop-opacity=".9" />
+      <stop offset="35%" stop-color="#f6c9ad" stop-opacity=".55" />
+      <stop offset="78%" stop-color="#f6c9ad" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="coral-shade" cx="100%" cy="100%" r="72%">
+      <stop offset="0" stop-color="#c86749" stop-opacity=".42" />
+      <stop offset="100%" stop-color="#c86749" stop-opacity="0" />
+    </radialGradient>
   </defs>
-  <rect width="1440" height="1080" fill="url(#coral)" />
+  <rect width="1440" height="1080" fill="url(#coral-base)" />
+  <rect width="1440" height="1080" fill="url(#coral-glow)" />
+  <rect width="1440" height="1080" fill="url(#coral-shade)" />
 </svg>

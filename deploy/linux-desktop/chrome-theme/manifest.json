@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Coke Dots Coral Desktop Theme",
+  "version": "1.0.0",
+  "theme": {
+    "colors": {
+      "frame": [242, 171, 138],
+      "toolbar": [249, 223, 210],
+      "ntp_text": [36, 35, 41],
+      "ntp_link": [79, 72, 70],
+      "ntp_section": [249, 244, 242],
+      "button_background": [249, 244, 242]
+    }
+  }
+}

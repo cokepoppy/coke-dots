@@ -17,6 +17,7 @@
 .computer-dock span{display:grid;place-items:center;width:26px;height:26px;border-radius:6px;font-size:17px}.dock-chrome{color:#4185ef;background:#f8f8f6}.dock-terminal{color:#f6f5ef;background:#77777a;font-size:12px!important}.dock-files{color:#fff;background:#75b7ee}
 .computer-controlbar{width:min(100%,900px);min-height:36px;display:flex;justify-content:space-between;align-items:center;padding:0 6px;gap:16px;color:#68666d}
 .computer-workspace.is-linux-desktop-workspace .computer-controlbar{justify-content:center;gap:9px}
+.computer-workspace.is-linux-desktop-workspace.has-user-control .computer-stage.is-linux-desktop iframe{outline:4px solid #ec8b3f;outline-offset:-4px}
 .computer-owner{display:flex;align-items:center;gap:7px;font-size:11px}.computer-owner i{width:7px;height:7px;border-radius:50%;background:#76bb78}
 .take-button,.computer-empty button{border:0;border-radius:20px;background:#c7edce;color:#2a5d34;padding:7px 15px;font:600 11px Arial,Helvetica,sans-serif;white-space:nowrap;cursor:pointer}.take-button:hover,.computer-empty button:hover{background:#b6e5bf}.take-button:disabled{opacity:.6;cursor:wait}
 .computer-empty{width:min(100%,700px);border:1px dashed #ddd9df;border-radius:17px;background:#fff;text-align:center;padding:72px 20px}.computer-icon{font-size:38px;color:#a995cd}.computer-empty h2{font-size:17px;margin:12px 0}.computer-empty p{font-size:12px;color:#999;margin-bottom:25px}.computer-empty button{border-radius:8px;background:#2f2d34;color:#fff;padding:10px 17px}.computer-empty button:hover{background:#45424a}
