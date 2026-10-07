@@ -18,6 +18,7 @@ const videoDir = join(artifactRoot, 'video');
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-e2e-'));
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
+const testKeychainService = `com.cokepoppy.coke-dots.e2e-${randomBytes(12).toString('hex')}`;
 const e2eClaudeBin = join(tempRoot, 'claude-e2e.js');
 const e2eClaudeRelease = join(tempRoot, 'release-claude-child');
 const fixtureSource = join(projectRoot, 'tests', 'e2e', 'fixtures', 'computer.html');
@@ -369,6 +370,7 @@ async function startServer(port: number) {
       DOTS_E2E_AUTH: '1',
       DOTS_ENV_FILE: emptyEnvFile,
       DOTS_DATA_DIR: testDataDir,
+      DOTS_KEYCHAIN_SERVICE: testKeychainService,
       DOTS_PORT: String(port),
       DOTS_CHROME_BIN: chromePath,
       GOOGLE_CLIENT_ID: 'coke-dots-e2e-client',
@@ -2240,6 +2242,30 @@ try {
     });
     assert.deepEqual(takeoverOutline, { color: 'rgb(236, 139, 63)', style: 'solid', width: '4px', offset: '-4px' }, 'Take over must outline the complete desktop stage in the video-observed orange');
     await screenshot(alphaPage!, '14-computer-takeover');
+  });
+
+  await recordStep('Computer takeover shows a Chromium-native blocked-by-client page', async () => {
+    const beforeResponse = await alphaContext!.request.get(`${baseUrl}/api/computer/screenshot`);
+    assert.equal(beforeResponse.status(), 200, 'The computer screenshot endpoint should return the current welcome page');
+    const beforeHash = createHash('sha256').update(await beforeResponse.body()).digest('hex');
+
+    const addressBar = alphaPage!.locator('.browser-toolbar input');
+    await addressBar.fill('https://www.amazon.com');
+    await addressBar.press('Enter');
+    await alphaPage!.waitForFunction(async () => {
+      const response = await fetch('/api/computer');
+      if (!response.ok) return false;
+      const state = await response.json() as { url: string; title: string; owner: string };
+      return state.url === 'https://www.amazon.com/' && state.title === 'www.amazon.com' && state.owner === 'user';
+    }, null, { timeout: 20_000 });
+
+    const blockedResponse = await alphaContext!.request.get(`${baseUrl}/api/computer/screenshot`);
+    assert.equal(blockedResponse.status(), 200, 'A browser-native blocked navigation should still return its screenshot');
+    const blockedHash = createHash('sha256').update(await blockedResponse.body()).digest('hex');
+    assert.notEqual(blockedHash, beforeHash, 'The blocked browser page should replace the welcome-page screenshot');
+    assert.equal(await alphaPage!.locator('.error-banner').count(), 0, 'Chromium’s blocked page should not be replaced by a Coke Dots error banner');
+    await waitForComputerScreenshot(alphaPage!);
+    await screenshot(alphaPage!, '14b-computer-amazon-blocked');
   });
 
   await recordStep('Computer takeover performs real browser navigation, click, text input, and return', async () => {

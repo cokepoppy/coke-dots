@@ -28,7 +28,7 @@ test('environment model credential is used without appearing in public settings'
   try {
     setModelMetadata('https://example.com/v1', '', 'legacy');
     assert.equal(effectiveModelConfig()?.model, 'env-model');
-    assert.equal(effectiveModelConfig()?.apiKey, 'test-secret');
+    assert.equal(effectiveModelConfig()?.apiKey === 'test-secret', true, 'The environment credential should take effect without exposing its value in assertion output');
     assert.equal(JSON.stringify(publicModelSettings()).includes('test-secret'), false);
   } finally { delete process.env.DOTS_MODEL_API_KEY; delete process.env.DOTS_MODEL; }
 });

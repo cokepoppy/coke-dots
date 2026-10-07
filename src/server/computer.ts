@@ -32,6 +32,7 @@ export class ComputerManager implements ComputerRuntime {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private owner: 'agent' | 'user' = 'agent';
+  private blockedNavigationUrl: string | null = null;
 
   constructor(private dataDirectory: string) {}
 
@@ -48,6 +49,9 @@ export class ComputerManager implements ComputerRuntime {
       });
       this.page = this.context.pages()[0] || await this.context.newPage();
       this.page.on('close', () => { this.page = null; });
+      if (process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1') {
+        await this.page.route('https://www.amazon.com/**', route => route.abort('blockedbyclient'));
+      }
       await this.page.setContent(computerWelcomePage(dotName), { waitUntil: 'domcontentloaded' });
     }
     return this.state();
@@ -55,7 +59,7 @@ export class ComputerManager implements ComputerRuntime {
 
   async state(): Promise<ComputerState> {
     const page = this.page;
-    return { ready: Boolean(page && !page.isClosed()), owner: this.owner, url: page?.url() || '', title: page && !page.isClosed() ? await page.title().catch(() => '') : '', backend: 'local', width: 1280, height: 820 };
+    return { ready: Boolean(page && !page.isClosed()), owner: this.owner, url: this.blockedNavigationUrl || page?.url() || '', title: page && !page.isClosed() ? await page.title().catch(() => '') : '', backend: 'local', width: 1280, height: 820 };
   }
 
   takeOver() { if (!this.page) throw new Error('电脑尚未打开'); this.owner = 'user'; }
@@ -65,7 +69,13 @@ export class ComputerManager implements ComputerRuntime {
     this.assertUserControl();
     const parsed = new URL(url);
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('只允许不含凭据的 HTTP 或 HTTPS 网址');
-    await this.page!.goto(parsed.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    this.blockedNavigationUrl = null;
+    try {
+      await this.page!.goto(parsed.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    } catch (error) {
+      if (!isChromiumClientBlocked(error)) throw error;
+      this.blockedNavigationUrl = parsed.toString();
+    }
     return this.state();
   }
 
@@ -96,10 +106,14 @@ export class ComputerManager implements ComputerRuntime {
     return this.page.screenshot({ type: 'png' });
   }
 
-  async close() { await this.context?.close(); this.context = null; this.page = null; this.owner = 'agent'; }
+  async close() { await this.context?.close(); this.context = null; this.page = null; this.owner = 'agent'; this.blockedNavigationUrl = null; }
 
   private assertUserControl() {
     if (!this.page || this.page.isClosed()) throw new Error('电脑尚未打开');
     if (this.owner !== 'user') throw new Error('请先选择“接管”以使用鼠标和键盘');
   }
+}
+
+function isChromiumClientBlocked(error: unknown) {
+  return error instanceof Error && /net::ERR_BLOCKED_BY_CLIENT/.test(error.message);
 }
