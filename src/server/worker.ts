@@ -14,9 +14,11 @@ export class Worker {
   private timer: NodeJS.Timeout | null = null;
   private active = new Set<string>();
   private activeTaskTenants = new Map<string, string>();
+  private activeRuns = new Map<string, Promise<void>>();
   private abortControllers = new Map<string, AbortController>();
   private activeByTenant = new Map<string, number>();
   private browserResearchQueues = new Map<string, Promise<void>>();
+  private resettingTenants = new Set<string>();
   private stopped = false;
 
   constructor(private store: Store, private onChange: () => void, private workspaceRoot = join(process.cwd(), 'data', 'workspaces'), private notify: DesktopNotifier = sendDesktopNotification, private computerFor?: (tenantId: string) => ComputerRuntime) {}
@@ -25,6 +27,20 @@ export class Worker {
   stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null; }
   pauseTask(taskId: string) { this.abortControllers.get(taskId)?.abort(new Error('Task paused by user')); }
   stopTask(taskId: string) { this.abortControllers.get(taskId)?.abort(new Error('Task stopped by user')); }
+
+  async beginWorkspaceReset(tenantId: string) {
+    this.resettingTenants.add(tenantId);
+    const taskIds = [...this.activeTaskTenants].filter(([, activeTenantId]) => activeTenantId === tenantId).map(([taskId]) => taskId);
+    for (const taskId of taskIds) this.abortControllers.get(taskId)?.abort(new Error('Dot reset by user'));
+    await Promise.all(taskIds.map(taskId => this.activeRuns.get(taskId)?.catch(() => undefined)));
+  }
+
+  endWorkspaceReset(tenantId: string) {
+    this.resettingTenants.delete(tenantId);
+    void this.tick();
+  }
+
+  isWorkspaceResetting(tenantId: string) { return this.resettingTenants.has(tenantId); }
 
   pauseWorkspace(tenantId: string) {
     const activeTaskIds = [...this.activeTaskTenants].filter(([, activeTenantId]) => activeTenantId === tenantId).map(([taskId]) => taskId);
@@ -39,6 +55,7 @@ export class Worker {
     if (this.stopped) return;
     this.store.releaseReadyDelegations();
     for (const task of this.store.dueTasks()) {
+      if (this.resettingTenants.has(task.tenantId)) continue;
       if (this.store.isDotPaused(task.tenantId)) continue;
       if (this.active.size >= Worker.maxActiveTasks) break;
       if (this.active.has(task.id)) continue;
@@ -49,9 +66,12 @@ export class Worker {
       const controller = new AbortController();
       this.abortControllers.set(task.id, controller);
       this.activeByTenant.set(task.tenantId, tenantActive + 1);
-      void this.run(task, controller.signal).finally(() => {
+      const run = this.run(task, controller.signal);
+      this.activeRuns.set(task.id, run);
+      void run.finally(() => {
         this.active.delete(task.id);
         this.activeTaskTenants.delete(task.id);
+        if (this.activeRuns.get(task.id) === run) this.activeRuns.delete(task.id);
         if (this.abortControllers.get(task.id) === controller) this.abortControllers.delete(task.id);
         const count = (this.activeByTenant.get(task.tenantId) || 1) - 1;
         if (count > 0) this.activeByTenant.set(task.tenantId, count);

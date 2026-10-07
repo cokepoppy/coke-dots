@@ -270,6 +270,15 @@ function App() {
     setState(current => ({ ...current, dotPaused: result.dotPaused }));
   }
 
+  function returnToFreshDotChat() {
+    setSelected(null);
+    setSelectedPageId(null);
+    setPendingAttachments([]);
+    setVoiceCalls([]);
+    if (authContext) setVoiceCallsScope(`${authContext.tenant.id}:${authContext.user.id}`);
+    setView('chat');
+  }
+
   async function submit() {
     if (!draft.trim() || busy) return;
     setBusy(true); setError('');
@@ -458,7 +467,7 @@ function App() {
         }}
         onNewTask={() => { setSchedule(true); setView('chat'); requestAnimationFrame(() => composerRef.current?.focus()); }}
         onAddWatch={addScheduledWatch} />}
-      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onSetDotPaused={setDotPaused} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} onStartCall={() => setVoiceCallOpen(true)} />}
+      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onSetDotPaused={setDotPaused} onResetDot={returnToFreshDotChat} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} onStartCall={() => setVoiceCallOpen(true)} />}
       {view === 'computer' && <ComputerView dotName={state.profile.name} localComputerEnabled={state.computerAccess.localComputer} onManageAccess={() => setComputerAccessOpen(true)} onError={setError} />}
     </main>
     {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, false, true)} />}
@@ -687,7 +696,7 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
   </div>;
 }
 
-function Profile({ state, auth, onError, onSetDotPaused, onEditAppearance, onManageComputerAccess, onStartCall }: { state: Snapshot; auth: AuthContext; onError: (s: string) => void; onSetDotPaused: (paused: boolean) => Promise<void>; onEditAppearance: () => void; onManageComputerAccess: () => void; onStartCall: () => void }) {
+function Profile({ state, auth, onError, onSetDotPaused, onResetDot, onEditAppearance, onManageComputerAccess, onStartCall }: { state: Snapshot; auth: AuthContext; onError: (s: string) => void; onSetDotPaused: (paused: boolean) => Promise<void>; onResetDot: () => void; onEditAppearance: () => void; onManageComputerAccess: () => void; onStartCall: () => void }) {
   const [name, setName] = useState(state.profile.name);
   const [baseUrl, setBaseUrl] = useState(state.modelSettings.baseUrl || 'https://api.openai.com/v1');
   const [model, setModel] = useState(state.modelSettings.model);
@@ -713,7 +722,11 @@ function Profile({ state, auth, onError, onSetDotPaused, onEditAppearance, onMan
   const [personalDotMemoryBusy, setPersonalDotMemoryBusy] = useState(false);
   const [dotMenuOpen, setDotMenuOpen] = useState(false);
   const [dotPauseBusy, setDotPauseBusy] = useState(false);
+  const [dotResetOpen, setDotResetOpen] = useState(false);
+  const [dotResetBusy, setDotResetBusy] = useState(false);
+  const [dotResetError, setDotResetError] = useState('');
   const canManageDot = ['owner', 'admin'].includes(auth.tenant.role);
+  const canResetDot = auth.tenant.kind === 'personal' && auth.tenant.role === 'owner' && members.length === 1 && members[0]?.id === auth.user.id;
   const refreshMembers = async () => {
     const response = await appFetch(`/api/tenants/${auth.tenant.id}/members`);
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
@@ -808,8 +821,19 @@ function Profile({ state, auth, onError, onSetDotPaused, onEditAppearance, onMan
     catch (error) { onError(String(error)); }
     finally { setDotPauseBusy(false); }
   }
+
+  async function confirmDotReset() {
+    if (dotResetBusy || !canResetDot) return;
+    setDotResetBusy(true); setDotResetError('');
+    try {
+      await request('/dot/reset', 'POST', { confirm: true });
+      setDotResetOpen(false);
+      onResetDot();
+    } catch (error) { setDotResetError(error instanceof Error ? error.message : String(error)); }
+    finally { setDotResetBusy(false); }
+  }
   return <section className="content profile-content">
-    <div className="section-heading dot-profile-heading"><div><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div><div className="dot-control-menu"><button type="button" className="dot-control-menu-trigger" aria-label="Dot options" aria-haspopup="menu" aria-expanded={dotMenuOpen} onClick={() => setDotMenuOpen(value => !value)}>•••</button>{dotMenuOpen && <div className="dot-control-menu-popover" role="menu"><button type="button" role="menuitem" data-testid="dot-pause-action" disabled={dotPauseBusy || !canManageDot} onClick={() => void toggleDotPause()}>{dotPauseBusy ? 'Saving…' : state.dotPaused ? 'Paused • Tap to resume' : 'Pause'}</button>{!canManageDot && <small>只有工作区所有者或管理员可以更改 Dot 状态。</small>}</div>}</div></div>
+    <div className="section-heading dot-profile-heading"><div><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div><div className="dot-control-menu"><button type="button" className="dot-control-menu-trigger" aria-label="Dot options" aria-haspopup="menu" aria-expanded={dotMenuOpen} onClick={() => setDotMenuOpen(value => !value)}>•••</button>{dotMenuOpen && <div className="dot-control-menu-popover" role="menu"><button type="button" role="menuitem" data-testid="dot-pause-action" disabled={dotPauseBusy || !canManageDot} onClick={() => void toggleDotPause()}>{dotPauseBusy ? 'Saving…' : state.dotPaused ? 'Paused • Tap to resume' : 'Pause'}</button>{canResetDot && <button type="button" role="menuitem" data-testid="dot-reset-action" onClick={() => { setDotMenuOpen(false); setDotResetError(''); setDotResetOpen(true); }}>Reset</button>}{!canManageDot && <small>只有工作区所有者或管理员可以更改 Dot 状态。</small>}{auth.tenant.kind === 'personal' && auth.tenant.role === 'owner' && members.length > 1 && <small>此个人工作区已有其他成员；为保护共享数据，暂不可重置。</small>}</div>}</div></div>
     <div className="profile-card">
       <DotAvatar appearance={state.profile} />
       <button type="button" className="primary" data-testid="profile-voice-call-launch" aria-label={`拨打 ${state.profile.name}`} onClick={onStartCall}>拨打 {state.profile.name}</button>
@@ -897,6 +921,13 @@ function Profile({ state, auth, onError, onSetDotPaused, onEditAppearance, onMan
       <button className="primary" disabled={!canManageDot} onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存模型设置</button>
       {!canManageDot && <small>只有工作区所有者或管理员可以修改共享模型凭据。</small>}
     </div>
+    {dotResetOpen && <div className="dot-reset-overlay" data-testid="dot-reset-overlay"><section className="dot-reset-dialog" role="dialog" aria-modal="true" aria-labelledby="dot-reset-title" onKeyDown={event => { if (event.key === 'Escape' && !dotResetBusy) setDotResetOpen(false); }}>
+      <h2 id="dot-reset-title">Reset this dot?</h2>
+      <p>This permanently deletes this Dot’s conversations, activity, scheduled tasks, website monitors, saved memories, Scratchpad pages, and isolated computer data.</p>
+      <p>Your Google sign-in, personal workspace, and model API configuration will remain. Reset won’t undo changes already made in connected apps or recall messages already delivered.</p>
+      {dotResetError && <small role="alert" className="dot-reset-error">{dotResetError}</small>}
+      <div className="dot-reset-actions"><button type="button" disabled={dotResetBusy} onClick={() => setDotResetOpen(false)}>Cancel</button><button type="button" className="dot-reset-confirm" data-testid="dot-reset-confirm" disabled={dotResetBusy} onClick={() => void confirmDotReset()}>{dotResetBusy ? 'Resetting…' : 'Reset'}</button></div>
+    </section></div>}
   </section>;
 }
 

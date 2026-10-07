@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { resolve, join, extname } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { resolve, join, extname, dirname } from 'node:path';
+import { lstat, readFile, rm } from 'node:fs/promises';
 import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
@@ -75,6 +75,36 @@ const sessionHeartbeat = setInterval(() => {
 const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor);
 const watchRunner = new WatchRunner(store, publish, e2eWatchFetcher());
 
+async function tenantRuntimeDirectoriesForReset(tenantId: string) {
+  if (!/^(legacy|[a-f0-9-]{36})$/i.test(tenantId)) throw new Error('工作区 ID 无效，无法清理运行目录');
+  const targets: string[] = [];
+  for (const directoryName of ['tenants', 'workspaces']) {
+    const parent = join(dataDirectory, directoryName);
+    let parentInfo;
+    try { parentInfo = await lstat(parent); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    if (parentInfo.isSymbolicLink() || !parentInfo.isDirectory()) throw new Error('Dot 运行目录不是受管目录，已停止重置');
+    const target = join(parent, tenantId);
+    if (dirname(target) !== parent) throw new Error('Dot 运行目录超出工作区，已停止重置');
+    let targetInfo;
+    try { targetInfo = await lstat(target); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    if (targetInfo.isSymbolicLink() || !targetInfo.isDirectory()) throw new Error('Dot 运行目录类型异常，已停止重置');
+    targets.push(target);
+  }
+  return targets;
+}
+
+async function clearTenantRuntimeDirectories(targets: string[]) {
+  for (const target of targets) {
+    let targetInfo;
+    try { targetInfo = await lstat(target); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    if (targetInfo.isSymbolicLink() || !targetInfo.isDirectory()) throw new Error('Dot 运行目录类型异常，已停止重置');
+    await rm(target, { recursive: true, force: true });
+  }
+}
+
 function e2eWatchFetcher(): typeof fetch {
   const configured = process.env.DOTS_E2E_WATCH_PROVIDER_URL?.trim();
   if (process.env.NODE_ENV !== 'test' || process.env.DOTS_E2E_AUTH !== '1' || !configured) return fetch;
@@ -129,8 +159,43 @@ const server = createServer(async (req, res) => {
   const session = auth.session(req);
   if (!session) return reply(res, 401, { error: '请先使用 Google 登录' });
   if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+  if (worker.isWorkspaceResetting(session.tenant.id) && req.method !== 'GET' && req.method !== 'HEAD' && path !== '/api/dot/reset') {
+    return reply(res, 409, { error: 'Dot 正在重置，请稍后重试' });
+  }
 
   try {
+    if (path === '/api/dot/reset' && req.method === 'POST') {
+      const body = await readJson(req);
+      if (body.confirm !== true) return reply(res, 400, { error: '请在确认窗口中确认重置 Dot' });
+      if (worker.isWorkspaceResetting(session.tenant.id)) return reply(res, 409, { error: 'Dot 正在重置，请稍后重试' });
+      const eligibility = store.personalDotResetEligibility(session.tenant.id, session.user.id);
+      if (eligibility !== 'ok') {
+        const response = eligibility === 'shared'
+          ? { status: 409, error: '当前 Dot 所在工作区有多位成员；为保护共享数据，不能从这里重置。' }
+          : eligibility === 'not-found'
+            ? { status: 404, error: '找不到当前 Dot' }
+            : { status: 403, error: '只有个人工作区所有者可以重置 Dot' };
+        return reply(res, response.status, { error: response.error });
+      }
+      const tenantId = session.tenant.id;
+      await Promise.all([worker.beginWorkspaceReset(tenantId), watchRunner.beginWorkspaceReset(tenantId)]);
+      try {
+        // Validate every local path before deleting the separately managed cloud computer.
+        const runtimeDirectories = await tenantRuntimeDirectoriesForReset(tenantId);
+        const computer = computers.get(tenantId);
+        if (computer?.reset) await computer.reset();
+        else await computer?.close();
+        computers.delete(tenantId);
+        await clearTenantRuntimeDirectories(runtimeDirectories);
+        const reset = store.resetPersonalDot(tenantId, session.user.id);
+        if (reset !== 'ok') return reply(res, 409, { error: 'Dot 工作区状态已改变，请刷新页面后重试。' });
+        publish();
+        return reply(res, 200, { ok: true });
+      } finally {
+        worker.endWorkspaceReset(tenantId);
+        watchRunner.endWorkspaceReset(tenantId);
+      }
+    }
     if (path === '/api/events' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'Cache-Control': 'no-store' });
       clients.set(res, session.tokenHash);

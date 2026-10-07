@@ -11,3 +11,17 @@
 .dots-dark .dot-control-menu-popover button{color:#e1dde5}
 .dots-dark .dot-control-menu-popover button:hover:not(:disabled){background:#302d34}
 .dots-dark .dot-control-menu-popover small{color:#aaa5af}
+.dot-reset-overlay{position:fixed;inset:0;z-index:1200;display:grid;place-items:center;padding:20px;background:#17141a66}
+.dot-reset-dialog{width:min(460px,100%);display:grid;gap:14px;padding:24px;border:1px solid #e8e4eb;border-radius:16px;background:#fff;color:#302d35;box-shadow:0 18px 60px #17131f40}
+.dot-reset-dialog h2{margin:0;font-size:18px;letter-spacing:-.02em}
+.dot-reset-dialog p{margin:0;color:#706b76;font-size:12px;line-height:1.65}
+.dot-reset-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:4px}
+.dot-reset-actions button{min-width:76px;height:34px;padding:0 13px;border:1px solid #e5e2e8;border-radius:8px;background:#fff;color:#494550;font-size:12px}
+.dot-reset-actions .dot-reset-confirm{border-color:#b83a35;background:#b83a35;color:#fff}
+.dot-reset-actions button:disabled{opacity:.55;cursor:wait}
+.dot-reset-error{color:#b83a35;font-size:11px;line-height:1.5}
+.dots-dark .dot-reset-dialog{border-color:#403c45;background:#201f23;color:#ece9f0}
+.dots-dark .dot-reset-dialog p{color:#b2acb8}
+.dots-dark .dot-reset-actions button{border-color:#403c45;background:#29272d;color:#d0ccd4}
+.dots-dark .dot-reset-actions .dot-reset-confirm{border-color:#b83a35;background:#b83a35;color:#fff}
+.dots-dark .dot-reset-error{color:#ff938d}

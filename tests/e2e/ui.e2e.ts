@@ -2652,6 +2652,118 @@ try {
     assert.notEqual(betaComputer.url, 'https://research-fixture.dots.test/launch', 'A different personal tenant inherited DSH browser state');
   });
 
+  await recordStep('Personal Dot reset is confirmed in Chrome, removes only that tenant, and returns to first-run setup', async () => {
+    await selectTenant(betaPage!, 'Beta workspace');
+    await openProfile(betaPage!);
+    await betaPage!.getByLabel('名字').fill('Reset Test Dot');
+    await betaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
+
+    const seeded = await betaPage!.evaluate(async () => {
+      const me = await (await fetch('/api/auth/me')).json() as { user: { id: string }; tenant: { id: string; kind: string } };
+      const taskResponse = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'E2E reset fixture — preserve this scheduled conversation until reset', engine: 'model', scheduleSpec: { frequency: 'weekly', weekdays: [1], time: '09:00', timeZone: 'Asia/Shanghai', endDate: null } }) });
+      const memoryResponse = await fetch('/api/memories', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ note: 'E2E reset fixture shared note' }) });
+      const dotMemoryResponse = await fetch('/api/dot-memories', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ note: 'E2E reset fixture private note' }) });
+      const pageResponse = await fetch('/api/pages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'E2E reset fixture page', content: 'This page should be removed by Dot reset.' }) });
+      const watchResponse = await fetch('/api/watches', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: 'https://example.test/e2e-page-change', intervalMinutes: 60 }) });
+      const modelResponse = await fetch('/api/model-settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-reset-test', apiKey: '' }) });
+      const attachmentResponse = await fetch('/api/attachments', { method: 'POST', headers: { 'content-type': 'text/plain', 'x-attachment-name': 'reset-fixture.txt' }, body: 'E2E private attachment' });
+      return {
+        userId: me.user.id, tenantId: me.tenant.id, tenantKind: me.tenant.kind,
+        task: { status: taskResponse.status, body: await taskResponse.json() },
+        memoryStatus: memoryResponse.status, dotMemoryStatus: dotMemoryResponse.status, pageStatus: pageResponse.status,
+        watchStatus: watchResponse.status, modelStatus: modelResponse.status, attachmentStatus: attachmentResponse.status,
+      };
+    }) as { userId: string; tenantId: string; tenantKind: string; task: { status: number; body: { id: string } }; memoryStatus: number; dotMemoryStatus: number; pageStatus: number; watchStatus: number; modelStatus: number; attachmentStatus: number };
+    assert.equal(seeded.tenantKind, 'personal');
+    assert.equal(seeded.task.status, 201);
+    assert.equal(seeded.memoryStatus, 201);
+    assert.equal(seeded.dotMemoryStatus, 201);
+    assert.equal(seeded.pageStatus, 201);
+    assert.equal(seeded.watchStatus, 201);
+    assert.equal(seeded.modelStatus, 200);
+    assert.equal(seeded.attachmentStatus, 201);
+
+    const sharedTenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    assert(sharedTenantId && sharedTenantId !== seeded.tenantId);
+    const privateRuntime = join(testDataDir, 'tenants', seeded.tenantId, 'agent-runtime', 'pi');
+    const privateWorkspace = join(testDataDir, 'workspaces', seeded.tenantId, 'task-session');
+    const sharedRuntime = join(testDataDir, 'tenants', sharedTenantId, 'agent-runtime', 'pi');
+    await mkdir(privateRuntime, { recursive: true });
+    await mkdir(privateWorkspace, { recursive: true });
+    await mkdir(sharedRuntime, { recursive: true });
+    await writeFile(join(privateRuntime, 'reset-fixture.json'), '{"private":true}\n');
+    await writeFile(join(privateWorkspace, 'reset-fixture.txt'), 'private');
+    await writeFile(join(sharedRuntime, 'preserve-fixture.json'), '{"shared":true}\n');
+
+    await waitFor(async () => betaPage!.evaluate(async () => {
+      const state = await (await fetch('/api/state')).json() as { watches: { url: string; lastCheckedAt: string | null }[] };
+      return Boolean(state.watches.find(watch => watch.url === 'https://example.test/e2e-page-change')?.lastCheckedAt);
+    }), 10_000);
+    const stateBeforeCancel = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { tasks: { id: string }[]; entries: { body: string }[]; watches: unknown[] };
+    const memoriesBeforeCancel = await betaPage!.evaluate(async () => ({ shared: await (await fetch('/api/memories')).json(), private: await (await fetch('/api/dot-memories')).json(), pages: await (await fetch('/api/pages')).json(), attachments: await (await fetch('/api/attachments')).json() })) as { shared: unknown[]; private: unknown[]; pages: unknown[]; attachments: unknown[] };
+    assert(stateBeforeCancel.tasks.some(task => task.id === seeded.task.body.id));
+    assert(stateBeforeCancel.entries.some(entry => entry.body === 'E2E reset fixture — preserve this scheduled conversation until reset'));
+    assert.equal(stateBeforeCancel.watches.length, 1);
+    assert.equal(memoriesBeforeCancel.shared.length, 1);
+    assert.equal(memoriesBeforeCancel.private.length, 1);
+    assert.equal(memoriesBeforeCancel.pages.length, 1);
+    assert.equal(memoriesBeforeCancel.attachments.length, 1);
+
+    await betaPage!.getByRole('button', { name: 'Dot options' }).click();
+    await betaPage!.getByTestId('dot-reset-action').click();
+    const dialog = betaPage!.getByRole('dialog', { name: 'Reset this dot?' });
+    await dialog.waitFor({ state: 'visible' });
+    await screenshot(betaPage!, 'personal-dot-reset-confirmation');
+    await betaPage!.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    const stateAfterCancel = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { tasks: { id: string }[]; entries: { body: string }[]; watches: unknown[] };
+    const memoriesAfterCancel = await betaPage!.evaluate(async () => ({ shared: await (await fetch('/api/memories')).json(), private: await (await fetch('/api/dot-memories')).json(), pages: await (await fetch('/api/pages')).json(), attachments: await (await fetch('/api/attachments')).json() })) as { shared: unknown[]; private: unknown[]; pages: unknown[]; attachments: unknown[] };
+    assert.deepEqual(stateAfterCancel, stateBeforeCancel, 'Cancel must leave all Dot data unchanged');
+    assert.deepEqual(memoriesAfterCancel, memoriesBeforeCancel, 'Cancel must preserve memories, pages, and attachments');
+    assert(existsSync(join(privateRuntime, 'reset-fixture.json')), 'Cancel must leave runtime data unchanged');
+    await screenshot(betaPage!, 'personal-dot-reset-cancelled');
+
+    await betaPage!.getByRole('button', { name: 'Dot options' }).click();
+    await betaPage!.getByTestId('dot-reset-action').click();
+    await betaPage!.getByTestId('dot-reset-confirm').click();
+    await betaPage!.getByTestId('computer-choice').waitFor({ state: 'visible', timeout: 10_000 });
+    const cleared = await betaPage!.evaluate(async () => {
+      const [me, state, shared, personal, pages, attachments] = await Promise.all([
+        fetch('/api/auth/me').then(response => response.json()), fetch('/api/state').then(response => response.json()),
+        fetch('/api/memories').then(response => response.json()), fetch('/api/dot-memories').then(response => response.json()),
+        fetch('/api/pages').then(response => response.json()), fetch('/api/attachments').then(response => response.json()),
+      ]);
+      return { me, state, shared, personal, pages, attachments };
+    }) as { me: { user: { id: string }; tenant: { id: string; kind: string } }; state: { tasks: unknown[]; watches: unknown[]; entries: unknown[]; profile: { name: string }; modelSettings: { baseUrl: string; model: string; hasKey: boolean } }; shared: unknown[]; personal: unknown[]; pages: unknown[]; attachments: unknown[] };
+    assert.equal(cleared.me.user.id, seeded.userId, 'Reset must keep the signed-in Google identity');
+    assert.equal(cleared.me.tenant.id, seeded.tenantId, 'Reset must keep the personal workspace');
+    assert.equal(cleared.me.tenant.kind, 'personal');
+    assert.deepEqual(cleared.state.tasks, []);
+    assert.deepEqual(cleared.state.watches, []);
+    assert.deepEqual(cleared.state.entries, []);
+    assert.deepEqual(cleared.shared, []);
+    assert.deepEqual(cleared.personal, []);
+    assert.deepEqual(cleared.pages, []);
+    assert.deepEqual(cleared.attachments, []);
+    assert.equal(cleared.state.profile.name, 'Dot');
+    assert.equal(cleared.state.modelSettings.baseUrl, 'https://api.deepseek.com/v1');
+    assert.equal(cleared.state.modelSettings.model, 'deepseek-reset-test');
+    assert.equal(cleared.state.modelSettings.hasKey, true, 'Reset keeps local model credentials configured outside Dot memory');
+    assert.equal(existsSync(join(testDataDir, 'tenants', seeded.tenantId)), false, 'Reset removes only the personal computer and agent runtime directories');
+    assert.equal(existsSync(join(testDataDir, 'workspaces', seeded.tenantId)), false, 'Reset removes the personal task workspaces');
+    assert.equal(existsSync(join(sharedRuntime, 'preserve-fixture.json')), true, 'Reset must preserve another tenant’s runtime data');
+
+    const onboarding = betaPage!.locator('[data-testid="computer-choice"]');
+    await onboarding.getByRole('button', { name: 'Continue' }).click();
+    await betaPage!.getByTestId('dot-onboarding').waitFor({ state: 'visible' });
+    await betaPage!.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
+    const sharedState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { entries: { body: string }[]; tasks: { instruction: string }[] };
+    assert(sharedState.tasks.length > 0, 'A personal reset must not clear the other user’s shared workspace tasks');
+    assert.equal(await alphaPage!.evaluate(async () => (await fetch('/api/dot/reset', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }) })).status), 403, 'The API must reject a reset request in a shared workspace');
+    const sharedAfterDeniedReset = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { tasks: { instruction: string }[] };
+    assert.equal(sharedAfterDeniedReset.tasks.length, sharedState.tasks.length, 'A rejected shared-workspace reset must leave its tasks intact');
+  });
+
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
 } catch (error) {
   failure = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);

@@ -14,6 +14,7 @@ export interface TenantMemory { id: string; tenantId: string; note: string; crea
 export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantSummary; expiresAt: string }
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
 export interface StoredTaskAttachment extends AttachmentSummary { tenantId: string; uploadedBy: string; taskId: string | null; content: Uint8Array; createdAt: string }
+export type PersonalDotResetResult = 'ok' | 'not-found' | 'not-personal' | 'not-owner' | 'shared';
 
 export class Store {
   readonly db: DatabaseSync;
@@ -420,6 +421,50 @@ export class Store {
   }
 
   removeSession(tokenHash: string) { this.db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').run(tokenHash); }
+
+  personalDotResetEligibility(tenantId: string, userId: string): PersonalDotResetResult {
+    const row = this.db.prepare(`SELECT t.kind,m.role,
+      (SELECT COUNT(*) FROM memberships members WHERE members.tenant_id=t.id) AS member_count
+      FROM tenants t JOIN memberships m ON m.tenant_id=t.id AND m.user_id=? WHERE t.id=?`)
+      .get(userId, tenantId) as { kind: string; role: string; member_count: number } | undefined;
+    if (!row) return 'not-found';
+    if (row.kind !== 'personal') return 'not-personal';
+    if (row.role !== 'owner') return 'not-owner';
+    if (row.member_count !== 1) return 'shared';
+    return 'ok';
+  }
+
+  resetPersonalDot(tenantId: string, userId: string): PersonalDotResetResult {
+    const eligibility = this.personalDotResetEligibility(tenantId, userId);
+    if (eligibility !== 'ok') return eligibility;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const lockedEligibility = this.personalDotResetEligibility(tenantId, userId);
+      if (lockedEligibility !== 'ok') { this.db.exec('COMMIT'); return lockedEligibility; }
+      this.db.prepare('DELETE FROM page_action_approvals WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM dot_pause_tasks WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM task_attachments WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM entries WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM tasks WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM watches WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM voice_calls WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM tenant_memories WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM personal_dot_memories WHERE user_id=?').run(userId);
+      this.db.prepare('DELETE FROM workspace_pages WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM tenant_action_rules WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM workspace_invitations WHERE tenant_id=?').run(tenantId);
+      // Provider configuration belongs to the local account setup, not the Dot's
+      // conversations or memory. Keep the model endpoint/name and Keychain secret.
+      this.db.prepare("DELETE FROM tenant_settings WHERE tenant_id=? AND key NOT IN ('modelBaseUrl','modelName')").run(tenantId);
+      this.db.prepare(`UPDATE tenant_profiles SET name='Dot',shape='circle',color='#c8cbd5',eyes='dot',glasses='none',accessory='none',
+        character='ring',pet='moss',avatar_setup_completed_at=NULL,onboarding_completed_at=NULL,onboarding_completed_name=NULL WHERE tenant_id=?`).run(tenantId);
+      this.db.exec('COMMIT');
+      return 'ok';
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
 
   snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false }, tenantId = 'legacy'): Snapshot {
     const p = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory,character,pet,avatar_setup_completed_at AS avatarSetupCompletedAt,onboarding_completed_at AS onboardingCompletedAt,onboarding_completed_name AS onboardingCompletedName FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;

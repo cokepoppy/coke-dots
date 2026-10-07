@@ -38,7 +38,8 @@ export function extractVisibleText(source: string, contentType: string): string 
 }
 
 export class WatchRunner {
-  private active = new Map<string, { tenantId: string; controller: AbortController }>();
+  private active = new Map<string, { tenantId: string; controller: AbortController; completion: Promise<void> }>();
+  private resettingTenants = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
   constructor(private store: Store, private onChange: () => void, private fetcher: typeof fetch = fetch, private notify: DesktopNotifier = sendDesktopNotification) {}
 
@@ -51,14 +52,28 @@ export class WatchRunner {
     }
   }
 
+  async beginWorkspaceReset(tenantId: string) {
+    this.resettingTenants.add(tenantId);
+    const checks = [...this.active.values()].filter(item => item.tenantId === tenantId);
+    for (const check of checks) check.controller.abort(new Error('Dot reset by user'));
+    await Promise.all(checks.map(check => check.completion.catch(() => undefined)));
+  }
+
+  endWorkspaceReset(tenantId: string) {
+    this.resettingTenants.delete(tenantId);
+    void this.tick();
+  }
+
   async tick() {
     for (const watch of this.store.dueWatches()) {
+      if (this.resettingTenants.has(watch.tenantId)) continue;
       if (this.store.isDotPaused(watch.tenantId)) continue;
       if (this.active.size >= 2) break;
       if (this.active.has(watch.id)) continue;
       const controller = new AbortController();
-      this.active.set(watch.id, { tenantId: watch.tenantId, controller });
-      void this.check(watch, controller.signal).finally(() => this.active.delete(watch.id));
+      const active = { tenantId: watch.tenantId, controller, completion: Promise.resolve() };
+      this.active.set(watch.id, active);
+      active.completion = this.check(watch, controller.signal).finally(() => this.active.delete(watch.id));
     }
   }
 

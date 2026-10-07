@@ -18,6 +18,7 @@ export interface DesktopConnection {
 export interface DesktopConnector {
   connect(tenantId: string): Promise<DesktopConnection>;
   close?(): Promise<void>;
+  reset?(tenantId: string): Promise<void>;
 }
 
 /**
@@ -160,6 +161,11 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     await this.connecting?.catch(() => undefined);
     this.connection = null;
     await this.connector.close?.();
+  }
+
+  async reset() {
+    await this.close();
+    await this.connector.reset?.(this.tenantId);
   }
 
   private async setRemoteOwner(owner: 'agent' | 'user') {
@@ -356,11 +362,27 @@ class KubectlDesktopConnector implements DesktopConnector {
     this.portForward = null;
     this.current = null;
   }
+
+  async reset(tenantId: string) {
+    await this.close();
+    const identity = desktopResourceIdentity(tenantId);
+    const rawNamespace = await kubectl(['get', 'namespace', identity.namespace, '-o', 'json', '--ignore-not-found=true']);
+    if (!rawNamespace.trim()) return;
+    let namespace: { metadata?: { labels?: Record<string, string> } };
+    try { namespace = JSON.parse(rawNamespace); }
+    catch { throw new Error('无法验证 Linux 云电脑工作区归属，已停止重置'); }
+    if (namespace.metadata?.labels?.['coke-dots.io/managed-by'] !== 'coke-dots' || namespace.metadata.labels['coke-dots.io/tenant-hash'] !== identity.tenantHash) {
+      throw new Error('Linux 云电脑工作区标记与当前租户不匹配，已停止重置');
+    }
+    await kubectl(['delete', 'namespace', identity.namespace, '--wait=true', '--timeout=120s']);
+  }
 }
 
 async function kubectl(args: string[], input?: string) {
-  const child = spawn(process.env.DOTS_KUBECTL_BIN || 'kubectl', args, { stdio: ['pipe', 'ignore', 'pipe'] });
+  const child = spawn(process.env.DOTS_KUBECTL_BIN || 'kubectl', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '';
   let stderr = '';
+  child.stdout.on('data', data => { stdout = (stdout + data.toString()).slice(-1_000_000); });
   child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-1000); });
   if (input !== undefined) child.stdin.end(input);
   else child.stdin.end();
@@ -374,6 +396,7 @@ async function kubectl(args: string[], input?: string) {
     void stderr;
     throw new Error(`kubectl ${args[0]} failed (exit ${code})`);
   }
+  return stdout;
 }
 
 async function reservePorts(count: number) {

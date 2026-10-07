@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium, type BrowserContext, type Page, type Route } from 'playwright-core';
 import { computerWelcomePage } from './computer-home.mjs';
@@ -28,6 +29,7 @@ export interface ComputerRuntime {
   openPublicPageForAgent?(url: string, signal?: AbortSignal): Promise<PublicPageSnapshot>;
   screenshot(): Promise<Buffer>;
   close(): Promise<void>;
+  reset?(): Promise<void>;
   novncTarget?(): Promise<URL | null>;
   runAgentTask?(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] }>;
 }
@@ -154,6 +156,11 @@ export class ComputerManager implements ComputerRuntime {
   }
 
   async close() { await this.context?.close(); this.context = null; this.page = null; this.owner = 'agent'; this.blockedNavigationUrl = null; }
+
+  async reset() {
+    await this.close();
+    await rm(this.dataDirectory, { recursive: true, force: true });
+  }
 
   private assertUserControl() {
     if (!this.page || this.page.isClosed()) throw new Error('电脑尚未打开');
