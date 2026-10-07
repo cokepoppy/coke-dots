@@ -27,6 +27,7 @@ The video chapter leads are from https://www.postcutoff.com/v/futurepedia-i-test
 
 ## Coke Dots infrastructure decisions (not Dots feature evidence)
 
+- Pi's native transcript is persisted in each task workspace to support the official Dots continuity behavior. The use of Pi, its JSONL session format, and the `.coke-dots/pi-sessions` path are Coke Dots implementation choices, not claims about Dots internals. See [Pi session persistence](pi-session-persistence.md).
 - Google accounts are keyed by the verified immutable `sub` claim; profile email remains mutable display/contact information (G1).
 - Login uses an authorization-code exchange, one-time state bound to a browser cookie, PKCE, nonce validation, and verified ID-token claims (G1–G3).
 - Each account gets a personal tenant. Workspace membership controls which tenant a session can select. Application data, Keychain model keys, task working directories, and computer browser profiles are tenant-scoped.
