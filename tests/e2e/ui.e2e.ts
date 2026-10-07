@@ -1690,12 +1690,44 @@ try {
   });
 
   await recordStep('Beta personal computer remains isolated from Alpha shared computer', async () => {
+    let beginOpenRequest!: () => void;
+    let finishOpenRequest!: () => void;
+    const openRequestStarted = new Promise<void>(resolve => { beginOpenRequest = resolve; });
+    const openRequestGate = new Promise<void>(resolve => { finishOpenRequest = resolve; });
+    await betaPage!.route('**/api/computer', async route => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({ json: { ready: false, owner: 'agent', url: '', title: '', backend: 'linux-desktop', width: 1440, height: 1080 } });
+        return;
+      }
+      await route.continue();
+    });
+    await betaPage!.route('**/api/computer/open', async route => {
+      beginOpenRequest();
+      await openRequestGate;
+      await route.continue();
+    });
     await clickNav(betaPage!, '电脑');
     await betaPage!.getByRole('region', { name: 'Dot 的电脑' }).waitFor({ state: 'visible' });
     await betaPage!.getByRole('button', { name: '打开电脑' }).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.locator('.computer-browser-window').count(), 0, 'Beta inherited another tenant’s already-open computer');
-    await betaPage!.getByRole('button', { name: '打开电脑' }).click();
-    await betaPage!.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible', timeout: 20_000 });
+    try {
+      await betaPage!.getByRole('button', { name: '打开电脑' }).click();
+      await openRequestStarted;
+      const bootScreen = betaPage!.getByTestId('computer-boot-screen');
+      await bootScreen.waitFor({ state: 'visible' });
+      const bootBounds = await bootScreen.boundingBox();
+      assert(bootBounds && Math.abs(bootBounds.width / bootBounds.height - 4 / 3) < 0.02, 'The video-observed computer startup screen must use the same 4:3 canvas as the desktop');
+      const bootGradient = await bootScreen.evaluate(element => getComputedStyle(element).backgroundImage);
+      assert.match(bootGradient, /linear-gradient/, 'The computer startup screen must retain the video-observed blue-to-lavender gradient');
+      await screenshot(betaPage!, '14-beta-cloud-computer-starting');
+      await betaPage!.unroute('**/api/computer');
+      finishOpenRequest();
+      await betaPage!.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible', timeout: 20_000 });
+    } finally {
+      finishOpenRequest();
+      await betaPage!.unroute('**/api/computer');
+      await betaPage!.unroute('**/api/computer/open');
+    }
     assert.equal(await alphaPage!.getByRole('status').filter({ hasText: 'Shared Dot has control' }).count(), 1, 'Opening Beta’s computer changed Alpha’s control owner');
     await screenshot(betaPage!, '14-beta-private-computer');
   });
