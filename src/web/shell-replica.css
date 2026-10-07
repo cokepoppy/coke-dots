@@ -5,6 +5,24 @@
 .rail-button.selected{background:#e5e5e9;color:#28272d}
 .rail-spacer{flex:1}
 .rail-user{height:34px;width:34px;padding:0}
+.account-menu-anchor{position:relative;z-index:30;flex:none}
+.account-avatar{width:26px;height:26px;display:grid;place-items:center;border-radius:50%;background:#d84a3f;color:#fff;font-size:9px;font-weight:700;letter-spacing:.02em}
+.account-menu-popover{position:fixed;left:52px;bottom:12px;z-index:1000;width:min(290px,calc(100vw - 60px));max-height:calc(100vh - 24px);overflow:auto;display:grid;gap:12px;padding:15px;border:1px solid #e3e1e6;border-radius:14px;background:#fff;color:#302d35;box-shadow:0 12px 40px #17131f24}
+.account-menu-identity{display:grid;gap:3px;padding-bottom:10px;border-bottom:1px solid #eceaee}
+.account-menu-identity strong{font-size:13px;font-weight:650}
+.account-menu-identity small{overflow:hidden;color:#817d87;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.account-menu-popover .workspace-switcher{display:grid;gap:9px;align-items:stretch}
+.account-menu-popover .workspace-switcher label{display:grid;gap:6px;color:#77737d;font-size:11px}
+.account-menu-popover .workspace-switcher label>span{display:block}
+.account-menu-popover .workspace-switcher select{width:100%;max-width:none}
+.account-menu-popover .workspace-switcher form{flex-wrap:wrap}
+.account-menu-popover .workspace-switcher form input{width:100%;max-width:none}
+.account-menu-popover .workspace-switcher button,.account-menu-popover .logout-button,.account-menu-popover .theme-toggle,.account-menu-popover .account-menu-dot-settings{height:34px;border:1px solid #e5e2e8;border-radius:8px;background:#faf9fb;color:#494550;font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.account-menu-popover .workspace-switcher .new-workspace{border-color:transparent;background:#f2eff7;color:#6b5b80}
+.account-menu-popover .theme-toggle{display:flex;align-items:center;gap:8px;padding:0 10px}
+.account-menu-popover .logout-button{padding:0 10px;background:transparent;color:#77737d}
+.account-menu-popover .account-menu-dot-settings{padding:0 10px}
+.account-menu-popover button:focus-visible,.account-menu-popover select:focus-visible,.account-menu-popover input:focus-visible,.rail-user:focus-visible{outline:2px solid #9073c1;outline-offset:2px}
 .sidebar{width:224px;padding:13px 8px 12px;background:#f7f7f8;border-right:1px solid #e9e9ec}
 .sidebar-heading{height:33px;display:flex;align-items:center;gap:6px;padding:0 9px 4px;color:#25252a;font-size:13px}
 .sidebar-heading strong{font-weight:650}
@@ -85,6 +103,15 @@
 .dots-dark .icon-rail{background:#202021;border-color:#303033}
 .dots-dark .rail-button,.dots-dark .rail-user{color:#aaa7af}
 .dots-dark .rail-button:hover,.dots-dark .rail-user:hover,.dots-dark .rail-button.selected{background:#39393c;color:#f1eff4}
+.dots-dark .account-avatar{background:#a73831;color:#fff}
+.dots-dark .account-menu-popover{border-color:#3a373f;background:#201f23;color:#ece9f0;box-shadow:0 12px 40px #0008}
+.dots-dark .account-menu-identity{border-color:#37343b}
+.dots-dark .account-menu-identity small{color:#a7a2ad}
+.dots-dark .account-menu-popover .workspace-switcher label{color:#aaa5af}
+.dots-dark .account-menu-popover .workspace-switcher select,.dots-dark .account-menu-popover .workspace-switcher input{border-color:#403c45;background:#19181c;color:#e7e4eb}
+.dots-dark .account-menu-popover .workspace-switcher button,.dots-dark .account-menu-popover .logout-button,.dots-dark .account-menu-popover .theme-toggle,.dots-dark .account-menu-popover .account-menu-dot-settings{border-color:#403c45;background:#29272d;color:#d0ccd4}
+.dots-dark .account-menu-popover .workspace-switcher .new-workspace{border-color:transparent;background:#30283a;color:#d3c0f1}
+.dots-dark .account-menu-popover .logout-button{background:transparent;color:#aaa5af}
 .dots-dark .sidebar{background:#252526;border-color:#38383a}
 .dots-dark .sidebar-heading{color:#f0eef2}
 .dots-dark .sidebar-heading>span,.dots-dark .sidebar-heading button{color:#b3b0b7}
@@ -111,5 +138,5 @@
 .dots-dark .message.system{align-self:center;min-width:0;padding:4px 10px;background:transparent}
 .dots-dark .message.system p{color:#aaa7af}
 .dots-dark .dot-onboarding-mode .message-attachments li{background:#18281e}
-@media(max-width:800px){.icon-rail{width:42px;padding-right:4px;padding-left:4px}.sidebar{width:194px}.topbar{padding:0 10px}.topbar-title{max-width:15%}.surface-switcher button{min-width:61px;padding:0 9px}.top-status{display:none}.workspace-switcher label>span,.workspace-switcher .new-workspace{display:none}}
-@media(max-width:620px){.sidebar{width:54px;padding-right:5px;padding-left:5px}.sidebar-heading{justify-content:center;padding:0}.sidebar-heading strong,.sidebar-heading>span,.sidebar-heading button,.sidebar .nav span,.sidebar .side-caption,.sidebar-item>span,.sidebar .task-links,.sidebar .profile-link>span{display:none}.sidebar .nav{justify-content:center;padding:0}.sidebar-item{justify-content:center;padding:0}.sidebar .profile-link{justify-content:center}.icon-rail{gap:5px}.topbar-title,.surface-switcher{display:none}.top-actions{gap:5px}.theme-toggle{height:29px;padding:0 7px}.workspace-switcher select{max-width:80px}.logout-button{display:none}}
+@media(max-width:800px){.icon-rail{width:42px;padding-right:4px;padding-left:4px}.sidebar{width:194px}.topbar{padding:0 10px}.topbar-title{max-width:15%}.surface-switcher button{min-width:61px;padding:0 9px}}
+@media(max-width:620px){.sidebar{width:54px;padding-right:5px;padding-left:5px}.sidebar-heading{justify-content:center;padding:0}.sidebar-heading strong,.sidebar-heading>span,.sidebar-heading button,.sidebar .nav span,.sidebar .side-caption,.sidebar-item>span,.sidebar .task-links,.sidebar .profile-link>span{display:none}.sidebar .nav{justify-content:center;padding:0}.sidebar-item{justify-content:center;padding:0}.sidebar .profile-link{justify-content:center}.icon-rail{gap:5px}.topbar-title,.surface-switcher{display:none}}

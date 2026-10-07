@@ -40,6 +40,11 @@ interface TenantMemory { id: string; tenantId: string; note: string; createdBy: 
 type ChatTimelineItem =
   | { id: string; at: string; source: 'entry'; entry: Entry }
   | { id: string; at: string; source: 'call-ended'; call: VoiceCallSession };
+function initialsForUser(name: string, email: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const initials = parts.length > 1 ? `${parts[0][0]}${parts.at(-1)?.[0] || ''}` : (parts[0] || email)[0] || '?';
+  return initials.slice(0, 2).toUpperCase();
+}
 const statusText: Record<TaskStatus, string> = {
   queued: '排队中', working: '工作中', delegating: '并行处理中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停', stopped: '已停止',
 };
@@ -86,6 +91,8 @@ function App() {
   const [computerAccessOpen, setComputerAccessOpen] = useState(false);
   const [computerConnectedToast, setComputerConnectedToast] = useState(false);
   const [voiceCallOpen, setVoiceCallOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<'home' | 'chat' | 'activity' | 'scheduled' | 'computer' | 'profile' | 'pages'>('home');
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
@@ -160,6 +167,22 @@ function App() {
   }, [authContext?.user.id]);
 
   useEffect(() => {
+    if (!accountMenuOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!accountMenuRef.current?.contains(event.target as Node)) setAccountMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAccountMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [accountMenuOpen]);
+
+  useEffect(() => {
     if (!computerConnectedToast) return;
     const timer = window.setTimeout(() => setComputerConnectedToast(false), 5000);
     return () => window.clearTimeout(timer);
@@ -217,6 +240,7 @@ function App() {
     if (authContext) {
       try { localStorage.setItem(`coke-dots:theme:${authContext.user.id}`, next); } catch { /* Keep the current session usable when storage is unavailable. */ }
     }
+    setAccountMenuOpen(false);
   }
 
   async function saveAvatarAppearance(appearance: DotAppearance, name?: string, completeOnboarding = false, completeSetup = false) {
@@ -326,13 +350,13 @@ function App() {
   }
 
   async function switchTenant(tenantId: string) {
-    if (authContext?.tenant.id === tenantId) return;
+    if (authContext?.tenant.id === tenantId) { setAccountMenuOpen(false); return; }
     setVoiceCallOpen(false); setPendingAttachments([]);
     try {
       const response = await appFetch('/api/auth/tenant', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setAuthContext(data as AuthContext); setState(initial); setStateLoaded(false); setSelected(null); setSelectedPageId(null); setError('');
+      setAuthContext(data as AuthContext); setState(initial); setStateLoaded(false); setSelected(null); setSelectedPageId(null); setError(''); setAccountMenuOpen(false);
     } catch (e) { setError(String(e)); }
   }
 
@@ -348,6 +372,7 @@ function App() {
 
   async function logout() {
     setVoiceCallOpen(false);
+    setAccountMenuOpen(false);
     try { await appFetch('/api/auth/logout', { method: 'POST' }); }
     finally { setAuthContext(null); setState(initial); setPendingAttachments([]); setSelectedPageId(null); }
   }
@@ -379,7 +404,16 @@ function App() {
       <button className={`rail-button ${view === 'scheduled' ? 'selected' : ''}`} aria-label="Scheduled" title="Scheduled" onClick={() => { setSelectedPageId(null); setView('scheduled'); }}>◴</button>
       <button className={`rail-button ${view === 'computer' ? 'selected' : ''}`} aria-label="电脑" title="电脑" onClick={() => { setSelectedPageId(null); setView('computer'); }}>▣</button>
       <span className="rail-spacer" />
-      <button className="rail-user" aria-label="你的 dot 设置" title="你的 dot 设置" onClick={() => { setSelectedPageId(null); setView('profile'); }}><DotAvatar appearance={state.profile} small /></button>
+      <div className="account-menu-anchor" ref={accountMenuRef}>
+        <button className="rail-user" data-testid="account-menu-trigger" aria-label="账户菜单" title="账户菜单" aria-haspopup="true" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen(value => !value)}><span className="account-avatar" aria-hidden="true">{initialsForUser(authContext.user.name, authContext.user.email)}</span></button>
+        {accountMenuOpen && <section className="account-menu-popover" data-testid="account-menu" aria-label="账号与工作区">
+          <div className="account-menu-identity"><strong>{authContext.user.name || authContext.user.email}</strong><small>{authContext.user.email}</small></div>
+          <WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} />
+          <button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色主题' : '浅色主题'}</span></button>
+          <button className="account-menu-dot-settings" onClick={() => { setSelectedPageId(null); setView('profile'); setAccountMenuOpen(false); }}>Dot 设置</button>
+          <button className="logout-button" onClick={() => void logout()}>退出</button>
+        </section>}
+      </div>
     </aside>
     <aside className="sidebar">
       <div className="sidebar-heading"><strong>ChatGPT</strong><span>⌄</span><button aria-label="搜索" title="搜索">⌕</button></div>
@@ -392,7 +426,7 @@ function App() {
       <button className="profile-link" onClick={() => { setSelectedPageId(null); setView('profile'); }}><DotAvatar appearance={state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
-      <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
+      <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div></header>
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {computerConnectedToast && <div className="computer-connected-toast" data-testid="computer-connected-toast" role="status"><span className="computer-connected-icon" aria-hidden="true">✓</span><span>The computer is connected to your dot</span><button type="button" aria-label="Dismiss notification" onClick={() => setComputerConnectedToast(false)}>×</button></div>}

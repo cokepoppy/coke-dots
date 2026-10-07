@@ -600,7 +600,13 @@ async function clickNav(page: Page, label: string) {
 }
 
 async function openProfile(page: Page) {
-  await page.getByRole('button', { name: '你的 dot 设置', exact: true }).click();
+  const dotProfile = page.locator('.profile-link');
+  if (await dotProfile.isVisible()) await dotProfile.click();
+  else {
+    await openAccountMenu(page);
+    await page.getByRole('button', { name: 'Dot 设置', exact: true }).click();
+  }
+  await page.getByRole('heading', { name: '你的 dot', exact: true }).waitFor({ state: 'visible' });
 }
 
 async function taskNavigationItem(page: Page, title: string) {
@@ -669,13 +675,33 @@ async function createTask(page: Page, instruction: string, scheduled = false) {
   if (scheduled) await page.waitForFunction(() => document.querySelector<HTMLInputElement>('.schedule-toggle input[type="checkbox"]')?.checked === false);
 }
 
+async function openAccountMenu(page: Page) {
+  const menu = page.getByTestId('account-menu');
+  if (!(await menu.isVisible())) await page.getByTestId('account-menu-trigger').click();
+  await menu.waitFor({ state: 'visible' });
+}
+
+async function closeAccountMenu(page: Page) {
+  const menu = page.getByTestId('account-menu');
+  if (await menu.isVisible()) await page.getByTestId('account-menu-trigger').click();
+  await menu.waitFor({ state: 'hidden' });
+}
+
+async function toggleAccountTheme(page: Page) {
+  await openAccountMenu(page);
+  await page.getByTestId('theme-toggle').click();
+  await page.getByTestId('account-menu').waitFor({ state: 'hidden' });
+}
+
 async function selectTenant(page: Page, text: string) {
+  await openAccountMenu(page);
   const option = page.locator('.workspace-switcher option').filter({ hasText: text }).first();
   await option.waitFor({ state: 'attached', timeout: 10_000 });
   const value = await option.getAttribute('value');
   assert(value, `Workspace option containing "${text}" has no value`);
   const activeTenantId = await page.getByTestId('app-shell').getAttribute('data-tenant-id');
   if (activeTenantId === value) {
+    await closeAccountMenu(page);
     await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
     return;
   }
@@ -787,12 +813,20 @@ try {
     assert(homeComposerLayout.inputCallDeltaY <= 3, 'The input and voice control should share one row');
     assert.equal(await alphaPage!.getByTestId('dictation-button').isVisible(), true, 'The landing composer should expose the separate microphone control seen in V1 at 01:18');
     assert.equal(await alphaPage!.locator('.home-mode .send').isVisible(), false, 'The empty landing composer should show voice instead of a disabled send arrow');
+    assert.equal(await alphaPage!.locator('.topbar .top-actions').count(), 0, 'Account controls should not crowd the reference Chat/Work header');
+    assert.equal(await alphaPage!.getByTestId('account-menu-trigger').isVisible(), true, 'The account avatar should stay at the bottom of the icon rail');
     await screenshot(alphaPage!, '02-alpha-home');
+    await openAccountMenu(alphaPage!);
+    assert.equal(await alphaPage!.getByTestId('theme-toggle').isVisible(), true, 'Theme preference should remain available from account controls');
+    assert.equal(await alphaPage!.locator('.workspace-switcher select').isVisible(), true, 'Workspace switching should remain available from account controls');
+    await screenshot(alphaPage!, 'account-menu-light');
+    await closeAccountMenu(alphaPage!);
   });
 
   await recordStep('Google OAuth rejects unverified email and preserves the same account after relogin', async () => {
     const original = oauthTestState.alphaSession;
     assert(original);
+    await openAccountMenu(alphaPage!);
     await alphaPage!.getByRole('button', { name: '退出' }).click();
     await alphaPage!.getByTestId('e2e-sign-in').waitFor({ state: 'visible' });
     await alphaPage!.getByRole('link', { name: '使用 Google 登录' }).click();
@@ -818,8 +852,7 @@ try {
 
   await recordStep('Switch between light and dark themes and restore the account preference after reload', async () => {
     const shell = alphaPage!.getByTestId('app-shell');
-    const themeToggle = alphaPage!.getByTestId('theme-toggle');
-    await themeToggle.click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await shell.getAttribute('data-theme'), 'dark');
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(37, 37, 38)');
     assert.equal(await alphaPage!.locator('.main').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(28, 28, 29)');
@@ -828,7 +861,7 @@ try {
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await shell.waitFor();
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-theme') === 'dark');
-    await themeToggle.click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await shell.getAttribute('data-theme'), 'light');
     await screenshot(alphaPage!, 'theme-light');
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
@@ -846,11 +879,11 @@ try {
     const localComputerToggle = computerChoice.getByRole('switch', { name: 'Your local computer' });
     assert.equal(await localComputerToggle.isChecked(), true, 'The local-computer switch starts in the observed enabled state');
     await screenshot(alphaPage!, 'computer-choice-light');
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
     assert.equal(await computerChoice.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(9, 9, 11)');
     await screenshot(alphaPage!, 'computer-choice-dark');
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     await localComputerToggle.uncheck();
     assert.equal(await localComputerToggle.isChecked(), false);
     await localComputerToggle.check();
@@ -904,7 +937,7 @@ try {
     assert.equal(await onboarding.locator('.dot-onboarding-messages .message').count(), 2, 'Saving the Color/Characters/Pets editor only saves the first setup stage');
     assert.equal(await onboarding.getByText('Want to give me a name?', { exact: true }).count(), 0);
     assert.equal(await onboarding.getByTestId('onboarding-suggestion-card').count(), 0);
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     await onboarding.getByRole('button', { name: 'Customize your dot' }).click();
     const advancedEditor = alphaPage!.getByTestId('avatar-editor-backdrop');
     await advancedEditor.getByRole('dialog', { name: 'Customize your dot' }).waitFor({ state: 'visible' });
@@ -913,7 +946,7 @@ try {
     assert.equal(await advancedEditor.getByRole('group', { name: 'Color' }).getByRole('button').count(), 9, 'The observed Shape page contains nine color swatches');
     await screenshot(alphaPage!, 'avatar-editor-reference-state-dark');
     await advancedEditor.getByRole('button', { name: 'Close customizer' }).click();
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     await onboarding.getByRole('button', { name: 'Customize your dot' }).click();
     await advancedEditor.waitFor({ state: 'visible' });
     await advancedEditor.getByLabel('Dot name').fill('Roger');
@@ -946,7 +979,7 @@ try {
     await onboarding.getByTestId('onboarding-name-ack').waitFor({ state: 'visible', timeout: 8000 });
     assert.equal((await onboarding.getByTestId('onboarding-name-ack').innerText()).trim(), 'Roger it is! ❤️');
     await screenshot(alphaPage!, 'onboarding-name-confirmation-light');
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
     assert.equal(await suggestionCard.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(16, 38, 27)');
     await screenshot(alphaPage!, 'onboarding-name-and-suggestions-dark');
@@ -964,7 +997,7 @@ try {
     await advancedEditor.getByRole('button', { name: 'Save', exact: true }).click();
     await advancedEditor.waitFor({ state: 'hidden' });
     assert.equal(await onboarding.locator('.dot-conversation-identity').innerText(), 'dot');
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
     await alphaPage!.waitForFunction(() => document.querySelector('.profile-link .avatar')?.classList.contains('scallop'));
     assert.match(await alphaPage!.locator('.profile-link .avatar').getAttribute('class') || '', /pet-moss/);
@@ -992,7 +1025,7 @@ try {
     assert.equal(await accessDialog.getByRole('switch', { name: 'Your local computer' }).isChecked(), false, 'Computer access settings persist across opening the editor');
     await accessDialog.getByRole('button', { name: 'Cancel' }).click();
     await accessDialog.waitFor({ state: 'hidden' });
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
     await alphaPage!.getByRole('button', { name: '更改电脑访问' }).click();
     const enableComputerDialog = alphaPage!.getByTestId('computer-access-dialog');
@@ -1002,7 +1035,7 @@ try {
     await alphaPage!.getByTestId('computer-connected-toast').waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.getByTestId('computer-connected-toast').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(23, 42, 29)');
     await screenshot(alphaPage!, 'computer-connected-toast-dark');
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
@@ -1067,7 +1100,7 @@ try {
     await alphaPage!.waitForFunction(() => document.querySelector('.dot-conversation-identity .avatar')?.classList.contains('heart'));
     assert.match(await alphaPage!.locator('.dot-conversation-identity .avatar').getAttribute('class') || '', /accessory-crown/);
 
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
     await openProfile(alphaPage!);
     await alphaPage!.getByRole('button', { name: 'Customize your dot' }).click();
@@ -1075,7 +1108,7 @@ try {
     assert.equal(await editor.locator('.avatar-editor-preview').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(14, 24, 18)');
     await screenshot(alphaPage!, 'avatar-customizer-dark');
     await editor.getByRole('button', { name: 'Close customizer' }).click();
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
     await clickNav(alphaPage!, '你的 dot');
   });
@@ -1150,18 +1183,15 @@ try {
     assert.equal(await contextPanel.getByRole('button', { name: 'Call' }).isDisabled(), false);
     assert.equal(await contextPanel.getByRole('button', { name: 'Slack, not connected' }).isDisabled(), true);
     assert.equal(await contextPanel.getByRole('region', { name: 'Skills' }).count(), 0, 'The observed details panel ends after Outputs; do not invent an unverified Skills section');
-    assert.equal(await alphaPage!.evaluate(() => {
-      const actions = document.querySelector('.top-actions')!.getBoundingClientRect();
-      const panel = document.querySelector('.dot-context-panel')!.getBoundingClientRect();
-      return actions.right <= panel.left;
-    }), true, 'Top-bar tenant and theme controls overlap the observed details panel');
+    assert.equal(await alphaPage!.locator('.topbar .top-actions').count(), 0, 'Account controls should not be rendered in the conversation header');
+    assert.equal(await alphaPage!.getByTestId('account-menu').count(), 0, 'The account popover should not cover the conversation details panel by default');
     await screenshot(alphaPage!, '03-task-progress-and-context');
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
     assert.equal(await contextPanel.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(17, 17, 19)');
-    assert.equal(await alphaPage!.evaluate(() => document.querySelector('.top-actions')!.getBoundingClientRect().right <= document.querySelector('.dot-context-panel')!.getBoundingClientRect().left), true);
+    assert.equal(await alphaPage!.locator('.topbar .top-actions').count(), 0, 'Theme selection should not add controls to the conversation header');
     await screenshot(alphaPage!, '03-task-context-dark');
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
   });
 
@@ -1238,18 +1268,20 @@ try {
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).display), 'none', 'Scheduled should use the compact single-rail work layout');
     assert.equal(await alphaPage!.locator('.icon-rail').evaluate(element => Math.round(element.getBoundingClientRect().width)), 44);
     assert.equal(await alphaPage!.getByTestId('surface-switcher').isVisible(), false, 'The Chat/Work switch should be hidden inside Scheduled');
+    await openAccountMenu(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('theme-toggle').isVisible(), true, 'Theme control should remain available inside Scheduled');
     assert.equal(await alphaPage!.locator('.workspace-switcher select').isVisible(), true, 'Workspace switching should remain available inside Scheduled');
+    await closeAccountMenu(alphaPage!);
     assert.equal(await alphaPage!.locator('.scheduled-detail-pane').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(255, 255, 255)', 'Scheduled should follow the light account theme');
     await screenshot(alphaPage!, '07-scheduled');
     await clickNav(alphaPage!, '新聊天');
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     await clickNav(alphaPage!, 'Scheduled');
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
     assert.equal(await alphaPage!.locator('.scheduled-detail-pane').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(13, 13, 15)', 'Scheduled should follow the dark account theme');
     await screenshot(alphaPage!, '07-scheduled-dark');
     await clickNav(alphaPage!, '新聊天');
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     await clickNav(alphaPage!, 'Scheduled');
     await search.fill(scheduledTask);
     await alphaPage!.locator('.scheduled-item').filter({ hasText: scheduledTask }).click();
@@ -1257,7 +1289,7 @@ try {
     assert.equal(await alphaPage!.locator('.scheduled-add-watch').getAttribute('aria-expanded'), 'true');
     await alphaPage!.getByLabel('HTTPS URL').waitFor({ state: 'visible' });
     await alphaPage!.getByRole('button', { name: 'Close monitor form' }).click();
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     let failScheduledStateRead = true;
     await alphaPage!.route('**/api/state', async route => {
       if (failScheduledStateRead && route.request().method() === 'GET') {
@@ -1275,7 +1307,7 @@ try {
     await openError.getByRole('button', { name: 'Try again' }).click();
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: scheduledTask }).waitFor({ state: 'visible' });
     await alphaPage!.unroute('**/api/state');
-    await alphaPage!.getByTestId('theme-toggle').click();
+    await toggleAccountTheme(alphaPage!);
     await clickNav(alphaPage!, 'Scheduled');
     await alphaPage!.getByTestId('scheduled-detail').getByRole('button', { name: 'Cancel schedule' }).click();
     await alphaPage!.getByText('No scheduled tasks yet').first().waitFor({ state: 'visible' });
@@ -1314,10 +1346,13 @@ try {
   });
 
   await recordStep('Create a separate shared workspace and task', async () => {
+    await openAccountMenu(alphaPage!);
     await alphaPage!.locator('.workspace-switcher .new-workspace').click();
     await alphaPage!.getByLabel('新工作区名称').fill('Alpha Shared');
     await alphaPage!.locator('.workspace-switcher form').getByRole('button', { name: '创建' }).click();
+    await openAccountMenu(alphaPage!);
     await alphaPage!.locator('.workspace-switcher select').locator('option', { hasText: 'Alpha Shared' }).waitFor({ state: 'attached' });
+    await closeAccountMenu(alphaPage!);
     await alphaPage!.waitForFunction(() => document.querySelector<HTMLInputElement>('input[aria-label="桌面通知"]')?.checked === false);
     assert.equal(await alphaPage!.getByLabel('桌面通知').isChecked(), false, 'A new tenant inherited personal notification preferences');
     await alphaPage!.locator('.profile-link strong').filter({ hasText: 'Dot' }).waitFor({ state: 'visible' });
@@ -1346,9 +1381,13 @@ try {
     await betaPage!.reload({ waitUntil: 'domcontentloaded' });
     await betaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
     await betaPage!.getByRole('region', { name: '工作区邀请' }).getByText('Alpha Shared').waitFor({ state: 'visible' });
+    await openAccountMenu(betaPage!);
     assert.equal(await betaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).count(), 0, 'An existing Google account received access before accepting the invitation');
+    await closeAccountMenu(betaPage!);
     await betaPage!.getByRole('button', { name: '接受并打开工作区' }).click();
+    await openAccountMenu(betaPage!);
     await betaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).waitFor({ state: 'attached' });
+    await closeAccountMenu(betaPage!);
     await selectTenant(betaPage!, 'Alpha Shared');
     const alphaSharedState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
     assert.equal(alphaSharedState.availableEngines.includes('claude'), false, 'Claude Code must remain unavailable in shared workspaces');
@@ -1376,7 +1415,9 @@ try {
 
     await signIn(gammaPage!, 'gamma@example.test');
     await gammaPage!.getByRole('region', { name: '工作区邀请' }).getByText('Alpha Shared').waitFor({ state: 'visible' });
+    await openAccountMenu(gammaPage!);
     assert.equal(await gammaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).count(), 0, 'A pending invitation exposed the workspace before acceptance');
+    await closeAccountMenu(gammaPage!);
     await screenshot(gammaPage!, '10b-gamma-pending-invitation');
     await gammaPage!.getByRole('button', { name: '接受并打开工作区' }).click();
     await (await taskNavigationItem(gammaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
