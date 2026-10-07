@@ -3,17 +3,40 @@ import { execFileSync } from 'node:child_process';
 import { redactSecret } from '../src/shared/redact-secret.ts';
 
 const stdinKey = process.argv.slice(2).includes('--stdin-key');
-const apiKey = (stdinKey ? await readHiddenInput() : process.env.DOTS_LIVE_MODEL_API_KEY || '').trim();
-if (!apiKey) {
-  console.error('Set DOTS_LIVE_MODEL_API_KEY or run interactively with --stdin-key.');
-  process.exitCode = 2;
+const keychain = process.argv.slice(2).includes('--keychain');
+if (stdinKey && keychain) throw new Error('Choose either --stdin-key or --keychain.');
+if (keychain) {
+  await runFromKeychain();
 } else {
-  await run(apiKey);
+  const apiKey = (stdinKey ? await readHiddenInput() : process.env.DOTS_LIVE_MODEL_API_KEY || '').trim();
+  if (!apiKey) {
+    console.error('Set DOTS_LIVE_MODEL_API_KEY or run interactively with --stdin-key.');
+    process.exitCode = 2;
+  } else {
+    const baseUrl = (process.env.DOTS_LIVE_MODEL_BASE_URL || 'https://api.deepseek.com').trim().replace(/\/$/, '');
+    const model = (process.env.DOTS_LIVE_MODEL || 'deepseek-flash').trim();
+    await run(apiKey, baseUrl, model, `live-model-smoke-${randomUUID()}`, true);
+  }
 }
 
-async function run(apiKey: string) {
-  const baseUrl = (process.env.DOTS_LIVE_MODEL_BASE_URL || 'https://api.deepseek.com').trim().replace(/\/$/, '');
-  const model = (process.env.DOTS_LIVE_MODEL || 'deepseek-flash').trim();
+async function runFromKeychain() {
+  const { resolve } = await import('node:path');
+  const { Store } = await import('../src/server/store.ts');
+  const { effectiveModelConfig, loadModelSettings } = await import('../src/server/model-settings.ts');
+  const store = new Store(resolve(process.env.DOTS_DATA_DIR || './data'));
+  try {
+    loadModelSettings(store.getSetting('modelBaseUrl', 'legacy'), store.getSetting('modelName', 'legacy'), 'legacy');
+    const config = effectiveModelConfig('legacy');
+    if (!config) {
+      console.error('The legacy workspace needs a saved model name and a Keychain API key before this check can run.');
+      process.exitCode = 2;
+      return;
+    }
+    await run(config.apiKey, config.baseUrl, config.model, 'legacy', false);
+  } finally { store.close(); }
+}
+
+async function run(apiKey: string, baseUrl: string, model: string, tenantId: string, useEnvironmentKey: boolean) {
   let endpoint: URL;
   try { endpoint = new URL(baseUrl); }
   catch { console.error('DOTS_LIVE_MODEL_BASE_URL must be a valid HTTPS URL.'); process.exitCode = 2; return; }
@@ -27,18 +50,13 @@ async function run(apiKey: string) {
   const previous = Object.fromEntries(environment.map(name => [name, process.env[name]])) as Record<typeof environment[number], string | undefined>;
   const marker = `COKE_DOTS_LIVE_${randomUUID()}`;
   const startedAt = Date.now();
-  Object.assign(process.env, {
-    NODE_ENV: 'test',
-    DOTS_E2E_AUTH: '1',
-    DOTS_MODEL_BASE_URL: baseUrl,
-    DOTS_MODEL: model,
-    DOTS_MODEL_API_KEY: apiKey,
-  });
+  Object.assign(process.env, { NODE_ENV: 'test', DOTS_E2E_AUTH: '1' });
+  if (useEnvironmentKey) Object.assign(process.env, { DOTS_MODEL_BASE_URL: baseUrl, DOTS_MODEL: model, DOTS_MODEL_API_KEY: apiKey });
 
   try {
     const { adapters } = await import('../src/server/adapters.ts');
     const result = await adapters.model.run({
-      tenantId: `live-model-smoke-${randomUUID()}`,
+      tenantId,
       prompt: `Live API smoke test. Return a short Chinese confirmation in the normal task result. Include this exact marker: ${marker}.`,
       memories: [], pages: [], actionRule: null, allowDelegation: false, availableEngines: ['model'],
       delegatedResults: [], priorResult: null, sessionId: null, workspace: process.cwd(), onEvent: () => {},

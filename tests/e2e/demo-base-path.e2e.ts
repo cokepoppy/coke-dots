@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -61,6 +62,7 @@ try {
     env: {
       ...process.env,
       NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory,
+      DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.e2e-demo-${randomUUID()}`,
       DOTS_PORT: String(port), DOTS_BASE_PATH: '/dots-demo', DOTS_PUBLIC_HOST: 'demo.test',
       DOTS_PUBLIC_ORIGIN: 'https://demo.test', DOTS_TRUSTED_PROXY_TOKEN: proxyToken,
       GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '',

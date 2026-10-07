@@ -11,3 +11,9 @@ Configured on 2026-10-07 for the `可乐可乐 workspace · owner` workspace thr
 | Verification | Submitted a real task through the workspace; it completed and returned the requested Chinese confirmation. |
 
 To rotate the credential, update the API key under **Profile → Model API** for the same workspace. The application stores the key separately from task data and reveals only whether a key is saved.
+
+## Local development verification
+
+On 2026-10-07, the local development database (`./data/dots.db`) was configured for its bootstrap `legacy` workspace with the same DeepSeek endpoint and model. The API key remains only in the macOS Keychain; it is intentionally absent from this file, shell output, task data, and source control.
+
+The saved Keychain configuration was tested with `npm run test:live-model -- --keychain`, which uses the production model adapter and sends one small live request. Result: `status=done`, unique marker present, about 1.17 seconds. The check prints neither the key nor the model response body.

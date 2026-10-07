@@ -196,7 +196,7 @@ function parseRemoteEngines(): Engine[] {
   if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [];
   try {
     const configured = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, unknown>;
-    return (Object.keys(configured) as string[]).filter((engine): engine is Engine => ['claude', 'pi', 'dsh'].includes(engine) && Boolean(configured[engine]));
+    return (Object.keys(configured) as string[]).filter((engine): engine is Engine => ['pi', 'dsh'].includes(engine) && Boolean(configured[engine]));
   } catch { return []; }
 }
 

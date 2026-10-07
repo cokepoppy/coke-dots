@@ -750,7 +750,7 @@ export class Store {
     if (!Array.isArray(delegations) || delegations.length < 1 || delegations.length > 3) throw new Error('代理子任务数量无效');
     for (const child of delegations) {
       if (!child.title.trim() || child.title.trim().length > 120 || !child.instruction.trim() || child.instruction.trim().length > 5000) throw new Error('代理子任务内容无效');
-      if (child.engine !== undefined && !['model', 'claude', 'pi', 'dsh'].includes(child.engine)) throw new Error('代理子任务内核无效');
+      if (child.engine !== undefined && !['model', 'pi', 'dsh'].includes(child.engine)) throw new Error('代理子任务内核无效');
     }
     const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');

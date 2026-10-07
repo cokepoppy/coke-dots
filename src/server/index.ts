@@ -34,7 +34,7 @@ const configuredDesktopEngines = () => {
   if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [] as Engine[];
   try {
     const configured = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, unknown>;
-    return Object.keys(configured).filter((id): id is Engine => ['claude', 'pi', 'dsh'].includes(id) && Boolean(configured[id]));
+    return Object.keys(configured).filter((id): id is Engine => ['pi', 'dsh'].includes(id) && Boolean(configured[id]));
   } catch { return [] as Engine[]; }
 };
 const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...configuredDesktopEngines()])];
@@ -383,6 +383,11 @@ const server = createServer(async (req, res) => {
       const minutes = scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null;
       const engine = String(body.engine || 'model') as Engine;
       if (!(engine in adapters)) return reply(res, 400, { error: 'Invalid engine' });
+      if (engine === 'claude') return reply(res, 400, { error: 'Claude Code 暂未支持；可选择 Pi 或 DeepSeek Harness。' });
+      const remoteEngineAvailable = process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && configuredDesktopEngines().includes(engine);
+      if (engine !== 'model' && !adapters[engine].available(session.tenant.id) && !remoteEngineAvailable) {
+        return reply(res, 400, { error: '当前工作区不可使用此 Agent 内核，请配置本工作区的模型 API。' });
+      }
       const reasoningEffort = body.reasoningEffort === undefined ? store.getSetting('reasoningEffort', session.tenant.id) || 'high' : body.reasoningEffort;
       if (!isReasoningEffort(reasoningEffort)) return reply(res, 400, { error: 'Invalid reasoning effort' });
       const attachmentIds = body.attachmentIds === undefined ? [] : body.attachmentIds;
@@ -457,6 +462,7 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, snapshot(session.tenant.id).computerAccess);
     }
     if (path === '/api/model-settings' && req.method === 'PATCH') {
+      if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以修改模型 API 凭据' });
       const baseUrl = String(body.baseUrl || '').trim().replace(/\/$/, '');
       const model = String(body.model || '').trim();
       const apiKey = String(body.apiKey || '').trim();

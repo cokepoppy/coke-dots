@@ -19,8 +19,6 @@ const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-e2e-'));
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
 const testKeychainService = `com.cokepoppy.coke-dots.e2e-${randomBytes(12).toString('hex')}`;
-const e2eClaudeBin = join(tempRoot, 'claude-e2e.js');
-const e2eClaudeRelease = join(tempRoot, 'release-claude-child');
 const fixtureSource = join(projectRoot, 'tests', 'e2e', 'fixtures', 'computer.html');
 const fixtureDestination = join(projectRoot, 'dist', 'e2e-computer-fixture.html');
 const chromePath = findChromePath();
@@ -76,13 +74,6 @@ const oauthTestState: { alphaSession?: { user: { id: string; email: string }; te
 await mkdir(screenshotsDir, { recursive: true });
 await mkdir(videoDir, { recursive: true });
 await writeFile(emptyEnvFile, '');
-await writeFile(e2eClaudeBin, `const { existsSync } = require('node:fs');
-const release = ${JSON.stringify(e2eClaudeRelease)};
-const prompt = process.argv.at(-1) || '';
-if (!prompt.includes('E2E delegated child — launch risks')) { process.stderr.write('Unexpected delegated child prompt'); process.exit(2); }
-const finish = () => { if (existsSync(release)) process.stdout.write(JSON.stringify({status:'done',message:'Claude Code completed the risks review.'})); else setTimeout(finish, 25); };
-finish();
-`, { mode: 0o600 });
 await copyFile(fixtureSource, fixtureDestination);
 
 function findChromePath() {
@@ -176,7 +167,7 @@ async function startMockModel() {
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
-          { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'claude' },
+          { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
         ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isDecisionNotificationCheck) Object.assign(decision, { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false });
@@ -385,7 +376,6 @@ async function startServer(port: number) {
       DOTS_MODEL_BASE_URL: testModelBaseUrl,
       DOTS_MODEL_API_KEY: testModelApiKey,
       DOTS_MODEL: testModelName,
-      DOTS_CLAUDE_BIN: e2eClaudeBin,
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
     },
@@ -645,6 +635,10 @@ try {
     assert.equal(mockGoogleCertRequests, 1, 'The ID token must be verified against the provider certificate');
     await alphaPage!.getByTestId('app-shell').waitFor();
     await alphaPage!.getByTestId('chat-home').getByRole('heading', { name: "What's on your mind today?" }).waitFor({ state: 'visible' });
+    const alphaState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
+    assert.equal(alphaState.availableEngines.includes('claude'), false, 'Claude Code must remain unavailable until explicitly supported');
+    const engineOptions = await alphaPage!.locator('.composer-bottom select').evaluate(element => [...(element as HTMLSelectElement).options].map(option => option.value));
+    assert.deepEqual(engineOptions, ['model', 'pi', 'dsh'], 'The UI must offer the Model API, Pi, and DeepSeek Harness only');
     assert.equal(await alphaPage!.locator('.icon-rail').evaluate(element => Math.round(element.getBoundingClientRect().width)), 44);
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => Math.round(element.getBoundingClientRect().width)), 224);
     const surfaceSwitcher = alphaPage!.getByTestId('surface-switcher');
@@ -1075,8 +1069,17 @@ try {
     await signIn(betaPage!, 'beta@example.test');
     assert.equal(await betaPage!.locator('.task-links button').count(), 0, 'Beta inherited Alpha task links');
     assert.equal(await betaPage!.getByTestId('dot-context-panel').count(), 0, 'Beta personal onboarding inherited Alpha conversation context');
-    const betaState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    const betaState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; computerAccess: { dotComputer: boolean; localComputer: boolean; configured: boolean }; tasks: unknown[] };
     assert.deepEqual(betaState.computerAccess, { dotComputer: true, localComputer: true, configured: false }, 'A different account must receive its own unconfigured computer-access choice');
+    assert.equal(betaState.availableEngines.includes('claude'), false, 'Claude Code must remain unavailable in all tenants');
+    const rejectedKernelTask = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'Attempt another tenant’s local kernel', engine: 'claude' }) });
+      return { status: response.status, body: await response.json() as { error?: string } };
+    });
+    assert.equal(rejectedKernelTask.status, 400, 'The task API must reject a local kernel outside its configured tenant');
+    assert.match(rejectedKernelTask.body.error || '', /Claude Code 暂未支持/);
+    const betaAfterKernelAttempt = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { tasks: unknown[] };
+    assert.equal(betaAfterKernelAttempt.tasks.length, betaState.tasks.length, 'A rejected cross-tenant kernel request must not create a task');
     await assertNoVisibleText(betaPage!, alphaPrivateTask);
     await screenshot(betaPage!, '04-beta-isolated');
   });
@@ -1239,12 +1242,23 @@ try {
     await betaPage!.getByRole('button', { name: '接受并打开工作区' }).click();
     await betaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).waitFor({ state: 'attached' });
     await selectTenant(betaPage!, 'Alpha Shared');
+    const alphaSharedState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
+    assert.equal(alphaSharedState.availableEngines.includes('claude'), false, 'Claude Code must remain unavailable in shared workspaces');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.locator('.profile-link strong').innerText(), 'Shared Dot');
     await openProfile(betaPage!);
     await betaPage!.locator('.member-row').filter({ hasText: 'alpha@example.test' }).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.getByRole('button', { name: '添加工作区成员' }).isDisabled(), true, 'A regular member received workspace-admin controls');
     assert.equal(await betaPage!.getByRole('button', { name: '更改电脑访问' }).isDisabled(), true, 'A regular member cannot change shared computer access');
+    assert.equal(await betaPage!.getByRole('button', { name: '保存模型设置' }).isDisabled(), true, 'A regular member cannot replace the shared model credential');
+    const memberModelSettingsWrite = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/model-settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', apiKey: 'e2e-rejected-key' }) });
+      return { status: response.status, body: await response.json() as { error?: string } };
+    });
+    assert.equal(memberModelSettingsWrite.status, 403, 'The API must enforce workspace-admin access to shared model credentials');
+    assert.match(memberModelSettingsWrite.body.error || '', /只有工作区所有者或管理员可以修改模型 API 凭据/);
+    const memberModelSettingsAfterWrite = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean } };
+    assert.equal(memberModelSettingsAfterWrite.modelSettings.hasKey, false, 'A rejected member change modified the shared model credential');
     const memberComputerWrite = await betaPage!.evaluate(async () => {
       const response = await fetch('/api/computer-access', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ localComputer: false }) });
       return { status: response.status, body: await response.json() };
@@ -2092,7 +2106,7 @@ try {
   });
 
   await recordStep('One goal delegates three parallel tasks, supports a single-child stop, and resumes with their results', async () => {
-    await selectTenant(alphaPage!, 'Alpha Shared');
+    await selectTenant(alphaPage!, 'Alpha workspace');
     await clickNav(alphaPage!, '你的 dot');
     const parentInstruction = 'E2E delegation goal — build a launch packet';
     const initialParentCalls = mockModelPrompts.filter(prompt => prompt.includes(parentInstruction)).length;
@@ -2100,13 +2114,13 @@ try {
     await clickNav(alphaPage!, 'Activity');
     const parentCard = alphaPage!.locator('.task-card').filter({ has: alphaPage!.getByRole('heading', { name: parentInstruction, exact: true }) });
     await parentCard.locator('.pill.delegating').waitFor({ state: 'visible', timeout: 15_000 });
-    await waitFor(() => delegatedModelPrompts.length === 2, 15_000);
+    await waitFor(() => delegatedModelPrompts.length === 3, 15_000);
     const delegationPlanPrompt = mockModelPrompts.find(prompt => prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:'));
-    assert.match(delegationPlanPrompt || '', /Available child engines for this tenant: model, claude/, 'Parent prompt did not receive the tenant’s currently available engines');
+    assert.match(delegationPlanPrompt || '', /Available child engines for this tenant: model/, 'Parent prompt did not receive the tenant’s currently available engines');
     const childCards = ['Market scan', 'Competitor scan', 'Launch risks'].map(title => alphaPage!.locator('.task-card').filter({ hasText: title }));
     for (const card of childCards) await card.locator('.pill.working').waitFor({ state: 'visible', timeout: 10_000 });
     await childCards[0].locator('.delegated-from').getByText('内核：模型 API').waitFor({ state: 'visible' });
-    await childCards[2].locator('.delegated-from').getByText('内核：Claude Code').waitFor({ state: 'visible' });
+    await childCards[2].locator('.delegated-from').getByText('内核：模型 API').waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'delegated-three-children-working');
 
     await childCards[0].getByRole('button', { name: '停止工作' }).click();
@@ -2120,7 +2134,7 @@ try {
     await childCards[1].locator('.pill.working').waitFor({ state: 'visible' });
     await childCards[2].locator('.pill.working').waitFor({ state: 'visible' });
     delegatedModelReleases.get('Competitor scan')?.();
-    await writeFile(e2eClaudeRelease, 'release');
+    delegatedModelReleases.get('Launch risks')?.();
     await childCards[1].locator('.pill.done').waitFor({ state: 'visible', timeout: 10_000 });
     await childCards[2].locator('.pill.done').waitFor({ state: 'visible', timeout: 10_000 });
     await parentCard.locator('.pill.paused').waitFor({ state: 'visible' });
@@ -2133,13 +2147,14 @@ try {
     assert.match(aggregatePrompt, /Competitor scan \[done\]/, 'Parent did not receive a successful child result');
     assert.match(aggregatePrompt, /Launch risks \[done\]/, 'Parent did not receive the second successful child result');
     assert.match(aggregatePrompt, /verified findings/, 'Child result text was not returned to the parent');
-    assert.match(aggregatePrompt, /Claude Code completed the risks review/, 'The selected Claude adapter result was not returned to the parent');
+    assert.match(aggregatePrompt, /Launch risks completed with verified findings/, 'The selected child result was not returned to the parent');
     await screenshot(alphaPage!, 'delegated-parent-aggregate-completed');
 
     await selectTenant(betaPage!, 'Beta workspace');
     await clickNav(betaPage!, 'Activity');
     assert.equal(await betaPage!.locator('.task-card').filter({ hasText: 'Market scan' }).count(), 0, 'A different tenant saw Alpha’s delegated task');
     assert.equal(await betaPage!.locator('.task-card').filter({ hasText: 'Completed launch packet' }).count(), 0, 'A different tenant saw Alpha’s parent result');
+    await selectTenant(alphaPage!, 'Alpha Shared');
   });
 
   await recordStep('Alpha computer welcome screen matches the video-observed Roger identity', async () => {
