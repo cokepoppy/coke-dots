@@ -3,7 +3,7 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium, type BrowserContext, type Page, type Route } from 'playwright-core';
 import { computerWelcomePage } from './computer-home.mjs';
-import { fetchPublicPageHtml, isE2EBrowserResearchFixture, validatePublicHttpsUrl } from '../shared/public-web-policy.mjs';
+import { fetchPublicPageHtml, isE2EBrowserResearchFixture, isE2EWebsiteSignInFixture, validatePublicHttpsUrl } from '../shared/public-web-policy.mjs';
 
 export interface PublicPageSnapshot { url: string; title: string; text: string }
 
@@ -26,12 +26,13 @@ export interface ComputerRuntime {
   click(x: number, y: number): Promise<ComputerState>;
   type(text: string): Promise<ComputerState>;
   press(key: string): Promise<ComputerState>;
+  fillWebsiteSignIn?(url: string, identifier: string, password: string): Promise<ComputerState>;
   openPublicPageForAgent?(url: string, signal?: AbortSignal): Promise<PublicPageSnapshot>;
   screenshot(): Promise<Buffer>;
   close(): Promise<void>;
   reset?(): Promise<void>;
   novncTarget?(): Promise<URL | null>;
-  runAgentTask?(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] }>;
+  runAgentTask?(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; websiteSignInRequest?: { url: string; reason: string } }>;
 }
 
 export class ComputerManager implements ComputerRuntime {
@@ -39,6 +40,7 @@ export class ComputerManager implements ComputerRuntime {
   private page: Page | null = null;
   private owner: 'agent' | 'user' = 'agent';
   private blockedNavigationUrl: string | null = null;
+  private privateSignInFields: { page: Page; url: string; identifier: import('playwright-core').Locator; password: import('playwright-core').Locator } | null = null;
   private readonly researchRequestGuard = async (route: Route) => {
     if (this.owner === 'user') { await route.continue(); return; }
     if (!['GET', 'HEAD'].includes(route.request().method())) { await route.abort('blockedbyclient'); return; }
@@ -83,7 +85,47 @@ export class ComputerManager implements ComputerRuntime {
   }
 
   takeOver() { if (!this.page) throw new Error('电脑尚未打开'); this.owner = 'user'; }
-  returnControl() { if (!this.page) throw new Error('电脑尚未打开'); this.owner = 'agent'; }
+  async returnControl() {
+    if (!this.page) throw new Error('电脑尚未打开');
+    await this.clearPrivateSignInFields();
+    this.owner = 'agent';
+  }
+
+  async fillWebsiteSignIn(value: string, identifier: string, password: string) {
+    const url = await validatePublicHttpsUrl(value);
+    if (this.owner !== 'agent') throw new Error('请先交还电脑，再使用私密登录表单');
+    if (!identifier.trim() || identifier.length > 320 || /[\u0000-\u001f\u007f]/.test(identifier)) throw new Error('账号或邮箱格式无效');
+    if (!password || password.length > 4096 || password.includes('\0')) throw new Error('密码格式无效');
+    const parsed = new URL(url);
+    if (parsed.search) throw new Error('登录地址包含查询参数，请接管电脑并手动登录');
+    let page = this.page;
+    if (!page || page.isClosed()) { await this.open(); page = this.page; }
+    if (!page) throw new Error('电脑尚未打开');
+    let current: URL | null = null;
+    try { current = new URL(page.url()); } catch { /* about:blank */ }
+    if (current?.href !== parsed.href) {
+      if (isE2EWebsiteSignInFixture(url)) await page.route(url, route => route.fulfill({
+        status: 200,
+        contentType: 'text/html; charset=utf-8',
+        body: '<!doctype html><html><head><title>Demo service sign in</title></head><body style="font:16px system-ui;max-width:420px;margin:72px auto;padding:24px"><h1>Demo service</h1><form onsubmit="event.preventDefault();document.title=\'Login received\';document.querySelector(\'#status\').textContent=\'Signed in in the Dot computer\'"><label>Account <input autocomplete="username" name="username" type="email"></label><br><label>Password <input autocomplete="current-password" name="password" type="password"></label><br><button type="submit">Sign in</button><p id="status"></p></form></body></html>',
+      }));
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    }
+    const landed = new URL(page.url());
+    if (landed.protocol !== 'https:' || landed.hostname.toLowerCase() !== parsed.hostname.toLowerCase()) throw new Error('网站跳转到了其他地址，请接管电脑手动登录');
+    const passwordField = page.locator('input[type="password"]:visible');
+    if (await passwordField.count() !== 1) throw new Error('此页面没有唯一的密码输入框，请接管电脑手动登录');
+    const namedIdentifierFields = page.locator('input[autocomplete="username"]:visible, input[type="email"]:visible, input[type="tel"]:visible, input[name*="user" i]:visible, input[id*="user" i]:visible, input[name*="email" i]:visible, input[id*="email" i]:visible');
+    const namedIdentifierCount = await namedIdentifierFields.count();
+    const textIdentifierFields = page.locator('input[type="text"]:visible');
+    const identifierField = namedIdentifierCount === 1 ? namedIdentifierFields.first() : namedIdentifierCount === 0 && await textIdentifierFields.count() === 1 ? textIdentifierFields.first() : null;
+    if (!identifierField) throw new Error('此页面没有唯一可识别的账号输入框，请接管电脑手动登录');
+    await identifierField.fill(identifier.trim());
+    await passwordField.fill(password);
+    this.privateSignInFields = { page, url: page.url(), identifier: identifierField, password: passwordField };
+    this.owner = 'user';
+    return this.state();
+  }
 
   async navigate(url: string) {
     this.assertUserControl();
@@ -155,7 +197,7 @@ export class ComputerManager implements ComputerRuntime {
     return this.page.screenshot({ type: 'png' });
   }
 
-  async close() { await this.context?.close(); this.context = null; this.page = null; this.owner = 'agent'; this.blockedNavigationUrl = null; }
+  async close() { await this.clearPrivateSignInFields(); await this.context?.close(); this.context = null; this.page = null; this.owner = 'agent'; this.blockedNavigationUrl = null; }
 
   async reset() {
     await this.close();
@@ -170,6 +212,14 @@ export class ComputerManager implements ComputerRuntime {
   private assertAgentControl() {
     if (!this.page || this.page.isClosed()) throw new Error('电脑尚未打开');
     if (this.owner !== 'agent') throw new Error('电脑目前由你控制；交还电脑后，Agent 才能继续浏览。');
+  }
+
+  private async clearPrivateSignInFields() {
+    const fields = this.privateSignInFields;
+    this.privateSignInFields = null;
+    if (!fields || fields.page.isClosed() || fields.page.url() !== fields.url) return;
+    await fields.password.fill('').catch(() => undefined);
+    await fields.identifier.fill('').catch(() => undefined);
   }
 }
 

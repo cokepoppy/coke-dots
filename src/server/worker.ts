@@ -178,6 +178,12 @@ export class Worker {
         this.onChange();
         return;
       }
+      if (decision.websiteSignInRequest) {
+        this.store.createWebsiteSignInRequest(task.tenantId, task.id, decision.websiteSignInRequest.url, decision.websiteSignInRequest.reason, decision.sessionId || current.agentSessionId);
+        this.notifyIfEnabled(task.tenantId, `“${task.title}”需要你在工作区电脑中登录网站。`);
+        this.onChange();
+        return;
+      }
       if (task.parentTaskId && decision.status === 'scheduled') throw new Error('子任务不能创建周期安排');
       if (decision.status === 'delegating') {
         const delegated = this.store.createDelegatedTasks(task.id, task.tenantId, decision.delegations || [], decision.message, decision.sessionId);

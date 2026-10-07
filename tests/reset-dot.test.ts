@@ -28,6 +28,9 @@ test('reset deletes one owner’s personal Dot data and retains account and prov
     store.requestPageActionApproval(personalId, active.id,
       { action: 'create', title: 'Pending page', content: 'This approval is private to the Dot.' },
       'Review this page first.', 'done', null);
+    const signInTask = store.createTask('Wait for website sign-in', null, 'model', personalId, null, future);
+    store.updateTask(signInTask.id, { status: 'working' }, personalId);
+    store.createWebsiteSignInRequest(personalId, signInTask.id, 'https://accounts.example.test/sign-in', 'Open the account dashboard.');
     const pauseTask = store.createTask('Pause this background task', null, 'model', personalId, null, future);
     store.updateTask(pauseTask.id, { status: 'working' }, personalId);
     assert.deepEqual(store.pauseDot(personalId, [pauseTask.id]), [pauseTask.id]);
@@ -60,9 +63,11 @@ test('reset deletes one owner’s personal Dot data and retains account and prov
     assert.deepEqual(store.voiceCalls(personalId, alpha.user.id), []);
     assert.deepEqual(store.pendingAttachments(personalId, alpha.user.id), []);
     assert.equal(store.pageActionApproval(personalId, active.id), null);
+    assert.equal(store.websiteSignInRequest(personalId, signInTask.id), null);
     assert.equal(store.tenantActionRule(personalId), null);
     assert.equal(store.getTask(scheduled.id, personalId), null);
     assert.equal(store.getTask(active.id, personalId), null);
+    assert.equal(store.getTask(signInTask.id, personalId), null);
     assert.deepEqual((store.db.prepare('SELECT key,value FROM tenant_settings WHERE tenant_id=? ORDER BY key').all(personalId) as { key: string; value: string }[]).map(row => ({ key: row.key, value: row.value })), [
       { key: 'modelBaseUrl', value: 'https://api.deepseek.com/v1' },
       { key: 'modelName', value: 'deepseek-chat' },

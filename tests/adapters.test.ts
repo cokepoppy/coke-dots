@@ -18,6 +18,25 @@ test('agent output must specify a real task state', () => {
   assert.throws(() => parseDecision('{"status":"done","message":""}'));
 });
 
+test('website sign-in requests wait for the user and contain only a safe public login address', () => {
+  const result = parseDecision(JSON.stringify({
+    status: 'waiting', message: 'Please sign in to continue.',
+    websiteSignInRequest: { url: 'https://accounts.example.test/sign-in', reason: 'The project requires an authenticated session.', username: 'must-not-persist', password: 'must-not-persist-either' },
+  }));
+  assert.deepEqual(result.websiteSignInRequest, { url: 'https://accounts.example.test/sign-in', reason: 'The project requires an authenticated session.' });
+  assert.doesNotMatch(JSON.stringify(result), /must-not-persist/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Finished.', websiteSignInRequest: { url: 'https://accounts.example.test/sign-in', reason: 'Need access.' } })), /必须等待用户/);
+  for (const url of [
+    'http://accounts.example.test/sign-in',
+    'https://user:password@accounts.example.test/sign-in',
+    'https://accounts.example.test/sign-in?code=secret',
+    'https://accounts.example.test:8443/sign-in',
+    'https://accounts.example.test/sign-in#password',
+  ]) {
+    assert.throws(() => parseDecision(JSON.stringify({ status: 'waiting', message: 'Need access.', websiteSignInRequest: { url, reason: 'Need to sign in.' } })), /标准 HTTPS 地址/);
+  }
+});
+
 test('agent may suppress routine notifications only with a boolean choice', () => {
   assert.equal(parseDecision('{"status":"done","message":"Routine check complete."}').notifyUser, undefined);
   assert.equal(parseDecision('{"status":"done","message":"Routine check complete.","notifyUser":false}').notifyUser, false);

@@ -39,7 +39,8 @@ export interface AgentRequest {
 }
 export type AgentPageAction = ScratchpadPageAction;
 export interface AgentDelegation { title: string; instruction: string; engine?: Engine }
-export interface AgentDecision { status: 'done' | 'waiting' | 'scheduled' | 'delegating'; message: string; nextMinutes?: number; sessionId?: string; pageAction?: AgentPageAction; delegations?: AgentDelegation[]; notifyUser?: boolean; personalDotMemoryUpdates?: PersonalDotMemoryUpdate[] }
+export interface AgentWebsiteSignInRequest { url: string; reason: string }
+export interface AgentDecision { status: 'done' | 'waiting' | 'scheduled' | 'delegating'; message: string; nextMinutes?: number; sessionId?: string; pageAction?: AgentPageAction; delegations?: AgentDelegation[]; notifyUser?: boolean; personalDotMemoryUpdates?: PersonalDotMemoryUpdate[]; websiteSignInRequest?: AgentWebsiteSignInRequest }
 export interface AgentAdapter { id: Engine; available(tenantId?: string): boolean; run(input: AgentRequest): Promise<AgentDecision> }
 
 /** Pi's custom-tool bridge for the same screened, read-only browser capability used by Model API. */
@@ -219,7 +220,7 @@ function isPathInside(root: string, candidate: string): boolean {
   return pathFromRoot === '' || (pathFromRoot !== '..' && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot));
 }
 
-const instruction = 'You are a personal agent. Finish with one JSON object only: {"status":"done|waiting|scheduled|delegating","message":"...","nextMinutes":15,"notifyUser":true,"delegations":[{"title":"...","instruction":"...","engine":"model|pi|dsh (optional)"}]}. `notifyUser` is optional; default to true for ordinary completion and progress updates. Set it to false only when the user asked for quiet or conditional updates and this routine success does not meet their notification criteria. This flag can suppress ordinary done or informational delegation notifications only. Never suppress a notification when you need a user reply, approval, hand-off, or when work fails. Use status delegating only when independent bounded work streams would materially improve the result; create at most 3 children. A child task cannot delegate or schedule more work. Do not split a request into children that need shared mutable state or an ordered handoff. When child results are supplied, synthesize them and finish without creating more children. When a Scratchpad page operation is allowed by the active tenant rule and relevant to the task, create it with "pageAction":{"action":"create","title":"...","content":"..."}; update an existing listed page with "pageAction":{"action":"update","pageId":"...","title":"...","content":"..."}. Use only listed page IDs. Page actions write only to this tenant-scoped local Scratchpad. Do not claim external actions you did not perform. Do not send messages, change external accounts, or edit files. If an action would require that access, choose waiting and explain the needed permission. For an ongoing check, choose scheduled. When the user asks for automation ideas, keep them as inactive proposals and choose done; do not schedule them unless the user chooses an idea and asks to set it up with its sources, timing, and review requirements. Use the user language.';
+const instruction = 'You are a personal agent. Finish with one JSON object only: {"status":"done|waiting|scheduled|delegating","message":"...","nextMinutes":15,"notifyUser":true,"delegations":[{"title":"...","instruction":"...","engine":"model|pi|dsh (optional)"}],"websiteSignInRequest":{"url":"https://...","reason":"..."}}. `notifyUser` is optional; default to true for ordinary completion and progress updates. Set it to false only when the user asked for quiet or conditional updates and this routine success does not meet their notification criteria. This flag can suppress ordinary done or informational delegation notifications only. Never suppress a notification when you need a user reply, approval, hand-off, or when work fails. Use status delegating only when independent bounded work streams would materially improve the result; create at most 3 children. A child task cannot delegate or schedule more work. Do not split a request into children that need shared mutable state or an ordered handoff. When child results are supplied, synthesize them and finish without creating more children. When a Scratchpad page operation is allowed by the active tenant rule and relevant to the task, create it with "pageAction":{"action":"create","title":"...","content":"..."}; update an existing listed page with "pageAction":{"action":"update","pageId":"...","title":"...","content":"..."}. Use only listed page IDs. Page actions write only to this tenant-scoped local Scratchpad. Never ask for usernames, passwords, one-time codes, or recovery codes in the conversation. If a task needs website authentication, request it only with status="waiting" and websiteSignInRequest containing a public HTTPS login URL and a brief reason; the app will present a separate private form or let the user take over the computer. Do not provide credential fields in JSON. Do not claim external actions you did not perform. Do not send messages, change external accounts, or edit files. If an action would require that access, choose waiting and explain the needed permission. For an ongoing check, choose scheduled. When the user asks for automation ideas, keep them as inactive proposals and choose done; do not schedule them unless the user chooses an idea and asks to set it up with its sources, timing, and review requirements. Use the user language.';
 const actionRuleText = (rule: TenantActionRule | null | undefined) => {
   if (!rule) return '\n\nScratchpad permission: take action when the user explicitly asks to create or update a Scratchpad page. Never infer approval for a page write.';
   const mode = {
@@ -270,6 +271,18 @@ export function parseDecision(raw: string, sessionId?: string, options: { allowD
   if (!status || !(['done', 'waiting', 'scheduled', 'delegating'] as const).includes(status) || typeof value.message !== 'string' || !value.message.trim()) throw new Error('代理返回的任务状态无效');
   if (value.notifyUser !== undefined && typeof value.notifyUser !== 'boolean') throw new Error('代理返回的通知偏好无效');
   if (status === 'scheduled' && options.allowScheduling === false) throw new Error('只读任务不能安排后续运行');
+  let websiteSignInRequest: AgentWebsiteSignInRequest | undefined;
+  if (value.websiteSignInRequest !== undefined) {
+    if (status !== 'waiting' || !value.websiteSignInRequest || typeof value.websiteSignInRequest !== 'object') throw new Error('网站登录请求必须等待用户处理');
+    const request = value.websiteSignInRequest as unknown as Record<string, unknown>;
+    const urlText = typeof request.url === 'string' ? request.url.trim() : '';
+    const reason = typeof request.reason === 'string' ? request.reason.trim() : '';
+    let url: URL;
+    try { url = new URL(urlText); } catch { throw new Error('网站登录地址无效'); }
+    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.port || url.hash || url.search || urlText.length > 2048) throw new Error('网站登录只允许不含凭据、查询参数或锚点的标准 HTTPS 地址');
+    if (!reason || reason.length > 500) throw new Error('网站登录请求说明无效');
+    websiteSignInRequest = { url: url.href, reason };
+  }
   let delegations: AgentDelegation[] | undefined;
   if (status === 'delegating') {
     if (options.allowDelegation === false) throw new Error('子任务不能继续委派');
@@ -295,8 +308,9 @@ export function parseDecision(raw: string, sessionId?: string, options: { allowD
     else throw new Error('代理返回的 Scratchpad 页面操作无效');
   }
   if (pageAction && (status === 'waiting' || status === 'delegating')) throw new Error('代理需要先获得补充信息，不能同时写入 Scratchpad 页面');
+  if (websiteSignInRequest && (pageAction || delegations?.length)) throw new Error('网站登录请求不能与页面写入或子任务委派同时进行');
   const personalDotMemoryUpdates = parsePersonalDotMemoryUpdates(value.personalDotMemoryUpdates, options, status);
-  return { status, message: value.message.trim(), nextMinutes: value.nextMinutes, sessionId, pageAction, delegations, notifyUser: value.notifyUser, personalDotMemoryUpdates };
+  return { status, message: value.message.trim(), nextMinutes: value.nextMinutes, sessionId, pageAction, delegations, notifyUser: value.notifyUser, personalDotMemoryUpdates, websiteSignInRequest };
 }
 
 function parsePersonalDotMemoryUpdates(value: unknown, options: { allowPersonalDotMemoryUpdates?: boolean; personalDotMemoryIds?: readonly string[] }, status: AgentDecision['status']): PersonalDotMemoryUpdate[] | undefined {

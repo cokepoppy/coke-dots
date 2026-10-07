@@ -17,6 +17,14 @@ export function isE2EBrowserResearchFixture(value, environment = process.env) {
   catch { return false; }
 }
 
+export function isE2EWebsiteSignInFixture(value, environment = process.env) {
+  if (environment.NODE_ENV !== 'test' || environment.DOTS_E2E_AUTH !== '1') return false;
+  const configured = environment.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL?.trim();
+  if (!configured) return false;
+  try { return new URL(value).href === new URL(configured).href; }
+  catch { return false; }
+}
+
 export async function validatePublicHttpsUrl(value, options = {}) {
   return (await resolvePublicHttpsUrl(value, options)).url.href;
 }
@@ -31,6 +39,9 @@ export async function resolvePublicHttpsUrl(value, options = {}) {
     throw new Error('电脑研究只允许不含凭据或锚点的标准 HTTPS 网址');
   }
   if (isE2EBrowserResearchFixture(url.href, options.environment || process.env)) {
+    return { url, hostname: url.hostname, address: null, family: 0, fixture: true };
+  }
+  if (isE2EWebsiteSignInFixture(url.href, options.environment || process.env)) {
     return { url, hostname: url.hostname, address: null, family: 0, fixture: true };
   }
 

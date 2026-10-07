@@ -796,6 +796,38 @@ test('paused workspace holds due tasks while an unpaused tenant continues', asyn
   }
 });
 
+test('website sign-in requests are tenant scoped, resumable, and persist no credentials', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-website-sign-in-'));
+  try {
+    const store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'sign-in-alpha', email: 'sign-in-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'sign-in-beta', email: 'sign-in-beta@example.test', name: 'Beta' });
+    const task = store.createTask('Continue the requested account research', null, 'model', alpha.tenant.id);
+    store.updateTask(task.id, { status: 'working' }, alpha.tenant.id);
+    const request = store.createWebsiteSignInRequest(alpha.tenant.id, task.id, 'https://accounts.example.test/sign-in', 'Read the account dashboard.', 'agent-session');
+    assert.equal(request.status, 'pending');
+    assert.equal(store.getTask(task.id, alpha.tenant.id)?.status, 'waiting');
+    assert.equal(store.websiteSignInRequest(beta.tenant.id, task.id), null, 'Another tenant retrieved the sign-in request');
+    assert.equal(store.markWebsiteSignInSubmitted(beta.tenant.id, task.id), null, 'Another tenant submitted the sign-in request');
+    assert.deepEqual(Object.keys(request).sort(), ['createdAt', 'hostname', 'id', 'reason', 'status', 'taskId', 'tenantId', 'updatedAt', 'url'].sort());
+    assert.deepEqual(store.markWebsiteSignInSubmitted(alpha.tenant.id, task.id)?.status, 'submitted');
+    assert.equal(store.continueWebsiteSignInTask(alpha.tenant.id, task.id)?.status, 'queued');
+    assert.equal(store.websiteSignInRequest(alpha.tenant.id, task.id)?.status, 'continued');
+    const state = store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, alpha.tenant.id);
+    const taskEntries = state.entries.filter(entry => entry.taskId === task.id);
+    assert.ok(taskEntries.some(entry => entry.kind === 'user' && entry.body === '我已在工作区电脑中完成登录，请继续。'));
+    const columns = store.db.prepare('PRAGMA table_info(website_sign_in_requests)').all() as { name: string }[];
+    assert.equal(columns.some(column => /password|credential|secret/i.test(column.name)), false, 'Credentials must have no database column');
+    const cancelledTask = store.createTask('Cancel the sign-in request', null, 'model', alpha.tenant.id);
+    store.updateTask(cancelledTask.id, { status: 'working' }, alpha.tenant.id);
+    store.createWebsiteSignInRequest(alpha.tenant.id, cancelledTask.id, 'https://accounts.example.test/sign-in', 'Open the dashboard.');
+    assert.equal(store.cancelWebsiteSignInRequest(alpha.tenant.id, cancelledTask.id)?.status, 'cancelled');
+    assert.equal(store.getTask(cancelledTask.id, alpha.tenant.id)?.status, 'waiting');
+    assert.throws(() => store.createWebsiteSignInRequest(alpha.tenant.id, task.id, 'https://accounts.example.test/sign-in?code=secret', 'Need access.'), /查询参数/);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 async function waitFor(predicate: () => boolean, timeout = 3000) {
   const start = Date.now();
   while (!predicate()) {

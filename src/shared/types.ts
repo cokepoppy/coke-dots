@@ -42,6 +42,18 @@ export interface Task {
   updatedAt: string;
 }
 
+export interface WebsiteSignInRequest {
+  id: string;
+  tenantId: string;
+  taskId: string;
+  url: string;
+  hostname: string;
+  reason: string;
+  status: 'pending' | 'submitted' | 'continued' | 'cancelled';
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Entry {
   id: number;
   tenantId: string;

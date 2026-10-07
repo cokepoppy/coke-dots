@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
 import { computerWelcomePage } from './computer-home.mjs';
-import { fetchPublicPageHtml, isE2EBrowserResearchFixture, validatePublicHttpsUrl } from './public-web-policy.mjs';
+import { fetchPublicPageHtml, isE2EBrowserResearchFixture, isE2EWebsiteSignInFixture, validatePublicHttpsUrl } from './public-web-policy.mjs';
 
 const exec = promisify(execFile);
 const token = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
@@ -15,6 +15,7 @@ let owner = 'agent';
 let browser;
 let initialized = false;
 let researchGuardInstalled = false;
+let privateSignInFields = null;
 
 if (!token) throw new Error('LINUX_DESKTOP_WORKER_TOKEN is required');
 
@@ -103,6 +104,53 @@ async function command(input) {
   return { ready: true, url: browserPage?.url() || '', title: await browserPage?.title().catch(() => '') || '' };
 }
 
+async function fillPrivateSignIn(input) {
+  if (owner !== 'agent') throw new Error('The computer is already controlled by the user');
+  const url = await validatePublicHttpsUrl(String(input.url || ''));
+  const target = new URL(url);
+  if (target.search || target.hash) throw new Error('Sign-in URLs with query parameters or fragments require manual browser takeover');
+  const identifier = String(input.identifier || '');
+  const password = String(input.password || '');
+  if (!identifier.trim() || identifier.length > 320 || /[\u0000-\u001f\u007f]/.test(identifier)) throw new Error('Invalid account identifier');
+  if (!password || password.length > 4096 || password.includes('\0')) throw new Error('Invalid password');
+  const browserPage = await page();
+  let current;
+  try { current = new URL(browserPage.url()); } catch { current = null; }
+  if (current?.href !== target.href) {
+    if (isE2EWebsiteSignInFixture(url)) await browserPage.route(url, route => route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: '<!doctype html><html><head><title>Demo service sign in</title></head><body style="font:16px system-ui;max-width:420px;margin:72px auto;padding:24px"><h1>Demo service</h1><form onsubmit="event.preventDefault();document.title=\'Login received\';document.querySelector(\'#status\').textContent=\'Signed in in the Dot computer\'"><label>Account <input autocomplete="username" name="username" type="email"></label><br><label>Password <input autocomplete="current-password" name="password" type="password"></label><br><button type="submit">Sign in</button><p id="status"></p></form></body></html>',
+    }));
+    await browserPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  }
+  const landed = new URL(browserPage.url());
+  if (landed.protocol !== 'https:' || landed.hostname.toLowerCase() !== target.hostname.toLowerCase()) throw new Error('The sign-in page redirected to another host; take over the computer to continue');
+  const passwordField = browserPage.locator('input[type="password"]:visible');
+  if (await passwordField.count() !== 1) throw new Error('Could not identify one password field; take over the computer to sign in manually');
+  const namedIdentifierFields = browserPage.locator('input[autocomplete="username"]:visible, input[type="email"]:visible, input[type="tel"]:visible, input[name*="user" i]:visible, input[id*="user" i]:visible, input[name*="email" i]:visible, input[id*="email" i]:visible');
+  const namedIdentifierCount = await namedIdentifierFields.count();
+  const textIdentifierFields = browserPage.locator('input[type="text"]:visible');
+  const identifierField = namedIdentifierCount === 1 ? namedIdentifierFields.first() : namedIdentifierCount === 0 && await textIdentifierFields.count() === 1 ? textIdentifierFields.first() : null;
+  if (!identifierField) throw new Error('Could not identify one account field; take over the computer to sign in manually');
+  await identifierField.fill(identifier.trim());
+  await passwordField.fill(password);
+  privateSignInFields = { page: browserPage, url: browserPage.url(), identifier: identifierField, password: passwordField };
+  owner = 'user';
+  await fetch(`http://127.0.0.1:${process.env.DOTS_AGENT_RUNTIME_PORT || 8083}/v1/tasks/pause`, {
+    method: 'POST', headers: { authorization: `Bearer ${process.env.DOTS_AGENT_RUNTIME_TOKEN}` }, signal: AbortSignal.timeout(1500),
+  }).catch(() => undefined);
+  return { ready: true, url: browserPage.url(), title: await browserPage.title().catch(() => ''), owner };
+}
+
+async function clearPrivateSignInFields() {
+  const fields = privateSignInFields;
+  privateSignInFields = null;
+  if (!fields || fields.page.url() !== fields.url) return;
+  await fields.password.fill('').catch(() => undefined);
+  await fields.identifier.fill('').catch(() => undefined);
+}
+
 http.createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url || '/', 'http://127.0.0.1').pathname;
@@ -122,6 +170,7 @@ http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/v1/control') {
       const input = await body(req);
       if (input.owner !== 'agent' && input.owner !== 'user') return send(res, 400, { error: 'invalid control owner' });
+      if (input.owner === 'agent') await clearPrivateSignInFields();
       owner = input.owner;
       if (owner === 'user') {
         await fetch(`http://127.0.0.1:${process.env.DOTS_AGENT_RUNTIME_PORT || 8083}/v1/tasks/pause`, {
@@ -130,6 +179,7 @@ http.createServer(async (req, res) => {
       }
       return send(res, 200, { owner });
     }
+    if (req.method === 'POST' && pathname === '/v1/commands/private-sign-in') return send(res, 200, await fillPrivateSignIn(await body(req)));
     if (req.method === 'GET' && pathname === '/v1/state') {
       const browserPage = await page();
       return send(res, 200, { ready: true, owner, url: browserPage.url(), title: await browserPage.title().catch(() => '') });

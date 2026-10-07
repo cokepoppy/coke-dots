@@ -578,6 +578,55 @@ const server = createServer(async (req, res) => {
       if (result.approval.resumeStatus === 'scheduled') void worker.tick();
       return reply(res, 200, result);
     }
+    const signInMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/sign-in(?:\/(submit|cancel|continue))?$/i);
+    if (signInMatch) {
+      const task = store.getTask(signInMatch[1], session.tenant.id);
+      if (!task) return reply(res, 404, { error: 'Task not found' });
+      const action = signInMatch[2] || '';
+      if (req.method === 'GET' && !action) return reply(res, 200, store.websiteSignInRequest(session.tenant.id, task.id));
+      if (req.method === 'POST' && action === 'cancel') {
+        const signIn = store.cancelWebsiteSignInRequest(session.tenant.id, task.id);
+        if (!signIn) return reply(res, 404, { error: 'No pending website sign-in request' });
+        publish();
+        return reply(res, 200, { signIn });
+      }
+      if (req.method === 'POST' && action === 'submit') {
+        const signIn = store.websiteSignInRequest(session.tenant.id, task.id);
+        if (!signIn || signIn.status !== 'pending' || task.status !== 'waiting') return reply(res, 409, { error: 'No pending website sign-in request' });
+        if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop' && store.getSetting('localComputerEnabled', session.tenant.id) === 'false') return reply(res, 403, { error: '当前工作区尚未授权 Dot 使用本机 Chrome 工作区' });
+        const identifier = typeof body.identifier === 'string' ? body.identifier : '';
+        const password = typeof body.password === 'string' ? body.password : '';
+        const computer = computerFor(session.tenant.id);
+        if (!computer.fillWebsiteSignIn) return reply(res, 503, { error: '当前电脑暂不支持私密登录表单，请接管电脑手动登录。' });
+        try {
+          await computer.fillWebsiteSignIn(signIn.url, identifier, password);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '无法在电脑中填写登录表单';
+          const redacted = [identifier, password].filter(Boolean).reduce((value, secret) => value.replaceAll(secret, '[redacted]'), message);
+          return reply(res, 400, { error: redacted.slice(0, 240) });
+        }
+        const updated = store.markWebsiteSignInSubmitted(session.tenant.id, task.id);
+        if (!updated) {
+          await Promise.resolve(computer.returnControl()).catch(() => undefined);
+          return reply(res, 409, { error: '这项工作已发生变化；为保护凭据，电脑已清除表单并交还 Dot。' });
+        }
+        publish();
+        return reply(res, 200, { signIn: updated, computer: await computer.state() });
+      }
+      if (req.method === 'POST' && action === 'continue') {
+        const signIn = store.websiteSignInRequest(session.tenant.id, task.id);
+        if (!signIn || !['pending', 'submitted'].includes(signIn.status)) return reply(res, 409, { error: '没有可继续的网站登录请求' });
+        const computer = computerFor(session.tenant.id);
+        const computerState = await computer.state();
+        if (!computerState.ready) return reply(res, 409, { error: '请先打开电脑并完成网站登录。' });
+        if (computerState.owner === 'user') return reply(res, 409, { error: '请先在电脑页面完成登录并交还电脑。' });
+        const updated = store.continueWebsiteSignInTask(session.tenant.id, task.id);
+        if (!updated) return reply(res, 409, { error: '这项工作已发生变化，无法继续。' });
+        publish(); void worker.tick();
+        return reply(res, 200, { task: updated });
+      }
+      return reply(res, 404, { error: 'Not found' });
+    }
     const taskMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)$/);
     if (taskMatch && req.method === 'PATCH') {
       const old = store.getTask(taskMatch[1], session.tenant.id);

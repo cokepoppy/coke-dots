@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WorkspacePage } from '../shared/types.ts';
+import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -130,6 +130,14 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS page_action_approvals_task ON page_action_approvals(tenant_id,task_id,created_at DESC);
       CREATE UNIQUE INDEX IF NOT EXISTS page_action_approvals_one_pending ON page_action_approvals(tenant_id,task_id) WHERE status='pending';
+      CREATE TABLE IF NOT EXISTS website_sign_in_requests (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id),
+        url TEXT NOT NULL, hostname TEXT NOT NULL, reason TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending','submitted','continued','cancelled')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS website_sign_in_task ON website_sign_in_requests(tenant_id,task_id,created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS website_sign_in_one_pending ON website_sign_in_requests(tenant_id,task_id) WHERE status IN ('pending','submitted');
     `);
 
     // Migrate the pre-auth single-user database into a reserved workspace. Its records
@@ -441,6 +449,7 @@ export class Store {
     try {
       const lockedEligibility = this.personalDotResetEligibility(tenantId, userId);
       if (lockedEligibility !== 'ok') { this.db.exec('COMMIT'); return lockedEligibility; }
+      this.db.prepare('DELETE FROM website_sign_in_requests WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM page_action_approvals WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM dot_pause_tasks WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM task_attachments WHERE tenant_id=?').run(tenantId);
@@ -698,6 +707,79 @@ export class Store {
       FROM page_action_approvals WHERE tenant_id=? AND task_id=? ORDER BY created_at DESC,id DESC LIMIT 1`).get(tenantId, taskId) as (Omit<PageActionApproval, 'action'> & { action_json: string }) | undefined;
     if (!row) return null;
     return { ...row, action: JSON.parse(row.action_json) as ScratchpadPageAction };
+  }
+
+  websiteSignInRequest(tenantId: string, taskId: string): WebsiteSignInRequest | null {
+    const row = this.db.prepare(`SELECT id,tenant_id AS tenantId,task_id AS taskId,url,hostname,reason,status,created_at AS createdAt,updated_at AS updatedAt
+      FROM website_sign_in_requests WHERE tenant_id=? AND task_id=? ORDER BY created_at DESC,id DESC LIMIT 1`).get(tenantId, taskId) as WebsiteSignInRequest | undefined;
+    return row || null;
+  }
+
+  createWebsiteSignInRequest(tenantId: string, taskId: string, urlValue: string, reasonValue: string, sessionId: string | null = null): WebsiteSignInRequest {
+    const url = new URL(urlValue);
+    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.port || url.hash || url.search || url.href.length > 2048) throw new Error('网站登录只允许不含凭据、查询参数或锚点的标准 HTTPS 地址');
+    const reason = reasonValue.trim();
+    if (!reason || reason.length > 500) throw new Error('网站登录请求说明无效');
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const task = this.getTask(taskId, tenantId);
+      if (!task || task.status !== 'working') throw new Error('当前工作已不在请求网站登录的状态');
+      this.db.prepare("UPDATE website_sign_in_requests SET status='cancelled',updated_at=? WHERE tenant_id=? AND task_id=? AND status IN ('pending','submitted')")
+        .run(now, tenantId, taskId);
+      const id = randomUUID();
+      this.db.prepare(`INSERT INTO website_sign_in_requests(id,tenant_id,task_id,url,hostname,reason,status,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,'pending',?,?)`).run(id, tenantId, taskId, url.href, url.hostname, reason, now, now);
+      this.db.prepare("UPDATE tasks SET status='waiting',next_run_at=NULL,error=NULL,agent_session_id=COALESCE(?,agent_session_id),updated_at=? WHERE tenant_id=? AND id=? AND status='working'")
+        .run(sessionId, now, tenantId, taskId);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+        .run(tenantId, taskId, 'dot', `我需要登录 ${url.hostname} 才能继续。请使用下方的私密表单，或接管电脑手动登录。`, now);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+        .run(tenantId, taskId, 'system', `网站登录请求已创建：${url.hostname}。账号凭据只会发送到此工作区的电脑，不会进入任务记录。`, now);
+      this.db.exec('COMMIT');
+      return this.websiteSignInRequest(tenantId, taskId)!;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  markWebsiteSignInSubmitted(tenantId: string, taskId: string): WebsiteSignInRequest | null {
+    const now = new Date().toISOString();
+    const task = this.getTask(taskId, tenantId);
+    if (!task || task.status !== 'waiting') return null;
+    const changed = this.db.prepare("UPDATE website_sign_in_requests SET status='submitted',updated_at=? WHERE tenant_id=? AND task_id=? AND status='pending'")
+      .run(now, tenantId, taskId);
+    if (!Number(changed.changes)) return null;
+    this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+      .run(tenantId, taskId, 'system', '用户已将登录信息填入工作区电脑；凭据未保存到任务记录。请在电脑页面完成登录或验证。', now);
+    return this.websiteSignInRequest(tenantId, taskId);
+  }
+
+  cancelWebsiteSignInRequest(tenantId: string, taskId: string): WebsiteSignInRequest | null {
+    const now = new Date().toISOString();
+    const result = this.db.prepare("UPDATE website_sign_in_requests SET status='cancelled',updated_at=? WHERE tenant_id=? AND task_id=? AND status IN ('pending','submitted')")
+      .run(now, tenantId, taskId);
+    if (!Number(result.changes)) return null;
+    this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+      .run(tenantId, taskId, 'system', '用户取消了网站登录请求。', now);
+    return this.websiteSignInRequest(tenantId, taskId);
+  }
+
+  continueWebsiteSignInTask(tenantId: string, taskId: string): Task | null {
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const task = this.getTask(taskId, tenantId);
+      const request = this.websiteSignInRequest(tenantId, taskId);
+      if (!task || task.status !== 'waiting' || !request || !['pending', 'submitted'].includes(request.status)) throw new Error('没有可继续的网站登录请求');
+      const instruction = `${task.instruction}\n\nUser confirmed: website sign-in was completed in the tenant computer. Continue with the requested task.`;
+      this.db.prepare("UPDATE website_sign_in_requests SET status='continued',updated_at=? WHERE tenant_id=? AND task_id=? AND status IN ('pending','submitted')")
+        .run(now, tenantId, taskId);
+      this.db.prepare("UPDATE tasks SET instruction=?,status='queued',next_run_at=?,error=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status='waiting'")
+        .run(instruction, now, now, tenantId, taskId);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+        .run(tenantId, taskId, 'user', '我已在工作区电脑中完成登录，请继续。', now);
+      this.db.exec('COMMIT');
+      return this.getTask(taskId, tenantId);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   requestPageActionApproval(tenantId: string, taskId: string, action: ScratchpadPageAction, message: string, resumeStatus: 'done' | 'scheduled', nextRunAt: string | null, sessionId: string | null = null): PageActionApproval {
@@ -974,8 +1056,10 @@ export class Store {
       if (!Number(updated.changes)) { this.db.exec('ROLLBACK'); return null; }
       const cancelled = this.db.prepare("UPDATE page_action_approvals SET status='cancelled',decided_at=?,decided_by=? WHERE tenant_id=? AND task_id=? AND status='pending'")
         .run(now, actorUserId, tenantId, id);
+      const cancelledSignIn = this.db.prepare("UPDATE website_sign_in_requests SET status='cancelled',updated_at=? WHERE tenant_id=? AND task_id=? AND status IN ('pending','submitted')")
+        .run(now, tenantId, id);
       this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
-        .run(tenantId, id, 'system', Number(cancelled.changes) ? '工作已停止；待批准的 Scratchpad 写入请求已取消，页面没有更改。' : '工作已由工作区成员停止。', now);
+        .run(tenantId, id, 'system', Number(cancelled.changes) ? '工作已停止；待批准的 Scratchpad 写入请求已取消，页面没有更改。' : Number(cancelledSignIn.changes) ? '工作已停止；网站登录请求已取消。' : '工作已由工作区成员停止。', now);
       this.db.exec('COMMIT');
       return { task: this.getTask(id, tenantId)!, cancelledApprovals: Number(cancelled.changes) };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }

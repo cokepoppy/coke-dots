@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, ScheduleSpec, Snapshot, Task, TaskStatus, VoiceCallSession } from '../shared/types.ts';
+import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, ScheduleSpec, Snapshot, Task, TaskStatus, VoiceCallSession, WebsiteSignInRequest } from '../shared/types.ts';
 import { appFetch, appPath } from './api.ts';
 import './style.css';
 import './chat-theme.css';
@@ -30,6 +30,7 @@ import './shell-replica.css';
 import './onboarding-replica.css';
 import './computer-choice.css';
 import './call-timeline.css';
+import './website-sign-in.css';
 
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, dotPaused: false, preferences: { desktopNotifications: false, reasoningEffort: 'high' }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
@@ -445,7 +446,7 @@ function App() {
           {timelineItems.map(item => item.source === 'entry'
             ? <article key={item.id} data-testid="chat-timeline-item" data-timestamp={item.at} className={`message ${item.entry.kind}`}><div className="message-avatar">{item.entry.kind === 'user' ? '你' : item.entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{item.entry.kind === 'user' ? '你' : item.entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(item.entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={item.entry.body} onOpenPage={id => openPage(id, item.entry.taskId)} />{Boolean(item.entry.attachments?.length) && <ul className="message-attachments" data-testid="message-attachments" aria-label="附加文件">{item.entry.attachments!.map(attachment => <li key={attachment.id}><span aria-hidden="true">▤</span><span>{attachment.name}</span></li>)}</ul>}</div></article>
             : <article key={item.id} data-testid="chat-timeline-item" data-timestamp={item.at} className="message voice-call-ended" data-call-id={item.call.id}><div className="voice-call-ended-chip"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7.1 3.8 10 7.2 8.2 9.1a13 13 0 0 0 6.7 6.7l1.9-1.8 3.4 2.9-.8 3.2a1.8 1.8 0 0 1-2 1.4C9 20.2 3.8 15 2.5 6.6a1.8 1.8 0 0 1 1.4-2z" fill="currentColor" /></svg>Me: Call ended</div><small>Optional</small></article>)}
-          {selectedTask && <TaskControls task={selectedTask} act={act} />}
+          {selectedTask && <TaskControls task={selectedTask} act={act} onOpenComputer={() => setView('computer')} />}
         </div>}
         <div className="composer-wrap">
           {pendingAttachments.length > 0 && <ul className="pending-attachments" data-testid="pending-attachments" aria-label="待发送附件">{pendingAttachments.map(attachment => <li key={attachment.id} data-testid="pending-attachment"><span aria-hidden="true">▤</span><span className="attachment-name" title={attachment.name}>{attachment.name}</span><button type="button" aria-label={`移除附件 ${attachment.name}`} onClick={() => void removePendingAttachment(attachment)}>×</button></li>)}</ul>}
@@ -641,12 +642,18 @@ function RecurrenceEditor({ frequency, setFrequency, minutes, setMinutes, time, 
   </div>;
 }
 
-function TaskControls({ task, act, compact = false }: { task: Task; act: (task: Task, action: string, extra?: object) => Promise<void>; compact?: boolean }) {
+function TaskControls({ task, act, compact = false, onOpenComputer }: { task: Task; act: (task: Task, action: string, extra?: object) => Promise<void>; compact?: boolean; onOpenComputer?: () => void }) {
   const [redirect, setRedirect] = useState('');
   const [approval, setApproval] = useState<PageActionApproval | null>(null);
   const [approvalLoaded, setApprovalLoaded] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [approvalError, setApprovalError] = useState('');
+  const [signIn, setSignIn] = useState<WebsiteSignInRequest | null>(null);
+  const [signInLoaded, setSignInLoaded] = useState(false);
+  const [signInBusy, setSignInBusy] = useState(false);
+  const [signInError, setSignInError] = useState('');
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
   useEffect(() => {
     let active = true;
     setApproval(null); setApprovalLoaded(false); setApprovalError('');
@@ -659,6 +666,18 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
       .finally(() => { if (active) setApprovalLoaded(true); });
     return () => { active = false; };
   }, [task.id, task.status, compact]);
+  useEffect(() => {
+    let active = true;
+    setSignIn(null); setSignInLoaded(false); setSignInError(''); setIdentifier(''); setPassword('');
+    if (compact || task.status !== 'waiting') { setSignInLoaded(true); return () => { active = false; }; }
+    void appFetch(`/api/tasks/${task.id}/sign-in`).then(async response => {
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (active) setSignIn(data as WebsiteSignInRequest | null);
+    }).catch(reason => { if (active) setSignInError(reason instanceof Error ? reason.message : String(reason)); })
+      .finally(() => { if (active) setSignInLoaded(true); });
+    return () => { active = false; };
+  }, [task.id, task.status, compact]);
   async function decideApproval(decision: 'approve' | 'decline') {
     setApprovalBusy(true); setApprovalError('');
     try {
@@ -667,8 +686,37 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
     } catch (reason) { setApprovalError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setApprovalBusy(false); }
   }
+  async function submitWebsiteSignIn(event: React.FormEvent) {
+    event.preventDefault();
+    if (!signIn || signIn.status !== 'pending') return;
+    setSignInBusy(true); setSignInError('');
+    try {
+      const result = await request(`/tasks/${task.id}/sign-in/submit`, 'POST', { identifier, password }) as { signIn: WebsiteSignInRequest };
+      setSignIn(result.signIn);
+      setIdentifier(''); setPassword('');
+      onOpenComputer?.();
+    } catch (reason) { setSignInError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setSignInBusy(false); setPassword(''); }
+  }
+  async function continueAfterSignIn() {
+    setSignInBusy(true); setSignInError('');
+    try {
+      await request(`/tasks/${task.id}/sign-in/continue`, 'POST', {});
+      setSignIn(null);
+    } catch (reason) { setSignInError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setSignInBusy(false); }
+  }
+  async function cancelWebsiteSignIn() {
+    setSignInBusy(true); setSignInError('');
+    try {
+      const result = await request(`/tasks/${task.id}/sign-in/cancel`, 'POST', {}) as { signIn: WebsiteSignInRequest };
+      setSignIn(result.signIn);
+    } catch (reason) { setSignInError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setSignInBusy(false); }
+  }
   const hasRecurringSchedule = Boolean(task.scheduleSpec || task.scheduleMinutes !== null);
   const canStop = !hasRecurringSchedule && ['queued', 'working', 'delegating', 'waiting', 'scheduled', 'paused'].includes(task.status);
+  const signInActive = Boolean(signIn && ['pending', 'submitted'].includes(signIn.status));
   return <div className={`task-controls ${compact ? 'compact' : ''}`}>
     {!compact && <span className={`pill ${task.status}`}>{statusText[task.status]}</span>}
     {!hasRecurringSchedule && ['working', 'queued', 'delegating', 'scheduled'].includes(task.status) && <button onClick={() => void act(task, 'pause')}>暂停</button>}
@@ -683,7 +731,25 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
         {approvalError && <small role="alert" className="approval-error">{approvalError}</small>}
         <div className="page-approval-actions"><button className="approve" disabled={approvalBusy} onClick={() => void decideApproval('approve')}>{approvalBusy ? '处理中…' : '批准并执行'}</button><button disabled={approvalBusy} onClick={() => void decideApproval('decline')}>拒绝并保持不变</button></div>
       </div>}
-      {approvalLoaded && !approval && task.status !== 'stopped' && <div className="redirect">
+      {signIn && ['pending', 'submitted'].includes(signIn.status) && <section className="website-sign-in" data-testid="website-sign-in">
+        <div className="website-sign-in-heading"><span aria-hidden="true">↗</span><div><strong>网站需要登录</strong><small>{signIn.hostname}</small><code className="website-sign-in-url">{signIn.url}</code></div></div>
+        <p>{signIn.reason}</p>
+        <p className="website-sign-in-safety">凭据通过当前工作区的受保护连接直接填入电脑，不会发给 Dot，也不会保存到任务记录。填入后请在电脑中检查页面并亲自提交。</p>
+        {signInError && <small role="alert" className="website-sign-in-error">{signInError}</small>}
+        {signIn.status === 'pending' ? <>
+          <form onSubmit={event => void submitWebsiteSignIn(event)} className="website-sign-in-form" autoComplete="off">
+            <label>账号或邮箱<input aria-label="登录账号或邮箱" autoComplete="off" value={identifier} onChange={event => setIdentifier(event.target.value)} maxLength={320} /></label>
+            <label>密码<input aria-label="网站密码" type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} maxLength={4096} /></label>
+            <button className="website-sign-in-primary" type="submit" disabled={signInBusy || !identifier.trim() || !password}>{signInBusy ? '正在发送到电脑…' : '安全填入并打开电脑'}</button>
+          </form>
+          <div className="website-sign-in-actions"><button type="button" disabled={signInBusy} onClick={onOpenComputer}>改为手动接管电脑</button><button type="button" disabled={signInBusy} onClick={() => void continueAfterSignIn()}>我已手动完成登录</button><button type="button" disabled={signInBusy} onClick={() => void cancelWebsiteSignIn()}>取消登录请求</button></div>
+        </> : <>
+          <div className="website-sign-in-submitted" role="status">登录信息已填入电脑。完成登录或 MFA 验证后，请交还电脑。</div>
+          <div className="website-sign-in-actions"><button type="button" onClick={onOpenComputer}>打开电脑</button><button type="button" className="website-sign-in-primary" disabled={signInBusy} onClick={() => void continueAfterSignIn()}>{signInBusy ? '正在继续…' : '我已完成登录，继续工作'}</button></div>
+        </>}
+      </section>}
+      {signInLoaded && !signInActive && signInError && <small role="alert" className="website-sign-in-error">{signInError}</small>}
+      {approvalLoaded && !approval && !signInActive && task.status !== 'stopped' && <div className="redirect">
         <input aria-label={task.status === 'waiting' ? '回复 dot 的问题' : '调整这项工作的要求'} value={redirect} onChange={e => setRedirect(e.target.value)} placeholder={task.status === 'waiting' ? '回复 dot 的问题…' : '调整这项工作的要求'} />
         <button disabled={!redirect.trim()} onClick={() => {
           const action = task.status === 'waiting' ? 'reply' : 'redirect';

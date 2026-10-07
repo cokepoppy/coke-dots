@@ -5,6 +5,7 @@ import { accessSync, constants, existsSync } from 'node:fs';
 import { appendFile, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createConnection, createServer, type Socket } from 'node:net';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -223,6 +224,8 @@ async function startMockModel() {
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
         const isGlobalPauseTask = prompt.includes('E2E global pause — pause and resume the Dot');
         const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
+        const isWebsiteSignIn = prompt.includes('E2E website sign-in — exercise private credential flow');
+        const isWebsiteSignInContinuation = prompt.includes('User confirmed: website sign-in was completed in the tenant computer.');
         const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
         const isParallelTask = prompt.includes('E2E parallel work —');
@@ -274,10 +277,15 @@ async function startMockModel() {
         ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isDecisionNotificationCheck) Object.assign(decision, { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false });
-        const content = JSON.stringify(decision);
+        if (isWebsiteSignIn && !isWebsiteSignInContinuation) Object.assign(decision, {
+          status: 'waiting', message: 'Please sign in to the demo service.',
+          websiteSignInRequest: { url: 'https://login-fixture.dots.test/sign-in', reason: 'This task needs the demo account page.' },
+        });
+        if (isWebsiteSignInContinuation) Object.assign(decision, { status: 'done', message: 'The demo sign-in flow completed successfully.' });
+        const finalContent = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ choices: [{ message: { content } }] }));
+        response.end(JSON.stringify({ choices: [{ message: { content: finalContent } }] }));
       } catch {
         response.writeHead(400, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ error: 'Invalid test model request' }));
@@ -465,6 +473,7 @@ async function startServer(port: number) {
       DOTS_E2E_AUTH: '1',
       DOTS_E2E_COMPUTER_BLOCK_URL: 'https://www.amazon.com/**',
       DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL: 'https://research-fixture.dots.test/launch',
+      DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL: 'https://login-fixture.dots.test/sign-in',
       DOTS_ENV_FILE: emptyEnvFile,
       DOTS_DATA_DIR: testDataDir,
       DOTS_KEYCHAIN_SERVICE: testKeychainService,
@@ -2650,6 +2659,68 @@ try {
     await selectTenant(betaPage!, 'Beta workspace');
     const betaComputer = await betaPage!.evaluate(async () => await (await fetch('/api/computer')).json()) as { url?: string };
     assert.notEqual(betaComputer.url, 'https://research-fixture.dots.test/launch', 'A different personal tenant inherited DSH browser state');
+  });
+
+  await recordStep('Private website sign-in fills the tenant computer without exposing credentials to Dot or task history', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.locator('.composer-bottom select').selectOption('model');
+    const instruction = 'E2E website sign-in — exercise private credential flow';
+    await createTask(alphaPage!, instruction);
+    const privateForm = alphaPage!.getByTestId('website-sign-in');
+    await privateForm.waitFor({ state: 'visible', timeout: 15_000 });
+    assert.match(await privateForm.innerText(), /login-fixture\.dots\.test/);
+    const taskId = await alphaPage!.evaluate(async instructionText => {
+      const state = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string }[] };
+      return state.tasks.find(task => task.instruction === instructionText)?.id || '';
+    }, instruction);
+    assert(taskId, 'The sign-in task was not persisted');
+    const isolatedRequest = await betaPage!.evaluate(async id => {
+      await fetch('/api/auth/tenant', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId: 'Beta workspace' }) });
+      const response = await fetch(`/api/tasks/${id}/sign-in`);
+      return response.status;
+    }, taskId);
+    assert.equal(isolatedRequest, 404, 'Another tenant read the sign-in request');
+
+    const accountValue = 'e2e-account@example.test';
+    const secretValue = 'e2e-private-login-secret-7391';
+    await privateForm.getByLabel('登录账号或邮箱').fill(accountValue);
+    await privateForm.getByLabel('网站密码').fill(secretValue);
+    await privateForm.getByRole('button', { name: '安全填入并打开电脑' }).click();
+    await alphaPage!.locator('.computer-view').waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('button', { name: 'Return control' }).waitFor({ state: 'visible', timeout: 15_000 });
+    const computerState = await alphaPage!.evaluate(async () => await (await fetch('/api/computer')).json()) as { url: string; owner: string };
+    assert.equal(computerState.url, 'https://login-fixture.dots.test/sign-in');
+    assert.equal(computerState.owner, 'user');
+    await screenshot(alphaPage!, 'website-private-sign-in-filled');
+
+    await clickComputerScreen(alphaPage!, 460, 230);
+    await alphaPage!.locator('.browser-tab-title').filter({ hasText: 'Login received' }).waitFor({ state: 'visible', timeout: 10_000 });
+    await alphaPage!.getByRole('button', { name: 'Return control' }).click();
+    await alphaPage!.getByRole('status').filter({ hasText: /has control/ }).waitFor({ state: 'visible' });
+
+    await (await taskNavigationItem(alphaPage!, instruction)).click();
+    const submittedCard = alphaPage!.getByTestId('website-sign-in');
+    await submittedCard.waitFor({ state: 'visible' });
+    assert.match(await submittedCard.innerText(), /登录信息已填入电脑/);
+    await submittedCard.getByRole('button', { name: '我已完成登录，继续工作' }).click();
+    await clickNav(alphaPage!, 'Activity');
+    const taskCard = alphaPage!.locator('.task-card').filter({ hasText: instruction });
+    await taskCard.locator('.pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+
+    const appState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    assert.doesNotMatch(JSON.stringify(appState), /e2e-account@example\.test|e2e-private-login-secret-7391/);
+    assert.equal(mockModelPrompts.some(prompt => /e2e-account@example\.test|e2e-private-login-secret-7391/.test(prompt)), false, 'Credentials reached the model prompt');
+    const database = new DatabaseSync(join(testDataDir, 'dots.db'), { readOnly: true });
+    try {
+      const persistedRows = JSON.stringify({
+        task: database.prepare('SELECT instruction,result,error FROM tasks WHERE id=?').get(taskId),
+        entries: database.prepare('SELECT body FROM entries WHERE task_id=?').all(taskId),
+        signIn: database.prepare('SELECT url,hostname,reason,status FROM website_sign_in_requests WHERE task_id=?').all(taskId),
+      });
+      assert.doesNotMatch(persistedRows, /e2e-account@example\.test|e2e-private-login-secret-7391/);
+    } finally { database.close(); }
+    await screenshot(alphaPage!, 'website-private-sign-in-completed');
   });
 
   await recordStep('Personal Dot reset is confirmed in Chrome, removes only that tenant, and returns to first-run setup', async () => {

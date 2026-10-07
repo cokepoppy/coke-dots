@@ -61,6 +61,22 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     this.owner = 'agent';
   }
 
+  async fillWebsiteSignIn(value: string, identifier: string, password: string) {
+    this.assertOpen();
+    const url = await validatePublicHttpsUrl(value);
+    const parsed = new URL(url);
+    if (parsed.search || parsed.hash) throw new Error('登录地址包含查询参数或锚点，请接管电脑并手动登录');
+    if (!identifier.trim() || identifier.length > 320 || /[\u0000-\u001f\u007f]/.test(identifier)) throw new Error('账号或邮箱格式无效');
+    if (!password || password.length > 4096 || password.includes('\0')) throw new Error('密码格式无效');
+    const response = await this.request('/v1/commands/private-sign-in', {
+      method: 'POST', body: JSON.stringify({ url, identifier: identifier.trim(), password }),
+    });
+    const result = await response.json().catch(() => ({})) as { error?: string };
+    if (!response.ok) throw new Error(result.error || `Linux 云电脑私密登录失败（HTTP ${response.status}）`);
+    this.owner = 'user';
+    return this.state();
+  }
+
   async navigate(url: string) {
     this.assertUserControl();
     const parsed = new URL(url);
@@ -147,10 +163,10 @@ export class LinuxDesktopComputer implements ComputerRuntime {
         body: JSON.stringify({ engine: input.engine, taskId: input.taskId, executionId: input.executionId || input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
         signal: AbortSignal.any([AbortSignal.timeout(15 * 60_000), requestAbort.signal]),
       });
-      const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] };
+      const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; websiteSignInRequest?: { url: string; reason: string } };
       if (!response.ok) throw new Error(result.error || `Linux Agent 运行时返回 HTTP ${response.status}`);
       if (typeof result.status !== 'string' || typeof result.message !== 'string') throw new Error('Linux Agent 运行时返回了无效结果');
-      return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }) };
+      return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }), ...(result.websiteSignInRequest === undefined ? {} : { websiteSignInRequest: result.websiteSignInRequest }) };
     } finally {
       input.signal?.removeEventListener('abort', onAbort);
     }

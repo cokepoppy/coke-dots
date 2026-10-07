@@ -1,4 +1,5 @@
 export function isE2EBrowserResearchFixture(value: string, environment?: NodeJS.ProcessEnv): boolean;
+export function isE2EWebsiteSignInFixture(value: string, environment?: NodeJS.ProcessEnv): boolean;
 export function validatePublicHttpsUrl(value: string, options?: {
   environment?: NodeJS.ProcessEnv;
   signal?: AbortSignal;

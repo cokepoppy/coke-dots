@@ -46,6 +46,7 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
   const commands: Record<string, unknown>[] = [];
   let connectionCount = 0;
   let researchRequests = 0;
+  const privateSignInRequests: Record<string, unknown>[] = [];
   const png = Buffer.from('mock-desktop-frame');
   const agentInput: Record<string, unknown>[] = [];
   const server = createServer(async (req, res) => {
@@ -60,6 +61,11 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     }
     if (req.url === '/v1/commands' && req.method === 'POST') {
       commands.push(value); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ready: true })); return;
+    }
+    if (req.url === '/v1/commands/private-sign-in' && req.method === 'POST') {
+      privateSignInRequests.push(value); owner = 'user';
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ready: true, owner, url: value.url, title: 'Demo service sign in' })); return;
     }
     if (req.url === '/v1/state') {
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ready: true, owner, url: 'https://example.test/', title: 'Example' })); return;
@@ -89,10 +95,11 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
   const connector: DesktopConnector = {
     async connect() { connectionCount += 1; return { workerUrl: new URL(`http://127.0.0.1:${workerAddress.port}/`), novncUrl: new URL(`http://127.0.0.1:${workerAddress.port}/`), agentUrl: new URL(`http://127.0.0.1:${agentAddress.port}/`), workerToken: 'scoped-worker-token', agentToken: 'scoped-agent-token' }; },
   };
-  const priorEnvironment = { nodeEnv: process.env.NODE_ENV, auth: process.env.DOTS_E2E_AUTH, fixture: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL };
+  const priorEnvironment = { nodeEnv: process.env.NODE_ENV, auth: process.env.DOTS_E2E_AUTH, fixture: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL, signInFixture: process.env.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL };
   process.env.NODE_ENV = 'test';
   process.env.DOTS_E2E_AUTH = '1';
   process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL = 'https://research-fixture.dots.test/launch';
+  process.env.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL = 'https://login-fixture.dots.test/sign-in';
   try {
     const computer = new LinuxDesktopComputer('tenant-alpha', connector);
     const [firstState, concurrentState] = await Promise.all([computer.state(), computer.state()]);
@@ -103,6 +110,11 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     assert.equal(opened.backend, 'linux-desktop');
     assert.equal(opened.ready, true);
     await assert.rejects(computer.click(10, 10), /先选择“接管”/);
+    await assert.rejects(computer.fillWebsiteSignIn('http://login-fixture.dots.test/sign-in', 'alpha', 'not-sent'), /标准 HTTPS 网址/);
+    const signedInState = await computer.fillWebsiteSignIn('https://login-fixture.dots.test/sign-in', 'alpha@example.test', 'private-sign-in-test-secret');
+    assert.equal(signedInState.owner, 'user');
+    assert.deepEqual(privateSignInRequests, [{ url: 'https://login-fixture.dots.test/sign-in', identifier: 'alpha@example.test', password: 'private-sign-in-test-secret' }]);
+    await computer.returnControl();
     await computer.takeOver();
     await computer.click(250, 400);
     await computer.type('human input');
@@ -131,6 +143,7 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     if (priorEnvironment.nodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorEnvironment.nodeEnv;
     if (priorEnvironment.auth === undefined) delete process.env.DOTS_E2E_AUTH; else process.env.DOTS_E2E_AUTH = priorEnvironment.auth;
     if (priorEnvironment.fixture === undefined) delete process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL; else process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL = priorEnvironment.fixture;
+    if (priorEnvironment.signInFixture === undefined) delete process.env.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL; else process.env.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL = priorEnvironment.signInFixture;
     await new Promise<void>(resolve => server.close(() => resolve()));
     await new Promise<void>(resolve => agentServer.close(() => resolve()));
   }
