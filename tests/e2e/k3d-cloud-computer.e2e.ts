@@ -257,25 +257,55 @@ try {
   assert(orangeTakeoverPixels > 3000, `The source video shows a visible orange screen frame during user takeover; screenshot contained ${orangeTakeoverPixels} matching pixels`);
   console.log('Live noVNC canvas connected at 1440x1080');
 
-  const actions = await page.evaluate(async () => {
-    const results: { status: number; url?: string }[] = [];
-    for (const [path, body] of [
-      ['/api/computer/navigate', { url: 'http://127.0.0.1:8082/healthz' }],
-      ['/api/computer/click', { x: 330, y: 280 }],
-      ['/api/computer/type', { text: 'cloud computer E2E' }],
-    ] as const) {
-      const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      const result = await response.json() as { url?: string };
-      results.push({ status: response.status, ...(result.url ? { url: result.url } : {}) });
-    }
-    return results;
+  const canvasBounds = await vncCanvas.boundingBox();
+  assert(canvasBounds, 'The live noVNC canvas must have a visible pointer target');
+  const omniboxPosition = { x: canvasBounds.width * (740 / 1440), y: canvasBounds.height * (160 / 1080) };
+  // The reference desktop shows Chromium's address bar at x=740, y=160 in its
+  // 1440x1080 screen. Click and type through noVNC. The final Return is sent
+  // through the runtime input API because Playwright's synthetic Enter leaves
+  // this Chromium omnibox in edit mode in the headless K3D test.
+  await vncCanvas.click({ position: omniboxPosition });
+  await vncCanvas.press('Control+L');
+  await vncCanvas.pressSequentially('http://127.0.0.1:8082/healthz', { delay: 15 });
+  await vncCanvas.click({ position: omniboxPosition });
+  const submit = await page.evaluate(async () => {
+    const response = await fetch('/api/computer/press', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: 'Enter' }) });
+    return { status: response.status, body: await response.json() };
   });
-  assert.deepEqual(actions.map(action => action.status), [200, 200, 200]);
-  assert.equal(actions[0].url, 'http://127.0.0.1:8082/healthz');
+  assert.equal(submit.status, 200, `The tenant desktop must accept an Enter event on the focused address bar: ${JSON.stringify(submit.body)}`);
+  const expectedRemoteUrl = 'http://127.0.0.1:8082/healthz';
+  let changedPagePixels = 0;
+  let browserState: { url?: string; title?: string } = {};
+  const readRemoteNavigation = async () => {
+    browserState = await page!.evaluate(async () => await (await fetch('/api/computer')).json()) as { url?: string; title?: string };
+    const remoteScreenshot = Buffer.from(await page!.evaluate(async () => Array.from(new Uint8Array(await (await fetch('/api/computer/screenshot')).arrayBuffer()))));
+    const afterNavigation = PNG.sync.read(remoteScreenshot);
+    changedPagePixels = 0;
+    for (let y = 190; y < 970; y += 2) for (let x = 100; x < 1340; x += 2) {
+      const offset = (frame.width * y + x) * 4;
+      if (Math.abs(frame.data[offset] - afterNavigation.data[offset]) + Math.abs(frame.data[offset + 1] - afterNavigation.data[offset + 1]) + Math.abs(frame.data[offset + 2] - afterNavigation.data[offset + 2]) > 48) changedPagePixels++;
+    }
+    return remoteScreenshot;
+  };
+  const waitForVisibleNavigation = async (durationMs: number) => {
+    const deadline = Date.now() + durationMs;
+    while (Date.now() < deadline) {
+      const remoteScreenshot = await readRemoteNavigation();
+      if (browserState.url === expectedRemoteUrl && changedPagePixels > 2_000) {
+        await writeFile(join(artifacts, '03-remote-browser-navigation.png'), remoteScreenshot);
+        return true;
+      }
+      await new Promise(resolvePromise => setTimeout(resolvePromise, 500));
+    }
+    return false;
+  };
+  const visibleNavigation = await waitForVisibleNavigation(20_000);
+  assert.equal(browserState.url, expectedRemoteUrl, 'The remote Chromium address bar must navigate to the tenant-local health page');
+  assert(visibleNavigation, `The remote browser page must visibly change after submission; only ${changedPagePixels} sampled page pixels changed`);
   await page.getByRole('button', { name: 'Return control' }).click();
   await page.getByRole('status').filter({ hasText: 'Roger has control' }).waitFor({ state: 'visible' });
-  await page.screenshot({ path: join(artifacts, '03-agent-control-restored.png'), fullPage: true });
-  console.log('Real cloud-browser navigate/click/type and control hand-back passed');
+  await page.screenshot({ path: join(artifacts, '04-agent-control-restored.png'), fullPage: true });
+  console.log('Real noVNC address-bar click/text entry, runtime Enter submission, visible navigation, and control hand-back passed');
 
   command(['kubectl', '-n', namespace, 'delete', 'pod', desktopPod, '--wait=true', '--timeout=90s']);
   command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', 'pod', '-l', 'app=desktop', '--timeout=120s']);
@@ -283,7 +313,7 @@ try {
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The tenant workspace artifact must survive a desktop Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'browser navigate/click/type', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
