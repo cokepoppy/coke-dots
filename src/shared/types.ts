@@ -20,6 +20,7 @@ export interface Task {
   tenantId: string;
   parentTaskId: string | null;
   engine: Engine;
+  executionMode: 'standard' | 'read-only';
   agentSessionId: string | null;
   title: string;
   instruction: string;
@@ -81,6 +82,7 @@ export interface Watch {
   nextCheckAt: string | null;
   lastCheckedAt: string | null;
   lastStatus: string | null;
+  lastTaskId: string | null;
   error: string | null;
 }
 

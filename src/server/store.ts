@@ -59,7 +59,8 @@ export class Store {
         status TEXT NOT NULL, priority INTEGER NOT NULL, next_run_at TEXT,
         schedule_minutes INTEGER, result TEXT, error TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT, parent_task_id TEXT
+        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT, parent_task_id TEXT,
+        execution_mode TEXT NOT NULL DEFAULT 'standard', task_context TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'legacy', task_id TEXT,
@@ -78,7 +79,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS watches (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'legacy', url TEXT NOT NULL, interval_minutes INTEGER NOT NULL,
         status TEXT NOT NULL, next_check_at TEXT, last_checked_at TEXT,
-        last_hash TEXT, last_status TEXT, error TEXT
+        last_hash TEXT, last_status TEXT, error TEXT, last_content TEXT, last_task_id TEXT
       );
       CREATE TABLE IF NOT EXISTS tenant_profiles (
         tenant_id TEXT PRIMARY KEY REFERENCES tenants(id), name TEXT NOT NULL, shape TEXT NOT NULL, color TEXT NOT NULL,
@@ -136,6 +137,10 @@ export class Store {
     this.addColumnIfMissing('tasks', 'agent_session_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
     this.addColumnIfMissing('tasks', 'parent_task_id', 'TEXT');
+    this.addColumnIfMissing('tasks', 'execution_mode', "TEXT NOT NULL DEFAULT 'standard'");
+    this.addColumnIfMissing('tasks', 'task_context', "TEXT NOT NULL DEFAULT ''");
+    this.addColumnIfMissing('watches', 'last_content', 'TEXT');
+    this.addColumnIfMissing('watches', 'last_task_id', 'TEXT');
     this.addColumnIfMissing('page_action_approvals', 'decided_by', 'TEXT REFERENCES users(id)');
     this.addColumnIfMissing('tenant_profiles', 'eyes', "TEXT NOT NULL DEFAULT 'classic'");
     this.addColumnIfMissing('tenant_profiles', 'glasses', "TEXT NOT NULL DEFAULT 'none'");
@@ -671,7 +676,7 @@ export class Store {
     return this.tenantPage(tenantId, id)!;
   }
 
-  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], uploaderId = ''): Task {
+  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], uploaderId = '', executionMode: Task['executionMode'] = 'standard'): Task {
     const now = new Date().toISOString();
     const id = randomUUID();
     const title = instruction.trim().split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
@@ -688,8 +693,8 @@ export class Store {
         const total = this.db.prepare(`SELECT COALESCE(SUM(size),0) AS total FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).get(tenantId, uploaderId, ...attachmentIds) as { total: number };
         if (total.total > 512 * 1024) throw new Error('附件总大小不能超过 512 KB');
       }
-      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null);
+      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,execution_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null, executionMode);
       if (attachmentIds.length) {
         const placeholders = attachmentIds.map(() => '?').join(',');
         this.db.prepare(`UPDATE task_attachments SET task_id=? WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`)
@@ -940,8 +945,8 @@ export class Store {
 
   createWatch(url: string, intervalMinutes: number, tenantId = 'legacy'): Watch {
     const id = randomUUID();
-    this.db.prepare('INSERT INTO watches(id,tenant_id,url,interval_minutes,status,next_check_at,last_checked_at,last_hash,last_status,error) VALUES (?,?,?,?,?,?,?,?,?,?)')
-      .run(id, tenantId, url, intervalMinutes, 'active', new Date().toISOString(), null, null, null, null);
+    this.db.prepare('INSERT INTO watches(id,tenant_id,url,interval_minutes,status,next_check_at,last_checked_at,last_hash,last_status,error,last_content,last_task_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, tenantId, url, intervalMinutes, 'active', new Date().toISOString(), null, null, null, null, null, null);
     this.addEntry('system', `开始只读检查：${url}`, null, tenantId);
     return this.getWatch(id, tenantId)!;
   }
@@ -969,6 +974,50 @@ export class Store {
     const row = this.db.prepare('SELECT last_hash FROM watches WHERE tenant_id=? AND id=?').get(tenantId, id) as { last_hash: string | null } | undefined;
     return row?.last_hash || null;
   }
+
+  recordWatchResponse(id: string, tenantId: string, digest: string, content: string, checkedAt: string, nextCheckAt: string): { outcome: 'ignored' | 'baseline' | 'unchanged' | 'changed'; task: Task | null } {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const watch = this.db.prepare('SELECT url,status,last_hash,last_content FROM watches WHERE tenant_id=? AND id=?').get(tenantId, id) as { url: string; status: Watch['status']; last_hash: string | null; last_content: string | null } | undefined;
+      if (!watch || watch.status !== 'active') {
+        this.db.exec('COMMIT');
+        return { outcome: 'ignored', task: null };
+      }
+      if (watch.last_hash === digest) {
+        this.db.prepare("UPDATE watches SET last_checked_at=?,next_check_at=?,last_status='没有变化',error=NULL WHERE tenant_id=? AND id=?")
+          .run(checkedAt, nextCheckAt, tenantId, id);
+        this.db.exec('COMMIT');
+        return { outcome: 'unchanged', task: null };
+      }
+      if (!watch.last_hash) {
+        this.db.prepare("UPDATE watches SET last_hash=?,last_content=?,last_checked_at=?,next_check_at=?,last_status='已建立基线',error=NULL WHERE tenant_id=? AND id=?")
+          .run(digest, content, checkedAt, nextCheckAt, tenantId, id);
+        this.db.exec('COMMIT');
+        return { outcome: 'baseline', task: null };
+      }
+
+      const sourceHost = new URL(watch.url).hostname;
+      const instruction = `Review page update: ${sourceHost}. Compare the saved page snapshots and report substantive changes only. This is a read-only review; do not modify pages, files, accounts, or other sources.`;
+      const context = JSON.stringify({ sourceUrl: watch.url, previousText: watch.last_content || '', currentText: content });
+      const taskId = randomUUID();
+      const title = instruction.split(/[.!?。！？\n]/)[0].slice(0, 64) || 'Page update review';
+      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,execution_mode,task_context) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(taskId, tenantId, title, instruction, 'queued', 0, checkedAt, null, null, null, checkedAt, checkedAt, 'model', null, null, 'read-only', context);
+      this.db.prepare("INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?, '[]')")
+        .run(tenantId, taskId, 'user', `A monitored page changed: ${watch.url}. Compare its previous and current text and report what matters.`, checkedAt);
+      this.db.prepare("INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?, '[]')")
+        .run(tenantId, taskId, 'system', 'A read-only page-change review was added to the work queue.', checkedAt);
+      this.db.prepare("UPDATE watches SET last_hash=?,last_content=?,last_checked_at=?,next_check_at=?,last_status='内容有变化，已启动只读分析',last_task_id=?,error=NULL WHERE tenant_id=? AND id=?")
+        .run(digest, content, checkedAt, nextCheckAt, taskId, tenantId, id);
+      this.db.exec('COMMIT');
+      return { outcome: 'changed', task: this.getTask(taskId, tenantId)! };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  taskContext(id: string, tenantId = 'legacy'): string {
+    const row = this.db.prepare('SELECT task_context FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, id) as { task_context: string } | undefined;
+    return row?.task_context || '';
+  }
 }
 
 function toTask(r: Record<string, unknown>): Task {
@@ -980,6 +1029,7 @@ function toTask(r: Record<string, unknown>): Task {
   scheduleSpec = scheduleForTask(scheduleSpec, scheduleMinutes);
   return {
     id: String(r.id), tenantId: String(r.tenant_id), parentTaskId: r.parent_task_id == null ? null : String(r.parent_task_id), title: String(r.title), instruction: String(r.instruction),
+    executionMode: r.execution_mode === 'read-only' ? 'read-only' : 'standard',
     engine: r.engine as Engine, agentSessionId: r.agent_session_id == null ? null : String(r.agent_session_id),
     status: r.status as TaskStatus, priority: Number(r.priority),
     nextRunAt: r.next_run_at == null ? null : String(r.next_run_at),
@@ -999,7 +1049,8 @@ function toWatch(r: Record<string, unknown>): Watch {
     id: String(r.id), tenantId: String(r.tenant_id), url: String(r.url), intervalMinutes: Number(r.interval_minutes),
     status: r.status as Watch['status'], nextCheckAt: r.next_check_at == null ? null : String(r.next_check_at),
     lastCheckedAt: r.last_checked_at == null ? null : String(r.last_checked_at),
-    lastStatus: r.last_status == null ? null : String(r.last_status), error: r.error == null ? null : String(r.error),
+    lastStatus: r.last_status == null ? null : String(r.last_status), lastTaskId: r.last_task_id == null ? null : String(r.last_task_id),
+    error: r.error == null ? null : String(r.error),
   };
 }
 

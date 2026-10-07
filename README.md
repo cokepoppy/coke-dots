@@ -24,6 +24,8 @@ Agent execution also includes a tenant-scoped Scratchpad page action when enable
 
 Activity can stop an individual one-off task, including a delegated child. Stop is terminal, interrupts supported active agent calls, and cancels that task's pending local page approval without writing the proposed page. Stopped tasks cannot be resumed or redirected. Stopping a parent stops its active children; stopping one child leaves its parent waiting for the remaining children.
 
+Scheduled also supports explicit HTTPS page monitors. The first successful check saves a text baseline; later content changes create a tenant-scoped read-only review task and a desktop notification when enabled. Page text is passed to the agent as untrusted source data. These reviews cannot write Scratchpad pages, delegate, schedule follow-up runs, modify files or accounts, or send messages. The Scheduled detail links to the latest review. Current extraction removes scripts, styles, comments and document metadata before comparing snapshots; this does not claim to reproduce a site's fully rendered visual state.
+
 ## Agent engines
 
 Each task records its selected engine and its own workspace. The adapter contract returns a durable state (`done`, `waiting`, `scheduled`, or `delegating`), message, optional next check time, optional native session ID and up to three bounded child instructions. A child can choose one of the engines currently available to its tenant, or inherit its parent's engine. The UI shows available engines and keeps each task's choice on retries and restarts.

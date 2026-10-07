@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { Task } from '../shared/types.ts';
 import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts';
 import { Store } from './store.ts';
-import { adapters, formatAgentPrompt, parseDecision, type AgentRequest, type Engine } from './adapters.ts';
+import { adapters, formatAgentPrompt, parseDecision, agentDecisionOptions, type AgentRequest, type Engine } from './adapters.ts';
 import type { ComputerRuntime } from './computer.ts';
 import { loadModelSettings } from './model-settings.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
@@ -90,7 +90,9 @@ export class Worker {
         tenantId: task.tenantId, prompt: `${task.instruction}${attachmentContext}`, memories: this.store.tenantMemories(task.tenantId).map(memory => memory.note),
         pages: this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
         actionRule: this.store.tenantActionRule(task.tenantId),
-        allowDelegation: !task.parentTaskId && children.length === 0,
+        allowDelegation: task.executionMode !== 'read-only' && !task.parentTaskId && children.length === 0,
+        executionMode: task.executionMode,
+        context: this.store.taskContext(task.id, task.tenantId),
         availableEngines,
         delegatedResults: children.map(child => ({ title: child.title, status: child.status, result: child.result, error: child.error })),
         priorResult: task.result, sessionId: task.agentSessionId,
@@ -104,7 +106,7 @@ export class Worker {
         },
       };
       const decision = useDesktopRuntime
-        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines })
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, signal })), task.agentSessionId || undefined, agentDecisionOptions(input))
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;

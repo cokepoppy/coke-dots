@@ -73,7 +73,21 @@ const sessionHeartbeat = setInterval(() => {
 }, 30_000);
 
 const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor);
-const watchRunner = new WatchRunner(store, publish);
+const watchRunner = new WatchRunner(store, publish, e2eWatchFetcher());
+
+function e2eWatchFetcher(): typeof fetch {
+  const configured = process.env.DOTS_E2E_WATCH_PROVIDER_URL?.trim();
+  if (process.env.NODE_ENV !== 'test' || process.env.DOTS_E2E_AUTH !== '1' || !configured) return fetch;
+  try {
+    const provider = new URL(configured);
+    if (provider.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(provider.hostname) || provider.username || provider.password || provider.pathname !== '/' || provider.search || provider.hash) return fetch;
+    return (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set('x-dots-e2e-source-url', String(input));
+      return fetch(provider, { ...init, headers });
+    };
+  } catch { return fetch; }
+}
 
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');

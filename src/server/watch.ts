@@ -9,6 +9,34 @@ export function validateWatchUrl(input: string): string {
   return url.toString();
 }
 
+export function extractVisibleText(source: string, contentType: string): string {
+  let text = source;
+  if (contentType.includes('text/html')) {
+    text = text
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<(script|style|noscript|template|svg|head)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+      .replace(/<(br|hr)\b[^>]*>/gi, '\n')
+      .replace(/<\/(p|div|li|tr|h[1-6]|section|article|main|header|footer|blockquote)\s*>/gi, '\n')
+      .replace(/<[^>]*>/g, ' ');
+  }
+  return text
+    .replace(/&nbsp;|&#160;|&#xA0;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;|&#39;/gi, "'")
+    .replace(/&#(?:x([\da-f]+)|(\d+));?/gi, (entity, hexadecimal: string | undefined, decimal: string | undefined) => {
+      const codePoint = Number.parseInt(hexadecimal || decimal || '', hexadecimal ? 16 : 10);
+      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? String.fromCodePoint(codePoint)
+        : ' ';
+    })
+    .replace(/[\t\r\n\f ]+/g, ' ')
+    .trim()
+    .slice(0, 12_000);
+}
+
 export class WatchRunner {
   private active = new Map<string, { tenantId: string; controller: AbortController }>();
   private timer: NodeJS.Timeout | null = null;
@@ -46,7 +74,8 @@ export class WatchRunner {
       if (!contentType.includes('text/html') && !contentType.includes('text/plain')) throw new Error('页面不是 HTML 或纯文本');
       const reader = response.body?.getReader();
       if (!reader) throw new Error('没有可读取的页面内容');
-      const hash = createHash('sha256');
+      const decoder = new TextDecoder();
+      let source = '';
       let size = 0;
       try {
         while (true) {
@@ -54,17 +83,18 @@ export class WatchRunner {
           if (done) break;
           size += value.length;
           if (size > 1_000_000) throw new Error('页面超过 1 MB 检查上限');
-          hash.update(value);
+          source += decoder.decode(value, { stream: true });
         }
       } finally { reader.releaseLock(); }
-      const digest = hash.digest('hex');
-      const previous = this.store.watchHash(watch.id, watch.tenantId);
-      if (previous && previous !== digest) {
+      source += decoder.decode();
+      const content = extractVisibleText(source, contentType);
+      const digest = createHash('sha256').update(content).digest('hex');
+      if (signal.aborted) { this.onChange(); return; }
+      const result = this.store.recordWatchResponse(watch.id, watch.tenantId, digest, content, new Date().toISOString(), nextCheckAt);
+      if (result.outcome === 'changed') {
         this.store.addEntry('dot', `检测到页面内容变化：${watch.url}`, null, watch.tenantId);
-        this.notifyIfEnabled(watch.tenantId, '你关注的网页有新变化。');
+        this.notifyIfEnabled(watch.tenantId, '你关注的网页有变化，已启动只读分析。');
       }
-      const current = this.store.getWatch(watch.id, watch.tenantId);
-      if (current?.status === 'active') this.store.updateWatch(watch.id, { lastHash: digest, lastCheckedAt: new Date().toISOString(), lastStatus: previous && previous !== digest ? '内容有变化' : previous ? '没有变化' : '已建立基线', error: null }, watch.tenantId);
       this.onChange();
     } catch (error) {
       if (signal.aborted) { this.onChange(); return; }

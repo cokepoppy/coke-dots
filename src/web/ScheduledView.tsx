@@ -46,6 +46,9 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
     return normalized ? items.filter(item => item.searchable.toLocaleLowerCase().includes(normalized)) : items;
   }, [items, query]);
   const selected = filtered.find(item => item.key === selectedKey) || null;
+  const selectedWatchReview = selected?.kind === 'watch' && selected.watch.lastTaskId
+    ? tasks.find(task => task.id === selected.watch.lastTaskId) || null
+    : null;
 
   useEffect(() => {
     if (!selected || !filtered.some(item => item.key === selectedKey)) setSelectedKey(filtered[0]?.key || null);
@@ -105,6 +108,7 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
       {taskOpenError && <div className="scheduled-chat-open-error" role="alert" data-testid="scheduled-chat-open-error">
         <p>Couldn't open this chat. Try again.</p>
         {selected?.kind === 'task' && <button type="button" onClick={() => void openTask(selected.task)} disabled={taskOpenBusy}>Try again</button>}
+        {selectedWatchReview && <button type="button" onClick={() => void openTask(selectedWatchReview)} disabled={taskOpenBusy}>Try again</button>}
       </div>}
       {showWatchForm && <form className="scheduled-watch-form" onSubmit={event => { event.preventDefault(); void submitWatch(); }}>
         <div className="scheduled-watch-form-heading"><strong>Monitor a page</strong><button type="button" aria-label="Close monitor form" onClick={() => { setShowWatchForm(false); setWatchError(''); }}>×</button></div>
@@ -132,8 +136,12 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
         <h2>{selected.watch.url}</h2>
         <p className="scheduled-instruction">Check this page for changes and let you know when its content changes.</p>
         <div className="scheduled-detail-meta"><span>Every {selected.watch.intervalMinutes} minutes</span><span>Last checked: {selected.watch.lastCheckedAt ? new Date(selected.watch.lastCheckedAt).toLocaleString() : 'Not checked yet'}</span></div>
+        <p className="scheduled-watch-last-status" role="status" data-testid="scheduled-watch-status">{selected.watch.lastStatus || 'Waiting for the first check'}</p>
         {selected.watch.error && <p className="scheduled-detail-error" role="alert">{selected.watch.error}</p>}
-        <div className="scheduled-detail-actions"><button className="scheduled-primary" onClick={() => onWatchAction(selected.watch, selected.watch.status === 'active' ? 'pause' : 'resume')}>{selected.watch.status === 'active' ? 'Pause monitor' : 'Resume monitor'}</button></div>
+        <div className="scheduled-detail-actions">
+          {selectedWatchReview && <button data-testid="watch-open-review" onClick={() => void openTask(selectedWatchReview)} disabled={taskOpenBusy}>Open latest review</button>}
+          <button className="scheduled-primary" onClick={() => onWatchAction(selected.watch, selected.watch.status === 'active' ? 'pause' : 'resume')}>{selected.watch.status === 'active' ? 'Pause monitor' : 'Resume monitor'}</button>
+        </div>
       </article>}
       {!taskOpenError && !selected && <div className="scheduled-empty-detail"><div className="scheduled-empty-icon" aria-hidden="true">◷</div><h2>{items.length ? 'No matching tasks' : 'No scheduled tasks yet'}</h2><p>{items.length ? 'Try a different search.' : 'Create a recurring task or monitor a page to see it here.'}</p><button className="scheduled-primary" onClick={onNewTask}>＋ New task</button></div>}
     </div>
