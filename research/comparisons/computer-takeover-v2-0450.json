@@ -1,0 +1,9 @@
+{
+  "id": "computer-takeover-v2-0450-app-stage",
+  "reference": "../frames/john-aspinall-v2-0450-user-control-replay.png",
+  "referenceRect": { "x": 310, "y": 553, "width": 1060, "height": 795 },
+  "implementationRect": { "x": 404, "y": 170, "width": 900, "height": 675 },
+  "output": "../../artifacts/reference-comparison/computer-takeover-v2-0450",
+  "threshold": 32,
+  "note": "Compares the app-side user-control desktop stage, including its orange outline, to the 04:50 John Aspinall YouTube frame. Playwright separately checks the centered Return control row and the CSS outline on the stage. The source is compressed video and does not establish absolute CSS-pixel parity."
+}

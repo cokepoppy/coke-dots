@@ -2030,6 +2030,11 @@ try {
     await alphaPage!.getByRole('button', { name: 'Take over' }).click();
     await alphaPage!.getByRole('status').filter({ hasText: 'You have control' }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.computer-controlbar.is-user-control').count(), 1, 'Take over must switch to the observed user-control ribbon');
+    const takeoverOutline = await alphaPage!.locator('.computer-stage').evaluate(element => {
+      const style = getComputedStyle(element);
+      return { color: style.outlineColor, style: style.outlineStyle, width: style.outlineWidth, offset: style.outlineOffset };
+    });
+    assert.deepEqual(takeoverOutline, { color: 'rgb(236, 139, 63)', style: 'solid', width: '4px', offset: '-4px' }, 'Take over must outline the complete desktop stage in the video-observed orange');
     await screenshot(alphaPage!, '14-computer-takeover');
   });
 

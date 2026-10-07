@@ -285,6 +285,11 @@ try {
   await page.getByRole('button', { name: 'Take over' }).click();
   const vncFrame = page.getByTestId('linux-desktop-view');
   await vncFrame.waitFor({ state: 'visible' });
+  const takeoverOutline = await page.getByTestId('linux-desktop-stage').evaluate(element => {
+    const style = getComputedStyle(element);
+    return { color: style.outlineColor, style: style.outlineStyle, width: style.outlineWidth, offset: style.outlineOffset };
+  });
+  assert.deepEqual(takeoverOutline, { color: 'rgb(236, 139, 63)', style: 'solid', width: '4px', offset: '-4px' }, 'Take over must outline the complete cloud desktop stage');
   const viewerToolbarDisplay = await page.frameLocator('[data-testid="linux-desktop-view"]').locator('#top_bar').evaluate(element => getComputedStyle(element).display);
   assert.equal(viewerToolbarDisplay, 'none', 'The source video shows the desktop canvas without the noVNC example toolbar');
   const viewerStyle = await page.frameLocator('[data-testid="linux-desktop-view"]').locator('style[data-coke-dots-viewer]').textContent();

@@ -269,8 +269,11 @@ try {
   const returnControl = await page.getByRole('button', { name: 'Return control' }).boundingBox();
   const takenOverStage = await page.getByTestId('linux-desktop-stage').boundingBox();
   assert(userControl && returnControl && takenOverStage, 'The live takeover row must remain visible with the desktop canvas');
-  const takeoverOutline = await page.getByTestId('linux-desktop-view').evaluate(element => ({ color: getComputedStyle(element).outlineColor, width: getComputedStyle(element).outlineWidth }));
-  assert.deepEqual(takeoverOutline, { color: 'rgb(236, 139, 63)', width: '4px' }, 'The user-owned VNC canvas must carry the video-observed orange outline');
+  const takeoverOutline = await page.getByTestId('linux-desktop-stage').evaluate(element => {
+    const style = getComputedStyle(element);
+    return { color: style.outlineColor, style: style.outlineStyle, width: style.outlineWidth, offset: style.outlineOffset };
+  });
+  assert.deepEqual(takeoverOutline, { color: 'rgb(236, 139, 63)', style: 'solid', width: '4px', offset: '-4px' }, 'The complete user-owned desktop stage must carry the video-observed orange outline');
   const userGroupCenter = (userControl.x + returnControl.x + returnControl.width) / 2;
   assert(Math.abs(userGroupCenter - (takenOverStage.x + takenOverStage.width / 2)) < 4, 'The takeover/return controls must stay centered when ownership changes');
   const vncCanvas = page.frameLocator('[data-testid="linux-desktop-view"]').locator('canvas').first();
