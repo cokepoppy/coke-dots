@@ -1025,11 +1025,15 @@ try {
 
   const alphaPrivateTask = 'E2E alpha private goal — inventory the project risks';
   await recordStep('Create a persistent task and inspect its visible execution state', async () => {
+    const promptCount = mockModelPrompts.length;
     await createTask(alphaPage!, alphaPrivateTask);
     await alphaPage!.locator('.timeline .pill').waitFor({ state: 'visible', timeout: 10_000 });
     await alphaPage!.waitForFunction(() => ['失败', '已完成'].includes(document.querySelector('.timeline .pill')?.textContent?.trim() || ''), null, { timeout: 15_000 });
     const status = await alphaPage!.locator('.timeline .pill').innerText();
     assert.equal(status, '失败', 'With model credentials disabled, the task must fail visibly instead of claiming completion');
+    const configurationError = alphaPage!.locator('.timeline .message.system p').filter({ hasText: '当前工作区缺少API 密钥和模型名称' });
+    await configurationError.waitFor({ state: 'visible' });
+    assert.equal(mockModelPrompts.length, promptCount, 'A preflight configuration failure must happen before a model request is sent');
     const contextPanel = alphaPage!.getByTestId('dot-context-panel');
     await contextPanel.waitFor({ state: 'visible' });
     await contextPanel.getByRole('region', { name: 'Computers' }).waitFor({ state: 'visible' });
@@ -1107,7 +1111,7 @@ try {
     await detail.getByText('Every 60 minutes', { exact: true }).waitFor({ state: 'visible' });
     assert.ok((await detail.innerText()).includes(scheduledTask));
     await detail.getByText('Failed', { exact: true }).waitFor({ state: 'visible' });
-    assert.match(await detail.innerText(), /内核尚未配置或安装/);
+    assert.match(await detail.innerText(), /模型 API 内核不可用，任务没有执行。当前工作区缺少API 密钥和模型名称/);
     assert.match(await detail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
     const search = alphaPage!.getByLabel('Search scheduled tasks');
     await search.fill('no matching schedule');

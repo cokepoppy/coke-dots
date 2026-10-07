@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.ts';
-import { effectiveModelConfig, loadModelSettings, publicModelSettings, setModelMetadata } from '../src/server/model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, missingModelSettings, publicModelSettings, setModelMetadata } from '../src/server/model-settings.ts';
 
 test('model endpoint and name persist without a secret in SQLite', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-settings-'));
@@ -45,6 +46,24 @@ test('the shared E2E model fixture can serve disposable test tenants without wri
     assert.equal(effectiveModelConfig(tenantId), null, 'The test-only model must not be available without the E2E auth fixture');
   } finally {
     for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2eAuth], ['DOTS_MODEL_BASE_URL', old.baseUrl], ['DOTS_MODEL', old.model], ['DOTS_MODEL_API_KEY', old.apiKey]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('missing model setup reports only which tenant fields need configuration', () => {
+  const tenantId = `missing-model-config-${randomUUID()}`;
+  const envKeys = ['DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+  for (const key of envKeys) delete process.env[key];
+  try {
+    loadModelSettings(null, null, tenantId);
+    assert.deepEqual(missingModelSettings(tenantId), ['API 密钥', '模型名称']);
+    setModelMetadata('https://api.example.test/v1', 'example-model', tenantId);
+    assert.deepEqual(missingModelSettings(tenantId), ['API 密钥']);
+    assert.deepEqual(publicModelSettings(tenantId), { baseUrl: 'https://api.example.test/v1', model: 'example-model', hasKey: false }, 'Public settings should expose key presence without exposing a secret');
+  } finally {
+    for (const [key, value] of previousEnv) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }

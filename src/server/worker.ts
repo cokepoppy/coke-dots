@@ -5,7 +5,7 @@ import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts
 import { Store } from './store.ts';
 import { adapters, formatAgentPrompt, parseDecision, agentDecisionOptions, type AgentRequest, type Engine } from './adapters.ts';
 import type { ComputerRuntime } from './computer.ts';
-import { loadModelSettings } from './model-settings.ts';
+import { loadModelSettings, missingModelSettings } from './model-settings.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
 export class Worker {
@@ -67,8 +67,14 @@ export class Worker {
     const remoteEngines = parseRemoteEngines();
     const useDesktopRuntime = Boolean(computer?.runAgentTask && process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && remoteEngines.includes(task.engine));
     if (!useDesktopRuntime && !adapter?.available(task.tenantId)) {
-      this.store.updateTask(task.id, { status: 'failed', error: `${task.engine} 内核尚未配置或安装。` }, task.tenantId);
-      this.store.addEntry('system', `${task.engine} 内核不可用，任务没有执行。配置后可重试。`, task.id, task.tenantId);
+      const engineName = ({ model: '模型 API', claude: 'Claude Code', pi: 'Pi', dsh: 'DeepSeek Harness' } as const)[task.engine];
+      const missing = task.engine === 'model' ? missingModelSettings(task.tenantId) : [];
+      const reason = missing.length
+        ? `当前工作区缺少${missing.join('和')}。请在“模型 API”设置中补全配置后重试。`
+        : `${engineName} 尚未配置或安装，请检查工作区设置后重试。`;
+      const errorMessage = `${engineName} 内核不可用，任务没有执行。${reason}`;
+      this.store.updateTask(task.id, { status: 'failed', error: errorMessage }, task.tenantId);
+      this.store.addEntry('system', errorMessage, task.id, task.tenantId);
       this.notifyIfEnabled(task.tenantId, `“${task.title}”无法开始，需要检查工作区设置。`);
       this.onChange();
       return;

@@ -28,6 +28,17 @@ export function publicModelSettings(tenantId = 'legacy'): ModelSettings {
   return { ...value, hasKey: Boolean(readTenantKey(tenantId) || (mayUseEnvironmentModel(tenantId) && process.env.DOTS_MODEL_API_KEY?.trim())) };
 }
 
+export function missingModelSettings(tenantId = 'legacy') {
+  const useEnvironment = mayUseEnvironmentModel(tenantId);
+  const settings = stored.get(tenantId);
+  const hasKey = Boolean(readTenantKey(tenantId) || (useEnvironment && process.env.DOTS_MODEL_API_KEY?.trim()));
+  const hasModel = Boolean(settings?.model || (useEnvironment && process.env.DOTS_MODEL?.trim()));
+  return [
+    ...(!hasKey ? ['API 密钥'] : []),
+    ...(!hasModel ? ['模型名称'] : []),
+  ];
+}
+
 export function effectiveModelConfig(tenantId = 'legacy') {
   const useEnvironment = mayUseEnvironmentModel(tenantId);
   const apiKey = readTenantKey(tenantId) || (useEnvironment ? process.env.DOTS_MODEL_API_KEY?.trim() || null : null);
