@@ -1,4 +1,12 @@
-FROM node:22.23.1-trixie-slim
+FROM node:22.23.1-trixie-slim AS x11-helper-build
+
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends gcc libc6-dev libx11-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY deploy/linux-desktop/set-window-decorations.c /tmp/set-window-decorations.c
+RUN gcc -O2 -Wall -Wextra -o /usr/local/bin/dots-set-window-decorations /tmp/set-window-decorations.c -lX11
+
+FROM node:22.23.1-trixie-slim AS desktop
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -34,6 +42,7 @@ RUN apt-get -o Acquire::Retries=5 update \
 
 RUN install -d -o node -g node "$HOME" /workspace /opt/coke-dots /tmp/.X11-unix \
     && chmod 1777 /tmp/.X11-unix
+COPY --from=x11-helper-build /usr/local/bin/dots-set-window-decorations /usr/local/bin/dots-set-window-decorations
 
 WORKDIR /opt/coke-dots
 COPY package.json package-lock.json ./

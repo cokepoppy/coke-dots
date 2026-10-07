@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { PNG } from 'pngjs';
 import { desktopResourceIdentity } from '../../src/server/linux-desktop-computer.ts';
-import { compareRasters, resizeRaster } from '../../src/shared/reference-visual.ts';
+import { compareRasters, cropRaster, resizeRaster } from '../../src/shared/reference-visual.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const cluster = process.env.DOTS_K3D_CLUSTER || 'tp1121-sandbox-dev';
@@ -63,6 +63,8 @@ async function startApp(): Promise<ChildProcess> {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => { logs.push(String(chunk)); if (logs.length > 120) logs.splice(0, logs.length - 120); });
+  child.on('exit', (code, signal) => logs.push(`Coke Dots service exited: code=${code ?? 'null'} signal=${signal ?? 'null'}`));
+  child.on('error', error => logs.push(`Coke Dots service process error: ${error.message}`));
   const health = `http://127.0.0.1:${appPort}/api/health`;
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -169,10 +171,33 @@ try {
   await writeFile(join(artifacts, '01-api-screenshot.png'), screenshot);
   const frame = PNG.sync.read(screenshot);
   assert.deepEqual([frame.width, frame.height], [1440, 1080]);
+  const videoFramePath = resolve(projectRoot, 'research/frames/john-aspinall-v2-0444-dot-control-replay.png');
+  if (existsSync(videoFramePath)) {
+    const comparisonConfig = JSON.parse(await readFile(resolve(projectRoot, 'research/comparisons/cloud-computer-v2-0444.json'), 'utf8')) as {
+      referenceRect: { x: number; y: number; width: number; height: number };
+      threshold: number;
+    };
+    const videoFrame = PNG.sync.read(await readFile(videoFramePath));
+    const videoDesktop = cropRaster(videoFrame, comparisonConfig.referenceRect);
+    const alignedReference = resizeRaster(videoDesktop, frame.width, frame.height);
+    const referenceComparison = compareRasters(alignedReference, frame, comparisonConfig.threshold);
+    assert(
+      referenceComparison.meanAbsoluteError < 8 && referenceComparison.changedPixelRatio < 0.1,
+      `The Debian welcome screen must stay close to the 04:44 video frame (MAE ${referenceComparison.meanAbsoluteError.toFixed(2)}, changed ${((referenceComparison.changedPixelRatio) * 100).toFixed(2)}%)`,
+    );
+    await writeFile(join(artifacts, '01-video-reference-comparison.json'), `${JSON.stringify({ source: 'john-aspinall-v2 04:44', ...referenceComparison }, null, 2)}\n`);
+    console.log(`Video-frame comparison passed (MAE ${referenceComparison.meanAbsoluteError.toFixed(2)}, changed ${((referenceComparison.changedPixelRatio) * 100).toFixed(2)}%)`);
+  } else {
+    console.log('Video-frame pixel comparison skipped because the ignored source frame is not present');
+  }
   const sample = (x: number, y: number) => {
     const offset = (frame.width * y + x) * 4;
     return [...frame.data.subarray(offset, offset + 3)];
   };
+  const topEdge = sample(720, 10);
+  assert(topEdge[0] > 220 && topEdge[1] > 100 && topEdge[1] < 190 && topEdge[2] < 170, `The Dots desktop must show coral wallpaper to the top edge without an XFCE panel; saw ${topEdge}`);
+  const browserChromeTop = sample(720, 70);
+  assert(browserChromeTop[0] > 220 && browserChromeTop[1] > 100 && browserChromeTop[1] < 190 && browserChromeTop[2] < 170, `The source frame has no OS titlebar above Chromium; saw ${browserChromeTop}`);
   const wallpaper = sample(20, 20);
   assert(wallpaper[0] > 220 && wallpaper[1] > 100 && wallpaper[1] < 190 && wallpaper[2] < 170, `The desktop margin must show the coral reference wallpaper; saw ${wallpaper}`);
   const wallpaperGlow = sample(20, 600);
@@ -246,16 +271,21 @@ try {
   assert.equal(await page.frameLocator('[data-testid="linux-desktop-view"]').locator('#top_bar').evaluate(element => getComputedStyle(element).display), 'none', 'The real takeover view must hide the noVNC demo toolbar like the observed Dots desktop');
   const canvasSize = await vncCanvas.evaluate(element => ({ width: (element as HTMLCanvasElement).width, height: (element as HTMLCanvasElement).height }));
   assert.deepEqual(canvasSize, { width: 1440, height: 1080 }, 'The live noVNC canvas must match the remote desktop resolution');
-  const takeoverCanvasPng = await vncCanvas.screenshot({ path: join(artifacts, '02-novnc-canvas.png') });
-  const takeoverCanvas = PNG.sync.read(takeoverCanvasPng);
-  const takeoverContinuity = compareRasters(
-    resizeRaster(frame, takeoverCanvas.width, takeoverCanvas.height),
-    takeoverCanvas,
-    32,
-  );
+  let takeoverCanvasPng: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  let takeoverContinuity: ReturnType<typeof compareRasters> | null = null;
+  const canvasDeadline = Date.now() + 30_000;
+  while (Date.now() < canvasDeadline) {
+    takeoverCanvasPng = await vncCanvas.screenshot();
+    const takeoverCanvas = PNG.sync.read(takeoverCanvasPng);
+    takeoverContinuity = compareRasters(resizeRaster(frame, takeoverCanvas.width, takeoverCanvas.height), takeoverCanvas, 32);
+    if (takeoverContinuity.meanAbsoluteError < 2.5 && takeoverContinuity.changedPixelRatio < 0.04) break;
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 500));
+  }
+  await writeFile(join(artifacts, '02-novnc-canvas.png'), takeoverCanvasPng);
+  assert(takeoverContinuity, 'The noVNC canvas must return a desktop frame after takeover');
   assert(
     takeoverContinuity.meanAbsoluteError < 2.5 && takeoverContinuity.changedPixelRatio < 0.04,
-    `Taking over must keep the current remote page visible (MAE ${takeoverContinuity.meanAbsoluteError.toFixed(2)}, changed ${((takeoverContinuity.changedPixelRatio) * 100).toFixed(2)}%)`,
+    `Taking over must keep the current remote page visible (last MAE ${takeoverContinuity.meanAbsoluteError.toFixed(2)}, changed ${((takeoverContinuity.changedPixelRatio) * 100).toFixed(2)}%)`,
   );
   await writeFile(join(artifacts, '02-takeover-continuity.json'), `${JSON.stringify(takeoverContinuity, null, 2)}\n`);
   console.log(`Remote page continuity after takeover passed (MAE ${takeoverContinuity.meanAbsoluteError.toFixed(2)}, changed ${((takeoverContinuity.changedPixelRatio) * 100).toFixed(2)}%)`);
@@ -274,17 +304,20 @@ try {
   assert(canvasBounds, 'The live noVNC canvas must have a visible pointer target');
   const omniboxPosition = { x: canvasBounds.width * (740 / 1440), y: canvasBounds.height * (160 / 1080) };
   // The reference desktop shows Chromium's address bar at x=740, y=160 in its
-  // 1440x1080 screen. Click and type through noVNC. The final Return is sent
-  // through the runtime input API because Playwright's synthetic Enter leaves
-  // this Chromium omnibox in edit mode in the headless K3D test.
+  // 1440x1080 screen. Click and type through noVNC. Do not use Control+L: the
+  // video shows a pointer click, and browser-level shortcuts can be captured
+  // by the host browser instead of the remote desktop. Send Return through the
+  // authenticated runtime input API after the address field is visibly filled.
   await vncCanvas.click({ position: omniboxPosition });
-  await vncCanvas.press('Control+L');
   await vncCanvas.pressSequentially('http://127.0.0.1:8082/healthz', { delay: 15 });
-  await vncCanvas.click({ position: omniboxPosition });
-  const submit = await page.evaluate(async () => {
-    const response = await fetch('/api/computer/press', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: 'Enter' }) });
-    return { status: response.status, body: await response.json() };
+  const beforeSubmit = Buffer.from(await page.evaluate(async () => Array.from(new Uint8Array(await (await fetch('/api/computer/screenshot')).arrayBuffer()))));
+  await writeFile(join(artifacts, '02b-before-navigation-submit.png'), beforeSubmit);
+  const appBaseUrl = `http://127.0.0.1:${appPort}`;
+  const submitResponse = await page.request.post(`${appBaseUrl}/api/computer/press`, {
+    headers: { origin: appBaseUrl, 'content-type': 'application/json' },
+    data: { key: 'Enter' },
   });
+  const submit = { status: submitResponse.status(), body: await submitResponse.json().catch(() => ({})) as Record<string, unknown> };
   assert.equal(submit.status, 200, `The tenant desktop must accept an Enter event on the focused address bar: ${JSON.stringify(submit.body)}`);
   const expectedRemoteUrl = 'http://127.0.0.1:8082/healthz';
   let changedPagePixels = 0;
@@ -328,6 +361,8 @@ try {
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
   console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
+  const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
+  logs.push(`Failure diagnostics: appServerExit=${appServer?.exitCode ?? 'running'} health=${health} page=${page?.url() ?? 'unavailable'}`);
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
 } finally {

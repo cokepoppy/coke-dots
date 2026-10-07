@@ -1,0 +1,9 @@
+{
+  "id": "cloud-computer-v2-0444",
+  "reference": "../frames/john-aspinall-v2-0444-dot-control-replay.png",
+  "referenceRect": { "x": 308, "y": 552, "width": 1060, "height": 795 },
+  "implementationRect": { "x": 0, "y": 0, "width": 1440, "height": 1080 },
+  "output": "../../artifacts/reference-comparison/cloud-computer-v2-0444",
+  "threshold": 32,
+  "note": "Crops the remote desktop from the 04:44 John Aspinall YouTube frame and compares it with the matching 1440x1080 Debian desktop screenshot. The source is a compressed 4:3 image inside a video composite; resampling is diagnostic only and cannot prove original CSS-pixel parity. Keep the frame local and ignored."
+}
