@@ -6,6 +6,7 @@ import './style.css';
 import './chat-theme.css';
 import './watch.css';
 import './dark-theme.css';
+import './dot-controls.css';
 import './avatar-editor.css';
 import './onboarding.css';
 import './notification.css';
@@ -29,7 +30,7 @@ import './shell-replica.css';
 import './onboarding-replica.css';
 import './computer-choice.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, dotPaused: false, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
@@ -193,6 +194,11 @@ function App() {
     setState(current => ({ ...current, computerAccess }));
     if (shouldShowConnectedToast) setComputerConnectedToast(true);
     setComputerAccessOpen(false);
+  }
+
+  async function setDotPaused(paused: boolean) {
+    const result = await request('/dot-control', 'PATCH', { paused }) as { dotPaused: boolean };
+    setState(current => ({ ...current, dotPaused: result.dotPaused }));
   }
 
   async function submit() {
@@ -359,7 +365,7 @@ function App() {
         }}
         onNewTask={() => { setSchedule(true); setView('chat'); requestAnimationFrame(() => composerRef.current?.focus()); }}
         onAddWatch={addScheduledWatch} />}
-      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} onStartCall={() => setVoiceCallOpen(true)} />}
+      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onSetDotPaused={setDotPaused} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} onStartCall={() => setVoiceCallOpen(true)} />}
       {view === 'computer' && <ComputerView dotName={state.profile.name} localComputerEnabled={state.computerAccess.localComputer} onManageAccess={() => setComputerAccessOpen(true)} onError={setError} />}
     </main>
     {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, false, true)} />}
@@ -588,7 +594,7 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
   </div>;
 }
 
-function Profile({ state, auth, onError, onEditAppearance, onManageComputerAccess, onStartCall }: { state: Snapshot; auth: AuthContext; onError: (s: string) => void; onEditAppearance: () => void; onManageComputerAccess: () => void; onStartCall: () => void }) {
+function Profile({ state, auth, onError, onSetDotPaused, onEditAppearance, onManageComputerAccess, onStartCall }: { state: Snapshot; auth: AuthContext; onError: (s: string) => void; onSetDotPaused: (paused: boolean) => Promise<void>; onEditAppearance: () => void; onManageComputerAccess: () => void; onStartCall: () => void }) {
   const [name, setName] = useState(state.profile.name);
   const [baseUrl, setBaseUrl] = useState(state.modelSettings.baseUrl || 'https://api.openai.com/v1');
   const [model, setModel] = useState(state.modelSettings.model);
@@ -606,6 +612,9 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
   const [editingDraft, setEditingDraft] = useState('');
   const [memoryError, setMemoryError] = useState('');
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const [dotMenuOpen, setDotMenuOpen] = useState(false);
+  const [dotPauseBusy, setDotPauseBusy] = useState(false);
+  const canManageDot = ['owner', 'admin'].includes(auth.tenant.role);
   const refreshMembers = async () => {
     const response = await appFetch(`/api/tenants/${auth.tenant.id}/members`);
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
@@ -617,6 +626,7 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
     } else setInvitations([]);
   };
   useEffect(() => { setName(state.profile.name); }, [state.profile.name]);
+  useEffect(() => { setDotMenuOpen(false); }, [auth.tenant.id]);
   useEffect(() => { setDesktopNotifications(state.preferences.desktopNotifications); }, [state.preferences.desktopNotifications]);
   useEffect(() => { if (state.modelSettings.baseUrl) setBaseUrl(state.modelSettings.baseUrl); if (state.modelSettings.model) setModel(state.modelSettings.model); }, [state.modelSettings.baseUrl, state.modelSettings.model]);
   useEffect(() => { void refreshMembers().catch(error => setMembersError(String(error))); }, [auth.tenant.id]);
@@ -656,8 +666,15 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
     } catch (error) { setMemoryError(String(error)); }
     finally { setMemoryBusy(false); }
   }
+  async function toggleDotPause() {
+    if (dotPauseBusy || !canManageDot) return;
+    setDotPauseBusy(true);
+    try { await onSetDotPaused(!state.dotPaused); setDotMenuOpen(false); }
+    catch (error) { onError(String(error)); }
+    finally { setDotPauseBusy(false); }
+  }
   return <section className="content profile-content">
-    <div className="section-heading"><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div>
+    <div className="section-heading dot-profile-heading"><div><h1>你的 dot</h1><p>给它起个名字，选择一个外观。</p></div><div className="dot-control-menu"><button type="button" className="dot-control-menu-trigger" aria-label="Dot options" aria-haspopup="menu" aria-expanded={dotMenuOpen} onClick={() => setDotMenuOpen(value => !value)}>•••</button>{dotMenuOpen && <div className="dot-control-menu-popover" role="menu"><button type="button" role="menuitem" data-testid="dot-pause-action" disabled={dotPauseBusy || !canManageDot} onClick={() => void toggleDotPause()}>{dotPauseBusy ? 'Saving…' : state.dotPaused ? 'Paused • Tap to resume' : 'Pause'}</button>{!canManageDot && <small>只有工作区所有者或管理员可以更改 Dot 状态。</small>}</div>}</div></div>
     <div className="profile-card">
       <DotAvatar appearance={state.profile} />
       <button type="button" className="primary" data-testid="profile-voice-call-launch" aria-label={`拨打 ${state.profile.name}`} onClick={onStartCall}>拨打 {state.profile.name}</button>

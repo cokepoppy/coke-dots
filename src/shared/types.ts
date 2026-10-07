@@ -61,6 +61,7 @@ export interface VoiceCallSession {
 
 export interface Snapshot {
   profile: { name: string; avatarSetupCompletedAt: string | null; onboardingCompletedAt: string | null; onboardingCompletedName: string | null } & DotAppearance;
+  dotPaused: boolean;
   preferences: { desktopNotifications: boolean };
   computerAccess: { dotComputer: true; localComputer: boolean; configured: boolean };
   tasks: Task[];

@@ -568,6 +568,102 @@ test('background worker persists the next daily occurrence in the selected time 
   }
 });
 
+test('Dot pause is tenant scoped, durable, and resumes only work interrupted by that pause', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-global-pause-'));
+  let store = new Store(directory);
+  try {
+    const alpha = store.signInGoogle({ subject: 'dot-pause-alpha', email: 'dot-pause-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'dot-pause-beta', email: 'dot-pause-beta@example.test', name: 'Beta' });
+    const active = store.createTask('Interrupted Alpha task', null, 'model', alpha.tenant.id);
+    const queued = store.createTask('Queued Alpha task', null, 'model', alpha.tenant.id);
+    const recurring = store.createTask('Recurring Alpha task', null, 'model', alpha.tenant.id, { frequency: 'daily', time: '09:00', timeZone: 'Asia/Shanghai', endDate: null });
+    const otherTenant = store.createTask('Beta task', null, 'model', beta.tenant.id);
+    const activeRunAt = active.nextRunAt;
+    store.updateTask(active.id, { status: 'working' }, alpha.tenant.id);
+    store.updateTask(recurring.id, { status: 'working' }, alpha.tenant.id);
+    store.updateTask(otherTenant.id, { status: 'working' }, beta.tenant.id);
+
+    assert.deepEqual(store.pauseDot(alpha.tenant.id, [active.id, recurring.id, otherTenant.id]), [active.id, recurring.id]);
+    assert.equal(store.isDotPaused(alpha.tenant.id), true);
+    assert.equal(store.isDotPaused(beta.tenant.id), false);
+    assert.equal(store.snapshot(false, [], undefined, alpha.tenant.id).dotPaused, true);
+    assert.equal(store.getTask(active.id, alpha.tenant.id)?.status, 'paused');
+    assert.equal(store.getTask(queued.id, alpha.tenant.id)?.status, 'queued', 'Queued work stays queued while the workspace is paused');
+    assert.equal(store.getTask(recurring.id, alpha.tenant.id)?.status, 'paused');
+    assert.equal(store.getTask(otherTenant.id, beta.tenant.id)?.status, 'working', 'Pausing Alpha did not change Beta task state');
+    assert.deepEqual(store.pauseDot(alpha.tenant.id, [otherTenant.id]), [], 'Repeated pause is idempotent');
+
+    store.close();
+    store = new Store(directory);
+    assert.equal(store.isDotPaused(alpha.tenant.id), true, 'Dot pause survives service restart');
+    assert.equal(store.getTask(active.id, alpha.tenant.id)?.status, 'paused');
+    const resumed = store.resumeDot(alpha.tenant.id);
+    assert.deepEqual(new Set(resumed), new Set([active.id, recurring.id]));
+    assert.equal(store.isDotPaused(alpha.tenant.id), false);
+    assert.equal(store.getTask(active.id, alpha.tenant.id)?.status, 'queued');
+    assert.equal(store.getTask(active.id, alpha.tenant.id)?.nextRunAt, activeRunAt);
+    assert.equal(store.getTask(recurring.id, alpha.tenant.id)?.status, 'scheduled', 'Interrupted recurring work returns to Scheduled');
+    assert.equal(store.getTask(queued.id, alpha.tenant.id)?.status, 'queued');
+    assert.equal(store.getTask(otherTenant.id, beta.tenant.id)?.status, 'queued', 'Restart recovery remains isolated from the pause record');
+    assert.deepEqual(store.resumeDot(alpha.tenant.id), [], 'Resume is idempotent');
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('paused workspace holds due tasks while an unpaused tenant continues', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-worker-pause-'));
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+  const prompts: string[] = [];
+  const modelServer = createServer((req, res) => {
+    let raw = '';
+    req.setEncoding('utf8');
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+      prompts.push(payload.messages?.find(message => message.role === 'user')?.content || '');
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'Tenant task completed.' }) } }] }));
+    });
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '1';
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`; process.env.DOTS_MODEL = 'test-model'; process.env.DOTS_MODEL_API_KEY = 'local-test-key';
+  const store = new Store(directory);
+  const alpha = store.signInGoogle({ subject: 'dot-pause-worker-alpha', email: 'dot-pause-worker-alpha@example.test', name: 'Alpha' });
+  const beta = store.signInGoogle({ subject: 'dot-pause-worker-beta', email: 'dot-pause-worker-beta@example.test', name: 'Beta' });
+  store.setSetting('dotPaused', 'true', alpha.tenant.id);
+  store.setSetting('modelBaseUrl', `http://127.0.0.1:${address.port}`, alpha.tenant.id);
+  store.setSetting('modelName', 'test-model', alpha.tenant.id);
+  store.setSetting('modelBaseUrl', `http://127.0.0.1:${address.port}`, beta.tenant.id);
+  store.setSetting('modelName', 'test-model', beta.tenant.id);
+  const alphaTask = store.createTask('Paused Alpha must wait', null, 'model', alpha.tenant.id);
+  const betaTask = store.createTask('Unpaused Beta continues', null, 'model', beta.tenant.id);
+  const worker = new Worker(store, () => {});
+  try {
+    worker.start();
+    await waitFor(() => store.getTask(betaTask.id, beta.tenant.id)?.status === 'done');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(store.getTask(alphaTask.id, alpha.tenant.id)?.status, 'queued');
+    assert.equal(prompts.some(prompt => prompt.includes('Paused Alpha must wait')), false, 'Paused tenant work reached the model');
+    assert.equal(prompts.filter(prompt => prompt.includes('Unpaused Beta continues')).length, 1);
+
+    worker.resumeWorkspace(alpha.tenant.id);
+    await worker.tick();
+    await waitFor(() => store.getTask(alphaTask.id, alpha.tenant.id)?.status === 'done');
+    assert.equal(prompts.filter(prompt => prompt.includes('Paused Alpha must wait')).length, 1, 'The queued task did not run exactly once after resume');
+  } finally {
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 async function waitFor(predicate: () => boolean, timeout = 3000) {
   const start = Date.now();
   while (!predicate()) {

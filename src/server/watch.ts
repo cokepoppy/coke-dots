@@ -10,29 +10,37 @@ export function validateWatchUrl(input: string): string {
 }
 
 export class WatchRunner {
-  private active = new Set<string>();
+  private active = new Map<string, { tenantId: string; controller: AbortController }>();
   private timer: NodeJS.Timeout | null = null;
   constructor(private store: Store, private onChange: () => void, private fetcher: typeof fetch = fetch, private notify: DesktopNotifier = sendDesktopNotification) {}
 
   start() { this.timer = setInterval(() => void this.tick(), 30_000); void this.tick(); }
   stop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
 
-  async tick() {
-    for (const watch of this.store.dueWatches()) {
-      if (this.active.size >= 2) break;
-      if (this.active.has(watch.id)) continue;
-      this.active.add(watch.id);
-      void this.check(watch).finally(() => this.active.delete(watch.id));
+  pauseWorkspace(tenantId: string) {
+    for (const [watchId, active] of this.active) {
+      if (active.tenantId === tenantId) active.controller.abort(new Error('Dot paused by user'));
     }
   }
 
-  private async check(watch: Watch) {
+  async tick() {
+    for (const watch of this.store.dueWatches()) {
+      if (this.store.isDotPaused(watch.tenantId)) continue;
+      if (this.active.size >= 2) break;
+      if (this.active.has(watch.id)) continue;
+      const controller = new AbortController();
+      this.active.set(watch.id, { tenantId: watch.tenantId, controller });
+      void this.check(watch, controller.signal).finally(() => this.active.delete(watch.id));
+    }
+  }
+
+  private async check(watch: Watch, signal: AbortSignal) {
     const nextCheckAt = new Date(Date.now() + watch.intervalMinutes * 60_000).toISOString();
     // Reserve the next check before network I/O, so a restart cannot send duplicate checks.
     this.store.updateWatch(watch.id, { nextCheckAt }, watch.tenantId);
     this.onChange();
     try {
-      const response = await this.fetcher(watch.url, { redirect: 'manual', signal: AbortSignal.timeout(20_000), headers: { accept: 'text/html,text/plain;q=0.9' } });
+      const response = await this.fetcher(watch.url, { redirect: 'manual', signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]), headers: { accept: 'text/html,text/plain;q=0.9' } });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const contentType = response.headers.get('content-type') || '';
       if (!contentType.includes('text/html') && !contentType.includes('text/plain')) throw new Error('页面不是 HTML 或纯文本');
@@ -59,6 +67,7 @@ export class WatchRunner {
       if (current?.status === 'active') this.store.updateWatch(watch.id, { lastHash: digest, lastCheckedAt: new Date().toISOString(), lastStatus: previous && previous !== digest ? '内容有变化' : previous ? '没有变化' : '已建立基线', error: null }, watch.tenantId);
       this.onChange();
     } catch (error) {
+      if (signal.aborted) { this.onChange(); return; }
       const message = error instanceof Error ? error.message : String(error);
       const current = this.store.getWatch(watch.id, watch.tenantId);
       if (current?.status === 'active') this.store.updateWatch(watch.id, { lastCheckedAt: new Date().toISOString(), lastStatus: '检查失败', error: message.slice(0, 300) }, watch.tenantId);

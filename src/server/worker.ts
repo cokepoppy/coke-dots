@@ -13,6 +13,7 @@ export class Worker {
   private static readonly maxActiveTasksPerTenant = 3;
   private timer: NodeJS.Timeout | null = null;
   private active = new Set<string>();
+  private activeTaskTenants = new Map<string, string>();
   private abortControllers = new Map<string, AbortController>();
   private activeByTenant = new Map<string, number>();
   private stopped = false;
@@ -24,20 +25,32 @@ export class Worker {
   pauseTask(taskId: string) { this.abortControllers.get(taskId)?.abort(new Error('Task paused by user')); }
   stopTask(taskId: string) { this.abortControllers.get(taskId)?.abort(new Error('Task stopped by user')); }
 
+  pauseWorkspace(tenantId: string) {
+    const activeTaskIds = [...this.activeTaskTenants].filter(([, activeTenantId]) => activeTenantId === tenantId).map(([taskId]) => taskId);
+    const pausedTaskIds = this.store.pauseDot(tenantId, activeTaskIds);
+    for (const taskId of pausedTaskIds) this.abortControllers.get(taskId)?.abort(new Error('Dot paused by user'));
+    return pausedTaskIds;
+  }
+
+  resumeWorkspace(tenantId: string) { return this.store.resumeDot(tenantId); }
+
   async tick() {
     if (this.stopped) return;
     this.store.releaseReadyDelegations();
     for (const task of this.store.dueTasks()) {
+      if (this.store.isDotPaused(task.tenantId)) continue;
       if (this.active.size >= Worker.maxActiveTasks) break;
       if (this.active.has(task.id)) continue;
       const tenantActive = this.activeByTenant.get(task.tenantId) || 0;
       if (tenantActive >= Worker.maxActiveTasksPerTenant) continue;
       this.active.add(task.id);
+      this.activeTaskTenants.set(task.id, task.tenantId);
       const controller = new AbortController();
       this.abortControllers.set(task.id, controller);
       this.activeByTenant.set(task.tenantId, tenantActive + 1);
       void this.run(task, controller.signal).finally(() => {
         this.active.delete(task.id);
+        this.activeTaskTenants.delete(task.id);
         if (this.abortControllers.get(task.id) === controller) this.abortControllers.delete(task.id);
         const count = (this.activeByTenant.get(task.tenantId) || 1) - 1;
         if (count > 0) this.activeByTenant.set(task.tenantId, count);
@@ -83,7 +96,12 @@ export class Worker {
         priorResult: task.result, sessionId: task.agentSessionId,
         workspace,
         signal,
-        onEvent: message => { this.store.addEntry('system', message, task.id, task.tenantId); this.onChange(); },
+        onEvent: message => {
+          const current = this.store.getTask(task.id, task.tenantId);
+          if (signal.aborted || this.store.isDotPaused(task.tenantId) || current?.status !== 'working') return;
+          this.store.addEntry('system', message, task.id, task.tenantId);
+          this.onChange();
+        },
       };
       const decision = useDesktopRuntime
         ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines })

@@ -184,6 +184,19 @@ const server = createServer(async (req, res) => {
     }
 
     const body = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT' ? await readJson(req) : {};
+    if (path === '/api/dot-control' && req.method === 'PATCH') {
+      if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以更改 Dot 状态' });
+      if (typeof body.paused !== 'boolean') return reply(res, 400, { error: 'Invalid Dot pause state' });
+      if (body.paused) {
+        worker.pauseWorkspace(session.tenant.id);
+        watchRunner.pauseWorkspace(session.tenant.id);
+      } else {
+        worker.resumeWorkspace(session.tenant.id);
+      }
+      publish();
+      if (!body.paused) { void worker.tick(); void watchRunner.tick(); }
+      return reply(res, 200, { dotPaused: store.isDotPaused(session.tenant.id) });
+    }
     if (path === '/api/voice-calls' && req.method === 'POST') {
       return reply(res, 201, store.createVoiceCall(session.tenant.id, session.user.id));
     }
@@ -467,7 +480,10 @@ const server = createServer(async (req, res) => {
         const waitingOnChildren = action === 'resume' && children.some(child => !['done', 'failed', 'stopped'].includes(child.status));
         store.updateTask(old.id, { status: waitingOnChildren ? 'delegating' : 'queued', nextRunAt: waitingOnChildren ? null : new Date().toISOString(), error: null }, session.tenant.id);
       }
-      else if (action === 'cancelSchedule') store.updateTask(old.id, { scheduleMinutes: null, scheduleSpec: null, status: 'paused', nextRunAt: null }, session.tenant.id);
+      else if (action === 'cancelSchedule') {
+        store.forgetDotPausedTask(session.tenant.id, old.id);
+        store.updateTask(old.id, { scheduleMinutes: null, scheduleSpec: null, status: 'paused', nextRunAt: null }, session.tenant.id);
+      }
       else if (action === 'stop') {
         try {
           const stopped = store.stopTask(old.id, session.tenant.id, session.user.id);

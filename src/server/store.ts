@@ -90,6 +90,10 @@ export class Store {
         tenant_id TEXT NOT NULL REFERENCES tenants(id), key TEXT NOT NULL, value TEXT NOT NULL,
         PRIMARY KEY(tenant_id,key)
       );
+      CREATE TABLE IF NOT EXISTS dot_pause_tasks (
+        tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        next_run_at TEXT, PRIMARY KEY(tenant_id,task_id)
+      );
       CREATE TABLE IF NOT EXISTS tenant_memories (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
         created_by TEXT NOT NULL REFERENCES users(id), note TEXT NOT NULL,
@@ -410,6 +414,7 @@ export class Store {
     if (!p) throw new Error('Workspace profile is missing');
     return {
       profile: p,
+      dotPaused: this.isDotPaused(tenantId),
       preferences: { desktopNotifications: this.getSetting('desktopNotifications', tenantId) === 'true' },
       computerAccess: {
         dotComputer: true,
@@ -878,6 +883,59 @@ export class Store {
 
   setSetting(key: string, value: string, tenantId = 'legacy') {
     this.db.prepare('INSERT INTO tenant_settings(tenant_id,key,value) VALUES (?,?,?) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value').run(tenantId, key, value);
+  }
+
+  isDotPaused(tenantId = 'legacy') { return this.getSetting('dotPaused', tenantId) === 'true'; }
+
+  pauseDot(tenantId: string, activeTaskIds: string[]): string[] {
+    if (this.isDotPaused(tenantId)) return [];
+    const now = new Date().toISOString();
+    const paused: string[] = [];
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.setSetting('dotPaused', 'true', tenantId);
+      for (const taskId of new Set(activeTaskIds)) {
+        const task = this.db.prepare('SELECT status,next_run_at FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, taskId) as { status: string; next_run_at: string | null } | undefined;
+        if (task?.status !== 'working') continue;
+        const changed = this.db.prepare("UPDATE tasks SET status='paused',next_run_at=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status='working'").run(now, tenantId, taskId);
+        if (!Number(changed.changes)) continue;
+        this.db.prepare('INSERT OR REPLACE INTO dot_pause_tasks(tenant_id,task_id,next_run_at) VALUES (?,?,?)').run(tenantId, taskId, task.next_run_at);
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+          .run(tenantId, taskId, 'system', 'Dot 已暂停；恢复后会继续这项工作。', now);
+        paused.push(taskId);
+      }
+      this.db.exec('COMMIT');
+      return paused;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  resumeDot(tenantId: string): string[] {
+    const now = new Date().toISOString();
+    const resumed: string[] = [];
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.setSetting('dotPaused', 'false', tenantId);
+      const rows = this.db.prepare('SELECT task_id,next_run_at FROM dot_pause_tasks WHERE tenant_id=?').all(tenantId) as { task_id: string; next_run_at: string | null }[];
+      for (const row of rows) {
+        const task = this.getTask(row.task_id, tenantId);
+        if (task?.status === 'paused') {
+          const recurring = Boolean(task.scheduleSpec || task.scheduleMinutes);
+          const status = recurring ? 'scheduled' : 'queued';
+          this.db.prepare('UPDATE tasks SET status=?,next_run_at=?,error=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status=\'paused\'')
+            .run(status, row.next_run_at || now, now, tenantId, row.task_id);
+          this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+            .run(tenantId, row.task_id, 'system', 'Dot 已恢复，这项工作已重新排入队列。', now);
+          resumed.push(row.task_id);
+        }
+      }
+      this.db.prepare('DELETE FROM dot_pause_tasks WHERE tenant_id=?').run(tenantId);
+      this.db.exec('COMMIT');
+      return resumed;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  forgetDotPausedTask(tenantId: string, taskId: string) {
+    this.db.prepare('DELETE FROM dot_pause_tasks WHERE tenant_id=? AND task_id=?').run(tenantId, taskId);
   }
 
   createWatch(url: string, intervalMinutes: number, tenantId = 'legacy'): Watch {

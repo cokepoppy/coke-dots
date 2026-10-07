@@ -32,6 +32,9 @@ let mockModelPrompts: string[] = [];
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
 let pauseModelHeld = false;
+let heldGlobalPauseModelRelease: (() => void) | null = null;
+let globalPauseModelAborted = false;
+let globalPauseModelHeld = false;
 let heldVoiceModelRelease: (() => void) | null = null;
 let voiceModelHeld = false;
 let heldStopModelRelease: (() => void) | null = null;
@@ -102,6 +105,7 @@ async function startMockModel() {
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
         const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
+        const isGlobalPauseTask = prompt.includes('E2E global pause — pause and resume the Dot');
         const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
         const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
@@ -115,6 +119,16 @@ async function startMockModel() {
           response.once('close', () => { heldPauseModelAborted = true; });
           await new Promise<void>(resolvePromise => { heldPauseModelRelease = resolvePromise; });
           heldPauseModelRelease = null;
+        }
+        if (isGlobalPauseTask && !globalPauseModelHeld) {
+          globalPauseModelHeld = true;
+          globalPauseModelAborted = false;
+          response.once('close', () => {
+            globalPauseModelAborted = true;
+            heldGlobalPauseModelRelease?.();
+          });
+          await new Promise<void>(resolvePromise => { heldGlobalPauseModelRelease = resolvePromise; });
+          heldGlobalPauseModelRelease = null;
         }
         if (isStopTask) {
           heldStopModelAborted = false;
@@ -135,13 +149,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isGlobalPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'claude' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -236,6 +250,12 @@ function releaseHeldPauseModel() {
   const release = heldPauseModelRelease as (() => void) | null;
   if (release) release();
   heldPauseModelRelease = null;
+}
+
+function releaseHeldGlobalPauseModel() {
+  const release = heldGlobalPauseModelRelease as (() => void) | null;
+  if (release) release();
+  heldGlobalPauseModelRelease = null;
 }
 
 function releaseHeldVoiceModel() {
@@ -1498,6 +1518,66 @@ try {
     await screenshot(alphaPage!, '20-pause-resumed-task');
   });
 
+  await recordStep('Dot profile menu pauses the tenant, interrupts running work, and resumes it without affecting another tenant', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    const instruction = 'E2E global pause — pause and resume the Dot';
+    const promptStart = mockModelPrompts.filter(prompt => prompt.includes(instruction)).length;
+    await createTask(alphaPage!, instruction);
+    await waitFor(() => mockModelPrompts.filter(prompt => prompt.includes(instruction)).length === promptStart + 1, 10_000);
+    const taskId = await alphaPage!.evaluate(async (goal: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string }[] };
+      return state.tasks.find(task => task.instruction === goal)?.id || null;
+    }, instruction);
+    assert(taskId, 'The global-pause task was missing from Alpha Shared');
+
+    await openProfile(alphaPage!);
+    await alphaPage!.getByRole('button', { name: 'Dot options' }).click();
+    await alphaPage!.getByTestId('dot-pause-action').click();
+    await waitFor(async () => {
+      const state = await alphaPage!.evaluate(async () => fetch('/api/state').then(response => response.json())) as { dotPaused: boolean; tasks: { id: string; status: string; result: string | null }[] };
+      return state.dotPaused && state.tasks.find(task => task.id === taskId)?.status === 'paused';
+    }, 5_000);
+    await waitFor(() => globalPauseModelAborted, 5_000);
+    releaseHeldGlobalPauseModel();
+    const paused = await alphaPage!.evaluate(async (id: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; result: string | null }[] };
+      return state.tasks.find(task => task.id === id) || null;
+    }, taskId);
+    assert.equal(paused?.result, null, 'A late model response committed after the Dot was paused');
+    await screenshot(alphaPage!, '21-global-dot-paused');
+
+    await selectTenant(betaPage!, 'Alpha Shared');
+    await openProfile(betaPage!);
+    await betaPage!.getByRole('button', { name: 'Dot options' }).click();
+    const memberAction = betaPage!.getByTestId('dot-pause-action');
+    assert.equal(await memberAction.innerText(), 'Paused • Tap to resume');
+    assert.equal(await memberAction.isDisabled(), true, 'A shared-workspace member cannot pause or resume the shared Dot');
+    const unauthorizedResume = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/dot-control', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ paused: false }) });
+      return response.status;
+    });
+    assert.equal(unauthorizedResume, 403, 'The server must enforce the Dot control role, not only disable the button');
+    await selectTenant(betaPage!, 'Beta workspace');
+    const betaState = await betaPage!.evaluate(async () => fetch('/api/state').then(response => response.json())) as { dotPaused: boolean };
+    assert.equal(betaState.dotPaused, false, 'Alpha Shared pause leaked into Beta personal workspace');
+    await screenshot(betaPage!, '21b-beta-dot-remains-active');
+
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByRole('button', { name: 'Dot options' }).click();
+    const resumeAction = alphaPage!.getByTestId('dot-pause-action');
+    assert.equal(await resumeAction.innerText(), 'Paused • Tap to resume');
+    const resumedPromptStart = mockModelPrompts.filter(prompt => prompt.includes(instruction)).length;
+    await resumeAction.click();
+    await waitFor(async () => {
+      const state = await alphaPage!.evaluate(async () => fetch('/api/state').then(response => response.json())) as { dotPaused: boolean; tasks: { id: string; status: string }[] };
+      return !state.dotPaused && state.tasks.find(task => task.id === taskId)?.status === 'done';
+    }, 15_000);
+    assert.equal(mockModelPrompts.filter(prompt => prompt.includes(instruction)).length, resumedPromptStart + 1, 'Resuming the Dot did not restart the interrupted task exactly once');
+    await screenshot(alphaPage!, '21c-global-dot-resumed');
+  });
+
   await recordStep('Activity stops a running task and cancels its pending page approval', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await clickNav(alphaPage!, '你的 dot');
@@ -1793,6 +1873,7 @@ try {
   throw error;
 } finally {
   releaseHeldPauseModel();
+  releaseHeldGlobalPauseModel();
   releaseHeldStopModel();
   releaseHeldVoiceModel();
   releaseParallelModels();
