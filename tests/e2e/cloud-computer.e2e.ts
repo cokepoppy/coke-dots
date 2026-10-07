@@ -265,6 +265,9 @@ try {
   });
 
   await signIn(page, 'cloud-alpha@example.test');
+  const availableEngines = await page.evaluate(async () => (await (await fetch('/api/state')).json()).availableEngines as string[]);
+  assert(availableEngines.includes('dsh'), 'The cloud workspace should expose its configured DeepSeek Harness adapter');
+  assert.equal(availableEngines.includes('claude'), false, 'Claude Code must remain unavailable in the cloud workspace UI and API');
   await page.evaluate(async () => {
     const response = await fetch('/api/computer-access', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ localComputer: false }) });
     if (!response.ok) throw new Error(`Could not disable local computer access: ${response.status}`);

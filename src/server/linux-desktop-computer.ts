@@ -251,10 +251,20 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
   const pullPolicy = process.env.DOTS_LINUX_DESKTOP_IMAGE_PULL_POLICY || 'IfNotPresent';
   const volumeSize = process.env.DOTS_LINUX_DESKTOP_VOLUME_SIZE || '10Gi';
   const controlNamespace = process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || 'coke-dots';
-  let agentEngines = process.env.DOTS_DESKTOP_AGENT_ADAPTERS || '';
+  const supportedAgentEngines = new Set(['pi', 'dsh']);
+  let kernelNames: string[] = [];
   try {
-    if (!agentEngines) agentEngines = Object.keys(JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}')).join(',');
-  } catch { agentEngines = ''; }
+    const kernels = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}');
+    if (!kernels || typeof kernels !== 'object' || Array.isArray(kernels)) throw new Error('DOTS_AGENT_KERNELS_JSON must be an object');
+    kernelNames = Object.keys(kernels);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : 'DOTS_AGENT_KERNELS_JSON is invalid');
+  }
+  const requestedAgentEngines = (process.env.DOTS_DESKTOP_AGENT_ADAPTERS || kernelNames.join(','))
+    .split(',').map(value => value.trim()).filter(Boolean);
+  const unsupportedAgentEngine = [...kernelNames, ...requestedAgentEngines].find(engine => !supportedAgentEngines.has(engine));
+  if (unsupportedAgentEngine) throw new Error(`Linux 云端 Agent 暂只支持 Pi 和 DeepSeek Harness；不支持内核：${unsupportedAgentEngine}`);
+  const agentEngines = [...new Set(requestedAgentEngines)].join(',');
   const objects: Record<string, unknown>[] = [
     {
       apiVersion: 'v1', kind: 'Secret', metadata: { name: 'desktop-runtime', namespace }, type: 'Opaque',

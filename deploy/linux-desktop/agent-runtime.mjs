@@ -9,18 +9,26 @@ const port = Number(process.env.DOTS_AGENT_RUNTIME_PORT || 8083);
 const workerPort = Number(process.env.LINUX_DESKTOP_WORKER_PORT || 8082);
 const workspace = path.resolve(process.env.DOTS_AGENT_WORKSPACE || '/workspace');
 const runtimeStateDirectory = path.join(workspace, '.coke-dots', 'agent-runtime');
-const allowedEngines = new Set(String(process.env.DOTS_DESKTOP_AGENT_ADAPTERS || '').split(',').map(value => value.trim()).filter(Boolean));
+const supportedEngines = new Set(['pi', 'dsh']);
+const allowedEngines = parseEngineList(process.env.DOTS_DESKTOP_AGENT_ADAPTERS || '');
 const configured = parseAdapterConfig(process.env.DOTS_AGENT_KERNELS_JSON || '{}');
 let active = null;
 const queue = [];
 
 if (!token) throw new Error('DOTS_AGENT_RUNTIME_TOKEN is required');
 
+function parseEngineList(raw) {
+  const engines = String(raw).split(',').map(value => value.trim()).filter(Boolean);
+  const unsupported = engines.find(engine => !supportedEngines.has(engine));
+  if (unsupported) throw new Error(`Unsupported cloud Agent kernel '${unsupported}'; only Pi and DeepSeek Harness are enabled`);
+  return new Set(engines);
+}
+
 function parseAdapterConfig(raw) {
   const value = JSON.parse(raw);
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('DOTS_AGENT_KERNELS_JSON must be an object');
   for (const [engine, adapter] of Object.entries(value)) {
-    if (!['claude', 'pi', 'dsh'].includes(engine) || !adapter || typeof adapter !== 'object' || typeof adapter.command !== 'string' || !Array.isArray(adapter.args) || adapter.args.some(arg => typeof arg !== 'string')) {
+    if (!supportedEngines.has(engine) || !adapter || typeof adapter !== 'object' || typeof adapter.command !== 'string' || !Array.isArray(adapter.args) || adapter.args.some(arg => typeof arg !== 'string')) {
       throw new Error(`Invalid kernel adapter config for ${engine}`);
     }
   }
@@ -129,7 +137,7 @@ async function drainQueue() {
 async function executeKernel(input, slot) {
   const engine = String(input.engine || '');
   if (!allowedEngines.has(engine)) throw new Error(`Agent kernel '${engine}' is not enabled for this workspace`);
-  if (!['claude', 'pi', 'dsh'].includes(engine)) throw new Error(`Agent kernel '${engine}' needs an installed adapter`);
+  if (!supportedEngines.has(engine)) throw new Error(`Unsupported cloud Agent kernel '${engine}'; only Pi and DeepSeek Harness are enabled`);
   const adapter = configured[engine];
   if (!adapter) throw new Error(`Agent kernel '${engine}' is enabled but no adapter is installed in this image`);
   const taskId = String(input.taskId || '');

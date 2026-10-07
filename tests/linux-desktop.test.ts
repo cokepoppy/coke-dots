@@ -25,6 +25,22 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(deployment.spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation, false);
 });
 
+test('Linux desktop provisioning rejects Claude Code kernel configuration', () => {
+  const previousAdapters = process.env.DOTS_DESKTOP_AGENT_ADAPTERS;
+  const previousKernels = process.env.DOTS_AGENT_KERNELS_JSON;
+  process.env.DOTS_DESKTOP_AGENT_ADAPTERS = 'claude';
+  process.env.DOTS_AGENT_KERNELS_JSON = '{}';
+  try {
+    assert.throws(() => desktopResources('tenant-alpha', 'worker-secret', 'agent-secret'), /暂只支持 Pi 和 DeepSeek Harness/);
+    process.env.DOTS_DESKTOP_AGENT_ADAPTERS = 'dsh';
+    process.env.DOTS_AGENT_KERNELS_JSON = JSON.stringify({ claude: { command: 'claude', args: [] } });
+    assert.throws(() => desktopResources('tenant-alpha', 'worker-secret', 'agent-secret'), /不支持内核：claude/);
+  } finally {
+    if (previousAdapters === undefined) delete process.env.DOTS_DESKTOP_AGENT_ADAPTERS; else process.env.DOTS_DESKTOP_AGENT_ADAPTERS = previousAdapters;
+    if (previousKernels === undefined) delete process.env.DOTS_AGENT_KERNELS_JSON; else process.env.DOTS_AGENT_KERNELS_JSON = previousKernels;
+  }
+});
+
 test('Linux desktop runtime scopes browser control and task dispatch to its connection', async () => {
   let owner: 'agent' | 'user' = 'agent';
   const commands: Record<string, unknown>[] = [];

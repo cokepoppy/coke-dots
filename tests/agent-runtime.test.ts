@@ -241,3 +241,40 @@ test('cloud Agent runtime finishes disconnected work and replays the persisted r
     await rm(temporary, { recursive: true, force: true });
   }
 });
+
+test('cloud Agent runtime refuses Claude Code even when an operator configures it', { timeout: 10_000 }, async () => {
+  const temporary = await mkdtemp(join(tmpdir(), 'coke-dots-agent-runtime-kernel-boundary-'));
+  const runtimePort = await freePort();
+  const child = spawn(process.execPath, [runtimePath], {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      DOTS_AGENT_RUNTIME_TOKEN: 'kernel-boundary-test-token',
+      DOTS_AGENT_RUNTIME_PORT: String(runtimePort),
+      DOTS_AGENT_WORKSPACE: join(temporary, 'workspace'),
+      DOTS_AGENT_KERNELS_JSON: JSON.stringify({ claude: { command: process.execPath, args: ['-e', 'process.exit(0)'] } }),
+      DOTS_DESKTOP_AGENT_ADAPTERS: 'claude',
+    },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr?.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-2000); });
+  try {
+    const exitCode = await new Promise<number | null>(resolvePromise => {
+      const timer = setTimeout(() => resolvePromise(null), 2500);
+      timer.unref();
+      child.once('exit', code => { clearTimeout(timer); resolvePromise(code); });
+    });
+    assert.notEqual(exitCode, null, 'Runtime must reject unsupported configuration instead of serving Claude Code');
+    assert.notEqual(exitCode, 0);
+    assert.match(stderr, /Unsupported cloud Agent kernel 'claude'/);
+    assert.doesNotMatch(stderr, /kernel-boundary-test-token/);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise<void>(resolvePromise => child.once('exit', () => resolvePromise()));
+      child.kill('SIGTERM');
+      await Promise.race([exited, new Promise(resolvePromise => setTimeout(resolvePromise, 1000))]);
+    }
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
