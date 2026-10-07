@@ -1,0 +1,27 @@
+.teams-setup-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:24px;background:#25222b55;backdrop-filter:blur(3px)}
+.teams-setup-dialog{position:relative;width:min(100%,420px);padding:34px 32px 26px;border:1px solid #ebe8e5;border-radius:14px;background:#fff;color:#37343c;box-shadow:0 22px 72px #17141d2e;text-align:center}
+.teams-setup-close{position:absolute;top:12px;right:14px;width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:#8c8990;font-size:22px;cursor:pointer}
+.teams-setup-close:hover{background:#f4f2f1}
+.teams-setup-mark{width:43px;height:43px;display:grid;place-items:center;margin:0 auto 16px;border-radius:11px;background:#eaf0fb;color:#5b74aa;font-size:23px;font-weight:700}
+.teams-setup-dialog h2{margin:0 0 18px;color:#343139;font-size:18px;font-weight:650}
+.teams-setup-description{margin:0 0 16px;color:#706d75;font-size:13px;line-height:1.65}
+.teams-setup-note{margin:0 0 18px;padding:12px 14px;border-radius:8px;background:#f8f7f6;color:#77747b;font-size:11px;line-height:1.65;text-align:left}
+.teams-setup-note strong{color:#4c4851;font-weight:650}
+.teams-setup-note code{font-size:10px;color:#554a69}
+.teams-setup-status{margin:10px 0 18px;color:#817e85;font-size:12px}
+.teams-setup-connected{display:flex;align-items:center;justify-content:center;gap:8px;margin:0 0 14px;color:#5c936a;font-size:12px}
+.teams-setup-connected span:first-child{width:20px;height:20px;display:grid;place-items:center;border-radius:50%;background:#edf6ee}
+.teams-setup-primary,.teams-setup-secondary,.teams-setup-dismiss{width:100%;min-height:39px;border-radius:7px;font-size:12px;cursor:pointer}
+.teams-setup-primary{border:1px solid #40374b;background:#40374b;color:#fff}
+.teams-setup-primary:hover:not(:disabled){background:#51475e}
+.teams-setup-secondary{margin:4px 0 12px;border:1px solid #e8e5e2;background:#fff;color:#625e67}
+.teams-setup-dismiss{margin-top:10px;border:1px solid #ebe8e6;background:#fff;color:#77737b}
+.teams-setup-primary:disabled,.teams-setup-secondary:disabled{cursor:wait;opacity:.62}
+.teams-setup-code{display:grid;gap:5px;justify-items:center;margin:16px 0 12px;padding:14px;border:1px solid #e5e1ed;border-radius:9px;background:#faf9fc}
+.teams-setup-code span{color:#3f354e;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:22px;font-weight:650;letter-spacing:.16em}
+.teams-setup-code small{color:#928d98;font-size:10px}
+.teams-setup-warning{margin:0 0 8px;color:#a17739;font-size:10px;line-height:1.5}
+.teams-setup-unavailable{margin:4px 0 12px;padding:10px;border:1px solid #eeeae7;border-radius:7px;background:#faf9f8;color:#96929a;font-size:11px}
+.teams-setup-error{margin:14px 0 0;color:#b55151;font-size:11px;line-height:1.5}
+.teams-setup-error button{margin-left:8px;border:0;background:transparent;color:#765ea0;text-decoration:underline;cursor:pointer}
+.teams-setup-close:focus-visible,.teams-setup-primary:focus-visible,.teams-setup-secondary:focus-visible,.teams-setup-dismiss:focus-visible,.teams-setup-error button:focus-visible{outline:2px solid #9b82c7;outline-offset:2px}

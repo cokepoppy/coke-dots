@@ -31,11 +31,13 @@ let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockGoogleServer: Server | null = null;
 let mockSlackServer: Server | null = null;
+let mockTeamsServer: Server | null = null;
 let mockGoogleProxyServer: Server | null = null;
 let mockWatchServer: Server | null = null;
 let mockModelPrompts: string[] = [];
 let mockGoogleOrigin = '';
 let mockSlackOrigin = '';
+let mockTeamsOrigin = '';
 let mockGoogleProxyOrigin = '';
 let mockWatchProviderOrigin = '';
 let mockWatchContent = '';
@@ -48,6 +50,7 @@ let mockSlackAuthorizationRequests: Record<string, string>[] = [];
 let mockSlackTokenExchanges = 0;
 let mockSlackPostedMessages: { channel: string; text: string; client_msg_id: string }[] = [];
 let mockSlackOpenedDms: string[] = [];
+let mockTeamsPostedMessages: { conversationId: string; text: string }[] = [];
 let mockSlackGrantedUserId = 'UINSTALLER1';
 const mockSlackToken = 'xoxb-coke-dots-e2e-fixture-token';
 const mockSlackSigningSecret = 'coke-dots-e2e-signing-secret';
@@ -226,6 +229,7 @@ async function startMockModel() {
         const isSharedMemoryIsolation = prompt.includes('E2E shared task — do not receive personal Dot notes');
         const isQuietNotificationCheck = prompt.includes('E2E notification criteria — routine success');
         const isSlackInboxTask = prompt.includes('E2E Slack inbox request — answer with the connector result.');
+        const isTeamsInboxTask = prompt.includes('E2E Teams inbox request — answer with the connector result.');
         const isDecisionNotificationCheck = prompt.includes('E2E notification criteria — ask the user');
         const isReasoningEffortTask = prompt.includes('E2E reasoning effort — extra high');
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
@@ -278,13 +282,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || isSlackInboxTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || isSlackInboxTask || isTeamsInboxTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isDecisionNotificationCheck) Object.assign(decision, { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false });
         if (isWebsiteSignIn && !isWebsiteSignInContinuation) Object.assign(decision, {
@@ -502,6 +506,43 @@ async function startMockSlackProvider() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function startMockTeamsProvider() {
+  mockTeamsPostedMessages = [];
+  const provider = createHttpServer(async (request, response) => {
+    const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
+    if (request.method === 'POST' && url.pathname === '/token') {
+      let raw = '';
+      for await (const chunk of request) raw += chunk.toString();
+      const params = new URLSearchParams(raw);
+      if (params.get('client_id') !== '1a96dc34-47e1-49a4-8e81-d83e39f5219a' || params.get('client_secret') !== 'coke-dots-teams-e2e-secret' || params.get('scope') !== 'https://api.botframework.com/.default') {
+        response.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid_client' }));
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify({ access_token: 'mock-teams-bot-token', expires_in: 3600 }));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname.startsWith('/connector/teams/v3/conversations/')) {
+      let payload: { type?: string; text?: string } = {};
+      try { let raw = ''; for await (const chunk of request) raw += chunk.toString(); payload = JSON.parse(raw) as typeof payload; }
+      catch { response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid_json' })); return; }
+      if (request.headers.authorization !== 'Bearer mock-teams-bot-token' || payload.type !== 'message' || !payload.text) {
+        response.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid_auth_or_message' }));
+        return;
+      }
+      const conversationId = decodeURIComponent(url.pathname.split('/').at(-2) || '');
+      mockTeamsPostedMessages.push({ conversationId, text: payload.text });
+      response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify({ id: 'teams-e2e-activity' }));
+      return;
+    }
+    response.writeHead(404).end('Not found');
+  });
+  await new Promise<void>((resolvePromise, reject) => provider.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  mockTeamsServer = provider;
+  const address = provider.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}`;
+}
+
 async function startMockGoogleProxy() {
   const provider = new URL(mockGoogleOrigin);
   const proxy = createHttpServer((_request, response) => response.writeHead(405).end('CONNECT is required'));
@@ -582,6 +623,9 @@ async function startServer(port: number) {
       SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
       SLACK_SIGNING_SECRET: mockSlackSigningSecret,
       DOTS_E2E_SLACK_PROVIDER_URL: mockSlackOrigin,
+      TEAMS_BOT_APP_ID: '1a96dc34-47e1-49a4-8e81-d83e39f5219a',
+      TEAMS_BOT_APP_SECRET: 'coke-dots-teams-e2e-secret',
+      DOTS_E2E_TEAMS_PROVIDER_URL: mockTeamsOrigin,
       DOTS_APP_URL: baseUrl,
       DOTS_E2E_GOOGLE_PROVIDER_URL: mockGoogleOrigin,
       DOTS_E2E_WATCH_PROVIDER_URL: mockWatchProviderOrigin,
@@ -840,6 +884,35 @@ async function sendSignedSlackMessageFromChrome(page: Page, signingSecret: strin
   await fixture.evaluate(element => element.remove());
 }
 
+async function sendTeamsActivityFromChrome(page: Page, activity: { id: string; text: string }) {
+  await page.evaluate(activity => {
+    const root = document.createElement('section');
+    root.id = 'teams-message-e2e-fixture';
+    const button = document.createElement('button');
+    button.type = 'button'; button.textContent = 'Send Teams message to Dot';
+    const result = document.createElement('output'); result.setAttribute('aria-label', 'Teams event response');
+    button.addEventListener('click', async () => {
+      const response = await fetch('/api/e2e/teams/activity', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'message', id: activity.id, channelId: 'msteams', serviceUrl: 'https://smba.trafficmanager.net/teams/',
+          from: { id: '29:teams-owner', aadObjectId: '3a96dc34-47e1-49a4-8e81-d83e39f5219a', name: 'Alpha Teams' },
+          recipient: { id: '28:coke-dots-bot' },
+          conversation: { id: 'a:alpha-personal-chat', conversationType: 'personal', tenantId: '2a96dc34-47e1-49a4-8e81-d83e39f5219a' },
+          text: activity.text,
+        }),
+      });
+      result.textContent = String(response.status);
+    });
+    root.append(button, result);
+    document.body.append(root);
+  }, activity);
+  const fixture = page.locator('#teams-message-e2e-fixture');
+  await fixture.getByRole('button', { name: 'Send Teams message to Dot' }).click();
+  await fixture.getByLabel('Teams event response').filter({ hasText: '200' }).waitFor({ state: 'visible' });
+  await fixture.evaluate(element => element.remove());
+}
+
 async function createTask(page: Page, instruction: string, scheduled = false) {
   if (scheduled) {
     await page.getByLabel('定期检查').check();
@@ -905,6 +978,7 @@ try {
   baseUrl = `http://127.0.0.1:${e2ePort}`;
   mockGoogleOrigin = await startMockGoogleProvider();
   mockSlackOrigin = await startMockSlackProvider();
+  mockTeamsOrigin = await startMockTeamsProvider();
   mockGoogleProxyOrigin = await startMockGoogleProxy();
   mockWatchProviderOrigin = await startMockWatchProvider();
   server = await startServer(e2ePort);
@@ -1751,6 +1825,46 @@ try {
         JOIN tasks t ON t.id=e.task_id AND t.tenant_id=e.tenant_id WHERE e.event_id=?`).get('EvChromeMentionE2E002') as
         { status: string; tenant_id: string; task_status: string; result: string };
       assert.deepEqual({ ...mention }, { status: 'delivered', tenant_id: oauthTestState.alphaSession!.tenant.id, task_status: 'done', result: 'Slack connector E2E reply received.' });
+    } finally { database.close(); }
+  });
+
+  await recordStep('Chrome links Microsoft Teams with a one-time code and routes a personal message through the task worker', async () => {
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    await (await taskNavigationItem(alphaPage!, alphaPrivateTask)).click();
+    const panel = alphaPage!.getByTestId('dot-context-panel');
+    await panel.waitFor({ state: 'visible' });
+    await panel.getByRole('button', { name: 'Microsoft Teams' }).click();
+    let dialog = alphaPage!.getByRole('dialog', { name: 'Set up Microsoft Teams' });
+    await dialog.waitFor({ state: 'visible' });
+    await dialog.getByRole('button', { name: 'Create connection code' }).click();
+    const code = (await alphaPage!.getByTestId('teams-link-code').locator('span').innerText()).trim();
+    assert.match(code, /^[A-F0-9]{24}$/);
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await sendTeamsActivityFromChrome(alphaPage!, { id: 'teams-link-event-e2e-001', text: `connect ${code}` });
+    await waitFor(() => mockTeamsPostedMessages.some(message => message.text.includes('now connected to your Dot')), 10_000);
+    await panel.getByRole('button', { name: 'Microsoft Teams' }).click();
+    dialog = alphaPage!.getByRole('dialog', { name: 'Set up Microsoft Teams' });
+    await dialog.getByRole('status').filter({ hasText: 'Connected as Alpha Teams' }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, 'teams-contact-connected');
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+
+    const promptBefore = mockModelPrompts.length;
+    await sendTeamsActivityFromChrome(alphaPage!, { id: 'teams-task-event-e2e-002', text: 'E2E Teams inbox request — answer with the connector result.' });
+    await waitFor(() => mockModelPrompts.slice(promptBefore).some(prompt => prompt.includes('E2E Teams inbox request — answer with the connector result.')), 15_000);
+    await waitFor(() => mockTeamsPostedMessages.some(message => message.conversationId === 'a:alpha-personal-chat' && message.text === 'Teams connector E2E reply received.'), 15_000);
+    const database = new DatabaseSync(join(testDataDir, 'dots.db'));
+    try {
+      const event = database.prepare(`SELECT e.status,e.tenant_id,e.task_id,t.status AS task_status,t.result FROM teams_inbox_events e
+        JOIN tasks t ON t.id=e.task_id AND t.tenant_id=e.tenant_id WHERE e.event_id=?`).get('teams-task-event-e2e-002') as
+        { status: string; tenant_id: string; task_id: string; task_status: string; result: string } | undefined;
+      assert(event, 'The Teams activity should be persisted beside its tenant task');
+      assert.deepEqual({ status: event.status, tenant_id: event.tenant_id, task_status: event.task_status, result: event.result }, {
+        status: 'delivered', tenant_id: oauthTestState.alphaSession!.tenant.id, task_status: 'done', result: 'Teams connector E2E reply received.',
+      });
+      const beta = await betaPage!.evaluate(async () => await (await fetch('/api/teams')).json()) as { linked: unknown };
+      assert.equal(beta.linked, null, 'Another Coke Dots tenant must not see Alpha’s Microsoft Teams identity');
+      const privateRows = database.prepare('SELECT COUNT(*) AS count FROM teams_user_links WHERE tenant_id<>?').get(oauthTestState.alphaSession!.tenant.id) as { count: number };
+      assert.equal(privateRows.count, 0);
     } finally { database.close(); }
   });
 
@@ -3118,6 +3232,7 @@ try {
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
   if (mockGoogleServer) await new Promise<void>(resolvePromise => mockGoogleServer!.close(() => resolvePromise()));
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
+  if (mockTeamsServer) await new Promise<void>(resolvePromise => mockTeamsServer!.close(() => resolvePromise()));
   if (mockGoogleProxyServer) await new Promise<void>(resolvePromise => mockGoogleProxyServer!.close(() => resolvePromise()));
   if (mockWatchServer) await new Promise<void>(resolvePromise => mockWatchServer!.close(() => resolvePromise()));
   testModelBaseUrl = '';

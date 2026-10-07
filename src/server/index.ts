@@ -13,6 +13,7 @@ import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
+import { TeamsService } from './teams.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -29,6 +30,7 @@ const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
 const auth = new AuthService(store, port);
 const slack = new SlackService(store, port);
+const teams = new TeamsService(store);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
@@ -137,6 +139,15 @@ const server = createServer(async (req, res) => {
     if (result.taskCreated) void worker.tick();
     return reply(res, result.status, result.body);
   }
+  if (path === '/teams/messages' && req.method === 'POST') {
+    let rawBody: Buffer;
+    try { rawBody = await readBytes(req, 128 * 1024); }
+    catch { return reply(res, 413, { error: 'Microsoft Teams activity body is too large' }); }
+    const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
+    const result = await teams.acceptActivity(rawBody, authorization);
+    if (result.taskCreated) void worker.tick();
+    return reply(res, result.status, result.body);
+  }
   if (!isLocalRequest(req, path)) return reply(res, 403, { error: 'Local access only' });
 
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
@@ -172,7 +183,20 @@ const server = createServer(async (req, res) => {
   const session = auth.session(req);
   if (!session) return reply(res, 401, { error: '请先使用 Google 登录' });
   if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+  if (path === '/api/e2e/teams/activity' && req.method === 'POST' && auth.e2eAuthAvailable()) {
+    let rawBody: Buffer;
+    try { rawBody = await readBytes(req, 128 * 1024); }
+    catch { return reply(res, 413, { error: 'Microsoft Teams activity body is too large' }); }
+    const result = teams.acceptE2EActivity(rawBody);
+    if (result.taskCreated) void worker.tick();
+    return reply(res, result.status, result.body);
+  }
   if (path === '/api/slack' && req.method === 'GET') return reply(res, 200, slack.snapshot(session.tenant.id));
+  if (path === '/api/teams' && req.method === 'GET') return reply(res, 200, teams.snapshot(session));
+  if (path === '/api/teams/link-code' && req.method === 'POST') {
+    const result = teams.createLinkCode(session);
+    return result.status === 200 ? reply(res, 200, result.value) : reply(res, result.status, { error: result.error });
+  }
   if (path === '/api/slack/oauth/start' && req.method === 'GET') return slack.begin(req, res, session);
   if (path === '/api/slack/contact' && req.method === 'POST') {
     const body = await readJson(req);
@@ -207,6 +231,7 @@ const server = createServer(async (req, res) => {
         else await computer?.close();
         computers.delete(tenantId);
         slack.clearTenant(tenantId);
+        teams.clearTenant(tenantId);
         await clearTenantRuntimeDirectories(runtimeDirectories);
         const reset = store.resetPersonalDot(tenantId, session.user.id);
         if (reset !== 'ok') return reply(res, 409, { error: 'Dot 工作区状态已改变，请刷新页面后重试。' });
@@ -817,6 +842,7 @@ server.listen(port, host, () => {
   worker.start();
   watchRunner.start();
   slack.start();
+  teams.start();
 });
 
 const shutdown = () => {
@@ -824,6 +850,7 @@ const shutdown = () => {
   worker.stop();
   watchRunner.stop();
   slack.stop();
+  teams.stop();
   for (const client of clients.keys()) client.end();
   clients.clear();
   server.close(() => store.close());

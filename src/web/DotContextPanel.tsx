@@ -10,13 +10,14 @@ const statusLabel: Record<TaskStatus, string> = {
   queued: 'Queued', working: 'Working', delegating: 'Parallel work', waiting: 'Needs you', scheduled: 'Scheduled', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
 };
 
-export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onStartCall, onOpenSlack, onSelectTask }: {
+export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onStartCall, onOpenSlack, onOpenTeams, onSelectTask }: {
   profile: Snapshot['profile'];
   state: Snapshot;
   tenantId: string;
   onOpenComputer: () => void;
   onStartCall: () => void;
   onOpenSlack: () => void;
+  onOpenTeams: () => void;
   onSelectTask: (taskId: string) => void;
 }) {
   const [computer, setComputer] = useState<ComputerState | null>(null);
@@ -45,6 +46,7 @@ export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSt
     <div className="context-quick-actions">
       <button type="button" onClick={onStartCall} aria-label="Call"><span aria-hidden="true">☎</span>Call</button>
       <button type="button" onClick={onOpenSlack} aria-label="Slack"><span className="slack-mark" aria-hidden="true">✣</span>Slack</button>
+      <button type="button" className="teams-quick-action" onClick={onOpenTeams} aria-label="Microsoft Teams"><span className="teams-mark" aria-hidden="true">T</span>Teams</button>
     </div>
 
     <ContextSection title="Computers" testId="context-computers">

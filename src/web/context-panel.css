@@ -3,3 +3,4 @@
 @media(max-width:700px){.chat-layout{flex-direction:column;overflow:auto}.chat-layout>.chat-panel{min-height:calc(100vh - 60px);flex:none}.dot-context-panel{width:auto;max-height:none;overflow:visible;padding:19px 18px 26px;border-top:1px solid #efeeec;border-left:0}.context-section{max-width:560px}.context-agent,.context-quick-actions{max-width:560px}}
 
 .context-status.stopped{background:#cf7772}
+.context-quick-actions{flex-wrap:wrap}.context-quick-actions .teams-quick-action{min-width:84px}.context-quick-actions .teams-mark{width:15px;height:15px;display:grid;place-items:center;border-radius:3px;background:#eaf0fb;color:#5874ad;font-size:10px;font-weight:700}

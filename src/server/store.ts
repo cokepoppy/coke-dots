@@ -18,6 +18,10 @@ export interface SlackInstallation { tenantId: string; teamId: string; teamName:
 export interface SlackInboundMessage { eventId: string; teamId: string; slackUserId: string; sourceChannelId: string; replyChannelId: string; eventType: 'message.im' | 'app_mention'; text: string }
 export interface SlackInboxResult { status: 'queued' | 'ignored' | 'duplicate'; tenantId?: string; taskId?: string }
 export interface SlackDeliveryCandidate { eventId: string; tenantId: string; teamId: string; replyChannelId: string; task: Task; attempts: number }
+export interface TeamsIdentity { tenantId: string; microsoftTenantId: string; microsoftUserId: string; aadObjectId: string; displayName: string; conversationId: string; serviceUrl: string; linkedAt: string }
+export interface TeamsInboundMessage { eventId: string; eventKey: string; microsoftTenantId: string; microsoftUserId: string; aadObjectId: string; displayName: string; conversationId: string; serviceUrl: string; text: string }
+export interface TeamsInboxResult { status: 'queued' | 'linked' | 'ignored' | 'duplicate'; tenantId?: string; taskId?: string }
+export interface TeamsDeliveryCandidate { eventId: string; eventKey: string; tenantId: string; conversationId: string; serviceUrl: string; task: Task; attempts: number }
 export interface StoredTaskAttachment extends AttachmentSummary { tenantId: string; uploadedBy: string; taskId: string | null; content: Uint8Array; createdAt: string }
 export type PersonalDotResetResult = 'ok' | 'not-found' | 'not-personal' | 'not-owner' | 'shared';
 
@@ -79,6 +83,25 @@ export class Store {
         attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, last_error TEXT, created_at TEXT NOT NULL, delivered_at TEXT
       );
       CREATE INDEX IF NOT EXISTS slack_inbox_delivery ON slack_inbox_events(status,retry_at,created_at);
+      CREATE TABLE IF NOT EXISTS teams_link_codes (
+        code_hash TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
+        expires_at TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS teams_link_codes_expiry ON teams_link_codes(expires_at);
+      CREATE TABLE IF NOT EXISTS teams_user_links (
+        tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id), microsoft_tenant_id TEXT NOT NULL, microsoft_user_id TEXT NOT NULL,
+        aad_object_id TEXT NOT NULL, display_name TEXT NOT NULL, conversation_id TEXT NOT NULL, service_url TEXT NOT NULL,
+        linked_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id,microsoft_tenant_id,aad_object_id)
+      );
+      CREATE INDEX IF NOT EXISTS teams_user_links_lookup ON teams_user_links(microsoft_tenant_id,aad_object_id,tenant_id);
+      CREATE TABLE IF NOT EXISTS teams_inbox_events (
+        event_key TEXT PRIMARY KEY, event_id TEXT NOT NULL, tenant_id TEXT REFERENCES tenants(id), microsoft_tenant_id TEXT NOT NULL,
+        microsoft_user_id TEXT NOT NULL, aad_object_id TEXT NOT NULL, conversation_id TEXT NOT NULL, service_url TEXT NOT NULL,
+        task_id TEXT, status TEXT NOT NULL CHECK(status IN ('ignored','linked','pending','delivered','dead')),
+        attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, last_error TEXT, created_at TEXT NOT NULL, delivered_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS teams_inbox_delivery ON teams_inbox_events(status,retry_at,created_at);
       CREATE TABLE IF NOT EXISTS desktop_handoffs (
         handoff_hash TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id), tenant_id TEXT REFERENCES tenants(id), expires_at TEXT NOT NULL
       );
@@ -394,6 +417,129 @@ export class Store {
 
   removeSlackInstallation(tenantId: string, teamId: string) {
     return Number(this.db.prepare('DELETE FROM slack_installations WHERE tenant_id=? AND team_id=?').run(tenantId, teamId).changes) > 0;
+  }
+
+  createTeamsLinkCode(codeHash: string, tenantId: string, userId: string, expiresAt: string, createdAt = new Date().toISOString()) {
+    const member = this.db.prepare('SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=?').get(tenantId, userId);
+    if (!member) throw new Error('Microsoft Teams connection must belong to a Coke Dots workspace member');
+    this.db.prepare('DELETE FROM teams_link_codes WHERE expires_at<=?').run(createdAt);
+    this.db.prepare('DELETE FROM teams_link_codes WHERE tenant_id=? AND user_id=?').run(tenantId, userId);
+    this.db.prepare('INSERT INTO teams_link_codes(code_hash,tenant_id,user_id,expires_at,created_at) VALUES (?,?,?,?,?)')
+      .run(codeHash, tenantId, userId, expiresAt, createdAt);
+  }
+
+  connectTeamsIdentity(codeHash: string, message: TeamsInboundMessage, now = new Date().toISOString()): TeamsInboxResult {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (this.db.prepare('SELECT 1 FROM teams_inbox_events WHERE event_key=?').get(message.eventKey)) {
+        this.db.exec('COMMIT');
+        return { status: 'duplicate' };
+      }
+      const code = this.db.prepare(`SELECT tenant_id AS tenantId,user_id AS userId,expires_at AS expiresAt
+        FROM teams_link_codes WHERE code_hash=?`).get(codeHash) as { tenantId: string; userId: string; expiresAt: string } | undefined;
+      const member = code && code.expiresAt > now && this.db.prepare('SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=?').get(code.tenantId, code.userId);
+      if (!code || !member) {
+        this.db.prepare(`INSERT INTO teams_inbox_events(event_key,event_id,microsoft_tenant_id,microsoft_user_id,aad_object_id,conversation_id,service_url,status,created_at)
+          VALUES (?,?,?,?,?,?,?,'ignored',?)`)
+          .run(message.eventKey, message.eventId, message.microsoftTenantId, message.microsoftUserId, message.aadObjectId, message.conversationId, message.serviceUrl, now);
+        this.db.exec('COMMIT');
+        return { status: 'ignored' };
+      }
+      this.db.prepare('DELETE FROM teams_link_codes WHERE code_hash=?').run(codeHash);
+      this.db.prepare(`INSERT INTO teams_user_links(tenant_id,user_id,microsoft_tenant_id,microsoft_user_id,aad_object_id,display_name,conversation_id,service_url,linked_at,last_seen_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,microsoft_tenant_id,aad_object_id) DO UPDATE SET
+        user_id=excluded.user_id,microsoft_user_id=excluded.microsoft_user_id,display_name=excluded.display_name,conversation_id=excluded.conversation_id,
+        service_url=excluded.service_url,last_seen_at=excluded.last_seen_at`)
+        .run(code.tenantId, code.userId, message.microsoftTenantId, message.microsoftUserId, message.aadObjectId, message.displayName, message.conversationId, message.serviceUrl, now, now);
+      this.db.prepare(`INSERT INTO teams_inbox_events(event_key,event_id,tenant_id,microsoft_tenant_id,microsoft_user_id,aad_object_id,conversation_id,service_url,status,created_at)
+        VALUES (?,?,?,?,?,?,?,?,'linked',?)`)
+        .run(message.eventKey, message.eventId, code.tenantId, message.microsoftTenantId, message.microsoftUserId, message.aadObjectId, message.conversationId, message.serviceUrl, now);
+      this.db.exec('COMMIT');
+      return { status: 'linked', tenantId: code.tenantId };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  teamsIdentity(tenantId: string, userId: string): TeamsIdentity | null {
+    const row = this.db.prepare(`SELECT l.tenant_id AS tenantId,l.microsoft_tenant_id AS microsoftTenantId,l.microsoft_user_id AS microsoftUserId,
+      l.aad_object_id AS aadObjectId,l.display_name AS displayName,l.conversation_id AS conversationId,l.service_url AS serviceUrl,l.linked_at AS linkedAt
+      FROM teams_user_links l JOIN memberships m ON m.tenant_id=l.tenant_id AND m.user_id=l.user_id WHERE l.tenant_id=? AND l.user_id=?
+      ORDER BY l.last_seen_at DESC LIMIT 1`).get(tenantId, userId) as TeamsIdentity | undefined;
+    return row || null;
+  }
+
+  createTeamsInboxTask(message: TeamsInboundMessage): TeamsInboxResult {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (this.db.prepare('SELECT 1 FROM teams_inbox_events WHERE event_key=?').get(message.eventKey)) {
+        this.db.exec('COMMIT');
+        return { status: 'duplicate' };
+      }
+      const matches = this.db.prepare(`SELECT DISTINCT l.tenant_id AS tenantId,l.microsoft_user_id AS microsoftUserId
+        FROM teams_user_links l JOIN memberships m ON m.tenant_id=l.tenant_id AND m.user_id=l.user_id
+        WHERE l.microsoft_tenant_id=? AND l.aad_object_id=?`)
+        .all(message.microsoftTenantId, message.aadObjectId) as { tenantId: string; microsoftUserId: string }[];
+      const now = new Date().toISOString();
+      if (matches.length !== 1 || !message.text.trim()) {
+        this.db.prepare(`INSERT INTO teams_inbox_events(event_key,event_id,microsoft_tenant_id,microsoft_user_id,aad_object_id,conversation_id,service_url,status,created_at)
+          VALUES (?,?,?,?,?,?,?,'ignored',?)`)
+          .run(message.eventKey, message.eventId, message.microsoftTenantId, message.microsoftUserId, message.aadObjectId, message.conversationId, message.serviceUrl, now);
+        this.db.exec('COMMIT');
+        return { status: 'ignored' };
+      }
+
+      const { tenantId } = matches[0];
+      const instruction = message.text.trim().slice(0, 4000);
+      const id = randomUUID();
+      const title = instruction.split(/[.!?。！？\n]/)[0].slice(0, 64) || 'Microsoft Teams message';
+      const effortSetting = this.getSetting('reasoningEffort', tenantId);
+      const reasoningEffort = isReasoningEffort(effortSetting) ? effortSetting : 'high';
+      this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode)
+        VALUES (?,?,?,?, 'queued',0,?,NULL,NULL,NULL,?,?, 'model',?,NULL,NULL,'standard')`)
+        .run(id, tenantId, title, instruction, now, now, now, reasoningEffort);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,\'[]\')')
+        .run(tenantId, id, 'user', instruction, now);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,\'[]\')')
+        .run(tenantId, id, 'system', '通过 Microsoft Teams 收到新消息，已加入 Dot 工作队列。', now);
+      this.db.prepare(`UPDATE teams_user_links SET microsoft_user_id=?,display_name=?,conversation_id=?,service_url=?,last_seen_at=?
+        WHERE tenant_id=? AND microsoft_tenant_id=? AND aad_object_id=?`)
+        .run(message.microsoftUserId, message.displayName, message.conversationId, message.serviceUrl, now, tenantId, message.microsoftTenantId, message.aadObjectId);
+      this.db.prepare(`INSERT INTO teams_inbox_events(event_key,event_id,tenant_id,microsoft_tenant_id,microsoft_user_id,aad_object_id,conversation_id,service_url,task_id,status,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?, 'pending',?)`)
+        .run(message.eventKey, message.eventId, tenantId, message.microsoftTenantId, message.microsoftUserId, message.aadObjectId, message.conversationId, message.serviceUrl, id, now);
+      this.db.exec('COMMIT');
+      return { status: 'queued', tenantId, taskId: id };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  teamsDeliveryCandidates(now = new Date().toISOString(), limit = 20): TeamsDeliveryCandidate[] {
+    const rows = this.db.prepare(`SELECT e.event_id AS eventId,e.event_key AS eventKey,e.tenant_id AS tenantId,e.conversation_id AS conversationId,e.service_url AS serviceUrl,e.task_id AS taskId,e.attempts
+      FROM teams_inbox_events e JOIN tasks t ON t.tenant_id=e.tenant_id AND t.id=e.task_id
+      WHERE e.status='pending' AND (e.retry_at IS NULL OR e.retry_at<=?) AND t.status IN ('done','failed','waiting')
+      ORDER BY e.created_at,e.event_id LIMIT ?`).all(now, limit) as
+        { eventId: string; eventKey: string; tenantId: string; conversationId: string; serviceUrl: string; taskId: string; attempts: number }[];
+    return rows.flatMap(row => {
+      const task = this.getTask(row.taskId, row.tenantId);
+      return task ? [{ ...row, task }] : [];
+    });
+  }
+
+  markTeamsDeliverySent(eventKey: string, deliveredAt = new Date().toISOString()) {
+    this.db.prepare("UPDATE teams_inbox_events SET status='delivered',delivered_at=?,last_error=NULL WHERE event_key=? AND status='pending'")
+      .run(deliveredAt, eventKey);
+  }
+
+  markTeamsDeliveryFailed(eventKey: string, error: string, retryAt: string | null, maxAttempts = 5) {
+    const row = this.db.prepare('SELECT attempts FROM teams_inbox_events WHERE event_key=? AND status=\'pending\'').get(eventKey) as { attempts: number } | undefined;
+    if (!row) return;
+    const attempts = row.attempts + 1;
+    this.db.prepare("UPDATE teams_inbox_events SET attempts=?,retry_at=?,last_error=?,status=? WHERE event_key=? AND status='pending'")
+      .run(attempts, attempts >= maxAttempts ? null : retryAt, error.slice(0, 300), attempts >= maxAttempts ? 'dead' : 'pending', eventKey);
+  }
+
+  clearTeamsWorkspace(tenantId: string) {
+    this.db.prepare('DELETE FROM teams_link_codes WHERE tenant_id=?').run(tenantId);
+    this.db.prepare('DELETE FROM teams_user_links WHERE tenant_id=?').run(tenantId);
+    this.db.prepare('DELETE FROM teams_inbox_events WHERE tenant_id=?').run(tenantId);
   }
 
   createDesktopHandoff(handoffHash: string, expiresAt: string) {

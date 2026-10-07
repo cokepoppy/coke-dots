@@ -16,6 +16,7 @@
     "test:e2e:live-model": "npm run build && node --import tsx tests/e2e/live-model.e2e.ts",
     "test:e2e:k3d": "npm run build && node --import tsx tests/e2e/k3d-cloud-computer.e2e.ts",
     "test:live-model": "node --import tsx scripts/live-model-smoke.ts",
+    "teams:configure": "tsx scripts/configure-teams-secret.ts",
     "compare:reference": "node --import tsx scripts/compare-reference.ts",
     "start": "tsx src/server/index.ts",
     "build:server": "esbuild src/server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=server-dist/index.js",
