@@ -1056,10 +1056,11 @@ try {
   betaPage.on('pageerror', error => pageErrors.push(`beta: ${error.message}`));
   gammaPage.on('pageerror', error => pageErrors.push(`gamma: ${error.message}`));
 
-  await recordStep('Unauthenticated page and E2E-only sign-in control render', async () => {
+  await recordStep('Unauthenticated page explains the shared instance model profile', async () => {
     await alphaPage!.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await alphaPage!.getByRole('link', { name: '使用 Google 登录' }).waitFor({ state: 'visible' });
     await alphaPage!.getByTestId('e2e-sign-in').waitFor({ state: 'visible' });
+    assert.match(await alphaPage!.locator('.auth-card').innerText(), /每个工作区的任务、记录和浏览器会话相互隔离；此 Coke Dots 实例的模型 API 凭据由所有 Google 账号和工作区共用/);
     await screenshot(alphaPage!, '01-login');
   });
 

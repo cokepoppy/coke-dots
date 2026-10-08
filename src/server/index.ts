@@ -577,7 +577,7 @@ const server = createServer(async (req, res) => {
       if (engine === 'claude') return reply(res, 400, { error: 'Claude Code 暂未支持；可选择 Pi 或 DeepSeek Harness。' });
       const remoteEngineAvailable = process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && configuredDesktopEngines().includes(engine);
       if (engine !== 'model' && !adapters[engine].available(session.tenant.id) && !remoteEngineAvailable) {
-        return reply(res, 400, { error: '当前工作区不可使用此 Agent 内核，请配置本工作区的模型 API。' });
+        return reply(res, 400, { error: '当前 Coke Dots 实例未启用此 Agent 内核，请检查实例级模型 API 配置和内核安装。' });
       }
       const reasoningEffort = body.reasoningEffort === undefined ? store.getSetting('reasoningEffort', session.tenant.id) || 'high' : body.reasoningEffort;
       if (!isReasoningEffort(reasoningEffort)) return reply(res, 400, { error: 'Invalid reasoning effort' });
