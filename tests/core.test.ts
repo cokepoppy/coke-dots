@@ -28,6 +28,67 @@ test('tasks, redirects and profile survive database reopen', () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('scheduled run history and unread attention are durable and tenant scoped', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-scheduled-runs-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'scheduled-runs-alpha', email: 'scheduled-runs-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'scheduled-runs-beta', email: 'scheduled-runs-beta@example.test', name: 'Beta' });
+    const alphaTask = store.createTask('Check the release timeline', 60, 'model', alpha.tenant.id);
+    const betaTask = store.createTask('Check the support queue', 60, 'model', beta.tenant.id);
+    const executionKey = alphaTask.nextRunAt!;
+    const startedAt = '2026-10-09T01:00:00.000Z';
+    const finishedAt = '2026-10-09T01:00:12.000Z';
+    const recorded = store.recordScheduledTaskRun(alpha.tenant.id, alphaTask.id, executionKey, {
+      status: 'complete', result: 'The release remains on track.', needsAttention: true, startedAt, finishedAt,
+    });
+
+    assert.equal(store.snapshot(true, [], undefined, alpha.tenant.id).tasks.find(task => task.id === alphaTask.id)?.unreadScheduledRunCount, 1);
+    assert.equal(store.snapshot(true, [], undefined, beta.tenant.id).tasks.find(task => task.id === betaTask.id)?.unreadScheduledRunCount, 0);
+    assert.deepEqual(store.scheduledTaskRuns(beta.tenant.id, alphaTask.id), [], 'A workspace cannot read another workspace task history');
+    assert.equal(store.markScheduledTaskRunsRead(beta.tenant.id, alphaTask.id), 0, 'A workspace cannot clear another workspace unread marker');
+    assert.equal(store.markScheduledTaskRunsRead(alpha.tenant.id, alphaTask.id), 1);
+    assert.equal(store.markScheduledTaskRunsRead(alpha.tenant.id, alphaTask.id), 0, 'Reading the same run is idempotent');
+
+    const duplicate = store.recordScheduledTaskRun(alpha.tenant.id, alphaTask.id, executionKey, {
+      status: 'complete', result: 'The release remains on track.', needsAttention: true, startedAt, finishedAt,
+    });
+    assert.equal(duplicate.id, recorded.id, 'A retried scheduler dispatch must not create a duplicate run');
+    assert(duplicate.readAt, 'An idempotent replay must not make an already read result unread again');
+    assert.equal(store.snapshot(true, [], undefined, alpha.tenant.id).tasks.find(task => task.id === alphaTask.id)?.unreadScheduledRunCount, 0);
+    store.close();
+
+    store = new Store(directory);
+    assert.equal(store.scheduledTaskRuns(alpha.tenant.id, alphaTask.id)[0]?.result, 'The release remains on track.');
+    assert(store.scheduledTaskRuns(alpha.tenant.id, alphaTask.id)[0]?.readAt, 'Run history and its read state must survive database reopen');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a due one-time continuation keeps its scheduled execution identity across service recovery', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-scheduled-recovery-'));
+  try {
+    let store = new Store(directory);
+    const user = store.signInGoogle({ subject: 'scheduled-recovery', email: 'scheduled-recovery@example.test', name: 'Scheduled Recovery' });
+    const task = store.createTask('Resume the release review after the approval arrives', null, 'model', user.tenant.id);
+    const executionKey = '2026-10-09T01:00:00.000Z';
+    store.updateTask(task.id, { status: 'scheduled', nextRunAt: executionKey, result: 'Checkpoint: waiting for approval status.' }, user.tenant.id);
+    assert.equal(store.claimDueTask(task.id, user.tenant.id, executionKey), true);
+    assert.equal(store.activeScheduledExecutionKey(task.id, user.tenant.id), executionKey);
+    store.close();
+
+    store = new Store(directory);
+    assert.equal(store.getTask(task.id, user.tenant.id)?.status, 'queued', 'A worker interrupted by a service restart should be queued for recovery');
+    assert.equal(store.activeScheduledExecutionKey(task.id, user.tenant.id), executionKey, 'The scheduled execution identity must survive recovery');
+    const run = store.recordScheduledTaskRun(user.tenant.id, task.id, executionKey, {
+      status: 'complete', result: 'Approval arrived; the release review is complete.', needsAttention: true, startedAt: executionKey,
+    });
+    assert.equal(run.id, store.scheduledTaskRuns(user.tenant.id, task.id)[0]?.id);
+    assert.equal(store.activeScheduledExecutionKey(task.id, user.tenant.id), null, 'A completed run must release its in-progress identity');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('dot appearance is durable and isolated to its tenant', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-appearance-'));
   try {
@@ -673,6 +734,12 @@ test('background worker stores real model result and schedules a future run', as
     assert.match(receivedPrompt, /When the user asks for automation ideas, keep them as inactive proposals and choose done; do not schedule them unless the user chooses an idea and asks to set it up with its sources, timing, and review requirements\./, 'The model prompt must keep automation brainstorming separate from active schedules');
     assert.ok(completed.nextRunAt && completed.nextRunAt > new Date().toISOString());
     assert.ok(store.snapshot(true).entries.some(e => e.taskId === task.id && e.kind === 'dot'));
+    const scheduledRuns = store.scheduledTaskRuns('legacy', task.id);
+    assert.equal(scheduledRuns.length, 1, 'The completed recurring execution should be recorded as one Scheduled run');
+    assert.equal(scheduledRuns[0]?.status, 'complete');
+    assert.equal(scheduledRuns[0]?.result, 'Checked the supplied information.');
+    assert.equal(scheduledRuns[0]?.needsAttention, true, 'A notified result should appear as unread until reviewed');
+    assert.equal(store.snapshot(true).tasks.find(item => item.id === task.id)?.unreadScheduledRunCount, 1);
     assert.deepEqual(notifications, [{ title: 'Dot', body: '“Check supplied information”已有新结果。' }]);
   } finally {
     worker.stop(); store.close();

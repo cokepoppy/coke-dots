@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
+import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScheduledTaskRun, type ScheduledTaskRunStatus, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -125,8 +125,17 @@ export class Store {
         schedule_minutes INTEGER, result TEXT, error TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         engine TEXT NOT NULL DEFAULT 'model', reasoning_effort TEXT NOT NULL DEFAULT 'high', agent_session_id TEXT, parent_task_id TEXT,
-        execution_mode TEXT NOT NULL DEFAULT 'standard', task_context TEXT NOT NULL DEFAULT '', created_by_user_id TEXT REFERENCES users(id)
+        execution_mode TEXT NOT NULL DEFAULT 'standard', task_context TEXT NOT NULL DEFAULT '', created_by_user_id TEXT REFERENCES users(id),
+        active_scheduled_execution_key TEXT
       );
+      CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        execution_key TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('complete','waiting','failed')),
+        result TEXT, error TEXT, needs_attention INTEGER NOT NULL CHECK(needs_attention IN (0,1)), read_at TEXT,
+        started_at TEXT NOT NULL, finished_at TEXT NOT NULL, UNIQUE(tenant_id,task_id,execution_key)
+      );
+      CREATE INDEX IF NOT EXISTS scheduled_task_runs_history ON scheduled_task_runs(tenant_id,task_id,finished_at DESC);
+      CREATE INDEX IF NOT EXISTS scheduled_task_runs_unread ON scheduled_task_runs(tenant_id,task_id,needs_attention,read_at);
       CREATE TABLE IF NOT EXISTS proactive_research_reviews (
         source_task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
         tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -244,6 +253,7 @@ export class Store {
     this.addColumnIfMissing('tenant_profiles', 'avatar_setup_completed_at', 'TEXT');
     this.addColumnIfMissing('tenant_profiles', 'onboarding_completed_at', 'TEXT');
     this.addColumnIfMissing('tenant_profiles', 'onboarding_completed_name', 'TEXT');
+    this.addColumnIfMissing('tasks', 'active_scheduled_execution_key', 'TEXT');
     this.db.exec('UPDATE tenant_profiles SET avatar_setup_completed_at=onboarding_completed_at WHERE avatar_setup_completed_at IS NULL AND onboarding_completed_at IS NOT NULL');
     this.db.exec("UPDATE tenant_profiles SET character='custom' WHERE character='classic'");
     this.ensurePageApprovalCancellationStatus();
@@ -926,7 +936,8 @@ export class Store {
         localComputer: this.getSetting('localComputerEnabled', tenantId) !== 'false',
         configured: this.getSetting('computerChoiceConfigured', tenantId) === 'true',
       },
-      tasks: (this.db.prepare(`SELECT * FROM tasks WHERE tenant_id=? AND (
+      tasks: (this.db.prepare(`SELECT tasks.*,(SELECT COUNT(*) FROM scheduled_task_runs runs WHERE runs.tenant_id=tasks.tenant_id AND runs.task_id=tasks.id AND runs.needs_attention=1 AND runs.read_at IS NULL) AS unread_scheduled_run_count
+      FROM tasks WHERE tenant_id=? AND (
         execution_mode!='proactive-research' OR status IN ('queued','working','failed','paused','stopped') OR (status='done' AND result IS NOT NULL)
       ) ORDER BY priority DESC,created_at DESC`).all(tenantId) as Record<string, unknown>[]).map(toTask),
       watches: (this.db.prepare('SELECT * FROM watches WHERE tenant_id=? ORDER BY rowid DESC').all(tenantId) as Record<string, unknown>[]).map(toWatch),
@@ -1500,9 +1511,15 @@ export class Store {
 
   /** Atomically claim due work so overlapping worker processes cannot run one task twice. */
   claimDueTask(id: string, tenantId: string, now = new Date().toISOString()) {
-    const result = this.db.prepare("UPDATE tasks SET status='working',error=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status IN ('queued','scheduled') AND next_run_at<=?")
+    const result = this.db.prepare("UPDATE tasks SET status='working',error=NULL,updated_at=?,active_scheduled_execution_key=CASE WHEN status='scheduled' THEN next_run_at ELSE active_scheduled_execution_key END WHERE tenant_id=? AND id=? AND status IN ('queued','scheduled') AND next_run_at<=?")
       .run(now, tenantId, id, now);
     return Number(result.changes) === 1;
+  }
+
+  activeScheduledExecutionKey(id: string, tenantId: string): string | null {
+    const row = this.db.prepare('SELECT active_scheduled_execution_key AS executionKey FROM tasks WHERE tenant_id=? AND id=?')
+      .get(tenantId, id) as { executionKey: string | null } | undefined;
+    return row?.executionKey ?? null;
   }
 
   updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes' | 'scheduleSpec' | 'agentSessionId'>>, tenantId = 'legacy'): Task | null {
@@ -1512,6 +1529,36 @@ export class Store {
     this.db.prepare('UPDATE tasks SET instruction=?,status=?,priority=?,next_run_at=?,schedule_minutes=?,schedule_json=?,result=?,error=?,updated_at=?,agent_session_id=? WHERE tenant_id=? AND id=?')
       .run(next.instruction, next.status, next.priority, next.nextRunAt, next.scheduleMinutes, next.scheduleSpec ? JSON.stringify(next.scheduleSpec) : null, next.result, next.error, next.updatedAt, next.agentSessionId, tenantId, id);
     return this.getTask(id, tenantId);
+  }
+
+  recordScheduledTaskRun(tenantId: string, taskId: string, executionKey: string, run: {
+    status: ScheduledTaskRunStatus; result?: string | null; error?: string | null; needsAttention: boolean; startedAt: string; finishedAt?: string;
+  }): ScheduledTaskRun {
+    if (!this.getTask(taskId, tenantId)) throw new Error('Scheduled task not found');
+    const id = randomUUID();
+    const finishedAt = run.finishedAt || new Date().toISOString();
+    this.db.prepare(`INSERT INTO scheduled_task_runs(id,tenant_id,task_id,execution_key,status,result,error,needs_attention,read_at,started_at,finished_at)
+      VALUES (?,?,?,?,?,?,?,?,NULL,?,?)
+      ON CONFLICT(tenant_id,task_id,execution_key) DO UPDATE SET status=excluded.status,result=excluded.result,error=excluded.error,
+      needs_attention=MAX(scheduled_task_runs.needs_attention,excluded.needs_attention),finished_at=excluded.finished_at`)
+      .run(id, tenantId, taskId, executionKey, run.status, run.result ?? null, run.error ?? null, run.needsAttention ? 1 : 0, run.startedAt, finishedAt);
+    const row = this.db.prepare('SELECT * FROM scheduled_task_runs WHERE tenant_id=? AND task_id=? AND execution_key=?')
+      .get(tenantId, taskId, executionKey) as Record<string, unknown>;
+    this.db.prepare('UPDATE tasks SET active_scheduled_execution_key=NULL WHERE tenant_id=? AND id=? AND active_scheduled_execution_key=?')
+      .run(tenantId, taskId, executionKey);
+    return toScheduledTaskRun(row);
+  }
+
+  scheduledTaskRuns(tenantId: string, taskId: string, limit = 20): ScheduledTaskRun[] {
+    const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    return (this.db.prepare('SELECT * FROM scheduled_task_runs WHERE tenant_id=? AND task_id=? ORDER BY finished_at DESC,id DESC LIMIT ?')
+      .all(tenantId, taskId, boundedLimit) as Record<string, unknown>[]).map(toScheduledTaskRun);
+  }
+
+  markScheduledTaskRunsRead(tenantId: string, taskId: string): number {
+    const now = new Date().toISOString();
+    return Number(this.db.prepare('UPDATE scheduled_task_runs SET read_at=? WHERE tenant_id=? AND task_id=? AND needs_attention=1 AND read_at IS NULL')
+      .run(now, tenantId, taskId).changes);
   }
 
   stopTask(id: string, tenantId: string, actorUserId: string): { task: Task; cancelledApprovals: number } | null {
@@ -1818,7 +1865,16 @@ function toTask(r: Record<string, unknown>): Task {
     scheduleMinutes: scheduleMinutes !== null ? scheduleMinutes : scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null,
     scheduleSpec,
     result: r.result == null ? null : String(r.result), error: r.error == null ? null : String(r.error),
-    createdAt: String(r.created_at), updatedAt: String(r.updated_at),
+    createdAt: String(r.created_at), updatedAt: String(r.updated_at), unreadScheduledRunCount: Number(r.unread_scheduled_run_count || 0),
+  };
+}
+
+function toScheduledTaskRun(r: Record<string, unknown>): ScheduledTaskRun {
+  return {
+    id: String(r.id), tenantId: String(r.tenant_id), taskId: String(r.task_id), status: r.status as ScheduledTaskRunStatus,
+    result: r.result == null ? null : String(r.result), error: r.error == null ? null : String(r.error),
+    needsAttention: Number(r.needs_attention) === 1, readAt: r.read_at == null ? null : String(r.read_at),
+    startedAt: String(r.started_at), finishedAt: String(r.finished_at),
   };
 }
 

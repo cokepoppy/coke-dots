@@ -735,6 +735,18 @@ const server = createServer(async (req, res) => {
       }
       return reply(res, 404, { error: 'Not found' });
     }
+    const scheduledRunsMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/scheduled-runs(?:\/(read))?$/);
+    if (scheduledRunsMatch) {
+      const task = store.getTask(scheduledRunsMatch[1], session.tenant.id);
+      if (!task) return reply(res, 404, { error: 'Task not found' });
+      if (req.method === 'GET' && !scheduledRunsMatch[2]) return reply(res, 200, store.scheduledTaskRuns(session.tenant.id, task.id));
+      if (req.method === 'POST' && scheduledRunsMatch[2] === 'read') {
+        const markedRead = store.markScheduledTaskRunsRead(session.tenant.id, task.id);
+        if (markedRead) publish();
+        return reply(res, 200, { markedRead });
+      }
+      return reply(res, 405, { error: 'Method not allowed' });
+    }
     const taskMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)$/);
     if (taskMatch && req.method === 'PATCH') {
       const old = store.getTask(taskMatch[1], session.tenant.id);

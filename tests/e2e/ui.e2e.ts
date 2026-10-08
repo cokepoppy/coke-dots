@@ -1623,7 +1623,7 @@ try {
     const detail = alphaPage!.getByTestId('scheduled-detail');
     await detail.getByText('Every 60 minutes', { exact: true }).waitFor({ state: 'visible' });
     assert.ok((await detail.innerText()).includes(scheduledTask));
-    await detail.getByText('Failed', { exact: true }).waitFor({ state: 'visible' });
+    await detail.locator('.scheduled-status.failed').waitFor({ state: 'visible' });
     assert.match(await detail.innerText(), /模型 API 内核不可用，任务没有执行。当前 Coke Dots 实例缺少API 密钥和模型名称/);
     assert.match(await detail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
     const search = alphaPage!.getByLabel('Search scheduled tasks');
@@ -3107,10 +3107,43 @@ try {
     await clickNav(alphaPage!, 'Scheduled');
     const item = alphaPage!.locator('.scheduled-item').filter({ hasText: instruction });
     await item.waitFor({ state: 'visible' });
+    const scheduledTaskId = await alphaPage!.evaluate(async goal => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; unreadScheduledRunCount?: number }[] };
+      const task = state.tasks.find(candidate => candidate.instruction === goal);
+      if (!task) throw new Error('Recurring task missing from Scheduled state');
+      return { id: task.id, unread: task.unreadScheduledRunCount || 0 };
+    }, instruction);
+    assert.equal(scheduledTaskId.unread, 2, 'Both notified recurring results should remain unread until opened');
+    const unreadMarker = item.locator('.scheduled-item-unread');
+    await unreadMarker.waitFor({ state: 'visible' });
+    const unreadRuns = await alphaPage!.evaluate(async id => fetch(`/api/tasks/${id}/scheduled-runs`).then(response => response.json()), scheduledTaskId.id) as { readAt: string | null; result: string | null }[];
+    assert.equal(unreadRuns.length, 2, 'Each recurring execution should be preserved in run history');
+    assert(unreadRuns.every(run => run.readAt === null), 'Newly reported scheduled results should start unread');
+    let failScheduledHistoryOnce = true;
+    const scheduledRunsRoute = `**/api/tasks/${scheduledTaskId.id}/scheduled-runs`;
+    await alphaPage!.route(scheduledRunsRoute, async route => {
+      if (route.request().method() === 'GET' && failScheduledHistoryOnce) {
+        failScheduledHistoryOnce = false;
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'E2E simulated history read failure' }) });
+        return;
+      }
+      await route.continue();
+    });
     await item.click();
+    await alphaPage!.getByRole('alert').filter({ hasText: 'Unable to load scheduled run history' }).waitFor({ state: 'visible' });
+    await unreadMarker.waitFor({ state: 'visible' });
+    const unreadAfterLoadFailure = await alphaPage!.evaluate(async id => fetch(`/api/tasks/${id}/scheduled-runs`).then(response => response.json()), scheduledTaskId.id) as { readAt: string | null }[];
+    assert(unreadAfterLoadFailure.every(run => run.readAt === null), 'Failed history loading must not clear unread attention');
+    await item.click();
+    await unreadMarker.waitFor({ state: 'detached' });
     const detail = alphaPage!.getByTestId('scheduled-detail');
     await detail.getByText('Every 1 minute', { exact: true }).waitFor({ state: 'visible' });
-    await detail.getByText('The recurring check completed.', { exact: false }).waitFor({ state: 'visible' });
+    await detail.locator('.scheduled-result').getByText('The recurring check completed.', { exact: true }).waitFor({ state: 'visible' });
+    await detail.getByTestId('scheduled-run-history').locator('.scheduled-run').nth(1).waitFor({ state: 'visible' });
+    assert.equal(await detail.locator('.scheduled-run').count(), 2, 'Scheduled should show both recent executions');
+    const readRuns = await alphaPage!.evaluate(async id => fetch(`/api/tasks/${id}/scheduled-runs`).then(response => response.json()), scheduledTaskId.id) as { readAt: string | null }[];
+    assert(readRuns.every(run => Boolean(run.readAt)), 'Opening the task should persist the read state for its attention results');
+    await alphaPage!.unroute(scheduledRunsRoute);
     await screenshot(alphaPage!, '07e-recurring-run-rescheduled');
     await detail.getByRole('button', { name: 'Cancel schedule' }).click();
     await item.waitFor({ state: 'detached' });

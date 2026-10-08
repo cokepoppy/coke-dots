@@ -41,6 +41,22 @@ export interface Task {
   error: string | null;
   createdAt: string;
   updatedAt: string;
+  unreadScheduledRunCount?: number;
+}
+
+export type ScheduledTaskRunStatus = 'complete' | 'waiting' | 'failed';
+
+export interface ScheduledTaskRun {
+  id: string;
+  tenantId: string;
+  taskId: string;
+  status: ScheduledTaskRunStatus;
+  result: string | null;
+  error: string | null;
+  needsAttention: boolean;
+  readAt: string | null;
+  startedAt: string;
+  finishedAt: string;
 }
 
 export interface WebsiteSignInRequest {

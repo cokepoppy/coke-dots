@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, ScheduleSpec, Snapshot, Task, TaskStatus, VoiceCallSession, WebsiteSignInRequest } from '../shared/types.ts';
+import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, ScheduleSpec, ScheduledTaskRun, Snapshot, Task, TaskStatus, VoiceCallSession, WebsiteSignInRequest } from '../shared/types.ts';
 import { appFetch, appPath } from './api.ts';
 import './style.css';
 import './chat-theme.css';
@@ -493,6 +493,18 @@ function App() {
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
         onCancelTask={task => void act(task, 'cancelSchedule')}
         onWatchAction={(watch, action) => void actWatch(watch.id, action)}
+        onLoadTaskRuns={async taskId => {
+          const response = await appFetch(`/api/tasks/${taskId}/scheduled-runs`);
+          if (!response.ok) throw new Error('Unable to load scheduled run history');
+          return await response.json() as ScheduledTaskRun[];
+        }}
+        onMarkTaskRunsRead={async taskId => {
+          const response = await appFetch(`/api/tasks/${taskId}/scheduled-runs/read`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+          if (!response.ok) throw new Error('Unable to mark scheduled runs as read');
+          const result = await response.json() as { markedRead?: unknown };
+          if (typeof result.markedRead !== 'number' || !Number.isSafeInteger(result.markedRead) || result.markedRead < 0) throw new Error('Invalid scheduled run read response');
+          return result.markedRead;
+        }}
         onOpenTask={async task => {
           const response = await appFetch('/api/state');
           if (!response.ok) throw new Error('Unable to load the latest task state');

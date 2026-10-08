@@ -111,6 +111,14 @@ export class Worker {
   }
 
   private async run(task: Task, signal: AbortSignal) {
+    const activeScheduledExecutionKey = this.store.activeScheduledExecutionKey(task.id, task.tenantId);
+    const scheduledExecution = task.status === 'scheduled' || Boolean(scheduleForTask(task.scheduleSpec, task.scheduleMinutes)) || Boolean(activeScheduledExecutionKey);
+    const executionKey = activeScheduledExecutionKey || task.nextRunAt || task.id;
+    const runStartedAt = new Date().toISOString();
+    const recordRun = (status: 'complete' | 'waiting' | 'failed', result: string | null, error: string | null, needsAttention: boolean) => {
+      if (!scheduledExecution) return;
+      this.store.recordScheduledTaskRun(task.tenantId, task.id, executionKey, { status, result, error, needsAttention, startedAt: runStartedAt });
+    };
     loadSharedModelSettings(
       this.store.getSetting('sharedModelBaseUrl', 'legacy') || this.store.getSetting('modelBaseUrl', 'legacy'),
       this.store.getSetting('sharedModelName', 'legacy') || this.store.getSetting('modelName', 'legacy'),
@@ -132,6 +140,7 @@ export class Worker {
       const errorMessage = `${engineName} 内核不可用，任务没有执行。${reason}`;
       this.store.updateTask(task.id, { status: 'failed', error: errorMessage }, task.tenantId);
       this.store.addEntry('system', errorMessage, task.id, task.tenantId);
+      recordRun('failed', null, errorMessage, true);
       this.notifyIfEnabled(task.tenantId, `“${task.title}”无法开始，需要检查工作区设置。`);
       this.onChange();
       return;
@@ -236,11 +245,13 @@ export class Worker {
         this.store.updateTask(task.id, { status: 'waiting', nextRunAt: null, error: null }, task.tenantId);
         this.store.addEntry('dot', message, task.id, task.tenantId);
         this.store.addEntry('system', '网页研究在用户接管电脑后暂停；没有继续操作。', task.id, task.tenantId);
+        recordRun('waiting', message, null, true);
         this.onChange();
         return;
       }
       if (decision.websiteSignInRequest) {
         this.store.createWebsiteSignInRequest(task.tenantId, task.id, decision.websiteSignInRequest.url, decision.websiteSignInRequest.reason, decision.sessionId || current.agentSessionId);
+        recordRun('waiting', decision.websiteSignInRequest.reason, null, true);
         this.notifyIfEnabled(task.tenantId, `“${task.title}”需要你在工作区电脑中登录网站。`);
         this.onChange();
         return;
@@ -248,6 +259,7 @@ export class Worker {
       if (task.parentTaskId && decision.status === 'scheduled') throw new Error('子任务不能创建周期安排');
       if (decision.status === 'delegating') {
         const delegated = this.store.createDelegatedTasks(task.id, task.tenantId, decision.delegations || [], decision.message, decision.sessionId);
+        recordRun('complete', decision.message, null, decision.notifyUser !== false);
         if (decision.notifyUser !== false) this.notifyIfEnabled(task.tenantId, `“${task.title}”已拆分为 ${delegated.length} 项并行工作。`);
         this.onChange();
         return;
@@ -264,6 +276,7 @@ export class Worker {
       if (decision.pageAction) {
         if (actionRule?.mode === 'ask-before') {
           this.store.requestPageActionApproval(task.tenantId, task.id, decision.pageAction, decision.message, status === 'scheduled' ? 'scheduled' : 'done', nextRunAt, decision.sessionId || current.agentSessionId);
+          recordRun('waiting', decision.message, null, true);
           this.notifyIfEnabled(task.tenantId, `“${task.title}”正在等待你批准 Scratchpad 页面写入。`);
           this.onChange();
           return;
@@ -273,6 +286,7 @@ export class Worker {
           this.store.updateTask(task.id, { status: 'waiting', nextRunAt: null, error: null }, task.tenantId);
           this.store.addEntry('dot', message, task.id, task.tenantId);
           this.store.addEntry('system', '按发起账号的规则将 Scratchpad 写入交由用户手动完成；页面未更改。', task.id, task.tenantId);
+          recordRun('waiting', message, null, true);
           this.notifyIfEnabled(task.tenantId, `“${task.title}”需要你手动处理 Scratchpad 页面。`);
           this.onChange();
           return;
@@ -282,6 +296,7 @@ export class Worker {
           this.store.updateTask(task.id, { status: 'waiting', nextRunAt: null, error: null }, task.tenantId);
           this.store.addEntry('dot', message, task.id, task.tenantId);
           this.store.addEntry('system', '发起账号的规则要求明确的 Scratchpad 页面指令；页面未更改。', task.id, task.tenantId);
+          recordRun('waiting', message, null, true);
           this.notifyIfEnabled(task.tenantId, `“${task.title}”正在等待你确认 Scratchpad 页面操作。`);
           this.onChange();
           return;
@@ -306,6 +321,8 @@ export class Worker {
         nextRunAt, error: null, agentSessionId: decision.sessionId || current.agentSessionId,
       }, task.tenantId);
       this.store.addEntry('dot', outputMessage, task.id, task.tenantId);
+      recordRun(decision.status === 'waiting' ? 'waiting' : 'complete', decision.message, null,
+        decision.status === 'waiting' || (['done', 'delegating'].includes(decision.status) && decision.notifyUser !== false));
       if (decision.status === 'waiting') this.notifyIfEnabled(task.tenantId, `“${task.title}”正在等待你的回复。`);
       else if (decision.status === 'done' && decision.notifyUser !== false) this.notifyIfEnabled(task.tenantId, `“${task.title}”已有新结果。`);
       if (decision.status === 'done' && !task.parentTaskId && task.executionMode === 'standard') {
@@ -324,6 +341,7 @@ export class Worker {
       const message = error instanceof Error ? error.message : String(error);
       this.store.updateTask(task.id, { status: 'failed', error: message.slice(0, 400) }, task.tenantId);
       this.store.addEntry('system', `执行失败：${message.slice(0, 400)}`, task.id, task.tenantId);
+      recordRun('failed', null, message.slice(0, 400), true);
       this.notifyIfEnabled(task.tenantId, `“${task.title}”执行失败，需要你查看。`);
       this.onChange();
     }
