@@ -42,7 +42,13 @@ async function page() {
   const browserPage = context.pages()[0] || await context.newPage();
   if (!initialized) {
     initialized = true;
-    if (browserPage.url() === 'about:blank') await browserPage.setContent(computerWelcomePage('Dot'), { waitUntil: 'domcontentloaded' });
+    // Chromium may create chrome://newtab/ even when the desktop entrypoint
+    // explicitly starts it at about:blank. The readiness probe is also the
+    // first browser client, so initialize either empty startup page before
+    // the desktop entrypoint looks for the welcome-window title.
+    if (['about:blank', 'chrome://newtab/', 'chrome://newtab'].includes(browserPage.url())) {
+      await browserPage.setContent(computerWelcomePage('Dot'), { waitUntil: 'domcontentloaded' });
+    }
   }
   return browserPage;
 }

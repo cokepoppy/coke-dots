@@ -12,6 +12,7 @@
     "test": "DOTS_KEYCHAIN_SERVICE=com.cokepoppy.coke-dots.test node --import tsx --test tests/*.test.ts",
     "test:e2e": "npm run build && node --import tsx tests/e2e/ui.e2e.ts && node --import tsx tests/e2e/cloud-computer.e2e.ts",
     "test:e2e:proactive-demo": "npm run build && node --import tsx tests/e2e/proactive-research-demo.e2e.ts",
+    "test:e2e:proactive-demo:live": "npm run build && DOTS_PROACTIVE_DEMO_LIVE_KERNELS=1 node --import tsx tests/e2e/proactive-research-demo.e2e.ts",
     "test:e2e:demo-path": "npm run build:demo && node --import tsx tests/e2e/demo-base-path.e2e.ts",
     "test:e2e:public-demo": "node --import tsx tests/e2e/public-demo.e2e.ts",
     "test:e2e:live-model": "npm run build && node --import tsx tests/e2e/live-model.e2e.ts",

@@ -12,9 +12,23 @@ const scratch = await mkdtemp(`${tmpdir()}/coke-dots-webp-`);
 const gif = resolve(scratch, `${basename(output, '.webp')}.gif`);
 
 try {
+  const probe = JSON.parse(execFileSync('ffprobe', [
+    '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height',
+    '-show_entries', 'format=duration', '-of', 'json', source,
+  ], { encoding: 'utf8' }));
+  const stream = probe.streams?.[0];
+  const duration = Number(probe.format?.duration);
+  if (!stream?.width || !stream?.height || !Number.isFinite(duration) || duration <= 0) throw new Error('Could not read the source video dimensions and duration');
+  const outputWidth = Math.min(1152, stream.width);
+  const outputHeight = Math.round(stream.height * outputWidth / stream.width);
+  // Animated images are decoded as one vertically stacked bitmap by Sharp.
+  // Bound total decoded pixels so long real-agent recordings stay convertible.
+  const fps = Math.max(1, Math.min(8, Math.floor(220_000_000 / (outputWidth * outputHeight * duration))));
+  const playbackSpeed = duration > 20 ? 1.5 : 1;
+  console.log(`Converting ${duration.toFixed(1)}s recording at ${fps} fps and ${outputWidth} px width (${playbackSpeed}x playback)`);
   execFileSync('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-y', '-i', source,
-    '-vf', 'fps=8,scale=1152:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3',
+    '-vf', `fps=${fps},setpts=PTS/${playbackSpeed},scale=${outputWidth}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3`,
     '-loop', '0', '-f', 'gif', gif,
   ], { stdio: 'inherit' });
   await sharp(gif, { animated: true }).webp({ quality: 82, effort: 5, loop: 0 }).toFile(output);

@@ -79,6 +79,7 @@
 .home-mode .composer-bottom{flex:none;align-items:center;gap:6px;justify-content:flex-end;margin:0}
 .home-mode .attachment-button{width:28px;height:28px;margin-left:-6px}
 .home-mode .composer-bottom label,.home-mode .hint{display:none}
+.home-mode .composer-bottom label:first-child{display:flex}
 .reasoning-picker{display:flex;align-items:center;gap:1px;flex:none;color:#7d7a83;font-size:11px;white-space:nowrap}
 .reasoning-picker select{width:auto;max-width:82px;padding:0;border:0;outline:0;appearance:none;background:transparent;color:inherit;font-size:11px;cursor:pointer}
 .reasoning-picker span{font-size:12px;line-height:1}
