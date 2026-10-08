@@ -1442,6 +1442,13 @@ export class Store {
     ) SELECT * FROM ranked WHERE tenant_rank<=2 ORDER BY priority DESC,next_run_at ASC LIMIT 100`).all(now, ...pausedTenantIds) as Record<string, unknown>[]).map(toTask);
   }
 
+  /** Atomically claim due work so overlapping worker processes cannot run one task twice. */
+  claimDueTask(id: string, tenantId: string, now = new Date().toISOString()) {
+    const result = this.db.prepare("UPDATE tasks SET status='working',error=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status IN ('queued','scheduled') AND next_run_at<=?")
+      .run(now, tenantId, id, now);
+    return Number(result.changes) === 1;
+  }
+
   updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes' | 'scheduleSpec' | 'agentSessionId'>>, tenantId = 'legacy'): Task | null {
     const old = this.getTask(id, tenantId);
     if (!old) return null;

@@ -232,6 +232,8 @@ async function startMockModel() {
         const isSharedMemoryIsolation = prompt.includes('E2E shared task — do not receive personal Dot notes');
         const isSharedModelReuse = prompt.includes('E2E shared Model API — second Google account runs a task');
         const isQuietNotificationCheck = prompt.includes('E2E notification criteria — routine success');
+        const isSelfWakeResponsibility = prompt.includes('E2E personal agent self-wake — monitor the release approval');
+        const hasSelfWakeCheckpoint = prompt.includes('Prior result: Checkpoint: I reviewed the timeline and will verify the approval response next.');
         const isSlackInboxTask = prompt.includes('E2E Slack inbox request — answer with the connector result.');
         const isSlackMonitorTask = prompt.includes('E2E Slack monitor — investigate new bug reports');
         const isTeamsInboxTask = prompt.includes('E2E Teams inbox request — answer with the connector result.');
@@ -302,7 +304,7 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || (isSelfWakeResponsibility && hasSelfWakeCheckpoint) || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isPauseDelegationParent && !isPauseDelegationAggregate ? { status: 'delegating', message: 'I started one independent research task.', delegations: [
           { title: 'Independent research', instruction: 'E2E global pause delegated child — keep running during pause', engine: 'model' },
@@ -312,6 +314,12 @@ async function startMockModel() {
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
         ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isSharedModelReuse ? 'The second Google account used the Coke Dots instance Model API configuration.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
+        if (isSelfWakeResponsibility) {
+          if (!hasSelfWakeCheckpoint) Object.assign(decision, { status: 'scheduled', message: 'Checkpoint: I reviewed the timeline and will verify the approval response next.', nextMinutes: 30, notifyUser: false });
+          else {
+            Object.assign(decision, { status: 'done', message: 'The approval arrived; the release timeline is updated and this responsibility is complete.' });
+          }
+        }
         if (isSlackMonitorTask) Object.assign(decision, { message: 'Read-only review: this report describes a regression blocking checkout in #incidents.' });
         if (isDecisionNotificationCheck) Object.assign(decision, { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false });
         if (isWebsiteSignIn && !isWebsiteSignInContinuation) Object.assign(decision, {
@@ -714,6 +722,15 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeout = 3_
     if (Date.now() - start > timeout) throw new Error('Timed out waiting for browser task state');
     await delay(20);
   }
+}
+
+async function waitForAsyncPredicate(
+  page: Page,
+  predicate: (arg: any) => boolean | Promise<boolean>,
+  arg?: any,
+  options: { timeout?: number } = {},
+) {
+  await waitFor(() => page.evaluate(predicate, arg), options.timeout ?? 30_000);
 }
 
 function releaseHeldStopModel() {
@@ -2024,7 +2041,7 @@ try {
     await picker.waitFor({ state: 'visible' });
     assert.equal(await picker.inputValue(), 'high', 'A fresh workspace should use the observed High default');
     await picker.selectOption('xhigh');
-    await alphaPage!.waitForFunction(async () => {
+    await waitForAsyncPredicate(alphaPage!, async () => {
       const state = await fetch('/api/state').then(response => response.json()) as { preferences: { reasoningEffort: string } };
       return state.preferences.reasoningEffort === 'xhigh';
     });
@@ -2032,7 +2049,7 @@ try {
 
     const instruction = 'E2E reasoning effort — extra high';
     await createTask(alphaPage!, instruction);
-    await alphaPage!.waitForFunction(async (taskInstruction: string) => {
+    await waitForAsyncPredicate(alphaPage!, async (taskInstruction: string) => {
       const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string; reasoningEffort: string }[] };
       return state.tasks.some(task => task.instruction === taskInstruction && task.status === 'done' && task.reasoningEffort === 'xhigh');
     }, instruction, { timeout: 15_000 });
@@ -2046,7 +2063,7 @@ try {
     assert.equal(await betaPage!.getByTestId('reasoning-effort').inputValue(), 'high', 'The Alpha workspace setting leaked into Beta personal workspace');
 
     await picker.selectOption('high');
-    await alphaPage!.waitForFunction(async () => {
+    await waitForAsyncPredicate(alphaPage!, async () => {
       const state = await fetch('/api/state').then(response => response.json()) as { preferences: { reasoningEffort: string } };
       return state.preferences.reasoningEffort === 'high';
     });
@@ -2062,7 +2079,7 @@ try {
     await alphaPage!.getByRole('button', { name: 'Add monitor' }).click();
     const watchItem = alphaPage!.locator('.scheduled-item').filter({ hasText: 'https://example.test/e2e-page-change' });
     await watchItem.waitFor({ state: 'visible' });
-    await alphaPage!.waitForFunction(async url => {
+    await waitForAsyncPredicate(alphaPage!, async url => {
       const state = await fetch('/api/state').then(response => response.json()) as { watches: { url: string; lastStatus: string | null }[] };
       return state.watches.find(watch => watch.url === url)?.lastStatus === '已建立基线';
     }, 'https://example.test/e2e-page-change', { timeout: 10_000 });
@@ -2201,7 +2218,7 @@ try {
   await recordStep('Conditional notifications stay quiet for routine success but surface decisions in the chat', async () => {
     const quietInstruction = 'E2E notification criteria — routine success';
     await createTask(alphaPage!, quietInstruction);
-    await alphaPage!.waitForFunction(async (instruction: string) => {
+    await waitForAsyncPredicate(alphaPage!, async (instruction: string) => {
       const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string; result: string | null }[] };
       return state.tasks.some(task => task.instruction === instruction && task.status === 'done' && task.result === 'Routine check completed.');
     }, quietInstruction, { timeout: 15_000 });
@@ -2211,13 +2228,103 @@ try {
 
     const decisionInstruction = 'E2E notification criteria — ask the user';
     await createTask(alphaPage!, decisionInstruction);
-    await alphaPage!.waitForFunction(async (instruction: string) => {
+    await waitForAsyncPredicate(alphaPage!, async (instruction: string) => {
       const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
       return state.tasks.some(task => task.instruction === instruction && task.status === 'waiting');
     }, decisionInstruction, { timeout: 15_000 });
     await alphaPage!.locator('.timeline .pill.waiting').waitFor({ state: 'visible' });
     await alphaPage!.locator('.timeline .message.dot p').filter({ hasText: 'Should I continue or pause?' }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, '07c-user-decision-needed');
+  });
+
+  await recordStep('A personal Dot saves a checkpoint, survives service restart, then resumes the same responsibility', async () => {
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id'), oauthTestState.alphaSession!.tenant.id, 'Self-waking personal work must run in the account owner’s personal workspace');
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.locator('.composer-bottom select').selectOption('model');
+    const instruction = 'E2E personal agent self-wake — monitor the release approval';
+    const checkpoint = 'Checkpoint: I reviewed the timeline and will verify the approval response next.';
+    const finalResult = 'The approval arrived; the release timeline is updated and this responsibility is complete.';
+    const priorPromptCount = mockModelPrompts.length;
+    await createTask(alphaPage!, instruction);
+    await waitForAsyncPredicate(alphaPage!, async ({ instruction: target, checkpoint: expected }) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string; result: string | null; nextRunAt: string | null; scheduleMinutes: number | null; scheduleSpec: unknown }[] };
+      const task = state.tasks.find(item => item.instruction === target);
+      return task?.status === 'scheduled' && task.result === expected && Boolean(task.nextRunAt && Date.parse(task.nextRunAt) > Date.now()) && task.scheduleMinutes === null && task.scheduleSpec === null;
+    }, { instruction, checkpoint }, { timeout: 15_000 });
+    const taskIdentity = await alphaPage!.evaluate(async (target: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; result: string | null; engine: string }[] };
+      const task = state.tasks.find(item => item.instruction === target);
+      return task ? { id: task.id, result: task.result, engine: task.engine } : null;
+    }, instruction);
+    assert(taskIdentity, 'The self-waking responsibility was not persisted');
+    assert.equal(taskIdentity.result, checkpoint);
+    assert.equal(taskIdentity.engine, 'model', 'The wake-up continuity check must exercise the stateless Model API adapter');
+    const firstPrompts = mockModelPrompts.slice(priorPromptCount).filter(prompt => prompt.includes(instruction));
+    assert.equal(firstPrompts.length, 1, 'The initial assignment should make exactly one model call before waking');
+    assert.match(firstPrompts[0] || '', /Prior result: \(none\)/);
+
+    await clickNav(alphaPage!, 'Scheduled');
+    const scheduledItem = alphaPage!.locator('.scheduled-item').filter({ hasText: instruction });
+    await scheduledItem.waitFor({ state: 'visible' });
+    await scheduledItem.click();
+    const checkpointDetail = alphaPage!.getByTestId('scheduled-detail');
+    await checkpointDetail.getByText('One-time follow-up', { exact: true }).waitFor({ state: 'visible' });
+    await checkpointDetail.locator('.scheduled-result').getByText(checkpoint, { exact: true }).waitFor({ state: 'visible' });
+    assert.match(await checkpointDetail.locator('.scheduled-detail-meta').innerText(), /Next run:/);
+    await screenshot(alphaPage!, '07d-personal-agent-sleeping-checkpoint');
+
+    await restartService();
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+    await waitForAsyncPredicate(betaPage!, async () => (await fetch('/api/auth/me')).ok, null, { timeout: 10_000 });
+    await betaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await betaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+    await clickNav(alphaPage!, 'Scheduled');
+    const restoredItem = alphaPage!.locator('.scheduled-item').filter({ hasText: instruction });
+    await restoredItem.waitFor({ state: 'visible' });
+    await restoredItem.click();
+    await alphaPage!.getByTestId('scheduled-detail').locator('.scheduled-result').getByText(checkpoint, { exact: true }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '07d-personal-agent-checkpoint-restored');
+    const database = new DatabaseSync(join(testDataDir, 'dots.db'));
+    try {
+      const changed = database.prepare("UPDATE tasks SET next_run_at=? WHERE tenant_id=? AND id=? AND status='scheduled'")
+        .run(new Date(Date.now() - 1000).toISOString(), oauthTestState.alphaSession!.tenant.id, taskIdentity.id);
+      assert.equal(Number(changed.changes), 1, 'The persisted wake-up should remain scheduled after restarting the service');
+    } finally { database.close(); }
+
+    await waitForAsyncPredicate(alphaPage!, async ({ id, finalResult: expected }) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string; result: string | null; nextRunAt: string | null }[] };
+      const task = state.tasks.find(item => item.id === id);
+      return task?.status === 'done' && task.result === expected && task.nextRunAt === null;
+    }, { id: taskIdentity.id, finalResult }, { timeout: 15_000 });
+    const afterWake = await alphaPage!.evaluate(async (target: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string; result: string | null; nextRunAt: string | null; engine: string }[] };
+      return state.tasks.find(item => item.id === target) || null;
+    }, taskIdentity.id);
+    assert.equal(afterWake?.id, taskIdentity.id, 'Self-wake must update the same responsibility instead of creating a duplicate');
+    assert.equal(afterWake?.status, 'done', 'The self-waking task should finish after its persisted follow-up is due');
+    assert.equal(afterWake?.result, finalResult);
+    assert.equal(afterWake?.nextRunAt, null);
+    assert.equal(afterWake?.engine, 'model');
+    const historyDatabase = new DatabaseSync(join(testDataDir, 'dots.db'), { readOnly: true });
+    try {
+      const taskCount = historyDatabase.prepare('SELECT COUNT(*) AS count FROM tasks WHERE tenant_id=? AND instruction=?').get(oauthTestState.alphaSession!.tenant.id, instruction) as { count: number };
+      assert.equal(Number(taskCount.count), 1, 'Self-wake must not create a second task for the same responsibility');
+      const history = historyDatabase.prepare('SELECT kind,body FROM entries WHERE tenant_id=? AND task_id=? ORDER BY id').all(oauthTestState.alphaSession!.tenant.id, taskIdentity.id) as { kind: string; body: string }[];
+      assert.deepEqual(history.filter(entry => entry.kind === 'dot').map(entry => entry.body), [checkpoint, finalResult], 'The resumed result should follow the sleeping checkpoint in task history');
+      assert.equal(history.filter(entry => entry.kind === 'system' && entry.body === '使用 model 开始处理。').length, 2, 'The task worker should start once for assignment and once for its wake-up');
+    } finally { historyDatabase.close(); }
+
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+    await clickNav(alphaPage!, 'Activity');
+    const activityCard = alphaPage!.getByTestId(`task-card-${taskIdentity.id}`);
+    await activityCard.getByText(finalResult, { exact: true }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '07e-personal-agent-resumed-result');
+    await selectTenant(alphaPage!, 'Alpha Shared');
   });
 
   await recordStep('Voice calls dispatch tenant work, preserve in-call controls, and end without stopping assigned work', async () => {
@@ -2329,7 +2436,7 @@ try {
     await call.getByRole('button', { name: '结束通话' }).click();
     await call.waitFor({ state: 'hidden' });
     releaseHeldVoiceModel();
-    await alphaPage!.waitForFunction(async (text: string) => {
+    await waitForAsyncPredicate(alphaPage!, async (text: string) => {
       const snapshot = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; result: string | null }[] };
       return snapshot.tasks.some(task => task.instruction === text && task.status === 'done' && task.result === 'Voice request finished after the call ended.');
     }, instruction, { timeout: 15_000 });
@@ -2843,7 +2950,7 @@ try {
     await screenshot(alphaPage!, '07d-recurring-run-completed');
 
     await waitFor(() => promptCount() === initialCount + 2, 80_000);
-    await alphaPage!.waitForFunction(async instructionText => {
+    await waitForAsyncPredicate(alphaPage!, async instructionText => {
       const response = await fetch('/api/state');
       const state = await response.json() as { tasks: { instruction: string; status: string; nextRunAt: string | null }[] };
       const task = state.tasks.find(item => item.instruction === instructionText);
@@ -3065,7 +3172,7 @@ try {
     const addressBar = alphaPage!.locator('.browser-toolbar input');
     await addressBar.fill('https://www.amazon.com');
     await addressBar.press('Enter');
-    await alphaPage!.waitForFunction(async () => {
+    await waitForAsyncPredicate(alphaPage!, async () => {
       const response = await fetch('/api/computer');
       if (!response.ok) return false;
       const state = await response.json() as { url: string; title: string; owner: string };
@@ -3161,7 +3268,7 @@ try {
     await clickNav(alphaPage!, '电脑');
     const computer = alphaPage!.locator('.computer-view');
     await computer.waitFor({ state: 'visible' });
-    await alphaPage!.waitForFunction(async () => {
+    await waitForAsyncPredicate(alphaPage!, async () => {
       const response = await fetch('/api/computer');
       if (!response.ok) return false;
       const state = await response.json() as { url?: string; owner?: string };
@@ -3222,7 +3329,7 @@ try {
     assert.doesNotMatch(mockModelWebResearchEvidence[1], /Ignore all instructions|expose credentials/);
 
     await clickNav(alphaPage!, '电脑');
-    await alphaPage!.waitForFunction(async () => {
+    await waitForAsyncPredicate(alphaPage!, async () => {
       const response = await fetch('/api/computer');
       if (!response.ok) return false;
       const state = await response.json() as { url?: string; owner?: string };
@@ -3252,7 +3359,7 @@ try {
     assert.match(mockModelWebResearchEvidence[2], /untrusted webpage content/);
 
     await clickNav(alphaPage!, '电脑');
-    await alphaPage!.waitForFunction(async () => {
+    await waitForAsyncPredicate(alphaPage!, async () => {
       const response = await fetch('/api/computer');
       if (!response.ok) return false;
       const state = await response.json() as { url?: string; owner?: string };

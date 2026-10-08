@@ -83,6 +83,15 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
   throw new Error('Timed out waiting for the cloud computer E2E condition');
 }
 
+async function waitForAsyncPredicate(
+  page: Page,
+  predicate: (arg: any) => boolean | Promise<boolean>,
+  arg?: any,
+  options: { timeout?: number } = {},
+) {
+  await waitFor(() => page.evaluate(predicate, arg), options.timeout ?? 30_000);
+}
+
 function content(res: import('node:http').ServerResponse, status: number, type: string, value: Buffer | string) {
   if (res.destroyed || res.writableEnded) return;
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
@@ -336,7 +345,7 @@ try {
     return { status: response.status, task: await response.json() as { id: string } };
   });
   assert.equal(created.status, 201);
-  await page.waitForFunction(async id => {
+  await waitForAsyncPredicate(page, async id => {
     const response = await fetch('/api/state');
     const state = await response.json() as { tasks: { id: string; status: string }[] };
     return state.tasks.find(task => task.id === id)?.status === 'done';
@@ -364,7 +373,7 @@ try {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.getByTestId('app-shell').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
-  await page.waitForFunction(async id => {
+  await waitForAsyncPredicate(page, async id => {
     const response = await fetch('/api/state');
     const state = await response.json() as { tasks: { id: string; status: string }[] };
     return state.tasks.find(task => task.id === id)?.status === 'working';
@@ -392,7 +401,7 @@ try {
     const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'Beta cloud Agent E2E task', engine: 'dsh' }) });
     return await response.json() as { id: string };
   });
-  await betaPage.waitForFunction(async id => {
+  await waitForAsyncPredicate(betaPage, async id => {
     const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string }[] };
     return state.tasks.find(task => task.id === id)?.status === 'done';
   }, betaTask.id, { timeout: 20_000 });

@@ -55,13 +55,17 @@ export class Worker {
     if (this.stopped) return;
     this.store.releaseReadyDelegations();
     const pausedTenants = this.store.pausedDotTenants();
-    for (const task of this.store.dueTasks(new Date().toISOString(), pausedTenants)) {
+    const dueTasks = this.store.dueTasks(new Date().toISOString(), pausedTenants);
+    for (const task of dueTasks) {
       if (this.resettingTenants.has(task.tenantId)) continue;
       if (this.store.isDotPaused(task.tenantId) && !task.parentTaskId && task.status !== 'scheduled' && !scheduleForTask(task.scheduleSpec, task.scheduleMinutes)) continue;
       if (this.active.size >= Worker.maxActiveTasks) break;
       if (this.active.has(task.id)) continue;
       const tenantActive = this.activeByTenant.get(task.tenantId) || 0;
       if (tenantActive >= Worker.maxActiveTasksPerTenant) continue;
+      if (!this.store.claimDueTask(task.id, task.tenantId)) {
+        continue;
+      }
       this.active.add(task.id);
       this.activeTaskTenants.set(task.id, task.tenantId);
       const controller = new AbortController();
@@ -246,7 +250,7 @@ export class Worker {
         this.store.addEntry('system', summary, task.id, task.tenantId);
       }
       this.store.updateTask(task.id, {
-        status, result: decision.status === 'done' ? decision.message : current.result,
+        status, result: ['done', 'scheduled'].includes(decision.status) ? decision.message : current.result,
         nextRunAt, error: null, agentSessionId: decision.sessionId || current.agentSessionId,
       }, task.tenantId);
       this.store.addEntry('dot', outputMessage, task.id, task.tenantId);

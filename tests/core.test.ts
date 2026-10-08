@@ -604,6 +604,73 @@ test('background worker stores real model result and schedules a future run', as
   }
 });
 
+test('a one-off agent wake-up preserves its checkpoint and resumes with the same task', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-self-wake-'));
+  const envKeys = ['DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+  const prompts: string[] = [];
+  const checkpoint = 'Checkpoint: I reviewed the timeline and will verify the approval response next.';
+  const finalResult = 'The approval arrived; the task is complete with the updated release timeline.';
+  const modelServer = createServer(async (req, res) => {
+    assert.equal(req.url, '/chat/completions');
+    let raw = '';
+    for await (const chunk of req) raw += String(chunk);
+    const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+    prompts.push(payload.messages?.find(message => message.role === 'user')?.content || '');
+    const decision = prompts.length === 1
+      ? { status: 'scheduled', message: checkpoint, nextMinutes: 30, notifyUser: false }
+      : { status: 'done', message: finalResult };
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(decision) } }] }));
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'self-wake-test-model';
+  process.env.DOTS_MODEL_API_KEY = 'self-wake-test-key';
+  const store = new Store(directory);
+  const user = store.signInGoogle({ subject: 'self-wake-owner', email: 'self-wake@example.test', name: 'Wake Owner' });
+  const competingStore = new Store(directory);
+  const instruction = 'Continue this responsibility when the approval changes';
+  const task = store.createTask(instruction, null, 'model', user.tenant.id);
+  const worker = new Worker(store, () => {});
+  const competingWorker = new Worker(competingStore, () => {});
+  try {
+    worker.start();
+    competingWorker.start();
+    await waitFor(() => store.getTask(task.id, user.tenant.id)?.status === 'scheduled');
+    const sleeping = store.getTask(task.id, user.tenant.id)!;
+    assert.equal(sleeping.result, checkpoint, 'The scheduled checkpoint must be visible and durable while the agent sleeps');
+    assert.equal(sleeping.scheduleMinutes, null, 'A model-chosen wake-up is a one-off continuation, not a recurring schedule');
+    assert.equal(sleeping.scheduleSpec, null);
+    assert.ok(sleeping.nextRunAt && sleeping.nextRunAt > new Date().toISOString());
+    assert.match(prompts[0] || '', /Prior result: \(none\)/);
+
+    store.db.prepare("UPDATE tasks SET next_run_at=? WHERE tenant_id=? AND id=? AND status='scheduled'")
+      .run(new Date(Date.now() - 1000).toISOString(), user.tenant.id, task.id);
+    await Promise.all([worker.tick(), competingWorker.tick()]);
+    await waitFor(() => store.getTask(task.id, user.tenant.id)?.status === 'done');
+    const resumed = store.getTask(task.id, user.tenant.id)!;
+    assert.equal(resumed.id, task.id);
+    assert.equal(resumed.result, finalResult);
+    assert.equal(resumed.nextRunAt, null);
+    assert.equal(prompts.length, 2, 'The same responsibility should wake once without creating a duplicate task');
+    assert.ok(prompts[1]?.includes(`Prior result: ${checkpoint}`), 'The model API must receive the saved checkpoint when the agent wakes');
+    const dotEntries = store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, user.tenant.id).entries
+      .filter(entry => entry.taskId === task.id && entry.kind === 'dot').map(entry => entry.body);
+    assert.deepEqual(dotEntries, [checkpoint, finalResult], 'Both the sleeping checkpoint and the completed result should stay visible in task history');
+  } finally {
+    worker.stop(); competingWorker.stop(); competingStore.close(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('routine notification preferences never hide work that needs a user reply', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-notification-criteria-'));
   const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;

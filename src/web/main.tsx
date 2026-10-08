@@ -222,10 +222,17 @@ function App() {
     if (!authContext) return;
     setStateLoaded(false);
     const stream = new EventSource(appPath('/api/events'));
-    stream.onmessage = event => { setState(JSON.parse(event.data)); setStateLoaded(true); };
+    stream.onmessage = event => {
+      setState(JSON.parse(event.data));
+      setStateLoaded(true);
+      setError(current => current === '与本机服务的连接已断开，正在重连。' ? '' : current);
+    };
     stream.onerror = () => {
       setError('与本机服务的连接已断开，正在重连。');
-      void appFetch('/api/auth/me').then(response => response.ok ? response.json() as Promise<AuthContext> : null).then(next => { if (!next) setAuthContext(null); }).catch(() => setAuthContext(null));
+      void appFetch('/api/auth/me').then(async response => {
+        if (response.status === 401) setAuthContext(null);
+        else if (response.ok) setAuthContext(await response.json() as AuthContext);
+      }).catch(() => undefined);
     };
     return () => stream.close();
   }, [authContext?.tenant.id]);
