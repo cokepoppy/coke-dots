@@ -521,7 +521,7 @@ export class Store {
         const effortSetting = this.getSetting('reasoningEffort', monitor.tenant_id);
         const reasoningEffort = isReasoningEffort(effortSetting) ? effortSetting : 'high';
         this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,task_context,created_by_user_id)
-          VALUES (?,?,?,?,'queued',0,?,NULL,NULL,NULL,?,?,'model',?,NULL,NULL,'read-only',?,NULL)`)
+          VALUES (?,?,?,?,'queued',-1,?,NULL,NULL,NULL,?,?,'model',?,NULL,NULL,'read-only',?,NULL)`)
           .run(id, monitor.tenant_id, title, instruction, now, now, now, reasoningEffort, context);
         this.db.prepare('UPDATE slack_monitor_events SET task_id=? WHERE event_id=? AND tenant_id=?').run(id, event.eventId, monitor.tenant_id);
         this.db.prepare('UPDATE slack_event_monitors SET last_event_at=?,last_task_id=?,updated_at=? WHERE tenant_id=? AND id=?')
@@ -1725,7 +1725,7 @@ export class Store {
       const taskId = randomUUID();
       const title = instruction.split(/[.!?。！？\n]/)[0].slice(0, 64) || 'Page update review';
       this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,execution_mode,task_context) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-        .run(taskId, tenantId, title, instruction, 'queued', 0, checkedAt, null, null, null, checkedAt, checkedAt, 'model', null, null, 'read-only', context);
+        .run(taskId, tenantId, title, instruction, 'queued', -1, checkedAt, null, null, null, checkedAt, checkedAt, 'model', null, null, 'read-only', context);
       this.db.prepare("INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?, '[]')")
         .run(tenantId, taskId, 'user', `A monitored page changed: ${watch.url}. Compare its previous and current text and report what matters.`, checkedAt);
       this.db.prepare("INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?, '[]')")
@@ -1786,8 +1786,10 @@ export class Store {
         workspaceNotes: workspaceNotes.map(row => row.note.slice(0, 600)),
         personalDotNotes: personalNotes.map(note => note.slice(0, 600)),
       });
+      // Context reviews are background work. Keep newly assigned and delegated
+      // user tasks ahead in the per-tenant due queue.
       this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,task_context,created_by_user_id)
-        VALUES (?,?,?,?, 'queued',0,?,NULL,NULL,NULL,?,?,?, ?,NULL,NULL,'proactive-research',?,?)`)
+        VALUES (?,?,?,?, 'queued',-1,?,NULL,NULL,NULL,?,?,?, ?,NULL,NULL,'proactive-research',?,?)`)
         .run(id, tenantId, title, instruction, now, now, now, engine, reasoningEffort, context, source.createdBy);
       this.db.prepare('INSERT INTO proactive_research_reviews(source_task_id,tenant_id,review_task_id,created_at) VALUES (?,?,?,?)')
         .run(sourceTaskId, tenantId, id, now);

@@ -136,6 +136,7 @@ test('Slack public-channel monitors create tenant-scoped read-only tasks only fo
     assert(alphaTask && betaTask);
     for (const task of [alphaTask, betaTask]) {
       assert.equal(task.executionMode, 'read-only');
+      assert.equal(task.priority, -1, 'A background channel review must stay behind user-assigned work');
       assert.match(task.instruction, /Do not reply to Slack or modify any external source/);
       const entryBodies = store.db.prepare('SELECT body FROM entries WHERE tenant_id=? AND task_id=? ORDER BY id').all(task.tenantId, task.id) as { body: string }[];
       assert.match(entryBodies.map(entry => entry.body).join('\n'), /No Slack reply will be sent/);

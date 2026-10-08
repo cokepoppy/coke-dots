@@ -10,14 +10,19 @@ import { configuredDesktopAgentEngines } from './linux-desktop-computer.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
 export class Worker {
-  private static readonly maxActiveTasks = 4;
-  private static readonly maxActiveTasksPerTenant = 3;
+  private static readonly maxActiveTasks = 5;
+  private static readonly maxActiveStandardTasks = 4;
+  private static readonly maxActiveStandardTasksPerTenant = 3;
+  private static readonly maxActiveBackgroundReviewTasks = 1;
   private timer: NodeJS.Timeout | null = null;
   private active = new Set<string>();
   private activeTaskTenants = new Map<string, string>();
   private activeRuns = new Map<string, Promise<void>>();
   private abortControllers = new Map<string, AbortController>();
   private activeByTenant = new Map<string, number>();
+  private activeStandardTasks = 0;
+  private activeStandardByTenant = new Map<string, number>();
+  private activeBackgroundReviewTasks = 0;
   private browserResearchQueues = new Map<string, Promise<void>>();
   private resettingTenants = new Set<string>();
   private stopped = false;
@@ -62,8 +67,13 @@ export class Worker {
       if (this.store.isDotPaused(task.tenantId) && !task.parentTaskId && task.status !== 'scheduled' && !scheduleForTask(task.scheduleSpec, task.scheduleMinutes)) continue;
       if (this.active.size >= Worker.maxActiveTasks) break;
       if (this.active.has(task.id)) continue;
+      const backgroundReview = task.executionMode !== 'standard';
+      if (backgroundReview && this.activeBackgroundReviewTasks >= Worker.maxActiveBackgroundReviewTasks) continue;
+      if (!backgroundReview && this.activeStandardTasks >= Worker.maxActiveStandardTasks) continue;
+      const tenantStandardActive = this.activeStandardByTenant.get(task.tenantId) || 0;
+      if (!backgroundReview && tenantStandardActive >= Worker.maxActiveStandardTasksPerTenant) continue;
       const tenantActive = this.activeByTenant.get(task.tenantId) || 0;
-      if (tenantActive >= Worker.maxActiveTasksPerTenant) continue;
+      if (tenantActive >= Worker.maxActiveStandardTasksPerTenant + Worker.maxActiveBackgroundReviewTasks) continue;
       if (!this.store.claimDueTask(task.id, task.tenantId)) {
         continue;
       }
@@ -72,6 +82,11 @@ export class Worker {
       const controller = new AbortController();
       this.abortControllers.set(task.id, controller);
       this.activeByTenant.set(task.tenantId, tenantActive + 1);
+      if (backgroundReview) this.activeBackgroundReviewTasks++;
+      else {
+        this.activeStandardTasks++;
+        this.activeStandardByTenant.set(task.tenantId, tenantStandardActive + 1);
+      }
       const run = this.run(task, controller.signal);
       this.activeRuns.set(task.id, run);
       void run.finally(() => {
@@ -82,6 +97,13 @@ export class Worker {
         const count = (this.activeByTenant.get(task.tenantId) || 1) - 1;
         if (count > 0) this.activeByTenant.set(task.tenantId, count);
         else this.activeByTenant.delete(task.tenantId);
+        if (backgroundReview) this.activeBackgroundReviewTasks = Math.max(0, this.activeBackgroundReviewTasks - 1);
+        else {
+          this.activeStandardTasks = Math.max(0, this.activeStandardTasks - 1);
+          const standardCount = (this.activeStandardByTenant.get(task.tenantId) || 1) - 1;
+          if (standardCount > 0) this.activeStandardByTenant.set(task.tenantId, standardCount);
+          else this.activeStandardByTenant.delete(task.tenantId);
+        }
         void this.tick();
       });
     }

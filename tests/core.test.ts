@@ -71,6 +71,9 @@ test('proactive reviews are idempotent, tenant scoped, and stay quiet when they 
     assert(review, 'A completed task with active work and private notes should queue a review');
     assert.equal(review.executionMode, 'proactive-research');
     assert.equal(review.engine, 'dsh');
+    assert.equal(review.priority, -1, 'A read-only context review must stay behind user-assigned work in the tenant queue');
+    const dueForAlpha = store.dueTasks().filter(task => task.tenantId === alpha.tenant.id);
+    assert.equal(dueForAlpha[0]?.id, ongoing.id, 'A queued user task must run before background proactive review work');
     assert.equal(store.createProactiveResearchReview(completed.id, alpha.tenant.id, 'pi', 'medium')?.id, review.id, 'Retrying review creation must reuse its original task');
     const context = store.taskContext(review.id, alpha.tenant.id);
     assert.match(context, /The release target is October 22/);
@@ -678,6 +681,86 @@ test('background worker stores real model result and schedules a future run', as
     delete process.env.DOTS_MODEL_BASE_URL;
     delete process.env.DOTS_MODEL;
     delete process.env.DOTS_MODEL_API_KEY;
+  }
+});
+
+test('one active background review cannot take the capacity reserved for assigned tenant work', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-background-capacity-'));
+  const envKeys = ['DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_E2E_AUTH'] as const;
+  const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+  const standardPrompts: string[] = [];
+  const standardReleases: (() => void)[] = [];
+  const backgroundReview = { release: undefined as (() => void) | undefined };
+  let backgroundReviewHasStarted = false;
+  const modelServer = createServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += String(chunk);
+    const payload = JSON.parse(raw) as { messages?: { role: string; content?: unknown }[] };
+    const content = payload.messages?.find(message => message.role === 'user')?.content;
+    const prompt = typeof content === 'string' ? content : JSON.stringify(content || '');
+    if (prompt.includes('Proactive research constraints')) {
+      backgroundReviewHasStarted = true;
+      await new Promise<void>(resolve => {
+        backgroundReview.release = () => {
+          response.setHeader('content-type', 'application/json');
+          response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'No useful connection found.', proactiveFinding: false, notifyUser: false }) } }] }));
+          resolve();
+        };
+      });
+      return;
+    }
+    standardPrompts.push(prompt);
+    await new Promise<void>(resolve => {
+      standardReleases.push(() => {
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'waiting', message: 'Need your review.' }) } }] }));
+        resolve();
+      });
+    });
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert(address && typeof address !== 'string');
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'background-capacity-test';
+  process.env.DOTS_MODEL_API_KEY = 'background-capacity-key';
+  process.env.DOTS_E2E_AUTH = '1';
+  const store = new Store(directory);
+  const account = store.signInGoogle({ subject: 'background-capacity-owner', email: 'background-capacity@example.test', name: 'Capacity Owner' });
+  store.addPersonalDotMemory(account.user.id, 'Prefers concise progress updates.');
+  const completed = store.createTask('Summarize completed release notes', null, 'model', account.tenant.id, null, null, [], account.user.id);
+  store.updateTask(completed.id, { status: 'done', result: 'The release target is October 22.' }, account.tenant.id);
+  const review = store.createProactiveResearchReview(completed.id, account.tenant.id, 'model', 'high');
+  assert(review, 'The completed task and private note should queue a proactive review');
+  const worker = new Worker(store, () => {});
+  const assignedInstructions = ['Review the release checklist', 'Confirm the launch owners', 'Prepare the status update'];
+  try {
+    worker.start();
+    await waitFor(() => backgroundReviewHasStarted);
+    const assignedTasks = assignedInstructions.map(instruction => store.createTask(instruction, null, 'model', account.tenant.id, null, null, [], account.user.id));
+    await worker.tick();
+    await waitFor(() => standardPrompts.length === assignedInstructions.length, 8_000);
+    for (const instruction of assignedInstructions) {
+      assert(standardPrompts.some(prompt => prompt.includes(`Task: ${instruction}`)), `Assigned work did not start while a review was active: ${instruction}`);
+    }
+    assert.equal(store.getTask(review.id, account.tenant.id)?.status, 'working', 'The capacity assertion must run while the review still occupies its background slot');
+    for (const release of standardReleases.splice(0)) release();
+    await waitFor(() => assignedTasks.every(task => store.getTask(task.id, account.tenant.id)?.status === 'waiting'));
+    assert(backgroundReview.release, 'The background review request was not held for the concurrency check');
+    const releaseReview = backgroundReview.release;
+    backgroundReview.release = undefined;
+    releaseReview();
+    await waitFor(() => store.getTask(review.id, account.tenant.id)?.status === 'done');
+  } finally {
+    for (const release of standardReleases.splice(0)) release();
+    backgroundReview.release?.();
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
   }
 });
 

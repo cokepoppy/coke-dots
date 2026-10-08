@@ -49,6 +49,7 @@ test('watch creates one tenant-scoped read-only review only after visible conten
     assert(updated.lastTaskId, 'A content change must persist its review task ID');
     const review = store.getTask(updated.lastTaskId, account.tenant.id)!;
     assert.equal(review.executionMode, 'read-only');
+    assert.equal(review.priority, -1, 'A background page review must stay behind user-assigned work');
     assert.equal(review.status, 'queued');
     const context = JSON.parse(store.taskContext(review.id, account.tenant.id)) as { sourceUrl: string; previousText: string; currentText: string };
     assert.equal(context.sourceUrl, watch.url);
