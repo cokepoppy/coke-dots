@@ -12,14 +12,19 @@ const runStamp = new Date().toISOString().replace(/[:.]/g, '-');
 const artifactRoot = resolve(process.env.DOTS_E2E_ARTIFACTS || join(projectRoot, 'artifacts', 'e2e', `public-demo-${runStamp}`));
 const screenshotPath = join(artifactRoot, 'public-demo-login.png');
 const videoDirectory = join(artifactRoot, 'video');
-const showcaseVideos = await Promise.all(([
+const showcaseVideoDefinitions = [
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
   { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 16, minimumFrames: 220 },
-  { file: 'proactive-cloud-computer-followthrough.webp', minimumWidth: 900, minimumHeight: 625, minimumDurationSeconds: 35, minimumFrames: 500 },
-] as { file: string; width?: number; height?: number; minimumWidth?: number; minimumHeight?: number; minimumDurationSeconds?: number; minimumFrames?: number }[]).map(async video => {
+  { file: 'proactive-cloud-computer-followthrough.webp', minimumWidth: 900, minimumHeight: 625, minimumDurationSeconds: 35, minimumFrames: 500, minimumReadableHoldCount: 3, readableHoldMinimumMs: 3900, verifyFullPlayback: true },
+] as { file: string; width?: number; height?: number; minimumWidth?: number; minimumHeight?: number; minimumDurationSeconds?: number; minimumFrames?: number; minimumReadableHoldCount?: number; readableHoldMinimumMs?: number; verifyFullPlayback?: boolean }[];
+const selectedVideoFile = process.env.DOTS_PUBLIC_DEMO_VIDEO;
+const selectedVideoDefinitions = showcaseVideoDefinitions.filter(video => !selectedVideoFile || video.file === selectedVideoFile);
+if (selectedVideoFile && selectedVideoDefinitions.length === 0) throw new Error(`Unknown DOTS_PUBLIC_DEMO_VIDEO: ${selectedVideoFile}`);
+const showcaseVideos = await Promise.all(selectedVideoDefinitions.map(async video => {
   const bytes = await readFile(join(projectRoot, 'public', 'demos', video.file));
   const metadata = await sharp(bytes, { animated: true, limitInputPixels: 600_000_000 }).metadata();
+  const readableHoldCount = (metadata.delay || []).filter(delay => delay >= (video.readableHoldMinimumMs ?? Infinity)).length;
   return {
     ...video,
     width: video.width ?? metadata.width ?? 0,
@@ -27,6 +32,7 @@ const showcaseVideos = await Promise.all(([
     sha256: createHash('sha256').update(bytes).digest('hex'),
     frames: metadata.pages || 0,
     durationSeconds: (metadata.delay || []).reduce((sum, delay) => sum + delay, 0) / 1000,
+    readableHoldCount,
   };
 }));
 const baseUrl = new URL(process.env.DOTS_PUBLIC_DEMO_URL || 'https://codex.cokeagent.com/dots-demo/');
@@ -122,6 +128,9 @@ try {
       if ('minimumDurationSeconds' in video && typeof video.minimumDurationSeconds === 'number') {
         assert(video.durationSeconds >= video.minimumDurationSeconds, `${video.file} must remain long enough to read the computer actions at the documented presentation speed`);
       }
+      if ('minimumReadableHoldCount' in video && typeof video.minimumReadableHoldCount === 'number') {
+        assert(video.readableHoldCount >= video.minimumReadableHoldCount, `${video.file} must include deliberate reading holds for its key results`);
+      }
       if ('minimumWidth' in video && typeof video.minimumWidth === 'number') assert(video.width >= video.minimumWidth, `${video.file} width`);
       if ('minimumHeight' in video && typeof video.minimumHeight === 'number') assert(video.height >= video.minimumHeight, `${video.file} height`);
       const response = await get(`${basePath}demos/${video.file}`);
@@ -207,6 +216,7 @@ try {
   await check('Chrome decodes and plays changing frames from all hosted WebPs', async () => {
     await page!.goto(baseUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 45_000 });
     for (const video of showcaseVideos) {
+      const playbackStartedAt = Date.now();
       await page!.evaluate(videoUrl => {
         document.body.innerHTML = '';
         document.body.style.margin = '0';
@@ -227,6 +237,12 @@ try {
         await page!.waitForTimeout(5000);
         const laterActionFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
         assert.notEqual(laterFrame, laterActionFrame, `${video.file} should continue through the recorded computer actions at the documented presentation speed`);
+      }
+      if ('verifyFullPlayback' in video && video.verifyFullPlayback && 'durationSeconds' in video) {
+        const remainingPlaybackMs = Math.ceil(video.durationSeconds * 1000) + 500 - (Date.now() - playbackStartedAt);
+        if (remainingPlaybackMs > 0) await page!.waitForTimeout(remainingPlaybackMs);
+        const completedPlaybackFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
+        assert.notEqual(completedPlaybackFrame, laterFrame, `${video.file} should keep playing through its full presentation sequence`);
       }
     }
   });
