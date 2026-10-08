@@ -237,7 +237,15 @@ test('agent Scratchpad actions require bounded page content and a valid tenant p
   assert.deepEqual(updated.pageAction, { action: 'update', pageId: id, title: 'Launch notes', content: 'Updated outline' });
   assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Invalid', pageAction: { action: 'update', pageId: '../other-tenant', title: 'Notes', content: 'Body' } })), /页面操作无效/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Invalid', pageAction: { action: 'create', title: 'Notes', content: 'x'.repeat(24001) } })), /页面内容无效/);
-  assert.throws(() => parseDecision(JSON.stringify({ status: 'waiting', message: 'Which page?', pageAction: { action: 'create', title: 'Notes', content: 'Draft' } })), /不能同时写入/);
+  const waitingProposal = JSON.stringify({ status: 'waiting', message: '我已准备好草稿提案，等待批准。', pageAction: { action: 'create', title: 'Notes', content: 'Draft' } });
+  assert.throws(() => parseDecision(waitingProposal), /账号规则不允许/);
+  const approvalRule = agentDecisionOptions({
+    executionMode: 'standard',
+    actionRule: { id: 'rule-id', userId: 'test-user', scope: 'scratchpad-write', instruction: 'Ask before writing.', mode: 'ask-before', createdAt: '', updatedAt: '' },
+  });
+  assert.equal(approvalRule.allowPageActionApproval, true);
+  assert.equal(parseDecision(waitingProposal, undefined, approvalRule).status, 'waiting', 'An explicit approval-before-write rule permits a pending proposal with no page write yet.');
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Delegate first.', delegations: [{ title: 'Research', instruction: 'Research.' }], pageAction: { action: 'create', title: 'Notes', content: 'Draft' } }), undefined, approvalRule), /委派其他任务/);
 });
 
 test('agent can create at most three bounded delegated tasks and children cannot delegate', () => {

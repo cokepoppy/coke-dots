@@ -25,8 +25,8 @@ if (!outputRelativePath || outputRelativePath.startsWith('..') || isAbsolute(out
 }
 const videoFileName = 'proactive-release-date-cloud-computer.webp';
 const videoOutput = join(outputRoot, videoFileName);
-const sourceDraft = '请起草一份内部发布公告，发布日期写 10 月 21 日。草稿先保留并等待我审批，不要发送、发布，也不要修改其他内容。处理后请用中文告诉我草稿在等待审批，而且没有发送。';
-const sourceDecision = '发布团队今天确认发布日期改为 10 月 22 日。请用一句中文记录这个决定，不要编辑或发送公告。';
+const sourceDraft = '请在我的 Dot Scratchpad 中起草一份内部发布公告页面，发布日期写 10 月 21 日。根据账号规则，先提交页面写入提案并等待我审批；批准前不要保存页面，也不要发送、发布或修改其他内容。请用中文说明草稿待审批。';
+const sourceDecision = '发布团队今天确认发布日期改为 10 月 22 日。请仅在当前聊天中用一句中文回复确认这个决定；不要新建 Scratchpad 页面，不要写入 Dot 记忆，不要编辑或发送公告。';
 const finding = '我发现发布团队把发布日期改为 10 月 22 日，但待审批的发布公告仍写着 10 月 21 日。要我更新这份草稿吗？我还没有修改或发送。';
 const researchFixtureUrl = 'https://research-fixture.dots.test/launch';
 const cloudFollowThroughInstruction = `我看到了你主动发现的发布日期冲突。请用 Dot 的云电脑打开 ${researchFixtureUrl}，查看公开发布说明并点击“展开发布时间”，核对完整发布时间是否与团队的新决定（10 月 22 日）一致。只读取网页，不修改、发送或发布任何内容；用中文告诉我你在云电脑里做了什么和核对结果。`;
@@ -302,6 +302,19 @@ try {
     await page.locator('.composer-bottom select').selectOption(liveEngine);
     const engines = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[] };
     assert(engines.availableEngines.includes(liveEngine) && engines.remoteEngines.includes(liveEngine), `${liveEngine} must be available and marked as a remote cloud-computer kernel.`);
+    const approvalRule = await page.evaluate(async () => {
+      const response = await fetch('/api/action-rule', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          instruction: 'For internal announcement drafts, prepare a private Scratchpad page but wait for my approval before saving. Never send or publish it.',
+          mode: 'ask-before',
+        }),
+      });
+      return { status: response.status, body: await response.json() as { mode?: string } };
+    });
+    assert.equal(approvalRule.status, 200, 'The disposable demo account should install its approval-before-write rule.');
+    assert.equal(approvalRule.body.mode, 'ask-before');
     console.log(`STEP selected ${liveEngine} for tenant cloud computer ${tenantNamespace}`);
   }
   await new Promise(resolvePromise => setTimeout(resolvePromise, 900));
@@ -322,9 +335,21 @@ try {
   }, draftInstruction);
   assert.equal(waitingSnapshot.task?.status, 'waiting', 'The launch draft must remain open for approval.');
   if (liveK3d) assert.match(waitingSnapshot.replies.at(-1) || '', /[\u3400-\u9fff]/, 'Pi must reply in Chinese to the Chinese draft request.');
+  if (liveK3d) {
+    const pendingApproval = await page.evaluate(async taskId => {
+      const response = await fetch(`/api/tasks/${taskId}/approval`, { cache: 'no-store' });
+      return { status: response.status, body: await response.json() as { status?: string; action?: { action?: string; title?: string; content?: string } } | null };
+    }, waitingSnapshot.task!.id);
+    assert.equal(pendingApproval.status, 200);
+    assert.equal(pendingApproval.body?.status, 'pending', 'The Pi task must leave a real Scratchpad write proposal pending for user approval.');
+    assert.equal(pendingApproval.body?.action?.action, 'create');
+    assert.match(pendingApproval.body?.action?.title || '', /内部发布公告/);
+    assert.match(pendingApproval.body?.action?.content || '', /10\s*月\s*21\s*日/);
+  }
+  assert.equal(await page.evaluate(async () => await fetch('/api/pages').then(response => response.json()).then((pages: unknown[]) => pages.length)), 0, 'The draft must remain a proposal until the user approves the page write.');
   await page.screenshot({ path: join(outputRoot, 'screenshots', '01-launch-draft-waiting.png') });
   console.log('STEP open launch draft is waiting');
-  await new Promise(resolvePromise => setTimeout(resolvePromise, 1_200));
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 2_500));
 
   await page.getByRole('button', { name: '新聊天', exact: true }).click();
   console.log('STEP opened a fresh chat');
@@ -338,7 +363,7 @@ try {
     return state.tasks.find(task => task.instruction === instruction)?.status;
   }, decisionInstruction);
   assert.equal(decisionStatus, 'done', 'The new release decision must complete successfully.');
-  await new Promise(resolvePromise => setTimeout(resolvePromise, 1_200));
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 2_500));
 
   await waitForTask(page, { executionMode: 'proactive-research', statuses: ['done', 'failed'] }, liveK3d ? 240_000 : 30_000);
   console.log('STEP proactive review found the conflicting dates');
@@ -469,6 +494,7 @@ try {
     assert.notEqual(afterHash, beforeHash, 'The displayed cloud-computer screen must change as Pi opens and inspects the page.');
     await writeFile(join(outputRoot, '07-cloud-computer-after-task.png'), Buffer.from(finalComputer.screenshot));
     await page.screenshot({ path: join(outputRoot, 'screenshots', '07-cloud-computer-after-task.png') });
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 3_000));
 
     const activity = await page.evaluate(async () => await (await fetch('/api/activity?limit=100', { cache: 'no-store' })).json()) as {
       entries: { taskId: string | null; body: string }[];
@@ -524,7 +550,7 @@ try {
 const recording = pageVideo ? await pageVideo.path().catch(() => '') : '';
 assert(recording && existsSync(recording), 'Chrome did not produce the demo WebM recording');
 const converter = join(projectRoot, 'scripts', 'convert-demo-video-to-webp.mjs');
-execFileSync(process.execPath, [converter, recording, videoOutput, '3', '0.5'], { cwd: projectRoot, stdio: 'inherit' });
+execFileSync(process.execPath, [converter, recording, videoOutput, '3', '1'], { cwd: projectRoot, stdio: 'inherit' });
 await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
   scenario: liveK3d
     ? 'Dot proactively detects a release-date conflict without writing, then after explicit user instruction Pi opens the tenant cloud computer, clicks the public page disclosure, verifies the date, and reports in Chinese.'
@@ -534,7 +560,7 @@ await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
   evidence: 'Official documentation supports proactive review of connected information and surfacing suggestions/questions; the exact UI shown is Coke Dots.',
   recording: videoFileName,
   sourceRecording: 'Playwright Chrome recording, converted to animated WebP',
-  presentationPlayback: { activeUiActions: '0.5x', readableStillSeconds: 3, longStaticWaitsRemoved: true },
+  presentationPlayback: { activeUiActions: '1x (source speed)', readableWaitEdgeSeconds: 3, longStaticWaitsRemoved: true },
   viewport: { width: 1440, height: 1000 },
   screenshots: [
     'screenshots/00-dot-ready.png', 'screenshots/01-launch-draft-waiting.png',

@@ -12,16 +12,18 @@ const runStamp = new Date().toISOString().replace(/[:.]/g, '-');
 const artifactRoot = resolve(process.env.DOTS_E2E_ARTIFACTS || join(projectRoot, 'artifacts', 'e2e', `public-demo-${runStamp}`));
 const screenshotPath = join(artifactRoot, 'public-demo-login.png');
 const videoDirectory = join(artifactRoot, 'video');
-const showcaseVideos = await Promise.all([
+const showcaseVideos = await Promise.all(([
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
   { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 16, minimumFrames: 220 },
-  { file: 'proactive-cloud-computer-followthrough.webp', width: 914, height: 635, minimumDurationSeconds: 39, minimumFrames: 500 },
-].map(async video => {
+  { file: 'proactive-cloud-computer-followthrough.webp', minimumWidth: 900, minimumHeight: 625, minimumDurationSeconds: 35, minimumFrames: 500 },
+] as { file: string; width?: number; height?: number; minimumWidth?: number; minimumHeight?: number; minimumDurationSeconds?: number; minimumFrames?: number }[]).map(async video => {
   const bytes = await readFile(join(projectRoot, 'public', 'demos', video.file));
   const metadata = await sharp(bytes, { animated: true, limitInputPixels: 600_000_000 }).metadata();
   return {
     ...video,
+    width: video.width ?? metadata.width ?? 0,
+    height: video.height ?? metadata.pageHeight ?? metadata.height ?? 0,
     sha256: createHash('sha256').update(bytes).digest('hex'),
     frames: metadata.pages || 0,
     durationSeconds: (metadata.delay || []).reduce((sum, delay) => sum + delay, 0) / 1000,
@@ -120,6 +122,8 @@ try {
       if ('minimumDurationSeconds' in video && typeof video.minimumDurationSeconds === 'number') {
         assert(video.durationSeconds >= video.minimumDurationSeconds, `${video.file} must remain long enough to read the computer actions at the documented presentation speed`);
       }
+      if ('minimumWidth' in video && typeof video.minimumWidth === 'number') assert(video.width >= video.minimumWidth, `${video.file} width`);
+      if ('minimumHeight' in video && typeof video.minimumHeight === 'number') assert(video.height >= video.minimumHeight, `${video.file} height`);
       const response = await get(`${basePath}demos/${video.file}`);
       assert.equal(response.status, 200, `${video.file} must be hosted`);
       assert.match(response.headers.get('content-type') || '', /^image\/webp/i, `${video.file} must use the WebP media type`);

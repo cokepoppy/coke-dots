@@ -75,12 +75,14 @@ function buildVisibleSegments(duration, freezes, retainedStillSeconds = 1.5) {
     const length = freeze.end - freeze.start;
     // Keep the closing state long enough to read; it is the demo's end card.
     if (freeze.end >= duration - 0.05) continue;
-    if (length <= retainedStillSeconds + 0.05) continue;
-    const visibleUntil = Math.min(freeze.end, freeze.start + retainedStillSeconds);
-    const segmentEnd = Math.max(cursor, visibleUntil);
+    // Preserve both the state that starts a wait and the result state at its
+    // end. Only remove the frozen middle, so long model waits do not make the
+    // task's transition into its result disappear from the presentation.
+    if (length <= retainedStillSeconds * 2 + 0.05) continue;
+    const segmentEnd = Math.max(cursor, freeze.start + retainedStillSeconds);
     if (segmentEnd > cursor + 0.02) segments.push({ start: cursor, end: segmentEnd });
-    cursor = Math.max(cursor, freeze.end);
-    removedSeconds += Math.max(0, length - retainedStillSeconds);
+    cursor = Math.max(cursor, freeze.end - retainedStillSeconds);
+    removedSeconds += Math.max(0, length - retainedStillSeconds * 2);
   }
   if (duration > cursor + 0.02) segments.push({ start: cursor, end: duration });
   if (!segments.length) segments.push({ start: 0, end: duration });
@@ -153,7 +155,7 @@ try {
   if (outputWidth < 640) throw new Error(`The WebP would exceed the animation pixel limit even at 640px wide (${expectedPlaybackDuration.toFixed(1)}s at ${fps}fps).`);
   const outputHeight = Math.round(stream.height * outputWidth / stream.width);
   const graph = buildFilterGraph(segments, fps, outputWidth, outputHeight, activePlaybackRate);
-  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > retainedStillSeconds + 0.05 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visible.visibleDuration.toFixed(1)}s visible (${expectedPlaybackDuration.toFixed(1)}s playback, active segments at ${activePlaybackRate}x; removed ${visible.removedSeconds.toFixed(1)}s), ${retainedStillSeconds.toFixed(1)}s readable holds, ${pausePoints.length} action pauses of ${pauseDurationSeconds.toFixed(1)}s, source cadence ${fps} fps, output ${outputWidth}x${outputHeight}`);
+  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > retainedStillSeconds * 2 + 0.05 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visible.visibleDuration.toFixed(1)}s visible (${expectedPlaybackDuration.toFixed(1)}s playback, active segments at ${activePlaybackRate}x; removed ${visible.removedSeconds.toFixed(1)}s), keeping up to ${retainedStillSeconds.toFixed(1)}s at each wait edge, ${pausePoints.length} action pauses of ${pauseDurationSeconds.toFixed(1)}s, source cadence ${fps} fps, output ${outputWidth}x${outputHeight}`);
 
   runFfmpeg([
     '-hide_banner', '-loglevel', 'error', '-y', '-i', source,
@@ -191,19 +193,23 @@ try {
   const removedFreezes = freezes.map(freeze => {
     const isClosingHold = freeze.end >= sourceDuration - 0.05;
     const retained = isClosingHold ? freeze.end - freeze.start : Math.min(freeze.end - freeze.start, retainedStillSeconds);
+    const retainedStart = isClosingHold ? 0 : Math.min(freeze.end - freeze.start, retainedStillSeconds);
+    const retainedEnd = isClosingHold ? 0 : Math.min(Math.max(0, freeze.end - freeze.start - retainedStart), retainedStillSeconds);
     return {
       startSeconds: Number(freeze.start.toFixed(2)),
       endSeconds: Number(freeze.end.toFixed(2)),
       originalSeconds: Number((freeze.end - freeze.start).toFixed(2)),
-      retainedSeconds: Number(retained.toFixed(2)),
-      removedSeconds: Number(Math.max(0, freeze.end - freeze.start - retained).toFixed(2)),
+      retainedStartSeconds: Number((isClosingHold ? retained : retainedStart).toFixed(2)),
+      retainedEndSeconds: Number(retainedEnd.toFixed(2)),
+      retainedSeconds: Number((isClosingHold ? retained : retainedStart + retainedEnd).toFixed(2)),
+      removedSeconds: Number(Math.max(0, freeze.end - freeze.start - (isClosingHold ? retained : retainedStart + retainedEnd)).toFixed(2)),
       closingHoldKept: isClosingHold,
     };
   }).filter(freeze => freeze.removedSeconds > 0.05);
   const reportPath = output.replace(/\.webp$/i, '.video-check.json');
   await writeFile(reportPath, `${JSON.stringify({
     source: { file: basename(source), durationSeconds: Number(sourceDuration.toFixed(2)), width: stream.width, height: stream.height, decodedFrames: sourceFrames },
-    freezeTrim: { detector: 'ffmpeg freezedetect, -45 dB, 2 second minimum', retainedSecondsPerLongStill: retainedStillSeconds, removedSeconds: Number(visible.removedSeconds.toFixed(2)), regions: removedFreezes },
+    freezeTrim: { detector: 'ffmpeg freezedetect, -45 dB, 2 second minimum', retainedSecondsAtEachEdgeOfLongStill: retainedStillSeconds, removedSeconds: Number(visible.removedSeconds.toFixed(2)), regions: removedFreezes },
     output: { file: basename(output), format: metadata.format, codec: decoded.streams?.[0]?.codec_name, width: metadata.width, height: metadata.pageHeight, decodedFrames, durationSeconds: Number(outputDuration.toFixed(2)), sourceFrameRate: Number(sourceFrameRate.toFixed(2)), frameRate: fps, openingSegmentPlaybackSpeed: 1, activePlaybackSpeed: activePlaybackRate, readablePausePointsSeconds: pausePoints, readablePauseDurationSeconds: pauseDurationSeconds, bytes: info.size, fullDecodeSucceeded: true },
   }, null, 2)}\n`);
   console.log(`Created and fully decoded ${output} (${metadata.width}x${metadata.pageHeight}, ${decodedFrames} frames, ${outputDuration.toFixed(1)}s, ${(info.size / 1024 / 1024).toFixed(2)} MiB)`);
