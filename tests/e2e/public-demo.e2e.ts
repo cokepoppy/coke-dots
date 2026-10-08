@@ -15,9 +15,9 @@ const videoDirectory = join(artifactRoot, 'video');
 const showcaseVideos = await Promise.all(([
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
-  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 16, minimumFrames: 220 },
+  { file: 'cloud-computer-agent-actions.webp', width: 1110, height: 755, minimumDurationSeconds: 27, minimumFrames: 260, minimumReadablePauseCount: 3 },
   { file: 'proactive-cloud-computer-followthrough.webp', minimumWidth: 900, minimumHeight: 625, minimumDurationSeconds: 35, minimumFrames: 500 },
-] as { file: string; width?: number; height?: number; minimumWidth?: number; minimumHeight?: number; minimumDurationSeconds?: number; minimumFrames?: number }[]).map(async video => {
+] as { file: string; width?: number; height?: number; minimumWidth?: number; minimumHeight?: number; minimumDurationSeconds?: number; minimumFrames?: number; minimumReadablePauseCount?: number }[]).map(async video => {
   const bytes = await readFile(join(projectRoot, 'public', 'demos', video.file));
   const metadata = await sharp(bytes, { animated: true, limitInputPixels: 600_000_000 }).metadata();
   return {
@@ -26,6 +26,7 @@ const showcaseVideos = await Promise.all(([
     height: video.height ?? metadata.pageHeight ?? metadata.height ?? 0,
     sha256: createHash('sha256').update(bytes).digest('hex'),
     frames: metadata.pages || 0,
+    readablePauseCount: (metadata.delay || []).filter(delay => delay >= 4_900).length,
     durationSeconds: (metadata.delay || []).reduce((sum, delay) => sum + delay, 0) / 1000,
   };
 }));
@@ -207,6 +208,9 @@ try {
   await check('Chrome decodes and plays changing frames from all hosted WebPs', async () => {
     await page!.goto(baseUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 45_000 });
     for (const video of showcaseVideos) {
+      if ('minimumReadablePauseCount' in video) {
+        assert(video.minimumReadablePauseCount !== undefined && video.readablePauseCount >= video.minimumReadablePauseCount, `${video.file} should retain three 5-second reading holds`);
+      }
       await page!.evaluate(videoUrl => {
         document.body.innerHTML = '';
         document.body.style.margin = '0';
