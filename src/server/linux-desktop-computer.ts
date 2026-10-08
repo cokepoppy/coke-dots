@@ -318,6 +318,9 @@ export function desktopResourceIdentity(tenantId: string) {
 
 export function desktopResources(tenantId: string, workerToken: string, agentToken: string) {
   const identity = desktopResourceIdentity(tenantId);
+  const compactTestResources = process.env.NODE_ENV === 'test'
+    && process.env.DOTS_E2E_AUTH === '1'
+    && process.env.DOTS_LINUX_DESKTOP_TEST_RESOURCE_PROFILE === 'compact';
   const namespace = identity.namespace;
   const name = 'desktop';
   const image = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
@@ -387,7 +390,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 ports: [{ name: 'novnc', containerPort: 6080 }, { name: 'worker', containerPort: 8082 }, { name: 'cdp', containerPort: 9222 }],
                 readinessProbe: { httpGet: { path: '/readyz', port: 'worker' }, initialDelaySeconds: 10, periodSeconds: 5, failureThreshold: 36 },
                 livenessProbe: { httpGet: { path: '/healthz', port: 'worker' }, initialDelaySeconds: 30, periodSeconds: 10 },
-                resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
+                resources: { requests: { cpu: '500m', memory: compactTestResources ? '768Mi' : '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
                 securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: ['ALL'] } },
                 volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'shm', mountPath: '/dev/shm' }, { name: 'tmp', mountPath: '/tmp' }],
               },
@@ -418,7 +421,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 ports: [{ name: 'agent', containerPort: 8083 }],
                 readinessProbe: { httpGet: { path: '/healthz', port: 'agent' }, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 36 },
                 livenessProbe: { httpGet: { path: '/healthz', port: 'agent' }, initialDelaySeconds: 15, periodSeconds: 10 },
-                resources: { requests: { cpu: '250m', memory: '384Mi' }, limits: { cpu: '2', memory: '2Gi' } },
+                resources: { requests: { cpu: '250m', memory: compactTestResources ? '256Mi' : '384Mi' }, limits: { cpu: '2', memory: '2Gi' } },
                 securityContext: { runAsNonRoot: true, runAsUser: 1001, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
                 volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'agent-tmp', mountPath: '/tmp' }],
               },

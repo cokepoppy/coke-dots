@@ -40,6 +40,41 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(runtimeEnv.includes('LINUX_DESKTOP_WORKER_TOKEN'), true);
 });
 
+test('compact Linux desktop memory requests are limited to the authenticated E2E profile', () => {
+  const envNames = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_LINUX_DESKTOP_TEST_RESOURCE_PROFILE'] as const;
+  const previous = Object.fromEntries(envNames.map(name => [name, process.env[name]]));
+  const readResources = () => {
+    const list = desktopResources('resource-profile-test', 'worker-secret', 'agent-secret')[1] as { items: Record<string, any>[] };
+    const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { containers: { name: string; resources: { requests: Record<string, string>; limits: Record<string, string> } }[] } } } };
+    return Object.fromEntries(deployment.spec.template.spec.containers.map(container => [container.name, container.resources]));
+  };
+  try {
+    delete process.env.NODE_ENV;
+    delete process.env.DOTS_E2E_AUTH;
+    delete process.env.DOTS_LINUX_DESKTOP_TEST_RESOURCE_PROFILE;
+    const defaults = readResources();
+    assert.equal(defaults.desktop.requests.memory, '1Gi');
+    assert.equal(defaults['agent-runtime'].requests.memory, '384Mi');
+
+    process.env.NODE_ENV = 'test';
+    process.env.DOTS_E2E_AUTH = '1';
+    process.env.DOTS_LINUX_DESKTOP_TEST_RESOURCE_PROFILE = 'compact';
+    const compact = readResources();
+    assert.equal(compact.desktop.requests.memory, '768Mi');
+    assert.equal(compact['agent-runtime'].requests.memory, '256Mi');
+    assert.equal(compact.desktop.limits.memory, defaults.desktop.limits.memory, 'The test profile must keep the production desktop memory limit');
+    assert.equal(compact['agent-runtime'].limits.memory, defaults['agent-runtime'].limits.memory, 'The test profile must keep the production Agent memory limit');
+
+    process.env.DOTS_E2E_AUTH = '0';
+    assert.equal(readResources().desktop.requests.memory, '1Gi', 'The compact requests must be unavailable outside E2E authentication');
+  } finally {
+    for (const name of envNames) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
 test('a fresh Linux desktop ships the Pi and DeepSeek Harness cloud kernel adapters without copying the shared API key into Kubernetes', () => {
   const previousBackend = process.env.DOTS_COMPUTER_BACKEND;
   const previousEngines = process.env.DOTS_DESKTOP_AGENT_ADAPTERS;

@@ -17,6 +17,7 @@ import { compareRasters, cropRaster, resizeRaster } from '../../src/shared/refer
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const cluster = process.env.DOTS_K3D_CLUSTER || 'tp1121-sandbox-dev';
+const controlNamespace = process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || cluster;
 const demoScenario = process.env.DOTS_K3D_DEMO_SCENARIO?.trim() || 'cloud-computer-handoff';
 const demoRecording = process.env.DOTS_K3D_DEMO_RECORDING === '1' || Boolean(process.env.DOTS_K3D_DEMO_SCENARIO?.trim());
 if (!['cloud-computer-handoff', 'cloud-computer-agent-actions'].includes(demoScenario)) throw new Error(`Unsupported cloud computer demo scenario: ${demoScenario}`);
@@ -97,6 +98,7 @@ async function startApp(): Promise<ChildProcess> {
       DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_LINUX_DESKTOP_TOKEN_SECRET: tokenSecret,
       DOTS_LINUX_DESKTOP_IMAGE: process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev',
       DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE: process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || cluster,
+      DOTS_LINUX_DESKTOP_TEST_RESOURCE_PROFILE: 'compact',
       DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX || '1',
       DOTS_LINUX_DESKTOP_TEST_WORKER_URL: '', DOTS_LINUX_DESKTOP_TEST_NOVNC_URL: '', DOTS_LINUX_DESKTOP_TEST_AGENT_URL: '',
       DOTS_DESKTOP_AGENT_ADAPTERS: runLiveAgentKernels ? 'pi,dsh' : 'dsh',
@@ -121,26 +123,30 @@ async function startApp(): Promise<ChildProcess> {
 
 async function signIn(target: Page): Promise<string> {
   const baseUrl = `http://127.0.0.1:${appPort}`;
-  await target.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await target.locator('#e2e-email').fill('k3d-cloud-computer@example.test');
-  const navigation = target.waitForNavigation({ waitUntil: 'domcontentloaded' });
-  await target.getByTestId('e2e-sign-in').click();
-  await navigation;
-  await target.getByTestId('app-shell').waitFor({ state: 'visible' });
-  await target.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  const authenticate = async (email: string) => {
+    await target.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    await target.locator('#e2e-email').fill(email);
+    const navigation = target.waitForNavigation({ waitUntil: 'domcontentloaded' });
+    await target.getByTestId('e2e-sign-in').click();
+    await navigation;
+    await target.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await target.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  };
+  // The migration-compatible first account owns the reserved `legacy` tenant.
+  // Sign it out before creating the disposable UUID tenant used by this live reset.
+  await authenticate('k3d-legacy-seed@example.test');
+  const logoutStatus = await target.evaluate(async () => (await fetch('/api/auth/logout', { method: 'POST' })).status);
+  assert.equal(logoutStatus, 200, 'The K3D harness must release the reserved legacy workspace before signing in its disposable owner');
+  await authenticate('k3d-cloud-computer@example.test');
   const status = await target.evaluate(async () => (await fetch('/api/profile', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ setupComplete: true, onboardingComplete: true }) })).status);
   assert.equal(status, 200);
   await target.reload({ waitUntil: 'domcontentloaded' });
   await target.getByTestId('app-shell').waitFor({ state: 'visible' });
   await target.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
-  const workspace = await target.evaluate(async name => {
-    const response = await fetch('/api/tenants', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
-    return { status: response.status, body: await response.json() as { id?: string } };
-  }, `K3D cloud E2E ${randomUUID()}`);
-  assert.equal(workspace.status, 201, 'Create a disposable tenant workspace for the live K3D desktop');
-  await target.reload({ waitUntil: 'domcontentloaded' });
-  await target.getByTestId('app-shell').waitFor({ state: 'visible' });
-  await target.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  const signedIn = await target.evaluate(async () => await (await fetch('/api/auth/me')).json()) as { user: { id: string }; tenant: { id: string; kind: string; role: string } };
+  assert.equal(signedIn.tenant.kind, 'personal', 'The live cloud computer and reset test must run in the disposable account’s personal workspace');
+  assert.equal(signedIn.tenant.role, 'owner', 'The disposable personal workspace must be owned by its test account');
+  assert.match(signedIn.tenant.id, /^[a-f0-9-]{36}$/i, 'The live reset test must not target the reserved legacy workspace');
   const profileStatus = await target.evaluate(async () => (await fetch('/api/profile', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Roger', setupComplete: true, onboardingComplete: true }) })).status);
   assert.equal(profileStatus, 200, 'The reference tenant must use the Dot name shown in the YouTube frame');
   await target.reload({ waitUntil: 'domcontentloaded' });
@@ -148,7 +154,7 @@ async function signIn(target: Page): Promise<string> {
   await target.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
   const tenantId = await target.getByTestId('app-shell').getAttribute('data-tenant-id');
   assert(tenantId, 'The signed-in workspace must expose its verified tenant ID to the E2E harness');
-  assert.equal(tenantId, workspace.body.id, 'The E2E session must use the unique workspace it just created');
+  assert.equal(tenantId, signedIn.tenant.id, 'The E2E session must remain in the unique personal workspace created for this disposable account');
   return tenantId;
 }
 
@@ -158,10 +164,17 @@ function assertNamespaceIsNew(name: string) {
   assert.match(result.stderr, /NotFound/i, `Could not safely check tenant namespace ${name}: ${(result.stderr || result.stdout).slice(-800)}`);
 }
 
+function existingNamespaceNames() {
+  const raw = command(['kubectl', 'get', 'namespaces', '-o', 'jsonpath={.items[*].metadata.name}']);
+  return raw.split(/\s+/).filter(Boolean);
+}
+
 try {
   const currentContext = command(['kubectl', 'config', 'current-context']);
   assert.equal(currentContext, `k3d-${cluster}`, 'The K3D smoke test must use the explicitly selected Coke sandbox cluster');
   command(['kubectl', 'get', 'nodes']);
+  const namespacesBeforeTest = existingNamespaceNames();
+  assert(namespacesBeforeTest.includes(controlNamespace), `The selected control namespace ${controlNamespace} must already exist before the test`);
   command(['docker', 'image', 'inspect', process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev']);
   if (runLiveAgentKernels) await configureLiveAgentKernels();
   console.log(`K3D preflight passed: ${cluster}`);
@@ -588,8 +601,31 @@ try {
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive a cloud computer Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
+
+  await page.getByTestId('account-menu-trigger').click();
+  await page.getByRole('button', { name: 'Dot 设置', exact: true }).click();
+  await page.getByRole('heading', { name: '你的 dot', exact: true }).waitFor({ state: 'visible' });
+  await page.getByRole('button', { name: 'Dot options' }).click();
+  await page.getByTestId('dot-reset-action').click();
+  const resetDialog = page.getByRole('dialog', { name: 'Reset this dot?' });
+  await resetDialog.waitFor({ state: 'visible' });
+  await page.screenshot({ path: join(artifacts, '06-personal-dot-reset-confirmation.png'), fullPage: true });
+  await page.getByTestId('dot-reset-confirm').click();
+  await page.getByTestId('computer-choice').waitFor({ state: 'visible', timeout: 180_000 });
+  const resetProfile = await page.evaluate(async () => await (await fetch('/api/auth/me')).json()) as { user: { id: string }; tenant: { id: string; kind: string } };
+  assert.equal(resetProfile.tenant.id, tenantId, 'Reset must preserve the disposable account’s personal workspace identity');
+  assert.equal(resetProfile.tenant.kind, 'personal', 'The cloud-computer reset must stay scoped to a personal workspace');
+  const resetNamespaceResult = spawnSync('kubectl', ['get', 'namespace', namespace, '-o', 'name'], { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.notEqual(resetNamespaceResult.status, 0, `The confirmed Dot reset must delete its isolated cloud-computer namespace ${namespace}`);
+  assert.match(resetNamespaceResult.stderr, /NotFound/i, `The tenant namespace check must fail only because the reset deleted it: ${(resetNamespaceResult.stderr || resetNamespaceResult.stdout).slice(-800)}`);
+  const namespacesAfterReset = new Set(existingNamespaceNames());
+  for (const existingNamespace of namespacesBeforeTest) {
+    assert(namespacesAfterReset.has(existingNamespace), `Reset deleted a pre-existing cluster namespace: ${existingNamespace}`);
+  }
+  kubectlNamespaceCreated = false;
+  console.log(`Chrome-confirmed personal Dot reset deleted only ${namespace}; all ${namespacesBeforeTest.length} pre-existing namespaces remain`);
   runPassed = true;
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation', 'Chrome-confirmed personal Dot reset deletes only its own K3D namespace'], artifacts }, null, 2));
   }
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
