@@ -89,14 +89,23 @@ function buildFilterGraph(segments, fps, width, height, activeRate) {
   return `${trims.join(';')};${source}fps=${fps},scale=${width}:${height}:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3[webpout]`;
 }
 
+function parseFrameRate(value) {
+  if (typeof value !== 'string') return null;
+  const [numerator, denominator] = value.split('/').map(Number);
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return null;
+  const rate = numerator / denominator;
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
 try {
   const probe = JSON.parse(execFileSync('ffprobe', [
-    '-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=width,height,nb_read_frames',
+    '-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=width,height,nb_read_frames,avg_frame_rate,r_frame_rate',
     '-show_entries', 'format=duration', '-of', 'json', source,
   ], { encoding: 'utf8' }));
   const stream = probe.streams?.[0];
   const sourceDuration = Number(probe.format?.duration);
   const sourceFrames = Number(stream?.nb_read_frames);
+  const sourceFrameRate = parseFrameRate(stream?.avg_frame_rate) ?? parseFrameRate(stream?.r_frame_rate) ?? 25;
   if (!stream?.width || !stream?.height || !Number.isFinite(sourceDuration) || sourceDuration <= 0 || !Number.isFinite(sourceFrames) || sourceFrames < 2) throw new Error('Could not read the source video dimensions, duration, and complete frame count');
 
   const freezes = detectFrozenIntervals(source, sourceDuration);
@@ -104,19 +113,21 @@ try {
   const expectedPlaybackDuration = segments.reduce((sum, segment, index) => sum + (segment.end - segment.start) / (index === 0 ? 1 : activePlaybackRate), 0);
   const outputWidth = Math.min(1152, stream.width);
   const outputHeight = Math.round(stream.height * outputWidth / stream.width);
-  // Keep the opening hold readable and slow later UI actions without changing their frame order.
-  const fps = Math.max(1, Math.min(12, Math.floor(220_000_000 / (outputWidth * outputHeight * expectedPlaybackDuration))));
+  // Preserve the capture cadence so cursor movement and UI clicks don't jump between sparse frames.
+  const fps = Math.max(1, Math.min(30, Math.round(sourceFrameRate)));
   const graph = buildFilterGraph(segments, fps, outputWidth, outputHeight, activePlaybackRate);
-  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > retainedStillSeconds + 0.05 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visibleDuration.toFixed(1)}s visible (${expectedPlaybackDuration.toFixed(1)}s playback, active segments at ${activePlaybackRate}x; removed ${removedSeconds.toFixed(1)}s), ${retainedStillSeconds.toFixed(1)}s readable holds, ${fps} fps`);
+  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > retainedStillSeconds + 0.05 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visibleDuration.toFixed(1)}s visible (${expectedPlaybackDuration.toFixed(1)}s playback, active segments at ${activePlaybackRate}x; removed ${removedSeconds.toFixed(1)}s), ${retainedStillSeconds.toFixed(1)}s readable holds, source cadence ${fps} fps`);
 
   runFfmpeg([
     '-hide_banner', '-loglevel', 'error', '-y', '-i', source,
     '-filter_complex', graph, '-map', '[webpout]',
     '-loop', '0', '-f', 'gif', gif,
   ]);
-  await sharp(gif, { animated: true }).webp({ quality: 86, effort: 5, loop: 0 }).toFile(output);
+  // Allow full-cadence clips without Sharp's default 268 MP animation guard.
+  const animationPixelLimit = 500_000_000;
+  await sharp(gif, { animated: true, limitInputPixels: animationPixelLimit }).webp({ quality: 86, effort: 5, loop: 0 }).toFile(output);
 
-  const image = sharp(output, { animated: true });
+  const image = sharp(output, { animated: true, limitInputPixels: animationPixelLimit });
   const metadata = await image.metadata();
   const info = await stat(output);
   const decoded = JSON.parse(execFileSync('ffprobe', [
@@ -157,7 +168,7 @@ try {
   await writeFile(reportPath, `${JSON.stringify({
     source: { file: basename(source), durationSeconds: Number(sourceDuration.toFixed(2)), width: stream.width, height: stream.height, decodedFrames: sourceFrames },
     freezeTrim: { detector: 'ffmpeg freezedetect, -45 dB, 2 second minimum', retainedSecondsPerLongStill: retainedStillSeconds, removedSeconds: Number(removedSeconds.toFixed(2)), regions: removedFreezes },
-    output: { file: basename(output), format: metadata.format, codec: decoded.streams?.[0]?.codec_name, width: metadata.width, height: metadata.pageHeight, decodedFrames, durationSeconds: Number(outputDuration.toFixed(2)), sampledFramesPerSecond: fps, openingSegmentPlaybackSpeed: 1, activePlaybackSpeed: activePlaybackRate, bytes: info.size, fullDecodeSucceeded: true },
+    output: { file: basename(output), format: metadata.format, codec: decoded.streams?.[0]?.codec_name, width: metadata.width, height: metadata.pageHeight, decodedFrames, durationSeconds: Number(outputDuration.toFixed(2)), sourceFrameRate: Number(sourceFrameRate.toFixed(2)), frameRate: fps, openingSegmentPlaybackSpeed: 1, activePlaybackSpeed: activePlaybackRate, bytes: info.size, fullDecodeSucceeded: true },
   }, null, 2)}\n`);
   console.log(`Created and fully decoded ${output} (${metadata.width}x${metadata.pageHeight}, ${decodedFrames} frames, ${outputDuration.toFixed(1)}s, ${(info.size / 1024 / 1024).toFixed(2)} MiB)`);
   console.log(`Video completeness report: ${reportPath}`);
