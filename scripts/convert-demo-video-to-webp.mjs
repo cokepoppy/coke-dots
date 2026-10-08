@@ -4,8 +4,12 @@ import { tmpdir } from 'node:os';
 import { basename, resolve } from 'node:path';
 import sharp from 'sharp';
 
-const [sourceArgument, outputArgument] = process.argv.slice(2);
-if (!sourceArgument || !outputArgument) throw new Error('Usage: node scripts/convert-demo-video-to-webp.mjs <input.webm> <output.webp>');
+const [sourceArgument, outputArgument, retainedStillArgument] = process.argv.slice(2);
+if (!sourceArgument || !outputArgument) throw new Error('Usage: node scripts/convert-demo-video-to-webp.mjs <input.webm> <output.webp> [readable-still-seconds]');
+const retainedStillSeconds = retainedStillArgument === undefined ? 1.5 : Number(retainedStillArgument);
+if (!Number.isFinite(retainedStillSeconds) || retainedStillSeconds <= 0 || retainedStillSeconds > 10) {
+  throw new Error('readable-still-seconds must be greater than 0 and at most 10');
+}
 const source = resolve(sourceArgument);
 const output = resolve(outputArgument);
 const scratch = await mkdtemp(`${tmpdir()}/coke-dots-webp-`);
@@ -92,13 +96,13 @@ try {
   if (!stream?.width || !stream?.height || !Number.isFinite(sourceDuration) || sourceDuration <= 0 || !Number.isFinite(sourceFrames) || sourceFrames < 2) throw new Error('Could not read the source video dimensions, duration, and complete frame count');
 
   const freezes = detectFrozenIntervals(source, sourceDuration);
-  const { segments, removedSeconds, visibleDuration } = buildVisibleSegments(sourceDuration, freezes);
+  const { segments, removedSeconds, visibleDuration } = buildVisibleSegments(sourceDuration, freezes, retainedStillSeconds);
   const outputWidth = Math.min(1152, stream.width);
   const outputHeight = Math.round(stream.height * outputWidth / stream.width);
-  // Bound decoded pixels while keeping enough frames for readable UI interactions.
-  const fps = Math.max(1, Math.min(8, Math.floor(220_000_000 / (outputWidth * outputHeight * visibleDuration))));
+  // Preserve normal-speed timing and enough frames to make visible UI actions readable.
+  const fps = Math.max(1, Math.min(12, Math.floor(220_000_000 / (outputWidth * outputHeight * visibleDuration))));
   const graph = buildFilterGraph(segments, fps, outputWidth, outputHeight);
-  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > 1.55 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visibleDuration.toFixed(1)}s (removed ${removedSeconds.toFixed(1)}s), ${fps} fps`);
+  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > retainedStillSeconds + 0.05 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visibleDuration.toFixed(1)}s (removed ${removedSeconds.toFixed(1)}s), ${retainedStillSeconds.toFixed(1)}s readable holds, ${fps} fps`);
 
   runFfmpeg([
     '-hide_banner', '-loglevel', 'error', '-y', '-i', source,
@@ -129,9 +133,12 @@ try {
     throw new Error(`WebP output failed completeness checks: ${JSON.stringify({ format: metadata.format, codec: decoded.streams?.[0]?.codec_name, pages: metadata.pages, decodedFrames, width: metadata.width, height: metadata.pageHeight, bytes: info.size })}`);
   }
   const outputDuration = (metadata.delay || []).reduce((sum, delay) => sum + delay, 0) / 1000;
+  if (!Number.isFinite(outputDuration) || Math.abs(outputDuration - visibleDuration) > 0.2) {
+    throw new Error(`WebP timing must preserve normal-speed visible segments: expected ${visibleDuration.toFixed(2)}s, got ${outputDuration.toFixed(2)}s`);
+  }
   const removedFreezes = freezes.map(freeze => {
     const isClosingHold = freeze.end >= sourceDuration - 0.05;
-    const retained = isClosingHold ? freeze.end - freeze.start : Math.min(freeze.end - freeze.start, 1.5);
+    const retained = isClosingHold ? freeze.end - freeze.start : Math.min(freeze.end - freeze.start, retainedStillSeconds);
     return {
       startSeconds: Number(freeze.start.toFixed(2)),
       endSeconds: Number(freeze.end.toFixed(2)),
@@ -144,8 +151,8 @@ try {
   const reportPath = output.replace(/\.webp$/i, '.video-check.json');
   await writeFile(reportPath, `${JSON.stringify({
     source: { file: basename(source), durationSeconds: Number(sourceDuration.toFixed(2)), width: stream.width, height: stream.height, decodedFrames: sourceFrames },
-    freezeTrim: { detector: 'ffmpeg freezedetect, -45 dB, 2 second minimum', retainedSecondsPerLongStill: 1.5, removedSeconds: Number(removedSeconds.toFixed(2)), regions: removedFreezes },
-    output: { file: basename(output), format: metadata.format, codec: decoded.streams?.[0]?.codec_name, width: metadata.width, height: metadata.pageHeight, decodedFrames, durationSeconds: Number(outputDuration.toFixed(2)), bytes: info.size, fullDecodeSucceeded: true },
+    freezeTrim: { detector: 'ffmpeg freezedetect, -45 dB, 2 second minimum', retainedSecondsPerLongStill: retainedStillSeconds, removedSeconds: Number(removedSeconds.toFixed(2)), regions: removedFreezes },
+    output: { file: basename(output), format: metadata.format, codec: decoded.streams?.[0]?.codec_name, width: metadata.width, height: metadata.pageHeight, decodedFrames, durationSeconds: Number(outputDuration.toFixed(2)), sampledFramesPerSecond: fps, playbackSpeed: 1, bytes: info.size, fullDecodeSucceeded: true },
   }, null, 2)}\n`);
   console.log(`Created and fully decoded ${output} (${metadata.width}x${metadata.pageHeight}, ${decodedFrames} frames, ${outputDuration.toFixed(1)}s, ${(info.size / 1024 / 1024).toFixed(2)} MiB)`);
   console.log(`Video completeness report: ${reportPath}`);

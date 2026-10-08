@@ -610,7 +610,8 @@ try {
       await rename(recording, sourceRecording);
       if (runPassed) {
         const converter = resolve(projectRoot, 'scripts', 'convert-demo-video-to-webp.mjs');
-        execFileSync(process.execPath, [converter, sourceRecording, join(artifacts, webpName)], { cwd: projectRoot, stdio: 'inherit' });
+        const readableStillSeconds = demoScenario === 'cloud-computer-agent-actions' ? '3' : '1.5';
+        execFileSync(process.execPath, [converter, sourceRecording, join(artifacts, webpName), readableStillSeconds], { cwd: projectRoot, stdio: 'inherit' });
       }
       const checkFile = join(artifacts, `${recordingStem}.video-check.json`);
       const videoCheck = existsSync(checkFile) ? JSON.parse(await readFile(checkFile, 'utf8')) : null;

@@ -5,6 +5,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
+import sharp from 'sharp';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const runStamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -14,8 +15,17 @@ const videoDirectory = join(artifactRoot, 'video');
 const showcaseVideos = await Promise.all([
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
-  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784 },
-].map(async video => ({ ...video, sha256: createHash('sha256').update(await readFile(join(projectRoot, 'public', 'demos', video.file))).digest('hex') })));
+  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 10, minimumFrames: 60 },
+].map(async video => {
+  const bytes = await readFile(join(projectRoot, 'public', 'demos', video.file));
+  const metadata = await sharp(bytes, { animated: true }).metadata();
+  return {
+    ...video,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    frames: metadata.pages || 0,
+    durationSeconds: (metadata.delay || []).reduce((sum, delay) => sum + delay, 0) / 1000,
+  };
+}));
 const baseUrl = new URL(process.env.DOTS_PUBLIC_DEMO_URL || 'https://codex.cokeagent.com/dots-demo/');
 const basePath = baseUrl.pathname.endsWith('/') ? baseUrl.pathname : `${baseUrl.pathname}/`;
 const browserPath = findChromePath();
@@ -102,8 +112,13 @@ try {
     }
   });
 
-  await check('both hosted demos are complete animated WebP artifacts', async () => {
+  await check('hosted demos are complete animated WebP artifacts with readable timing', async () => {
     for (const video of showcaseVideos) {
+      const minimumFrames = 'minimumFrames' in video && typeof video.minimumFrames === 'number' ? video.minimumFrames : 16;
+      assert(video.frames >= minimumFrames, `${video.file} must contain a full animated sequence, not a short slide show`);
+      if ('minimumDurationSeconds' in video && typeof video.minimumDurationSeconds === 'number') {
+        assert(video.durationSeconds >= video.minimumDurationSeconds, `${video.file} must remain long enough to read the computer actions at normal speed`);
+      }
       const response = await get(`${basePath}demos/${video.file}`);
       assert.equal(response.status, 200, `${video.file} must be hosted`);
       assert.match(response.headers.get('content-type') || '', /^image\/webp/i, `${video.file} must use the WebP media type`);
@@ -184,7 +199,7 @@ try {
     await page!.getByText('登录返回信息无效。', { exact: true }).waitFor({ state: 'visible' });
   });
 
-  await check('Chrome decodes and plays changing frames from both hosted WebPs', async () => {
+  await check('Chrome decodes and plays changing frames from all hosted WebPs', async () => {
     await page!.goto(baseUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 45_000 });
     for (const video of showcaseVideos) {
       await page!.evaluate(videoUrl => {
@@ -200,9 +215,14 @@ try {
       assert.equal(await image.evaluate(element => (element as HTMLImageElement).naturalWidth), video.width, `${video.file} width`);
       assert.equal(await image.evaluate(element => (element as HTMLImageElement).naturalHeight), video.height, `${video.file} height`);
       const firstFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
-      await page!.waitForTimeout(2500);
+      await page!.waitForTimeout('minimumDurationSeconds' in video ? 4000 : 2500);
       const laterFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
       assert.notEqual(firstFrame, laterFrame, `${video.file} should advance beyond its initial frame`);
+      if ('minimumDurationSeconds' in video) {
+        await page!.waitForTimeout(4000);
+        const laterActionFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
+        assert.notEqual(laterFrame, laterActionFrame, `${video.file} should continue through the cloud computer actions at normal speed`);
+      }
     }
   });
 } catch (error) {
