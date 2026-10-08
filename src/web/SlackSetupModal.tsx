@@ -5,7 +5,9 @@ import './slack-setup.css';
 interface SlackInstallation {
   teamId: string; teamName: string; installedAt: string; scopes: string[]; contactEnabled: boolean;
 }
-interface SlackState { configured: boolean; eventsConfigured: boolean; installations: SlackInstallation[] }
+interface SlackChannel { id: string; name: string }
+interface SlackMonitor { id: string; teamId: string; channelId: string; channelName: string; instructions: string; status: 'active' | 'paused'; lastEventAt: string | null; lastTaskId: string | null }
+interface SlackState { configured: boolean; eventsConfigured: boolean; installations: SlackInstallation[]; monitors: SlackMonitor[] }
 
 export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }: { dotName: string; canManage: boolean; onClose: () => void; onConnectSlack: () => void }) {
   const [state, setState] = useState<SlackState | null>(null);
@@ -14,6 +16,12 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [channels, setChannels] = useState<SlackChannel[]>([]);
+  const [channelsError, setChannelsError] = useState('');
+  const [channelId, setChannelId] = useState('');
+  const [instructions, setInstructions] = useState('');
+  const [monitorBusy, setMonitorBusy] = useState(false);
+  const [monitorError, setMonitorError] = useState('');
 
   async function refresh() {
     setLoading(true);
@@ -29,6 +37,24 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
 
   useEffect(() => { void refresh(); }, []);
 
+  useEffect(() => {
+    if (!selectedTeamId || !canManage) { setChannels([]); setChannelsError(''); return; }
+    let current = true;
+    setChannelsError('');
+    void appFetch(`/api/slack/channels?teamId=${encodeURIComponent(selectedTeamId)}`).then(async response => {
+      const body = await response.json() as { channels?: SlackChannel[]; error?: string };
+      if (!response.ok) throw new Error(body.error || '无法加载 Slack 公共频道');
+      return body.channels || [];
+    }).then(next => {
+      if (!current) return;
+      setChannels(next);
+      setChannelId(value => next.some(channel => channel.id === value) ? value : next[0]?.id || '');
+    }).catch(reason => {
+      if (current) { setChannels([]); setChannelsError(reason instanceof Error ? reason.message : '无法加载 Slack 公共频道'); }
+    });
+    return () => { current = false; };
+  }, [selectedTeamId, canManage]);
+
   async function selectWorkspace() {
     if (!selectedTeamId || !canManage) return;
     setSaving(true); setError('');
@@ -43,6 +69,29 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
 
   function connectAnotherWorkspace() {
     if (canManage) onConnectSlack();
+  }
+
+  async function addMonitor() {
+    if (!selectedTeamId || !channelId || !instructions.trim() || monitorBusy || !canManage) return;
+    setMonitorBusy(true); setMonitorError('');
+    try {
+      const response = await appFetch('/api/slack/monitors', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ teamId: selectedTeamId, channelId, instructions: instructions.trim() }) });
+      const body = await response.json() as SlackMonitor & { error?: string };
+      if (!response.ok) throw new Error(body.error || '无法创建事件监控');
+      setInstructions('');
+      await refresh();
+    } catch (reason) { setMonitorError(reason instanceof Error ? reason.message : '无法创建事件监控'); }
+    finally { setMonitorBusy(false); }
+  }
+
+  async function toggleMonitor(monitor: SlackMonitor) {
+    setMonitorError('');
+    try {
+      const response = await appFetch(`/api/slack/monitors/${monitor.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: monitor.status === 'active' ? 'pause' : 'resume' }) });
+      const body = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(body.error || '无法更新事件监控');
+      await refresh();
+    } catch (reason) { setMonitorError(reason instanceof Error ? reason.message : '无法更新事件监控'); }
   }
 
   return <div className="slack-setup-backdrop" data-testid="slack-setup-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
@@ -63,6 +112,27 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
         {state.eventsConfigured
           ? <p className="slack-setup-readonly" role="status">Message receiver is ready. Subscribe to app_mention and message.im in the Slack app’s Events API and send events to /slack/events.</p>
           : <p className="slack-setup-readonly" role="status">Message receiving needs SLACK_SIGNING_SECRET and the Slack app’s Events API URL set to /slack/events.</p>}
+        <div className="slack-monitor-section" aria-label="Proactive Slack monitoring">
+          <h3>Proactive monitoring</h3>
+          <p className="slack-setup-readonly">Choose a public channel and tell your dot what to look for. New messages create read-only reviews in Activity; Dot will not reply in Slack.</p>
+          {state.eventsConfigured && <p className="slack-setup-readonly" role="status">For channel events, add the Slack app to the channel and subscribe to message.channels in the Events API.</p>}
+          {canManage && <>
+            {channelsError ? <p className="slack-setup-error" role="alert">{channelsError}</p> : <>
+              <label className="slack-monitor-field">Public channel<select aria-label="Public Slack channel" value={channelId} onChange={event => setChannelId(event.target.value)} disabled={!channels.length}>
+                {channels.length ? channels.map(channel => <option key={channel.id} value={channel.id}>#{channel.name}</option>) : <option value="">No public channels available</option>}
+              </select></label>
+              <label className="slack-monitor-field">What should Dot look for?<textarea aria-label="Slack monitoring instructions" value={instructions} onChange={event => setInstructions(event.target.value)} maxLength={1000} placeholder="For example: new bug reports that block the release" /></label>
+              <button className="slack-setup-primary" type="button" onClick={() => void addMonitor()} disabled={monitorBusy || !channelId || instructions.trim().length < 3}>{monitorBusy ? 'Starting…' : 'Monitor this channel'}</button>
+            </>}
+          </>}
+          {monitorError && <p className="slack-setup-error" role="alert">{monitorError}</p>}
+          <div className="slack-monitor-list" aria-label="Configured Slack monitors">
+            {(state.monitors || []).filter(monitor => monitor.teamId === selectedTeamId).map(monitor => <div className="slack-monitor-row" key={monitor.id}>
+              <div><strong>#{monitor.channelName}</strong><span>{monitor.instructions}</span><small>{monitor.status === 'active' ? 'Monitoring' : 'Paused'}</small></div>
+              {canManage && <button type="button" onClick={() => void toggleMonitor(monitor)}>{monitor.status === 'active' ? 'Pause' : 'Resume'}</button>}
+            </div>)}
+          </div>
+        </div>
         {!canManage && <p className="slack-setup-readonly">Ask a workspace owner or admin to change this connection.</p>}
         <button className="slack-setup-primary" type="button" disabled={!canManage || saving || !selectedTeamId} onClick={() => void selectWorkspace()}>{saving ? 'Saving…' : 'Select a workspace'}</button>
         <button className="slack-setup-secondary" type="button" disabled={!canManage} onClick={connectAnotherWorkspace}>Connect or refresh Slack access</button>

@@ -232,6 +232,7 @@ async function startMockModel() {
         const isSharedMemoryIsolation = prompt.includes('E2E shared task — do not receive personal Dot notes');
         const isQuietNotificationCheck = prompt.includes('E2E notification criteria — routine success');
         const isSlackInboxTask = prompt.includes('E2E Slack inbox request — answer with the connector result.');
+        const isSlackMonitorTask = prompt.includes('E2E Slack monitor — investigate new bug reports');
         const isTeamsInboxTask = prompt.includes('E2E Teams inbox request — answer with the connector result.');
         const isDecisionNotificationCheck = prompt.includes('E2E notification criteria — ask the user');
         const isReasoningEffortTask = prompt.includes('E2E reasoning effort — extra high');
@@ -300,7 +301,7 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || isSlackInboxTask || isTeamsInboxTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isPauseDelegationParent && !isPauseDelegationAggregate ? { status: 'delegating', message: 'I started one independent research task.', delegations: [
           { title: 'Independent research', instruction: 'E2E global pause delegated child — keep running during pause', engine: 'model' },
@@ -310,6 +311,7 @@ async function startMockModel() {
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
         ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
+        if (isSlackMonitorTask) Object.assign(decision, { message: 'Read-only review: this report describes a regression blocking checkout in #incidents.' });
         if (isDecisionNotificationCheck) Object.assign(decision, { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false });
         if (isWebsiteSignIn && !isWebsiteSignInContinuation) Object.assign(decision, {
           status: 'waiting', message: 'Please sign in to the demo service.',
@@ -488,7 +490,20 @@ async function startMockSlackProvider() {
       flows.delete(code);
       mockSlackTokenExchanges++;
       response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      response.end(JSON.stringify({ ok: true, access_token: mockSlackToken, scope: 'chat:write,app_mentions:read,im:history,im:write', team: { id: 'TASPIE2E', name: 'ASPI' }, authed_user: { id: mockSlackGrantedUserId } }));
+      response.end(JSON.stringify({ ok: true, access_token: mockSlackToken, scope: 'chat:write,app_mentions:read,im:history,im:write,channels:read,channels:history', team: { id: 'TASPIE2E', name: 'ASPI' }, authed_user: { id: mockSlackGrantedUserId } }));
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/conversations.list') {
+      if (request.headers.authorization !== `Bearer ${mockSlackToken}` || url.searchParams.get('types') !== 'public_channel') {
+        response.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, error: 'invalid_auth_or_channel_type' }));
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({ ok: true, channels: [
+        { id: 'CBUGS1', name: 'incidents', is_archived: false, is_private: false },
+        { id: 'COTHER1', name: 'general', is_archived: false, is_private: false },
+        { id: 'CPRIVATE1', name: 'private-room', is_archived: false, is_private: true },
+      ], response_metadata: { next_cursor: '' } }));
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/conversations.open') {
@@ -860,7 +875,7 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   const authorization = mockSlackAuthorizationRequests.at(-1);
   assert(authorization, 'The browser did not visit the Slack OAuth authorization endpoint');
   assert.equal(authorization.client_id, 'coke-dots-slack-e2e-client');
-  assert.deepEqual(authorization.scope.split(',').sort(), ['app_mentions:read', 'chat:write', 'im:history', 'im:write']);
+  assert.deepEqual(authorization.scope.split(',').sort(), ['app_mentions:read', 'channels:history', 'channels:read', 'chat:write', 'im:history', 'im:write']);
   assert.equal(authorization.redirect_uri, `${baseUrl}/auth/slack/callback`);
   assert.ok(authorization.state);
   const callbackPage = page.waitForURL(url => url.origin === baseUrl && url.searchParams.get('slack') === 'connected', { timeout: 10_000 });
@@ -878,7 +893,7 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   await dialog.waitFor({ state: 'hidden' });
 }
 
-async function sendSignedSlackMessageFromChrome(page: Page, signingSecret: string, options: { eventId?: string; eventType?: 'message' | 'app_mention'; channelType?: 'im'; channel?: string; text?: string } = {}) {
+async function sendSignedSlackMessageFromChrome(page: Page, signingSecret: string, options: { eventId?: string; eventType?: 'message' | 'app_mention'; channelType?: 'im' | 'channel'; channel?: string; text?: string; botId?: string } = {}) {
   await page.evaluate(({ secret, options }) => {
     const root = document.createElement('section');
     root.id = 'slack-message-e2e-fixture';
@@ -892,7 +907,8 @@ async function sendSignedSlackMessageFromChrome(page: Page, signingSecret: strin
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const eventType = options.eventType || 'message';
       const body = JSON.stringify({ type: 'event_callback', event_id: options.eventId || 'EvChromeSlackE2E001', team_id: 'TASPIE2E', event: {
-        type: eventType, ...(eventType === 'message' ? { channel_type: options.channelType || 'im' } : {}),
+        type: eventType, ...(eventType === 'message' ? { channel_type: options.channelType || 'im', ts: '1791421200.000001' } : {}),
+        ...(options.botId ? { bot_id: options.botId } : {}),
         channel: options.channel || 'DASPIE2E', user: 'UINSTALLER1', text: input.value,
       } });
       const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -1483,13 +1499,13 @@ try {
     assert.equal(linked.installations[0]?.tenantId, oauthTestState.alphaSession!.tenant.id);
     assert.equal(linked.installations[0]?.teamId, 'TASPIE2E');
     assert.equal(linked.installations[0]?.teamName, 'ASPI');
-    assert.deepEqual(linked.installations[0]?.scopes, ['chat:write', 'app_mentions:read', 'im:history', 'im:write']);
+    assert.deepEqual(linked.installations[0]?.scopes, ['chat:write', 'app_mentions:read', 'im:history', 'im:write', 'channels:read', 'channels:history']);
     assert.equal(linked.installations[0]?.contactEnabled, true, 'The selected Slack workspace must be linked only to the active tenant');
     assert.equal('accessToken' in (linked.installations[0] || {}), false, 'Slack token fields must never be returned to the browser');
     const database = new DatabaseSync(join(testDataDir, 'dots.db'));
     try {
       const row = database.prepare('SELECT team_id,team_name,scopes_json FROM slack_installations WHERE tenant_id=?').get(oauthTestState.alphaSession!.tenant.id) as { team_id: string; team_name: string; scopes_json: string };
-      assert.deepEqual({ ...row }, { team_id: 'TASPIE2E', team_name: 'ASPI', scopes_json: '["chat:write","app_mentions:read","im:history","im:write"]' });
+      assert.deepEqual({ ...row }, { team_id: 'TASPIE2E', team_name: 'ASPI', scopes_json: '["chat:write","app_mentions:read","im:history","im:write","channels:read","channels:history"]' });
       assert.doesNotMatch(JSON.stringify(row), /xoxb-coke-dots-e2e-fixture-token/, 'Slack access tokens must not be persisted in SQLite');
     } finally { database.close(); }
     assert.equal(mockSlackAuthorizationRequests.length, 1);
@@ -1851,6 +1867,104 @@ try {
         JOIN tasks t ON t.id=e.task_id AND t.tenant_id=e.tenant_id WHERE e.event_id=?`).get('EvChromeMentionE2E002') as
         { status: string; tenant_id: string; task_status: string; result: string };
       assert.deepEqual({ ...mention }, { status: 'delivered', tenant_id: oauthTestState.alphaSession!.tenant.id, task_status: 'done', result: 'Slack connector E2E reply received.' });
+    } finally { database.close(); }
+  });
+
+  await recordStep('Chrome configures proactive Slack monitoring, reviews the event in Activity, deduplicates retries, and pauses future work', async () => {
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    await clickNav(alphaPage!, '你的 dot');
+    const panel = alphaPage!.getByTestId('dot-context-panel');
+    await panel.waitFor({ state: 'visible' });
+    await panel.getByRole('button', { name: 'Slack', exact: true }).click();
+    const dialog = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
+    await dialog.waitFor({ state: 'visible' });
+    const channelPicker = dialog.getByLabel('Public Slack channel');
+    await channelPicker.waitFor({ state: 'visible' });
+    await channelPicker.selectOption('CBUGS1');
+    const channelOptions = await channelPicker.locator('option').allTextContents();
+    assert.deepEqual(channelOptions, ['#general', '#incidents'], 'The private channel returned in the mock API response must not be exposed in the public-channel picker');
+    const monitorInstructions = 'E2E Slack monitor — investigate new bug reports';
+    await dialog.getByLabel('Slack monitoring instructions').fill(monitorInstructions);
+    await screenshot(alphaPage!, 'slack-proactive-monitor-setup');
+    await dialog.getByRole('button', { name: 'Monitor this channel' }).click();
+    await dialog.locator('.slack-monitor-row').filter({ hasText: '#incidents' }).getByText('Monitoring', { exact: true }).waitFor({ state: 'visible' });
+    const monitorState = await alphaPage!.evaluate(async () => await (await fetch('/api/slack')).json()) as { monitors: { tenantId: string; channelId: string; instructions: string; status: string }[] };
+    assert.equal(monitorState.monitors.length, 1);
+    assert.deepEqual({ tenantId: monitorState.monitors[0]?.tenantId, channelId: monitorState.monitors[0]?.channelId, instructions: monitorState.monitors[0]?.instructions, status: monitorState.monitors[0]?.status }, {
+      tenantId: oauthTestState.alphaSession!.tenant.id, channelId: 'CBUGS1', instructions: monitorInstructions, status: 'active',
+    });
+    await dialog.getByRole('button', { name: 'Close Slack setup' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+
+    const database = new DatabaseSync(join(testDataDir, 'dots.db'));
+    try {
+      const initialCount = (database.prepare("SELECT COUNT(*) AS count FROM tasks WHERE tenant_id=? AND title='#incidents update'").get(oauthTestState.alphaSession!.tenant.id) as { count: number }).count;
+      const promptBefore = mockModelPrompts.length;
+      await sendSignedSlackMessageFromChrome(alphaPage!, mockSlackSigningSecret, {
+        eventId: 'EvChromeSlackUnmonitored001', channelType: 'channel', channel: 'COTHER1', text: 'E2E Slack monitor — investigate new bug reports; unrelated public update.',
+      });
+      assert.equal((database.prepare("SELECT COUNT(*) AS count FROM tasks WHERE tenant_id=? AND title='#incidents update'").get(oauthTestState.alphaSession!.tenant.id) as { count: number }).count, initialCount, 'An unmonitored public channel must not dispatch work');
+      await sendSignedSlackMessageFromChrome(alphaPage!, mockSlackSigningSecret, {
+        eventId: 'EvChromeSlackMonitor001', channelType: 'channel', channel: 'CBUGS1', text: `${monitorInstructions}; checkout is blocked by a regression.`,
+      });
+      const taskReady = await waitFor(() => {
+        const task = database.prepare("SELECT id,status,tenant_id,execution_mode,result FROM tasks WHERE tenant_id=? AND title='#incidents update' ORDER BY created_at DESC LIMIT 1")
+          .get(oauthTestState.alphaSession!.tenant.id) as { id: string; status: string; tenant_id: string; execution_mode: string; result: string | null } | undefined;
+        return Boolean(task && task.status === 'done' && task.result);
+      }, 20_000).then(() => true, () => false);
+      if (!taskReady) {
+        const task = database.prepare("SELECT id,status,tenant_id,execution_mode,result,error FROM tasks WHERE tenant_id=? AND title='#incidents update' ORDER BY created_at DESC LIMIT 1")
+          .get(oauthTestState.alphaSession!.tenant.id);
+        assert.fail(`Proactive Slack review did not finish. Task=${JSON.stringify(task)} Prompts=${JSON.stringify(mockModelPrompts.slice(promptBefore))} Logs=${serverLogs.slice(-12).join('')}`);
+      }
+      const task = database.prepare("SELECT id,status,tenant_id,execution_mode,result FROM tasks WHERE tenant_id=? AND title='#incidents update' ORDER BY created_at DESC LIMIT 1")
+        .get(oauthTestState.alphaSession!.tenant.id) as { id: string; status: string; tenant_id: string; execution_mode: string; result: string };
+      assert.equal(task.tenant_id, oauthTestState.alphaSession!.tenant.id);
+      assert.equal(task.status, 'done');
+      assert.equal(task.execution_mode, 'read-only');
+      assert.match(task.result, /read-only review/i);
+      assert.ok(mockModelPrompts.slice(promptBefore).some(prompt => prompt.includes(monitorInstructions) && prompt.includes('checkout is blocked by a regression')),
+        'The actual task worker must send both the configured criterion and incoming message to the model');
+      const context = JSON.parse((database.prepare('SELECT task_context FROM tasks WHERE id=? AND tenant_id=?').get(task.id, task.tenant_id) as { task_context: string }).task_context) as { message: string; channelName: string };
+      assert.equal(context.channelName, 'incidents');
+      assert.match(context.message, /checkout is blocked by a regression/);
+      assert.equal(mockSlackPostedMessages.length, 2, 'Proactive monitoring must not post its analysis or acknowledgements into Slack');
+
+      await sendSignedSlackMessageFromChrome(alphaPage!, mockSlackSigningSecret, {
+        eventId: 'EvChromeSlackMonitor001', channelType: 'channel', channel: 'CBUGS1', text: `${monitorInstructions}; duplicate delivery.`,
+      });
+      await sendSignedSlackMessageFromChrome(alphaPage!, mockSlackSigningSecret, {
+        eventId: 'EvChromeSlackIgnoredBot001', channelType: 'channel', channel: 'CBUGS1', botId: 'BTESTBOT', text: `${monitorInstructions}; ignored bot message.`,
+      });
+      const afterDuplicateCount = (database.prepare("SELECT COUNT(*) AS count FROM tasks WHERE tenant_id=? AND title='#incidents update'").get(task.tenant_id) as { count: number }).count;
+      assert.equal(afterDuplicateCount, initialCount + 1, 'A retried event or a bot message must not create another proactive task');
+      const monitorEvent = database.prepare('SELECT COUNT(*) AS count FROM slack_monitor_events WHERE tenant_id=? AND event_id=?')
+        .get(task.tenant_id, 'EvChromeSlackMonitor001') as { count: number };
+      assert.equal(monitorEvent.count, 1, 'Slack event delivery must be durably deduplicated per tenant');
+
+      await clickNav(alphaPage!, 'Activity');
+      const activityCard = alphaPage!.locator('.task-card').filter({ hasText: '#incidents update' });
+      await activityCard.getByText('已完成', { exact: true }).waitFor({ state: 'visible' });
+      await activityCard.getByText(/read-only review/i).waitFor({ state: 'visible' });
+      const activityFeed = alphaPage!.getByTestId('activity-feed');
+      await activityFeed.getByTestId('activity-entry').filter({ hasText: 'New message in #incidents' }).first().waitFor({ state: 'visible' });
+      await screenshot(alphaPage!, 'slack-proactive-review-in-activity');
+      await activityCard.getByRole('button', { name: /查看详情/ }).click();
+
+      const contextPanel = alphaPage!.getByTestId('dot-context-panel');
+      await contextPanel.getByRole('button', { name: 'Slack', exact: true }).click();
+      const pausedDialog = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
+      await pausedDialog.waitFor({ state: 'visible' });
+      const monitorRow = pausedDialog.locator('.slack-monitor-row').filter({ hasText: '#incidents' });
+      await monitorRow.getByRole('button', { name: 'Pause', exact: true }).click();
+      await monitorRow.getByText('Paused', { exact: true }).waitFor({ state: 'visible' });
+      await pausedDialog.getByRole('button', { name: 'Close Slack setup' }).click();
+      await sendSignedSlackMessageFromChrome(alphaPage!, mockSlackSigningSecret, {
+        eventId: 'EvChromeSlackPaused001', channelType: 'channel', channel: 'CBUGS1', text: `${monitorInstructions}; must not start while paused.`,
+      });
+      const pausedCount = (database.prepare("SELECT COUNT(*) AS count FROM tasks WHERE tenant_id=? AND title='#incidents update'").get(task.tenant_id) as { count: number }).count;
+      assert.equal(pausedCount, initialCount + 1, 'A paused monitor must not dispatch new proactive work');
+      assert.equal(mockSlackPostedMessages.length, 2, 'Paused monitor events must not create Slack replies');
     } finally { database.close(); }
   });
 

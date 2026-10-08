@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
+import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -15,8 +15,10 @@ export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantS
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
 export interface SlackOAuthFlow { stateHash: string; tenantId: string; userId: string; expiresAt: string; returnTo: string }
 export interface SlackInstallation { tenantId: string; teamId: string; teamName: string; scopes: string[]; installedAt: string; contactEnabled: boolean }
-export interface SlackInboundMessage { eventId: string; teamId: string; slackUserId: string; sourceChannelId: string; replyChannelId: string; eventType: 'message.im' | 'app_mention'; text: string }
+export interface SlackInboundMessage { eventId: string; teamId: string; slackUserId: string; sourceChannelId: string; replyChannelId: string; eventType: 'message.im' | 'app_mention' | 'message.channels'; text: string }
 export interface SlackInboxResult { status: 'queued' | 'ignored' | 'duplicate'; tenantId?: string; taskId?: string }
+export interface SlackMonitorEvent { eventId: string; teamId: string; channelId: string; slackUserId: string; text: string; timestamp?: string }
+export interface SlackMonitorResult { status: 'queued' | 'ignored' | 'duplicate'; taskIds: string[] }
 export interface SlackDeliveryCandidate { eventId: string; tenantId: string; teamId: string; replyChannelId: string; task: Task; attempts: number }
 export interface TeamsIdentity { tenantId: string; microsoftTenantId: string; microsoftUserId: string; aadObjectId: string; displayName: string; conversationId: string; serviceUrl: string; linkedAt: string }
 export interface TeamsInboundMessage { eventId: string; eventKey: string; microsoftTenantId: string; microsoftUserId: string; aadObjectId: string; displayName: string; conversationId: string; serviceUrl: string; text: string }
@@ -83,6 +85,17 @@ export class Store {
         attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, last_error TEXT, created_at TEXT NOT NULL, delivered_at TEXT
       );
       CREATE INDEX IF NOT EXISTS slack_inbox_delivery ON slack_inbox_events(status,retry_at,created_at);
+      CREATE TABLE IF NOT EXISTS slack_event_monitors (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), team_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL, channel_name TEXT NOT NULL, instructions TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('active','paused')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        last_event_at TEXT, last_task_id TEXT, UNIQUE(tenant_id,team_id,channel_id)
+      );
+      CREATE INDEX IF NOT EXISTS slack_event_monitors_lookup ON slack_event_monitors(team_id,channel_id,status);
+      CREATE TABLE IF NOT EXISTS slack_monitor_events (
+        event_id TEXT NOT NULL, tenant_id TEXT NOT NULL REFERENCES tenants(id), monitor_id TEXT NOT NULL,
+        task_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(event_id,tenant_id)
+      );
       CREATE TABLE IF NOT EXISTS teams_link_codes (
         code_hash TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
         expires_at TEXT NOT NULL, created_at TEXT NOT NULL
@@ -387,6 +400,8 @@ export class Store {
   clearSlackWorkspace(tenantId: string) {
     this.db.prepare('DELETE FROM slack_user_links WHERE tenant_id=?').run(tenantId);
     this.db.prepare('DELETE FROM slack_inbox_events WHERE tenant_id=?').run(tenantId);
+    this.db.prepare('DELETE FROM slack_monitor_events WHERE tenant_id=?').run(tenantId);
+    this.db.prepare('DELETE FROM slack_event_monitors WHERE tenant_id=?').run(tenantId);
   }
 
   slackInstallations(tenantId: string): SlackInstallation[] {
@@ -415,7 +430,86 @@ export class Store {
     return this.slackInstallations(tenantId).find(item => item.teamId === teamId) || null;
   }
 
+  createSlackEventMonitor(input: { tenantId: string; teamId: string; channelId: string; channelName: string; instructions: string }): SlackEventMonitor {
+    const installation = this.slackInstallation(input.tenantId, input.teamId);
+    if (!installation) throw new Error('Slack workspace is not connected to this tenant');
+    if (!installation.scopes.includes('channels:read') || !installation.scopes.includes('channels:history')) {
+      throw new Error('Reconnect Slack to grant channels:read and channels:history for public-channel monitoring');
+    }
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    try {
+      this.db.prepare(`INSERT INTO slack_event_monitors(id,tenant_id,team_id,channel_id,channel_name,instructions,status,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,'active',?,?)`).run(id, input.tenantId, input.teamId, input.channelId, input.channelName, input.instructions, now, now);
+    } catch (error) {
+      if (String(error).includes('UNIQUE constraint failed')) throw new Error('This channel is already monitored');
+      throw error;
+    }
+    return this.slackEventMonitor(id, input.tenantId)!;
+  }
+
+  slackEventMonitors(tenantId: string): SlackEventMonitor[] {
+    return this.db.prepare(`SELECT m.id,m.tenant_id AS tenantId,m.team_id AS teamId,i.team_name AS teamName,
+      m.channel_id AS channelId,m.channel_name AS channelName,m.instructions,m.status,m.created_at AS createdAt,
+      m.updated_at AS updatedAt,m.last_event_at AS lastEventAt,m.last_task_id AS lastTaskId
+      FROM slack_event_monitors m JOIN slack_installations i ON i.tenant_id=m.tenant_id AND i.team_id=m.team_id
+      WHERE m.tenant_id=? ORDER BY m.created_at DESC`).all(tenantId) as unknown as SlackEventMonitor[];
+  }
+
+  slackEventMonitor(id: string, tenantId: string): SlackEventMonitor | null {
+    return this.slackEventMonitors(tenantId).find(monitor => monitor.id === id) || null;
+  }
+
+  updateSlackEventMonitor(id: string, tenantId: string, action: 'pause' | 'resume'): SlackEventMonitor | null {
+    const status = action === 'pause' ? 'paused' : 'active';
+    this.db.prepare('UPDATE slack_event_monitors SET status=?,updated_at=? WHERE tenant_id=? AND id=?')
+      .run(status, new Date().toISOString(), tenantId, id);
+    return this.slackEventMonitor(id, tenantId);
+  }
+
+  createSlackMonitorTasks(event: SlackMonitorEvent): SlackMonitorResult {
+    const monitors = this.db.prepare(`SELECT m.*,i.team_name FROM slack_event_monitors m JOIN slack_installations i
+      ON i.tenant_id=m.tenant_id AND i.team_id=m.team_id WHERE m.team_id=? AND m.channel_id=? AND m.status='active'
+      ORDER BY m.tenant_id`).all(event.teamId, event.channelId) as {
+        id: string; tenant_id: string; team_id: string; channel_id: string; channel_name: string;
+        instructions: string; status: string; team_name: string;
+      }[];
+    if (!monitors.length || !event.text.trim()) return { status: 'ignored', taskIds: [] };
+    const taskIds: string[] = [];
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const monitor of monitors) {
+        const receipt = this.db.prepare(`INSERT OR IGNORE INTO slack_monitor_events(event_id,tenant_id,monitor_id,task_id,created_at)
+          VALUES (?,?,?, '',?)`).run(event.eventId, monitor.tenant_id, monitor.id, now);
+        if (!Number(receipt.changes)) continue;
+        const id = randomUUID();
+        const userText = event.text.trim().slice(0, 4000);
+        const title = `#${monitor.channel_name} update`;
+        const instruction = `Review a new message in the monitored public Slack channel #${monitor.channel_name}. Determine whether it meets these monitoring instructions: ${monitor.instructions}. If it is not relevant, report that no follow-up is needed and set notifyUser=false. If it is relevant, provide a concise read-only analysis, evidence, and any decision the user needs to make. Do not reply to Slack or modify any external source.`;
+        const context = JSON.stringify({ source: 'Slack public channel event', teamName: monitor.team_name, channelId: event.channelId, channelName: monitor.channel_name, userId: event.slackUserId, timestamp: event.timestamp || null, message: userText });
+        const effortSetting = this.getSetting('reasoningEffort', monitor.tenant_id);
+        const reasoningEffort = isReasoningEffort(effortSetting) ? effortSetting : 'high';
+        this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,task_context)
+          VALUES (?,?,?,?,'queued',0,?,NULL,NULL,NULL,?,?,'model',?,NULL,NULL,'read-only',?)`)
+          .run(id, monitor.tenant_id, title, instruction, now, now, now, reasoningEffort, context);
+        this.db.prepare('UPDATE slack_monitor_events SET task_id=? WHERE event_id=? AND tenant_id=?').run(id, event.eventId, monitor.tenant_id);
+        this.db.prepare('UPDATE slack_event_monitors SET last_event_at=?,last_task_id=?,updated_at=? WHERE tenant_id=? AND id=?')
+          .run(now, id, now, monitor.tenant_id, monitor.id);
+        this.db.prepare(`INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,'[]')`)
+          .run(monitor.tenant_id, id, 'user', `New message in #${monitor.channel_name}: ${userText}`, now);
+        this.db.prepare(`INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,'[]')`)
+          .run(monitor.tenant_id, id, 'system', 'A configured Slack event monitor started a read-only review. No Slack reply will be sent.', now);
+        taskIds.push(id);
+      }
+      this.db.exec('COMMIT');
+      return { status: taskIds.length ? 'queued' : 'duplicate', taskIds };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
   removeSlackInstallation(tenantId: string, teamId: string) {
+    this.db.prepare('DELETE FROM slack_monitor_events WHERE tenant_id=? AND monitor_id IN (SELECT id FROM slack_event_monitors WHERE tenant_id=? AND team_id=?)').run(tenantId, tenantId, teamId);
+    this.db.prepare('DELETE FROM slack_event_monitors WHERE tenant_id=? AND team_id=?').run(tenantId, teamId);
     return Number(this.db.prepare('DELETE FROM slack_installations WHERE tenant_id=? AND team_id=?').run(tenantId, teamId).changes) > 0;
   }
 
@@ -757,6 +851,8 @@ export class Store {
       this.db.prepare('DELETE FROM slack_oauth_flows WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM slack_user_links WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM slack_inbox_events WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM slack_monitor_events WHERE tenant_id=?').run(tenantId);
+      this.db.prepare('DELETE FROM slack_event_monitors WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM slack_installations WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM website_sign_in_requests WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM page_action_approvals WHERE tenant_id=?').run(tenantId);

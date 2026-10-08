@@ -105,6 +105,21 @@ export interface Watch {
   error: string | null;
 }
 
+export interface SlackEventMonitor {
+  id: string;
+  tenantId: string;
+  teamId: string;
+  teamName: string;
+  channelId: string;
+  channelName: string;
+  instructions: string;
+  status: 'active' | 'paused';
+  createdAt: string;
+  updatedAt: string;
+  lastEventAt: string | null;
+  lastTaskId: string | null;
+}
+
 export interface WorkspacePage {
   id: string;
   tenantId: string;

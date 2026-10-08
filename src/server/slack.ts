@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Entry } from '@napi-rs/keyring';
 import type { Task } from '../shared/types.ts';
-import type { AuthSession, SlackDeliveryCandidate, SlackInboundMessage } from './store.ts';
+import type { AuthSession, SlackDeliveryCandidate, SlackInboundMessage, SlackMonitorEvent } from './store.ts';
 import { Store } from './store.ts';
 
 const cookieName = 'coke_dots_slack_state';
@@ -30,7 +30,48 @@ export class SlackService {
   }
 
   snapshot(tenantId: string) {
-    return { configured: this.configured(), eventsConfigured: Boolean(this.signingSecret), installations: this.store.slackInstallations(tenantId) };
+    return { configured: this.configured(), eventsConfigured: Boolean(this.signingSecret), installations: this.store.slackInstallations(tenantId), monitors: this.store.slackEventMonitors(tenantId) };
+  }
+
+  async publicChannels(tenantId: string, teamId: string, session: AuthSession) {
+    if (!canManage(session) || session.tenant.id !== tenantId) return { status: 403, error: '只有当前工作区所有者或管理员可以读取 Slack 频道列表' };
+    const installation = this.store.slackInstallation(tenantId, teamId);
+    if (!installation) return { status: 404, error: 'Slack workspace is not connected to this tenant' };
+    if (!installation.scopes.includes('channels:read') || !installation.scopes.includes('channels:history')) {
+      return { status: 409, error: 'Reconnect Slack to grant channels:read and channels:history for public-channel monitoring' };
+    }
+    const token = tokenEntry(tenantId, teamId).getPassword();
+    if (!token) return { status: 409, error: 'Slack bot token is unavailable; reconnect this workspace' };
+    const channels: { id: string; name: string }[] = [];
+    let cursor = '';
+    try {
+      for (let page = 0; page < 5; page++) {
+        const url = new URL(this.webApiUrl('conversations.list'));
+        url.searchParams.set('exclude_archived', 'true');
+        url.searchParams.set('limit', '200');
+        url.searchParams.set('types', 'public_channel');
+        if (cursor) url.searchParams.set('cursor', cursor);
+        const response = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
+        let result: SlackChannelListResponse = {};
+        try { result = await response.json() as SlackChannelListResponse; } catch { /* Return a bounded provider error below. */ }
+        if (!response.ok || result.ok !== true) {
+          const missingScope = result.error === 'missing_scope';
+          return { status: missingScope ? 409 : 502, error: missingScope ? 'Reconnect Slack to grant channels:read and channels:history for public-channel monitoring' : `Slack could not list public channels${result.error ? `: ${result.error}` : ''}` };
+        }
+        for (const channel of result.channels || []) {
+          if (typeof channel.id === 'string' && /^[A-Z0-9]{2,32}$/.test(channel.id) && typeof channel.name === 'string' && channel.name.length <= 80 && channel.is_archived !== true && channel.is_private !== true) {
+            channels.push({ id: channel.id, name: channel.name });
+          }
+        }
+        cursor = result.response_metadata?.next_cursor?.trim() || '';
+        if (!cursor) break;
+      }
+      channels.sort((left, right) => left.name.localeCompare(right.name));
+      return { status: 200, value: channels };
+    } catch (error) {
+      const reason = error instanceof Error && error.name === 'TimeoutError' ? 'Slack channel list timed out' : 'Slack channel list request failed';
+      return { status: 502, error: reason };
+    }
   }
 
   async begin(req: IncomingMessage, res: ServerResponse, session: AuthSession) {
@@ -48,7 +89,7 @@ export class SlackService {
     setStateCookie(res, stateHash, redirectUri.startsWith('https://'));
     const authorizeUrl = new URL(`${this.slackOrigin()}/oauth/v2/authorize`);
     authorizeUrl.searchParams.set('client_id', this.clientId);
-    authorizeUrl.searchParams.set('scope', 'chat:write,app_mentions:read,im:history,im:write');
+    authorizeUrl.searchParams.set('scope', 'chat:write,app_mentions:read,im:history,im:write,channels:read,channels:history');
     authorizeUrl.searchParams.set('state', state);
     authorizeUrl.searchParams.set('redirect_uri', redirectUri);
     res.writeHead(302, { Location: authorizeUrl.toString(), 'Cache-Control': 'no-store' });
@@ -138,7 +179,9 @@ export class SlackService {
     const eventId = typeof envelope.event_id === 'string' ? envelope.event_id : '';
     const teamId = typeof envelope.team_id === 'string' ? envelope.team_id : '';
     const event = envelope.event && typeof envelope.event === 'object' ? envelope.event as Record<string, unknown> : {};
-    const eventType = event.type === 'app_mention' ? 'app_mention' : event.type === 'message' && event.channel_type === 'im' ? 'message.im' : '';
+    const eventType = event.type === 'app_mention' ? 'app_mention'
+      : event.type === 'message' && event.channel_type === 'im' ? 'message.im'
+        : event.type === 'message' && event.channel_type === 'channel' ? 'message.channels' : '';
     if (!/^[A-Za-z0-9_-]{4,120}$/.test(eventId) || !/^[A-Z0-9]{2,32}$/.test(teamId) || !eventType) return { status: 200, body: { ok: true } };
     if (event.subtype || event.bot_id) return { status: 200, body: { ok: true } };
     const slackUserId = typeof event.user === 'string' ? event.user : '';
@@ -151,6 +194,13 @@ export class SlackService {
       eventType, text,
     };
     try {
+      if (eventType === 'message.channels') {
+        const accepted = this.store.createSlackMonitorTasks({
+          eventId, teamId, channelId: channelId, slackUserId, text,
+          ...(typeof event.ts === 'string' && event.ts.length <= 32 ? { timestamp: event.ts } : {}),
+        } satisfies SlackMonitorEvent);
+        return { status: 200, body: { ok: true }, taskCreated: accepted.status === 'queued' };
+      }
       const accepted = this.store.createSlackInboxTask(message);
       return { status: 200, body: { ok: true }, taskCreated: accepted.status === 'queued' };
     } catch (error) {
@@ -318,4 +368,10 @@ function json(res: ServerResponse, status: number, value: unknown) {
 }
 interface SlackOAuthGrant {
   ok?: boolean; access_token?: string; scope?: string; team?: { id?: string; name?: string }; authed_user?: { id?: string };
+}
+interface SlackChannelListResponse {
+  ok?: boolean;
+  error?: string;
+  channels?: { id?: unknown; name?: unknown; is_archived?: unknown; is_private?: unknown }[];
+  response_metadata?: { next_cursor?: string };
 }

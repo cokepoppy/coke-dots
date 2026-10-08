@@ -97,3 +97,61 @@ test('Slack inbound events map only linked users to one selected tenant, dedupli
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('Slack public-channel monitors create tenant-scoped read-only tasks only for opted-in channels', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-slack-monitor-'));
+  try {
+    const store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'slack-monitor-alpha', email: 'slack-monitor-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'slack-monitor-beta', email: 'slack-monitor-beta@example.test', name: 'Beta' });
+    const install = (tenantId: string, scopes: string[]) => store.installSlackWorkspace({
+      tenantId, teamId: 'TASPI', teamName: 'Shared public Slack', scopes, installedAt: '2026-10-08T00:00:00.000Z',
+    });
+    install(alpha.tenant.id, ['channels:read']);
+    install(beta.tenant.id, ['channels:read', 'channels:history']);
+    assert.throws(() => store.createSlackEventMonitor({
+      tenantId: alpha.tenant.id, teamId: 'TASPI', channelId: 'CBUGS', channelName: 'incidents', instructions: 'Find release blocking bugs',
+    }), /channels:read and channels:history/);
+
+    install(alpha.tenant.id, ['channels:read', 'channels:history']);
+    const alphaMonitor = store.createSlackEventMonitor({
+      tenantId: alpha.tenant.id, teamId: 'TASPI', channelId: 'CBUGS', channelName: 'incidents', instructions: 'Find release blocking bugs',
+    });
+    const betaMonitor = store.createSlackEventMonitor({
+      tenantId: beta.tenant.id, teamId: 'TASPI', channelId: 'CBUGS', channelName: 'incidents', instructions: 'Find security incidents',
+    });
+    assert.throws(() => store.createSlackEventMonitor({
+      tenantId: alpha.tenant.id, teamId: 'TASPI', channelId: 'CBUGS', channelName: 'incidents', instructions: 'Duplicate subscription',
+    }), /already monitored/);
+    assert.equal(store.slackEventMonitors(alpha.tenant.id).length, 1);
+    assert.equal(store.slackEventMonitors(beta.tenant.id).length, 1);
+    assert.equal(store.updateSlackEventMonitor(alphaMonitor.id, beta.tenant.id, 'pause'), null, 'A tenant cannot change another tenant monitor');
+
+    const event = { eventId: 'EvMonitorTest0001', teamId: 'TASPI', channelId: 'CBUGS', slackUserId: 'UREPORTER', text: 'Checkout is blocked by a release regression', timestamp: '1791421200.000001' };
+    const queued = store.createSlackMonitorTasks(event);
+    assert.equal(queued.status, 'queued');
+    assert.equal(queued.taskIds.length, 2, 'Each tenant that explicitly configured the channel receives an independent task');
+    const alphaTask = store.getTask(queued.taskIds.find(id => store.getTask(id, alpha.tenant.id))!, alpha.tenant.id);
+    const betaTask = store.getTask(queued.taskIds.find(id => store.getTask(id, beta.tenant.id))!, beta.tenant.id);
+    assert(alphaTask && betaTask);
+    for (const task of [alphaTask, betaTask]) {
+      assert.equal(task.executionMode, 'read-only');
+      assert.match(task.instruction, /Do not reply to Slack or modify any external source/);
+      const entryBodies = store.db.prepare('SELECT body FROM entries WHERE tenant_id=? AND task_id=? ORDER BY id').all(task.tenantId, task.id) as { body: string }[];
+      assert.match(entryBodies.map(entry => entry.body).join('\n'), /No Slack reply will be sent/);
+      assert.equal(JSON.parse(store.taskContext(task.id, task.tenantId)).message, event.text);
+    }
+    assert.deepEqual(store.slackDeliveryCandidates(), [], 'Proactive monitor work must never enter the outbound Slack reply queue');
+    assert.equal(store.createSlackMonitorTasks(event).status, 'duplicate');
+    assert.deepEqual(store.createSlackMonitorTasks({ ...event, eventId: 'EvUnmonitored0001', channelId: 'CGENERAL' }), { status: 'ignored', taskIds: [] });
+
+    assert.equal(store.updateSlackEventMonitor(alphaMonitor.id, alpha.tenant.id, 'pause')?.status, 'paused');
+    const afterPause = store.createSlackMonitorTasks({ ...event, eventId: 'EvMonitorTest0002' });
+    assert.equal(afterPause.status, 'queued');
+    assert.equal(afterPause.taskIds.length, 1);
+    assert.equal(store.getTask(afterPause.taskIds[0]!, beta.tenant.id)?.tenantId, beta.tenant.id);
+    assert.equal(store.slackEventMonitor(alphaMonitor.id, alpha.tenant.id)?.lastTaskId, queued.taskIds.find(id => store.getTask(id, alpha.tenant.id)));
+    assert.equal(store.slackEventMonitor(betaMonitor.id, beta.tenant.id)?.lastTaskId, afterPause.taskIds[0]);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

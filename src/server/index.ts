@@ -192,6 +192,39 @@ const server = createServer(async (req, res) => {
     return reply(res, result.status, result.body);
   }
   if (path === '/api/slack' && req.method === 'GET') return reply(res, 200, slack.snapshot(session.tenant.id));
+  if (path === '/api/slack/channels' && req.method === 'GET') {
+    const result = await slack.publicChannels(session.tenant.id, url.searchParams.get('teamId') || '', session);
+    return result.status === 200 ? reply(res, 200, { channels: result.value }) : reply(res, result.status, { error: result.error });
+  }
+  if (path === '/api/slack/monitors' && req.method === 'POST') {
+    const body = await readJson(req);
+    const teamId = String(body.teamId || '');
+    const channelId = String(body.channelId || '');
+    const instructions = String(body.instructions || '').trim();
+    if (!/^[A-Z0-9]{2,32}$/.test(teamId) || !/^[A-Z0-9]{2,32}$/.test(channelId) || instructions.length < 3 || instructions.length > 1000) {
+      return reply(res, 400, { error: '请指定 Slack 工作区、公共频道和 3–1000 字的关注条件' });
+    }
+    const channelResult = await slack.publicChannels(session.tenant.id, teamId, session);
+    if (!channelResult.value) return reply(res, channelResult.status, { error: channelResult.error || 'Slack public channels are unavailable' });
+    const channel = channelResult.value.find(item => item.id === channelId);
+    if (!channel) return reply(res, 400, { error: '请选择当前工作区中可见的公共频道' });
+    try {
+      const monitor = store.createSlackEventMonitor({ tenantId: session.tenant.id, teamId, channelId, channelName: channel.name, instructions });
+      publish();
+      return reply(res, 201, monitor);
+    } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法创建 Slack 事件监控' }); }
+  }
+  const slackMonitorMatch = path.match(/^\/api\/slack\/monitors\/([a-f0-9-]{36})$/i);
+  if (slackMonitorMatch && req.method === 'PATCH') {
+    const body = await readJson(req);
+    const action = body.action;
+    if (action !== 'pause' && action !== 'resume') return reply(res, 400, { error: 'Invalid Slack monitor action' });
+    if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以管理 Slack 事件监控' });
+    const monitor = store.updateSlackEventMonitor(slackMonitorMatch[1], session.tenant.id, action);
+    if (!monitor) return reply(res, 404, { error: 'Slack event monitor not found' });
+    publish();
+    return reply(res, 200, monitor);
+  }
   if (path === '/api/teams' && req.method === 'GET') return reply(res, 200, teams.snapshot(session));
   if (path === '/api/teams/link-code' && req.method === 'POST') {
     const result = teams.createLinkCode(session);
