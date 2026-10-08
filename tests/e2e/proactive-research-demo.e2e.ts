@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page, type Video } from 'playwright-core';
 import { execFileSync } from 'node:child_process';
@@ -15,11 +15,21 @@ import { Store } from '../../src/server/store.ts';
 import { desktopResourceIdentity } from '../../src/server/linux-desktop-computer.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const outputRoot = join(projectRoot, 'artifacts', 'demos', 'proactive-release-date-conflict');
-const videoOutput = join(outputRoot, 'proactive-release-date-conflict.webp');
+const demosRoot = resolve(projectRoot, 'artifacts', 'demos');
+const configuredOutput = process.env.DOTS_PROACTIVE_DEMO_OUTPUT_DIR?.trim();
+const defaultOutput = `proactive-release-date-conflict-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+const outputRoot = resolve(projectRoot, configuredOutput || join('artifacts', 'demos', defaultOutput));
+const outputRelativePath = relative(demosRoot, outputRoot);
+if (!outputRelativePath || outputRelativePath.startsWith('..') || isAbsolute(outputRelativePath)) {
+  throw new Error('DOTS_PROACTIVE_DEMO_OUTPUT_DIR must name a new directory inside artifacts/demos.');
+}
+const videoFileName = 'proactive-release-date-cloud-computer.webp';
+const videoOutput = join(outputRoot, videoFileName);
 const sourceDraft = '请起草一份内部发布公告，发布日期写 10 月 21 日。草稿先保留并等待我审批，不要发送、发布，也不要修改其他内容。处理后请用中文告诉我草稿在等待审批，而且没有发送。';
 const sourceDecision = '发布团队今天确认发布日期改为 10 月 22 日。请用一句中文记录这个决定，不要编辑或发送公告。';
 const finding = '我发现发布团队把发布日期改为 10 月 22 日，但待审批的发布公告仍写着 10 月 21 日。要我更新这份草稿吗？我还没有修改或发送。';
+const researchFixtureUrl = 'https://research-fixture.dots.test/launch';
+const cloudFollowThroughInstruction = `我看到了你主动发现的发布日期冲突。请用 Dot 的云电脑打开 ${researchFixtureUrl}，查看公开发布说明并点击“展开发布时间”，核对完整发布时间是否与团队的新决定（10 月 22 日）一致。只读取网页，不修改、发送或发布任何内容；用中文告诉我你在云电脑里做了什么和核对结果。`;
 const liveK3d = process.env.DOTS_PROACTIVE_DEMO_LIVE_KERNELS === '1';
 const liveEngine = process.env.DOTS_PROACTIVE_DEMO_ENGINE?.trim() || 'dsh';
 assert(['pi', 'dsh'].includes(liveEngine), 'DOTS_PROACTIVE_DEMO_ENGINE must be pi or dsh.');
@@ -148,6 +158,9 @@ async function startServer(port: number, modelBaseUrl: string) {
       ...process.env,
       NODE_ENV: 'test',
       DOTS_E2E_AUTH: '1',
+      DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL: liveK3d ? researchFixtureUrl : '',
+      DOTS_E2E_DESKTOP_MEMORY_REQUEST: liveK3d ? process.env.DOTS_E2E_DESKTOP_MEMORY_REQUEST || '512Mi' : '',
+      DOTS_E2E_AGENT_RUNTIME_MEMORY_REQUEST: liveK3d ? process.env.DOTS_E2E_AGENT_RUNTIME_MEMORY_REQUEST || '256Mi' : '',
       DOTS_ENV_FILE: emptyEnvFile,
       DOTS_DATA_DIR: dataDirectory,
       DOTS_KEYCHAIN_SERVICE: keychainService,
@@ -245,7 +258,7 @@ async function waitForTask(pageToWait: Page, selector: { instruction?: string; e
   throw new Error(`Task did not reach ${selector.statuses.join('/')} within ${timeout} ms. Last task states: ${JSON.stringify(lastMatches)}`);
 }
 
-await rm(outputRoot, { recursive: true, force: true });
+assert.equal(existsSync(outputRoot), false, `Refusing to overwrite an existing proactive demo recording directory: ${outputRoot}`);
 await mkdir(join(outputRoot, 'screenshots'), { recursive: true });
 await writeFile(emptyEnvFile, '');
 let modelBaseUrl = '';
@@ -383,6 +396,95 @@ try {
   await page.locator('.timeline .message.dot p').filter({ hasText: visibleFinding }).waitFor({ state: 'visible' });
   await page.screenshot({ path: join(outputRoot, 'screenshots', '03-proactive-finding-detail.png') });
   await new Promise(resolvePromise => setTimeout(resolvePromise, 2_000));
+
+  if (liveK3d) {
+    await page.getByRole('button', { name: '新聊天', exact: true }).click();
+    await page.getByTestId('chat-home').waitFor({ state: 'visible' });
+    const kernelPicker = page.locator('.composer-bottom select');
+    await kernelPicker.selectOption(liveEngine);
+    assert.equal(await kernelPicker.inputValue(), liveEngine, 'The follow-through task must explicitly use the selected cloud Agent kernel.');
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '04-follow-through-ready.png') });
+
+    await submitTask(page, cloudFollowThroughInstruction);
+    const followThroughCreated = await page.evaluate(async instruction => {
+      const state = await (await fetch('/api/state', { cache: 'no-store' })).json() as {
+        tasks: { id: string; instruction: string; status: string; executionMode: string; engine: string }[];
+      };
+      return state.tasks.find(task => task.instruction === instruction) || null;
+    }, cloudFollowThroughInstruction);
+    assert(followThroughCreated, 'The explicitly assigned follow-through task must be created from the chat composer.');
+    assert.equal(followThroughCreated.executionMode, 'standard', 'The computer task must be a separate user-authorized task, not part of proactive review.');
+    assert.equal(followThroughCreated.engine, liveEngine);
+    await writeFile(join(outputRoot, '05-follow-through-task-created.json'), `${JSON.stringify({ taskId: followThroughCreated.id, engine: liveEngine, executionMode: followThroughCreated.executionMode, instruction: cloudFollowThroughInstruction }, null, 2)}\n`);
+
+    await page.getByRole('button', { name: '电脑', exact: true }).click();
+    await page.getByTestId('linux-desktop-stage').waitFor({ state: 'visible', timeout: 30_000 });
+    const beforeComputer = await page.evaluate(async () => {
+      const stateResponse = await fetch('/api/computer', { cache: 'no-store' });
+      const screenshotResponse = await fetch('/api/computer/screenshot', { cache: 'no-store' });
+      const state = await stateResponse.json() as { url?: string; title?: string; owner?: string; backend?: string };
+      return {
+        state: { status: stateResponse.status, ...state },
+        screenshotStatus: screenshotResponse.status,
+        screenshot: Array.from(new Uint8Array(await screenshotResponse.arrayBuffer())),
+      };
+    });
+    assert.equal(beforeComputer.state.status, 200, 'The tenant cloud computer must be visible before Agent follow-through.');
+    assert.equal(beforeComputer.screenshotStatus, 200);
+    await writeFile(join(outputRoot, '06-cloud-computer-before-task.png'), Buffer.from(beforeComputer.screenshot));
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '06-cloud-computer-before-task.png') });
+    console.log('STEP watching the tenant cloud computer while Pi performs the user-authorized follow-through');
+
+    await waitForTask(page, { instruction: cloudFollowThroughInstruction, statuses: ['done', 'failed'] }, 300_000);
+    const followThroughState = await page.evaluate(async instruction => {
+      const state = await (await fetch('/api/state', { cache: 'no-store' })).json() as {
+        tasks: { id: string; instruction: string; status: string; executionMode: string; engine: string; result: string | null; error: string | null }[];
+      };
+      const task = state.tasks.find(row => row.instruction === instruction) || null;
+      return { task };
+    }, cloudFollowThroughInstruction);
+    const followThroughTask = followThroughState.task;
+    assert.equal(followThroughTask?.status, 'done', `The Pi cloud-computer follow-through failed: ${followThroughTask?.error || followThroughTask?.result || '(no result)'}`);
+    assert.equal(followThroughTask?.executionMode, 'standard');
+    assert.equal(followThroughTask?.engine, liveEngine);
+    assert.match(followThroughTask?.result || '', /[\u3400-\u9fff]/, 'The follow-through result must be in Chinese.');
+    assert.match(followThroughTask?.result || '', /10\s*月\s*22\s*日/);
+    assert.match(followThroughTask?.result || '', /云电脑/);
+
+    const finalComputer = await page.evaluate(async () => {
+      const stateResponse = await fetch('/api/computer', { cache: 'no-store' });
+      const screenshotResponse = await fetch('/api/computer/screenshot', { cache: 'no-store' });
+      const state = await stateResponse.json() as { url?: string; title?: string; owner?: string; backend?: string };
+      return {
+        state: { status: stateResponse.status, ...state },
+        screenshotStatus: screenshotResponse.status,
+        screenshot: Array.from(new Uint8Array(await screenshotResponse.arrayBuffer())),
+      };
+    });
+    assert.equal(finalComputer.state.status, 200);
+    assert.equal(finalComputer.screenshotStatus, 200);
+    assert.equal(finalComputer.state.url, researchFixtureUrl, `The tenant computer must remain on the requested public page: ${JSON.stringify(finalComputer.state)}`);
+    const beforeHash = createHash('sha256').update(Buffer.from(beforeComputer.screenshot)).digest('hex');
+    const afterHash = createHash('sha256').update(Buffer.from(finalComputer.screenshot)).digest('hex');
+    assert.notEqual(afterHash, beforeHash, 'The displayed cloud-computer screen must change as Pi opens and inspects the page.');
+    await writeFile(join(outputRoot, '07-cloud-computer-after-task.png'), Buffer.from(finalComputer.screenshot));
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '07-cloud-computer-after-task.png') });
+
+    const activity = await page.evaluate(async () => await (await fetch('/api/activity?limit=100', { cache: 'no-store' })).json()) as {
+      entries: { taskId: string | null; body: string }[];
+    };
+    const computerActions = activity.entries.filter(entry => entry.taskId === followThroughTask.id).map(entry => entry.body);
+    assert(computerActions.some(body => body.includes('打开了云电脑中的公开网页')), `Activity must record cloud-browser navigation: ${computerActions.join(' | ')}`);
+    assert(computerActions.some(body => body.includes('点击了云电脑公开网页中的安全控件')), `Activity must record the safe page click: ${computerActions.join(' | ')}`);
+    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    const activityFeed = page.getByTestId('activity-feed');
+    await activityFeed.waitFor({ state: 'visible' });
+    await activityFeed.getByTestId('activity-entry').filter({ hasText: '点击了云电脑公开网页中的安全控件' }).first().waitFor({ state: 'visible', timeout: 10_000 });
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '08-cloud-computer-actions-in-activity.png') });
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 3_000));
+    console.log('STEP Pi opened and clicked the cloud browser page; Chinese result and Activity actions verified');
+  }
+
   assert.deepEqual(browserErrors, [], `Browser runtime errors: ${browserErrors.join('; ')}`);
   assert.deepEqual(mockErrors, [], `Model fixture errors: ${mockErrors.join('; ')}`);
   if (!liveK3d) {
@@ -422,15 +524,31 @@ try {
 const recording = pageVideo ? await pageVideo.path().catch(() => '') : '';
 assert(recording && existsSync(recording), 'Chrome did not produce the demo WebM recording');
 const converter = join(projectRoot, 'scripts', 'convert-demo-video-to-webp.mjs');
-execFileSync(process.execPath, [converter, recording, videoOutput], { cwd: projectRoot, stdio: 'inherit' });
+execFileSync(process.execPath, [converter, recording, videoOutput, '3', '0.5'], { cwd: projectRoot, stdio: 'inherit' });
 await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
-  scenario: 'An open launch draft says October 21; a later release decision says October 22. Dot detects and reports the conflict without editing or sending anything.',
+  scenario: liveK3d
+    ? 'Dot proactively detects a release-date conflict without writing, then after explicit user instruction Pi opens the tenant cloud computer, clicks the public page disclosure, verifies the date, and reports in Chinese.'
+    : 'An open launch draft says October 21; a later release decision says October 22. Dot detects and reports the conflict without editing or sending anything.',
   reference: 'https://learn.chatgpt.com/docs/dots/tasks-and-memory',
+  computerReference: 'https://learn.chatgpt.com/docs/dots/computers-and-apps',
   evidence: 'Official documentation supports proactive review of connected information and surfacing suggestions/questions; the exact UI shown is Coke Dots.',
-  recording: 'proactive-release-date-conflict.webp',
+  recording: videoFileName,
   sourceRecording: 'Playwright Chrome recording, converted to animated WebP',
+  presentationPlayback: { activeUiActions: '0.5x', readableStillSeconds: 3, longStaticWaitsRemoved: true },
   viewport: { width: 1440, height: 1000 },
-  screenshots: ['screenshots/00-dot-ready.png', 'screenshots/01-launch-draft-waiting.png', 'screenshots/02-proactive-finding-in-activity.png', 'screenshots/03-proactive-finding-detail.png'],
+  screenshots: [
+    'screenshots/00-dot-ready.png', 'screenshots/01-launch-draft-waiting.png',
+    'screenshots/02-proactive-finding-in-activity.png', 'screenshots/03-proactive-finding-detail.png',
+    ...(liveK3d ? ['screenshots/04-follow-through-ready.png', 'screenshots/06-cloud-computer-before-task.png', 'screenshots/07-cloud-computer-after-task.png', 'screenshots/08-cloud-computer-actions-in-activity.png'] : []),
+  ],
+  computerEvidence: liveK3d ? {
+    screenshotBefore: '06-cloud-computer-before-task.png',
+    screenshotAfter: '07-cloud-computer-after-task.png',
+    assignedTask: '05-follow-through-task-created.json',
+    instruction: cloudFollowThroughInstruction,
+    observedActions: ['navigate to the public launch page', 'click 展开发布时间', 'verify 10 月 22 日 and report in Chinese'],
+    proactiveReviewRemainsReadOnly: true,
+  } : undefined,
   kernel: liveK3d ? `${liveEngine} running in the tenant-isolated Debian 13 cloud-computer Pod` : 'Local deterministic E2E model fixture',
   model: liveK3d ? liveModelName : 'Deterministic local E2E fixture; no live provider request',
   providerMode: liveK3d ? 'Live shared Model API credentials reused by this and other tenants' : 'Local deterministic fixture; no provider request',

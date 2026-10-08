@@ -15,10 +15,11 @@ const videoDirectory = join(artifactRoot, 'video');
 const showcaseVideos = await Promise.all([
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
-  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 9.5, minimumFrames: 230 },
+  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 16, minimumFrames: 250 },
+  { file: 'proactive-cloud-computer-followthrough.webp', width: 914, height: 635, minimumDurationSeconds: 39, minimumFrames: 500 },
 ].map(async video => {
   const bytes = await readFile(join(projectRoot, 'public', 'demos', video.file));
-  const metadata = await sharp(bytes, { animated: true }).metadata();
+  const metadata = await sharp(bytes, { animated: true, limitInputPixels: 600_000_000 }).metadata();
   return {
     ...video,
     sha256: createHash('sha256').update(bytes).digest('hex'),
@@ -221,7 +222,7 @@ try {
       if ('minimumDurationSeconds' in video) {
         await page!.waitForTimeout(5000);
         const laterActionFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
-        assert.notEqual(laterFrame, laterActionFrame, `${video.file} should continue through the cloud computer actions at normal speed`);
+        assert.notEqual(laterFrame, laterActionFrame, `${video.file} should continue through the recorded computer actions at the documented presentation speed`);
       }
     }
   });

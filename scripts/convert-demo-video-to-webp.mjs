@@ -111,20 +111,27 @@ try {
   const freezes = detectFrozenIntervals(source, sourceDuration);
   const { segments, removedSeconds, visibleDuration } = buildVisibleSegments(sourceDuration, freezes, retainedStillSeconds);
   const expectedPlaybackDuration = segments.reduce((sum, segment, index) => sum + (segment.end - segment.start) / (index === 0 ? 1 : activePlaybackRate), 0);
-  const outputWidth = Math.min(1152, stream.width);
-  const outputHeight = Math.round(stream.height * outputWidth / stream.width);
   // Preserve the capture cadence so cursor movement and UI clicks don't jump between sparse frames.
   const fps = Math.max(1, Math.min(30, Math.round(sourceFrameRate)));
+  // Keep long, slowed-down demos below Sharp's animation pixel guard without
+  // reducing the resolution of ordinary clips. Include a small frame margin
+  // for timestamp rounding at segment boundaries.
+  const animationPixelLimit = 600_000_000;
+  const expectedFrames = Math.ceil(expectedPlaybackDuration * fps) + 10;
+  const pixelsPerWidthSquared = stream.height / stream.width * expectedFrames;
+  const maxWidthForAnimation = Math.floor(Math.sqrt(animationPixelLimit / pixelsPerWidthSquared));
+  const outputWidth = Math.min(1152, stream.width, maxWidthForAnimation);
+  if (outputWidth < 640) throw new Error(`The WebP would exceed the animation pixel limit even at 640px wide (${expectedPlaybackDuration.toFixed(1)}s at ${fps}fps).`);
+  const outputHeight = Math.round(stream.height * outputWidth / stream.width);
   const graph = buildFilterGraph(segments, fps, outputWidth, outputHeight, activePlaybackRate);
-  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > retainedStillSeconds + 0.05 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visibleDuration.toFixed(1)}s visible (${expectedPlaybackDuration.toFixed(1)}s playback, active segments at ${activePlaybackRate}x; removed ${removedSeconds.toFixed(1)}s), ${retainedStillSeconds.toFixed(1)}s readable holds, source cadence ${fps} fps`);
+  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > retainedStillSeconds + 0.05 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visibleDuration.toFixed(1)}s visible (${expectedPlaybackDuration.toFixed(1)}s playback, active segments at ${activePlaybackRate}x; removed ${removedSeconds.toFixed(1)}s), ${retainedStillSeconds.toFixed(1)}s readable holds, source cadence ${fps} fps, output ${outputWidth}x${outputHeight}`);
 
   runFfmpeg([
     '-hide_banner', '-loglevel', 'error', '-y', '-i', source,
     '-filter_complex', graph, '-map', '[webpout]',
     '-loop', '0', '-f', 'gif', gif,
   ]);
-  // Allow full-cadence clips without Sharp's default 268 MP animation guard.
-  const animationPixelLimit = 500_000_000;
+  // The output dimensions above keep the complete animation under this limit.
   await sharp(gif, { animated: true, limitInputPixels: animationPixelLimit }).webp({ quality: 86, effort: 5, loop: 0 }).toFile(output);
 
   const image = sharp(output, { animated: true, limitInputPixels: animationPixelLimit });
