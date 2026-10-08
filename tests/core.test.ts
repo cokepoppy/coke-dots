@@ -709,19 +709,25 @@ test('Dot pause is tenant scoped, durable, and resumes only work interrupted by 
     const active = store.createTask('Interrupted Alpha task', null, 'model', alpha.tenant.id);
     const queued = store.createTask('Queued Alpha task', null, 'model', alpha.tenant.id);
     const recurring = store.createTask('Recurring Alpha task', null, 'model', alpha.tenant.id, { frequency: 'daily', time: '09:00', timeZone: 'Asia/Shanghai', endDate: null });
+    const parent = store.createTask('Alpha main task with delegated work', null, 'model', alpha.tenant.id);
     const otherTenant = store.createTask('Beta task', null, 'model', beta.tenant.id);
     const activeRunAt = active.nextRunAt;
     store.updateTask(active.id, { status: 'working' }, alpha.tenant.id);
     store.updateTask(recurring.id, { status: 'working' }, alpha.tenant.id);
+    store.updateTask(parent.id, { status: 'working' }, alpha.tenant.id);
+    const [child] = store.createDelegatedTasks(parent.id, alpha.tenant.id, [{ title: 'Child research', instruction: 'Continue independently' }], 'Main task delegated the research.');
+    store.updateTask(child.id, { status: 'working' }, alpha.tenant.id);
     store.updateTask(otherTenant.id, { status: 'working' }, beta.tenant.id);
 
-    assert.deepEqual(store.pauseDot(alpha.tenant.id, [active.id, recurring.id, otherTenant.id]), [active.id, recurring.id]);
+    assert.deepEqual(store.pauseDot(alpha.tenant.id, [active.id, recurring.id, child.id, otherTenant.id]), [active.id, recurring.id]);
     assert.equal(store.isDotPaused(alpha.tenant.id), true);
     assert.equal(store.isDotPaused(beta.tenant.id), false);
     assert.equal(store.snapshot(false, [], undefined, alpha.tenant.id).dotPaused, true);
     assert.equal(store.getTask(active.id, alpha.tenant.id)?.status, 'paused');
     assert.equal(store.getTask(queued.id, alpha.tenant.id)?.status, 'queued', 'Queued work stays queued while the workspace is paused');
     assert.equal(store.getTask(recurring.id, alpha.tenant.id)?.status, 'paused');
+    assert.equal(store.getTask(parent.id, alpha.tenant.id)?.status, 'delegating');
+    assert.equal(store.getTask(child.id, alpha.tenant.id)?.status, 'working', 'Pausing the main task must not stop delegated work');
     assert.equal(store.getTask(otherTenant.id, beta.tenant.id)?.status, 'working', 'Pausing Alpha did not change Beta task state');
     assert.deepEqual(store.pauseDot(alpha.tenant.id, [otherTenant.id]), [], 'Repeated pause is idempotent');
 
@@ -729,6 +735,7 @@ test('Dot pause is tenant scoped, durable, and resumes only work interrupted by 
     store = new Store(directory);
     assert.equal(store.isDotPaused(alpha.tenant.id), true, 'Dot pause survives service restart');
     assert.equal(store.getTask(active.id, alpha.tenant.id)?.status, 'paused');
+    assert.equal(store.getTask(child.id, alpha.tenant.id)?.status, 'queued', 'An interrupted child is recovered as queued work, not marked paused');
     const resumed = store.resumeDot(alpha.tenant.id);
     assert.deepEqual(new Set(resumed), new Set([active.id, recurring.id]));
     assert.equal(store.isDotPaused(alpha.tenant.id), false);
@@ -741,7 +748,7 @@ test('Dot pause is tenant scoped, durable, and resumes only work interrupted by 
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('paused workspace holds due tasks while an unpaused tenant continues', async () => {
+test('Dot pause lets delegated and due scheduled work continue while ordinary main tasks wait', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-worker-pause-'));
   const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
   const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
@@ -752,9 +759,17 @@ test('paused workspace holds due tasks while an unpaused tenant continues', asyn
     req.on('data', chunk => { raw += chunk; });
     req.on('end', () => {
       const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
-      prompts.push(payload.messages?.find(message => message.role === 'user')?.content || '');
+      const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
+      prompts.push(prompt);
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'Tenant task completed.' }) } }] }));
+      const message = prompt.includes('E2E paused child — continue independently')
+        ? 'Delegated research completed while the Dot was paused.'
+        : prompt.includes('E2E paused parent — aggregate child findings')
+          ? 'The main task aggregated the delegated result.'
+          : prompt.includes('E2E recurring while paused — run the scheduled check')
+            ? 'The scheduled check completed while the Dot was paused.'
+            : 'Tenant task completed.';
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message }) } }] }));
     });
   });
   await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
@@ -771,20 +786,34 @@ test('paused workspace holds due tasks while an unpaused tenant continues', asyn
   store.setSetting('modelBaseUrl', `http://127.0.0.1:${address.port}`, beta.tenant.id);
   store.setSetting('modelName', 'test-model', beta.tenant.id);
   const alphaTask = store.createTask('Paused Alpha must wait', null, 'model', alpha.tenant.id);
+  const recurringTask = store.createTask('E2E recurring while paused — run the scheduled check', null, 'model', alpha.tenant.id, { frequency: 'interval', intervalMinutes: 60 }, new Date(Date.now() - 60_000).toISOString());
+  const parentTask = store.createTask('E2E paused parent — aggregate child findings', null, 'model', alpha.tenant.id);
+  store.updateTask(parentTask.id, { status: 'working' }, alpha.tenant.id);
+  const [childTask] = store.createDelegatedTasks(parentTask.id, alpha.tenant.id, [{ title: 'Delegated Alpha child', instruction: 'E2E paused child — continue independently' }], 'The child can continue its research.');
   const betaTask = store.createTask('Unpaused Beta continues', null, 'model', beta.tenant.id);
   const worker = new Worker(store, () => {});
   try {
     worker.start();
-    await waitFor(() => store.getTask(betaTask.id, beta.tenant.id)?.status === 'done');
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await waitFor(() => store.getTask(betaTask.id, beta.tenant.id)?.status === 'done'
+      && store.getTask(childTask.id, alpha.tenant.id)?.status === 'done'
+      && store.getTask(recurringTask.id, alpha.tenant.id)?.status === 'scheduled'
+      && store.getTask(parentTask.id, alpha.tenant.id)?.status === 'queued');
     assert.equal(store.getTask(alphaTask.id, alpha.tenant.id)?.status, 'queued');
     assert.equal(prompts.some(prompt => prompt.includes('Paused Alpha must wait')), false, 'Paused tenant work reached the model');
     assert.equal(prompts.filter(prompt => prompt.includes('Unpaused Beta continues')).length, 1);
+    assert.equal(prompts.filter(prompt => prompt.includes('E2E paused child — continue independently')).length, 1, 'Delegated work did not continue during the pause');
+    assert.equal(prompts.filter(prompt => prompt.includes('E2E recurring while paused — run the scheduled check')).length, 1, 'The due scheduled occurrence did not run during the pause');
+    assert.equal(prompts.filter(prompt => prompt.includes('E2E paused parent — aggregate child findings')).length, 0, 'The main task aggregated child results before resume');
+    assert.equal(store.getTask(recurringTask.id, alpha.tenant.id)?.status, 'scheduled');
+    assert.ok(Date.parse(store.getTask(recurringTask.id, alpha.tenant.id)!.nextRunAt!) > Date.now(), 'The recurring schedule did not advance to its future occurrence');
 
     worker.resumeWorkspace(alpha.tenant.id);
     await worker.tick();
-    await waitFor(() => store.getTask(alphaTask.id, alpha.tenant.id)?.status === 'done');
+    await waitFor(() => store.getTask(alphaTask.id, alpha.tenant.id)?.status === 'done'
+      && store.getTask(parentTask.id, alpha.tenant.id)?.status === 'done');
     assert.equal(prompts.filter(prompt => prompt.includes('Paused Alpha must wait')).length, 1, 'The queued task did not run exactly once after resume');
+    assert.equal(prompts.filter(prompt => prompt.includes('E2E paused parent — aggregate child findings')).length, 1, 'The main task did not aggregate exactly once after resume');
+    assert.match(prompts.find(prompt => prompt.includes('E2E paused parent — aggregate child findings')) || '', /Delegated task results:/, 'The parent did not receive the child result context');
   } finally {
     worker.stop(); store.close();
     await new Promise<void>(resolve => modelServer.close(() => resolve()));

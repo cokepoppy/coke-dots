@@ -1,28 +1,27 @@
 # Global Dot pause: evidence and implementation
 
-Research date: 2026-10-07.
+Research date: 2026-10-08.
 
 ## Product evidence
 
-OpenAI's [Getting started with your dot](https://help.openai.com/en/articles/20001530-getting-started-with-your-dot) describes a Dot as an always-on agent that can continue work between conversations. It says to open the Dot profile's `•••` menu and select **Pause** to stop it until ready to resume; the resume label is **Paused • Tap to resume**. The article also places Activity and the Dot computer in the profile, and describes scheduled and proactive work.
+OpenAI's [Controls documentation](https://learn.chatgpt.com/docs/dots/controls) says Pause stops the Dot's current main task, does not stop every delegated task, and does not cancel future scheduled runs. Activity is where a delegated task can be inspected or stopped; Scheduled is where a recurring task can be disabled or deleted. Resume continues a paused Dot.
 
-The product source establishes the entry point and visible action labels. The reviewed hands-on YouTube videos do not show this menu being opened or the pause flow. The article does not define task cancellation/restart semantics, the effect on in-flight requests, workspace roles, or the menu's exact visual dimensions. Those details remain implementation choices pending direct product access or new evidence.
+The [Tasks and memory documentation](https://learn.chatgpt.com/docs/dots/tasks-and-memory) confirms that a Dot can work across conversations, run parallel background agents, and perform recurring work at saved times. The reviewed hands-on videos do not show the Pause control. The exact visual dimensions and treatment of page watches remain unverified.
 
 ## Coke Dots behavior
 
-- Pause state is persisted for the active tenant, so other personal tenants and shared workspaces remain independent.
-- The profile `•••` menu exposes Pause and the documented resume label. In a shared workspace, only an owner or admin can change the setting; both the button and API enforce this boundary.
-- New work remains queued while paused. An active supported engine request is aborted and its task becomes paused. Resume returns those tasks to queued or scheduled state and allows the worker to pick them up again.
-- A scheduled page-monitor check in flight is aborted. Its watch remains active and checks again on its next interval. Other tenants' monitors continue.
-- The UI reflects the pause state from the server snapshot. The state is included in tenant-scoped persistence.
+- Pause remains tenant-scoped and durable. Only a shared workspace owner or admin can change it; the API enforces the same rule as the control.
+- Pausing interrupts active top-level tasks and records them for resume. It does not abort delegated children. A parent waits in the queue after its children finish, then aggregates their results after resume.
+- Ordinary queued top-level tasks wait while the Dot is paused. A due scheduled occurrence can still run, and its saved schedule advances to the next occurrence.
+- Resume requeues only tasks interrupted by that pause. It does not restart already-completed delegated work.
+- Page watches remain a separate Coke Dots polling extension. Their pause interaction is not demonstrated in official Dots material and remains an implementation choice.
 
-These are local product decisions; they do not claim to reproduce unseen OpenAI runtime details.
+The first four rules follow the documented distinction between main work, delegated work, and future scheduled runs. The exact handling of multiple active top-level tasks is an implementation interpretation: Coke Dots pauses each active top-level task in the tenant.
 
 ## Verification
 
-- `npm test`: 48 tests passed, including tenant persistence/isolation, worker queue gating and resume, and active monitor interruption.
-- `npm run test:e2e`: passed. The Chrome flow pauses a running task through the profile menu, confirms the late response is not committed, checks the shared-workspace member's 403 response and disabled control, confirms another tenant remains active, then resumes and verifies the task completes once.
-- The same E2E command also passed the existing Linux cloud-computer browser flow.
-- Run artifacts: `artifacts/e2e/2026-10-07T05-17-00-072Z` and `artifacts/e2e/linux-cloud-computer-2026-10-07T05-18-50-062Z` (ignored local output).
+`npm test` passed all 95 tests, including tenant-scoped pause persistence, delegated-child continuation, due scheduled work, and resuming the parent once. `npm run test:e2e` passed 49 Chrome steps; its pause click-through observes a child finish while the parent waits and verifies one parent aggregation after resume. The same run passed the cloud-computer browser checks. `npm run test:e2e:k3d` also passed against a disposable tenant on the live `tp1121-sandbox-dev` cluster, including Debian 13, noVNC takeover, live Agent adapter execution, and workspace persistence after Pod recreation.
 
-The screenshots and click path verify Coke Dots' behavior. They are not Dots reference frames, so they do not establish pixel parity for the profile menu.
+Artifacts: Chrome traces and manifest at `artifacts/e2e/2026-10-08T02-07-22-844Z`; cloud-computer screenshots at `artifacts/e2e/linux-cloud-computer-2026-10-08T02-09-31-619Z`; live K3D screenshots and comparisons at `artifacts/e2e/k3d-cloud-computer-2026-10-08T02-10-08-893Z` (ignored local output).
+
+Screenshots and click paths verify Coke Dots behavior. They are not Dots reference frames, so they do not establish pixel parity for the profile menu.

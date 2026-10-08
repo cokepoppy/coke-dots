@@ -62,6 +62,9 @@ let pauseModelHeld = false;
 let heldGlobalPauseModelRelease: (() => void) | null = null;
 let globalPauseModelAborted = false;
 let globalPauseModelHeld = false;
+let heldGlobalPauseChildRelease: (() => void) | null = null;
+let globalPauseChildAborted = false;
+let globalPauseChildHeld = false;
 let heldVoiceModelRelease: (() => void) | null = null;
 let voiceModelHeld = false;
 let heldStopModelRelease: (() => void) | null = null;
@@ -237,6 +240,9 @@ async function startMockModel() {
         const isPageChangeReview = prompt.includes('E2E page-change review');
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
         const isGlobalPauseTask = prompt.includes('E2E global pause — pause and resume the Dot');
+        const isPauseDelegationParent = prompt.includes('E2E global pause delegation — parent');
+        const isPauseDelegationAggregate = isPauseDelegationParent && prompt.includes('Delegated task results:');
+        const isPauseDelegationChild = prompt.includes('E2E global pause delegated child — keep running during pause');
         const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
         const isWebsiteSignIn = prompt.includes('E2E website sign-in — exercise private credential flow');
         const isWebsiteSignInContinuation = prompt.includes('User confirmed: website sign-in was completed in the tenant computer.');
@@ -263,6 +269,18 @@ async function startMockModel() {
           await new Promise<void>(resolvePromise => { heldGlobalPauseModelRelease = resolvePromise; });
           heldGlobalPauseModelRelease = null;
         }
+        if (isPauseDelegationChild && !globalPauseChildHeld) {
+          globalPauseChildHeld = true;
+          globalPauseChildAborted = false;
+          response.once('close', () => {
+            if (!response.writableFinished) {
+              globalPauseChildAborted = true;
+              heldGlobalPauseChildRelease?.();
+            }
+          });
+          await new Promise<void>(resolvePromise => { heldGlobalPauseChildRelease = resolvePromise; });
+          heldGlobalPauseChildRelease = null;
+        }
         if (isStopTask) {
           heldStopModelAborted = false;
           response.once('close', () => { heldStopModelAborted = true; });
@@ -282,13 +300,15 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || isSlackInboxTask || isTeamsInboxTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || isSlackInboxTask || isTeamsInboxTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
-        const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
+        const decision = isPauseDelegationParent && !isPauseDelegationAggregate ? { status: 'delegating', message: 'I started one independent research task.', delegations: [
+          { title: 'Independent research', instruction: 'E2E global pause delegated child — keep running during pause', engine: 'model' },
+        ] } : isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isDecisionNotificationCheck) Object.assign(decision, { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false });
         if (isWebsiteSignIn && !isWebsiteSignInContinuation) Object.assign(decision, {
@@ -696,6 +716,12 @@ function releaseHeldGlobalPauseModel() {
   const release = heldGlobalPauseModelRelease as (() => void) | null;
   if (release) release();
   heldGlobalPauseModelRelease = null;
+}
+
+function releaseHeldGlobalPauseChild() {
+  const release = heldGlobalPauseChildRelease as (() => void) | null;
+  if (release) release();
+  heldGlobalPauseChildRelease = null;
 }
 
 function releaseHeldVoiceModel() {
@@ -2570,6 +2596,56 @@ try {
     await screenshot(alphaPage!, '21c-global-dot-resumed');
   });
 
+  await recordStep('Dot Pause leaves an active delegated child running and waits to aggregate until resume', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    const instruction = 'E2E global pause delegation — parent';
+    const parentStart = mockModelPrompts.filter(prompt => prompt.includes(instruction) && !prompt.includes('Delegated task results:')).length;
+    await createTask(alphaPage!, instruction);
+    await waitFor(() => mockModelPrompts.filter(prompt => prompt.includes(instruction) && !prompt.includes('Delegated task results:')).length === parentStart + 1, 10_000);
+    await waitFor(() => globalPauseChildHeld, 10_000);
+    const taskIds = await alphaPage!.evaluate(async (goal: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string; parentTaskId: string | null }[] };
+      const parent = state.tasks.find(task => task.instruction === goal);
+      const child = state.tasks.find(task => task.parentTaskId === parent?.id);
+      return { parentId: parent?.id || null, parentStatus: parent?.status || null, childId: child?.id || null, childStatus: child?.status || null };
+    }, instruction);
+    assert(taskIds.parentId && taskIds.childId, 'The delegation parent and child were not visible in Activity state');
+    assert.equal(taskIds.parentStatus, 'delegating');
+    assert.equal(taskIds.childStatus, 'working');
+
+    await openProfile(alphaPage!);
+    await alphaPage!.getByRole('button', { name: 'Dot options' }).click();
+    await alphaPage!.getByTestId('dot-pause-action').click();
+    await waitFor(async () => {
+      const state = await alphaPage!.evaluate(async () => fetch('/api/state').then(response => response.json())) as { dotPaused: boolean; tasks: { id: string; status: string }[] };
+      return state.dotPaused && state.tasks.find(task => task.id === taskIds.parentId)?.status === 'delegating' && state.tasks.find(task => task.id === taskIds.childId)?.status === 'working';
+    }, 5_000);
+    assert.equal(globalPauseChildAborted, false, 'Pausing the Dot aborted its active delegated child');
+    await screenshot(alphaPage!, '21d-dot-paused-child-still-working');
+
+    const aggregateStart = mockModelPrompts.filter(prompt => prompt.includes(instruction) && prompt.includes('Delegated task results:')).length;
+    releaseHeldGlobalPauseChild();
+    await waitFor(async () => {
+      const state = await alphaPage!.evaluate(async () => fetch('/api/state').then(response => response.json())) as { tasks: { id: string; status: string }[] };
+      return state.tasks.find(task => task.id === taskIds.childId)?.status === 'done' && state.tasks.find(task => task.id === taskIds.parentId)?.status === 'queued';
+    }, 10_000);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(mockModelPrompts.filter(prompt => prompt.includes(instruction) && prompt.includes('Delegated task results:')).length, aggregateStart, 'The parent aggregated delegated results while the Dot remained paused');
+
+    await openProfile(alphaPage!);
+    await alphaPage!.getByRole('button', { name: 'Dot options' }).click();
+    const resumeAction = alphaPage!.getByTestId('dot-pause-action');
+    assert.equal(await resumeAction.innerText(), 'Paused • Tap to resume');
+    await resumeAction.click();
+    await waitFor(async () => {
+      const state = await alphaPage!.evaluate(async () => fetch('/api/state').then(response => response.json())) as { dotPaused: boolean; tasks: { id: string; status: string }[] };
+      return !state.dotPaused && state.tasks.find(task => task.id === taskIds.parentId)?.status === 'done';
+    }, 15_000);
+    assert.equal(mockModelPrompts.filter(prompt => prompt.includes(instruction) && prompt.includes('Delegated task results:')).length, aggregateStart + 1, 'Resume did not aggregate the completed child exactly once');
+    await screenshot(alphaPage!, '21e-dot-resumed-parent-aggregated');
+  });
+
   await recordStep('Activity stops a running task and cancels its pending page approval', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await clickNav(alphaPage!, '你的 dot');
@@ -3217,6 +3293,7 @@ try {
 } finally {
   releaseHeldPauseModel();
   releaseHeldGlobalPauseModel();
+  releaseHeldGlobalPauseChild();
   releaseHeldStopModel();
   releaseHeldVoiceModel();
   releaseParallelModels();

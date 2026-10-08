@@ -1336,11 +1336,14 @@ export class Store {
     return row ? toTask(row) : null;
   }
 
-  dueTasks(now = new Date().toISOString()): Task[] {
+  dueTasks(now = new Date().toISOString(), pausedTenantIds: string[] = []): Task[] {
+    const pausedFilter = pausedTenantIds.length
+      ? `AND (tenant_id NOT IN (${pausedTenantIds.map(() => '?').join(',')}) OR status='scheduled' OR parent_task_id IS NOT NULL OR schedule_minutes IS NOT NULL OR schedule_json IS NOT NULL)`
+      : '';
     return (this.db.prepare(`WITH ranked AS (
       SELECT *,ROW_NUMBER() OVER (PARTITION BY tenant_id ORDER BY priority DESC,next_run_at ASC) AS tenant_rank
-      FROM tasks WHERE status IN ('queued','scheduled') AND next_run_at<=?
-    ) SELECT * FROM ranked WHERE tenant_rank<=2 ORDER BY priority DESC,next_run_at ASC LIMIT 100`).all(now) as Record<string, unknown>[]).map(toTask);
+      FROM tasks WHERE status IN ('queued','scheduled') AND next_run_at<=? ${pausedFilter}
+    ) SELECT * FROM ranked WHERE tenant_rank<=2 ORDER BY priority DESC,next_run_at ASC LIMIT 100`).all(now, ...pausedTenantIds) as Record<string, unknown>[]).map(toTask);
   }
 
   updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes' | 'scheduleSpec' | 'agentSessionId'>>, tenantId = 'legacy'): Task | null {
@@ -1426,6 +1429,10 @@ export class Store {
 
   isDotPaused(tenantId = 'legacy') { return this.getSetting('dotPaused', tenantId) === 'true'; }
 
+  pausedDotTenants(): string[] {
+    return (this.db.prepare("SELECT tenant_id FROM tenant_settings WHERE key='dotPaused' AND value='true'").all() as { tenant_id: string }[]).map(row => row.tenant_id);
+  }
+
   pauseDot(tenantId: string, activeTaskIds: string[]): string[] {
     if (this.isDotPaused(tenantId)) return [];
     const now = new Date().toISOString();
@@ -1434,8 +1441,8 @@ export class Store {
     try {
       this.setSetting('dotPaused', 'true', tenantId);
       for (const taskId of new Set(activeTaskIds)) {
-        const task = this.db.prepare('SELECT status,next_run_at FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, taskId) as { status: string; next_run_at: string | null } | undefined;
-        if (task?.status !== 'working') continue;
+        const task = this.db.prepare('SELECT status,next_run_at,parent_task_id AS parentTaskId FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, taskId) as { status: string; next_run_at: string | null; parentTaskId: string | null } | undefined;
+        if (task?.status !== 'working' || task.parentTaskId) continue;
         const changed = this.db.prepare("UPDATE tasks SET status='paused',next_run_at=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status='working'").run(now, tenantId, taskId);
         if (!Number(changed.changes)) continue;
         this.db.prepare('INSERT OR REPLACE INTO dot_pause_tasks(tenant_id,task_id,next_run_at) VALUES (?,?,?)').run(tenantId, taskId, task.next_run_at);

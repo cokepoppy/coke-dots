@@ -54,9 +54,10 @@ export class Worker {
   async tick() {
     if (this.stopped) return;
     this.store.releaseReadyDelegations();
-    for (const task of this.store.dueTasks()) {
+    const pausedTenants = this.store.pausedDotTenants();
+    for (const task of this.store.dueTasks(new Date().toISOString(), pausedTenants)) {
       if (this.resettingTenants.has(task.tenantId)) continue;
-      if (this.store.isDotPaused(task.tenantId)) continue;
+      if (this.store.isDotPaused(task.tenantId) && !task.parentTaskId && task.status !== 'scheduled' && !scheduleForTask(task.scheduleSpec, task.scheduleMinutes)) continue;
       if (this.active.size >= Worker.maxActiveTasks) break;
       if (this.active.has(task.id)) continue;
       const tenantActive = this.activeByTenant.get(task.tenantId) || 0;
@@ -133,7 +134,7 @@ export class Worker {
         signal,
         onEvent: message => {
           const current = this.store.getTask(task.id, task.tenantId);
-          if (signal.aborted || this.store.isDotPaused(task.tenantId) || current?.status !== 'working') return;
+          if (signal.aborted || current?.status !== 'working') return;
           this.store.addEntry('system', message, task.id, task.tenantId);
           this.onChange();
         },
