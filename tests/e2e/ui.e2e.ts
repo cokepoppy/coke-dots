@@ -1677,6 +1677,50 @@ try {
     await alphaPage!.unroute('**/api/state');
     await toggleAccountTheme(alphaPage!);
     await clickNav(alphaPage!, 'Scheduled');
+    const scheduledTaskId = await detail.getAttribute('data-item-id');
+    assert(scheduledTaskId, 'The recurring task details must include a stable task ID');
+    await detail.getByRole('button', { name: 'Edit schedule' }).click();
+    const scheduleEditor = detail.getByTestId('task-schedule-editor');
+    await scheduleEditor.getByLabel('间隔分钟数').fill('90');
+    await screenshot(alphaPage!, '07-scheduled-edit-schedule');
+    await scheduleEditor.getByRole('button', { name: 'Save schedule' }).click();
+    await detail.getByText('Every 90 minutes', { exact: true }).waitFor({ state: 'visible' });
+    const editedSchedule = await alphaPage!.evaluate(async id => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string; nextRunAt: string | null; scheduleSpec: { frequency: string; intervalMinutes?: number } | null }[] };
+      return state.tasks.find(task => task.id === id) || null;
+    }, scheduledTaskId);
+    assert.equal(editedSchedule?.status, 'scheduled', 'Editing a failed recurrence should make it active again');
+    assert.deepEqual(editedSchedule?.scheduleSpec, { frequency: 'interval', intervalMinutes: 90 });
+    assert.ok(editedSchedule?.nextRunAt && Date.parse(editedSchedule.nextRunAt) > Date.now() + 89 * 60_000, 'The edited interval must set its next run from the new cadence');
+    const crossTenantScheduleStatus = await betaPage!.evaluate(async id => (await fetch(`/api/tasks/${id}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scheduleSpec: { frequency: 'interval', intervalMinutes: 120 } }),
+    })).status, scheduledTaskId);
+    assert.equal(crossTenantScheduleStatus, 404, 'Another tenant must not inspect or edit the schedule');
+    await detail.getByRole('button', { name: 'Pause' }).click();
+    await waitForAsyncPredicate(alphaPage!, async id => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string; nextRunAt: string | null }[] };
+      const task = state.tasks.find(item => item.id === id);
+      return task?.status === 'paused' && task.nextRunAt === null;
+    }, scheduledTaskId, { timeout: 10_000 });
+    await screenshot(alphaPage!, '07-scheduled-task-paused');
+    await detail.getByRole('button', { name: 'Edit schedule' }).click();
+    await scheduleEditor.getByLabel('间隔分钟数').fill('45');
+    await scheduleEditor.getByRole('button', { name: 'Save schedule' }).click();
+    await detail.getByText('Every 45 minutes', { exact: true }).waitFor({ state: 'visible' });
+    const pausedSchedule = await alphaPage!.evaluate(async id => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string; nextRunAt: string | null; scheduleSpec: { frequency: string; intervalMinutes?: number } | null }[] };
+      return state.tasks.find(task => task.id === id) || null;
+    }, scheduledTaskId);
+    assert.equal(pausedSchedule?.status, 'paused', 'Editing a paused task must keep it paused');
+    assert.equal(pausedSchedule?.nextRunAt, null, 'Editing a paused task must not silently schedule a run');
+    assert.deepEqual(pausedSchedule?.scheduleSpec, { frequency: 'interval', intervalMinutes: 45 });
+    await screenshot(alphaPage!, '07-scheduled-paused-edit');
+    await detail.getByRole('button', { name: 'Resume' }).click();
+    await waitForAsyncPredicate(alphaPage!, async id => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string; nextRunAt: string | null; scheduleMinutes: number | null }[] };
+      const task = state.tasks.find(item => item.id === id);
+      return task?.status === 'scheduled' && task.scheduleMinutes === 45 && Boolean(task.nextRunAt) && Date.parse(task.nextRunAt!) > Date.now();
+    }, scheduledTaskId, { timeout: 10_000 });
     await alphaPage!.getByTestId('scheduled-detail').getByRole('button', { name: 'Cancel schedule' }).click();
     await alphaPage!.getByText('No scheduled tasks yet').first().waitFor({ state: 'visible' });
     await alphaPage!.getByTestId('scheduled-new-task').click();

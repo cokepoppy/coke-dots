@@ -43,15 +43,21 @@ test('calendar recurrence survives SQLite reopen and old interval records remain
       frequency: 'daily', time: '09:00', timeZone: 'Asia/Shanghai', endDate: '2026-12-31',
     }, '2026-10-06T01:00:00.000Z');
     const interval = store.createTask('Check the page every hour', 60);
+    const edited = store.createTask('Update this schedule while paused', 60);
     assert.equal(daily.notifyOnCompletion, true, 'Scheduled tasks should enable completion notices by default');
     assert.equal(interval.notifyOnCompletion, true, 'Legacy interval tasks should enable completion notices by default');
     store.updateTask(daily.id, { notifyOnCompletion: false });
+    store.updateTask(edited.id, { scheduleSpec: { frequency: 'weekly', weekdays: [1, 3], time: '10:30', timeZone: 'Asia/Shanghai', endDate: '2026-12-31' }, scheduleMinutes: null, status: 'paused', nextRunAt: null });
     store.close();
     store = new Store(directory);
     assert.deepEqual(store.getTask(daily.id)?.scheduleSpec, { frequency: 'daily', time: '09:00', timeZone: 'Asia/Shanghai', endDate: '2026-12-31' });
     assert.equal(store.getTask(daily.id)?.notifyOnCompletion, false, 'A disabled completion notice must survive a database reopen');
     assert.deepEqual(store.getTask(interval.id)?.scheduleSpec, { frequency: 'interval', intervalMinutes: 60 });
     assert.equal(store.getTask(interval.id)?.notifyOnCompletion, true, 'A task setting change must not leak to another task');
+    assert.deepEqual(store.getTask(edited.id)?.scheduleSpec, { frequency: 'weekly', weekdays: [1, 3], time: '10:30', timeZone: 'Asia/Shanghai', endDate: '2026-12-31' }, 'An edited calendar schedule must survive a database reopen');
+    assert.equal(store.getTask(edited.id)?.scheduleMinutes, null);
+    assert.equal(store.getTask(edited.id)?.status, 'paused');
+    assert.equal(store.getTask(edited.id)?.nextRunAt, null);
     assert.deepEqual(scheduleForTask(null, 60), { frequency: 'interval', intervalMinutes: 60 });
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }

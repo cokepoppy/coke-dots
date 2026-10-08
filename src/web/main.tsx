@@ -28,6 +28,7 @@ import { DotSetupEditor } from './DotSetupEditor.tsx';
 import { DotComputerChoice } from './DotComputerChoice.tsx';
 import { VoiceCall } from './VoiceCall.tsx';
 import { DictationButton } from './DictationButton.tsx';
+import { RecurrenceEditor } from './RecurrenceEditor.tsx';
 import './shell-replica.css';
 import './onboarding-replica.css';
 import './computer-choice.css';
@@ -370,6 +371,16 @@ function App() {
     setState(current => ({ ...current, tasks: current.tasks.map(item => item.id === updated.id ? updated : item) }));
   }
 
+  async function updateScheduledTask(task: Task, scheduleSpec: ScheduleSpec) {
+    const updated = await request(`/tasks/${task.id}`, 'PATCH', { scheduleSpec }) as Task;
+    setState(current => ({ ...current, tasks: current.tasks.map(item => item.id === updated.id ? updated : item) }));
+  }
+
+  async function actOnScheduledTask(task: Task, action: 'pauseSchedule' | 'resumeSchedule') {
+    const updated = await request(`/tasks/${task.id}`, 'PATCH', { action }) as Task;
+    setState(current => ({ ...current, tasks: current.tasks.map(item => item.id === updated.id ? updated : item) }));
+  }
+
   async function submitVoiceTranscript(instruction: string, waitingTaskId?: string) {
     const task = waitingTaskId
       ? await request(`/tasks/${waitingTaskId}`, 'PATCH', { action: 'reply', message: instruction }) as Task
@@ -498,6 +509,8 @@ function App() {
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
         onCancelTask={task => void act(task, 'cancelSchedule')}
         onSetTaskNotifications={setTaskCompletionNotification}
+        onScheduleAction={actOnScheduledTask}
+        onUpdateTaskSchedule={updateScheduledTask}
         onWatchAction={(watch, action) => void actWatch(watch.id, action)}
         onOpenTask={async task => {
           const response = await appFetch('/api/state');
@@ -665,31 +678,6 @@ function WorkspaceSwitcher({ auth, onSwitch, onCreate, onError }: { auth: AuthCo
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
   return <div className="workspace-switcher"><label><span>工作区</span><select value={auth.tenant.id} onChange={event => void onSwitch(event.target.value)}>{auth.tenants.map(tenant => <option key={tenant.id} value={tenant.id}>{tenant.name} · {tenant.role}</option>)}</select></label>{creating ? <form onSubmit={event => { event.preventDefault(); void onCreate(name.trim()).then(() => { setName(''); setCreating(false); }).catch(error => onError(String(error))); }}><input aria-label="新工作区名称" autoFocus maxLength={60} value={name} onChange={event => setName(event.target.value)} placeholder="工作区名称" /><button disabled={!name.trim()}>创建</button><button type="button" onClick={() => setCreating(false)}>取消</button></form> : <button className="new-workspace" onClick={() => setCreating(true)}>＋ 新建工作区</button>}</div>;
-}
-
-function RecurrenceEditor({ frequency, setFrequency, minutes, setMinutes, time, setTime, timeZone, setTimeZone, weekdays, setWeekdays, endDate, setEndDate }: {
-  frequency: 'interval' | 'daily' | 'weekly';
-  setFrequency: React.Dispatch<React.SetStateAction<'interval' | 'daily' | 'weekly'>>;
-  minutes: number; setMinutes: React.Dispatch<React.SetStateAction<number>>;
-  time: string; setTime: React.Dispatch<React.SetStateAction<string>>;
-  timeZone: string; setTimeZone: React.Dispatch<React.SetStateAction<string>>;
-  weekdays: number[]; setWeekdays: React.Dispatch<React.SetStateAction<number[]>>;
-  endDate: string; setEndDate: React.Dispatch<React.SetStateAction<string>>;
-}) {
-  const zones = useMemo(() => {
-    const supported = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
-    return [...new Set(['UTC', timeZone, ...supported])].sort();
-  }, [timeZone]);
-  const dayLabels = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
-  return <div className="schedule-details" data-testid="schedule-details">
-    <label>频率<select aria-label="重复频率" value={frequency} onChange={event => setFrequency(event.target.value as 'interval' | 'daily' | 'weekly')}><option value="interval">按间隔</option><option value="daily">每天</option><option value="weekly">每周</option></select></label>
-    {frequency === 'interval' ? <label>每 <input aria-label="间隔分钟数" className="minutes" type="number" min="1" max="10080" value={minutes} onChange={event => setMinutes(Number(event.target.value))} /> 分钟</label> : <>
-      <label>时间<input aria-label="定时时间" type="time" value={time} onChange={event => setTime(event.target.value)} /></label>
-      <label>时区<select aria-label="时区" value={timeZone} onChange={event => setTimeZone(event.target.value)}>{zones.map(zone => <option key={zone} value={zone}>{zone}</option>)}</select></label>
-      {frequency === 'weekly' && <fieldset className="schedule-weekdays"><legend>重复日</legend>{dayLabels.map((label, day) => <label key={day}><input aria-label={label} type="checkbox" checked={weekdays.includes(day)} onChange={event => setWeekdays(current => event.target.checked ? [...current, day] : current.filter(value => value !== day))} />{label.slice(2)}</label>)}</fieldset>}
-      <label>结束日期（可选）<input aria-label="结束日期" type="date" value={endDate} onChange={event => setEndDate(event.target.value)} /></label>
-    </>}
-  </div>;
 }
 
 function TaskControls({ task, act, compact = false, onOpenComputer }: { task: Task; act: (task: Task, action: string, extra?: object) => Promise<void>; compact?: boolean; onOpenComputer?: () => void }) {

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { Task, Watch } from '../shared/types.ts';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import type { ScheduleSpec, Task, Watch } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask } from '../shared/scheduling.ts';
+import { RecurrenceEditor } from './RecurrenceEditor.tsx';
 
 type ScheduledItem =
   | { key: string; kind: 'task'; title: string; searchable: string; updatedAt: string; task: Task }
@@ -16,11 +17,49 @@ function taskStatusText(task: Task) {
     : statusText[task.status];
 }
 
-export function ScheduledView({ tasks, watches, onCancelTask, onSetTaskNotifications, onWatchAction, onOpenTask, onNewTask, onAddWatch }: {
+function TaskScheduleEditor({ schedule, onCancel, onSave }: { schedule: ScheduleSpec; onCancel: () => void; onSave: (schedule: ScheduleSpec) => Promise<void> }) {
+  const [frequency, setFrequency] = useState<ScheduleSpec['frequency']>(schedule.frequency);
+  const [minutes, setMinutes] = useState(schedule.frequency === 'interval' ? schedule.intervalMinutes : 60);
+  const [time, setTime] = useState(schedule.frequency === 'interval' ? '09:00' : schedule.time);
+  const [timeZone, setTimeZone] = useState(schedule.frequency === 'interval' ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' : schedule.timeZone);
+  const [weekdays, setWeekdays] = useState(schedule.frequency === 'weekly' ? schedule.weekdays : []);
+  const [endDate, setEndDate] = useState(schedule.frequency === 'interval' ? '' : schedule.endDate || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (frequency === 'weekly' && weekdays.length === 0) {
+      setError('请选择至少一个重复日。');
+      return;
+    }
+    const nextSchedule: ScheduleSpec = frequency === 'interval'
+      ? { frequency, intervalMinutes: minutes }
+      : frequency === 'daily'
+        ? { frequency, time, timeZone, endDate: endDate || null }
+        : { frequency, weekdays, time, timeZone, endDate: endDate || null };
+    setBusy(true);
+    setError('');
+    try { await onSave(nextSchedule); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
+  }
+
+  return <form className="scheduled-schedule-editor" data-testid="task-schedule-editor" onSubmit={event => void submit(event)}>
+    <strong>Edit schedule</strong>
+    <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={time} setTime={setTime} timeZone={timeZone} setTimeZone={setTimeZone} weekdays={weekdays} setWeekdays={setWeekdays} endDate={endDate} setEndDate={setEndDate} />
+    {error && <p className="scheduled-detail-error" role="alert">{error}</p>}
+    <div className="scheduled-detail-actions"><button type="button" onClick={onCancel} disabled={busy}>Cancel</button><button className="scheduled-primary" type="submit" disabled={busy || (frequency === 'weekly' && weekdays.length === 0)}>{busy ? 'Saving…' : 'Save schedule'}</button></div>
+  </form>;
+}
+
+export function ScheduledView({ tasks, watches, onCancelTask, onSetTaskNotifications, onScheduleAction, onUpdateTaskSchedule, onWatchAction, onOpenTask, onNewTask, onAddWatch }: {
   tasks: Task[];
   watches: Watch[];
   onCancelTask: (task: Task) => void;
   onSetTaskNotifications: (task: Task, enabled: boolean) => Promise<void>;
+  onScheduleAction: (task: Task, action: 'pauseSchedule' | 'resumeSchedule') => Promise<void>;
+  onUpdateTaskSchedule: (task: Task, schedule: ScheduleSpec) => Promise<void>;
   onWatchAction: (watch: Watch, action: 'pause' | 'resume') => void;
   onOpenTask: (task: Task) => void | Promise<void>;
   onNewTask: () => void;
@@ -37,6 +76,9 @@ export function ScheduledView({ tasks, watches, onCancelTask, onSetTaskNotificat
   const [taskOpenError, setTaskOpenError] = useState(false);
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [notificationError, setNotificationError] = useState('');
+  const [scheduleActionBusy, setScheduleActionBusy] = useState(false);
+  const [scheduleActionError, setScheduleActionError] = useState('');
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
   const [itemPreview, setItemPreview] = useState<{ key: string; top: number; left: number } | null>(null);
 
   const items = useMemo<ScheduledItem[]>(() => [
@@ -96,6 +138,21 @@ export function ScheduledView({ tasks, watches, onCancelTask, onSetTaskNotificat
     try { await onSetTaskNotifications(task, enabled); }
     catch (error) { setNotificationError(error instanceof Error ? error.message : String(error)); }
     finally { setNotificationBusy(false); }
+  }
+
+  async function changeScheduleState(task: Task, action: 'pauseSchedule' | 'resumeSchedule') {
+    if (scheduleActionBusy) return;
+    setScheduleActionBusy(true);
+    setScheduleActionError('');
+    try { await onScheduleAction(task, action); }
+    catch (error) { setScheduleActionError(error instanceof Error ? error.message : String(error)); }
+    finally { setScheduleActionBusy(false); }
+  }
+
+  async function saveSchedule(task: Task, schedule: ScheduleSpec) {
+    await onUpdateTaskSchedule(task, schedule);
+    setEditingScheduleId(null);
+    setScheduleActionError('');
   }
 
   function showItemPreview(target: HTMLButtonElement, item: ScheduledItem) {
@@ -163,8 +220,13 @@ export function ScheduledView({ tasks, watches, onCancelTask, onSetTaskNotificat
         {notificationError && <p className="scheduled-detail-error" role="alert">{notificationError}</p>}
         {selected.task.error && <p className="scheduled-detail-error" role="alert">{selected.task.error}</p>}
         {selected.task.result && <div className="scheduled-result"><span>Latest result</span><p>{selected.task.result}</p></div>}
+        {scheduleActionError && <p className="scheduled-detail-error" role="alert">{scheduleActionError}</p>}
+        {scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes) && editingScheduleId === selected.task.id && <TaskScheduleEditor key={selected.task.id} schedule={scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes)!} onCancel={() => setEditingScheduleId(null)} onSave={schedule => saveSchedule(selected.task, schedule)} />}
         <div className="scheduled-detail-actions">
           <button onClick={() => void openTask(selected.task)} disabled={taskOpenBusy}>Open conversation</button>
+          {scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes) && ['scheduled', 'paused', 'failed'].includes(selected.task.status) && editingScheduleId !== selected.task.id && <button onClick={() => { setEditingScheduleId(selected.task.id); setScheduleActionError(''); }}>Edit schedule</button>}
+          {scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes) && selected.task.status === 'scheduled' && <button onClick={() => void changeScheduleState(selected.task, 'pauseSchedule')} disabled={scheduleActionBusy}>{scheduleActionBusy ? 'Saving…' : 'Pause'}</button>}
+          {scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes) && ['paused', 'failed'].includes(selected.task.status) && <button className="scheduled-primary" onClick={() => void changeScheduleState(selected.task, 'resumeSchedule')} disabled={scheduleActionBusy}>{scheduleActionBusy ? 'Saving…' : 'Resume'}</button>}
           {selected.task.status === 'paused'
             ? <button className="scheduled-primary" onClick={() => onCancelTask(selected.task)}>Remove schedule</button>
             : <button className="scheduled-danger" onClick={() => onCancelTask(selected.task)}>Cancel schedule</button>}
