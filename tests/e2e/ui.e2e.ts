@@ -3012,12 +3012,44 @@ try {
     await waitFor(() => promptCount() === initialCount + 1, 15_000);
     await screenshot(alphaPage!, '07d-recurring-run-completed');
 
+    await clickNav(alphaPage!, 'Scheduled');
+    const item = alphaPage!.locator('.scheduled-item').filter({ hasText: instruction });
+    await item.waitFor({ state: 'visible' });
+    await item.click();
+    const detail = alphaPage!.getByTestId('scheduled-detail');
+    await detail.getByText('Every 1 minute', { exact: true }).waitFor({ state: 'visible' });
+    const completionNotice = detail.getByRole('checkbox', { name: 'Notify me when this task completes' });
+    assert.equal(await completionNotice.isChecked(), true, 'Scheduled tasks should default to completion notifications on');
+    const notificationUpdate = alphaPage!.waitForResponse(response =>
+      response.url().includes('/api/tasks/')
+      && response.request().method() === 'PATCH'
+      && response.request().postData()?.includes('notifyOnCompletion') === true,
+    );
+    await completionNotice.click();
+    const notificationResponse = await notificationUpdate;
+    assert.equal(notificationResponse.status(), 200, `The scheduled notification setting was rejected: ${await notificationResponse.text()}`);
+    assert.equal((await notificationResponse.json() as { notifyOnCompletion: boolean }).notifyOnCompletion, false, 'The API must persist the unchecked completion notification setting');
+    await waitForAsyncPredicate(alphaPage!, async goal => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; notifyOnCompletion: boolean }[] };
+      return state.tasks.find(task => task.instruction === goal)?.notifyOnCompletion === false;
+    }, instruction, { timeout: 10_000 });
+    const scheduledTaskId = await alphaPage!.evaluate(async goal => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string }[] };
+      return state.tasks.find(task => task.instruction === goal)?.id || null;
+    }, instruction);
+    assert(scheduledTaskId, 'The scheduled task must have a stable ID for the cross-tenant check');
+    const otherTenantStatus = await betaPage!.evaluate(async id => (await fetch(`/api/tasks/${id}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ notifyOnCompletion: true }),
+    })).status, scheduledTaskId);
+    assert.equal(otherTenantStatus, 404, 'Another Google account must not change this task’s completion notification setting');
+    await screenshot(alphaPage!, '07e-completion-notification-disabled');
+
     await waitFor(() => promptCount() === initialCount + 2, 80_000);
     await waitForAsyncPredicate(alphaPage!, async instructionText => {
       const response = await fetch('/api/state');
-      const state = await response.json() as { tasks: { instruction: string; status: string; nextRunAt: string | null }[] };
+      const state = await response.json() as { tasks: { instruction: string; status: string; nextRunAt: string | null; notifyOnCompletion: boolean }[] };
       const task = state.tasks.find(item => item.instruction === instructionText);
-      return task?.status === 'scheduled' && Boolean(task.nextRunAt) && Date.parse(task.nextRunAt!) > Date.now();
+      return task?.status === 'scheduled' && task.notifyOnCompletion === false && Boolean(task.nextRunAt) && Date.parse(task.nextRunAt!) > Date.now();
     }, instruction, { timeout: 20_000 });
 
     await clickNav(alphaPage!, 'Activity');
@@ -3038,10 +3070,10 @@ try {
     assert.equal(pauseResult.after?.nextRunAt, pauseResult.before.nextRunAt, 'Rejected pause removed the next recurring run');
 
     await clickNav(alphaPage!, 'Scheduled');
-    const item = alphaPage!.locator('.scheduled-item').filter({ hasText: instruction });
     await item.waitFor({ state: 'visible' });
     await item.click();
-    const detail = alphaPage!.getByTestId('scheduled-detail');
+    await detail.waitFor({ state: 'visible' });
+    assert.equal(await completionNotice.isChecked(), false, 'The per-task completion preference must survive the next recurrence');
     await detail.getByText('Every 1 minute', { exact: true }).waitFor({ state: 'visible' });
     await detail.getByText('The recurring check completed.', { exact: false }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, '07e-recurring-run-rescheduled');

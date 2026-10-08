@@ -37,6 +37,7 @@ export interface Task {
   nextRunAt: string | null;
   scheduleMinutes: number | null;
   scheduleSpec: ScheduleSpec | null;
+  notifyOnCompletion: boolean;
   result: string | null;
   error: string | null;
   createdAt: string;

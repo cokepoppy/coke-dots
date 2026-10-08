@@ -306,7 +306,10 @@ export class Worker {
       }, task.tenantId);
       this.store.addEntry('dot', outputMessage, task.id, task.tenantId);
       if (decision.status === 'waiting') this.notifyIfEnabled(task.tenantId, `“${task.title}”正在等待你的回复。`);
-      else if (decision.status === 'done' && decision.notifyUser !== false) this.notifyIfEnabled(task.tenantId, `“${task.title}”已有新结果。`);
+      else if (decision.status === 'done' && decision.notifyUser !== false
+        && (task.notifyOnCompletion || (!scheduleForTask(task.scheduleSpec, task.scheduleMinutes) && task.status !== 'scheduled'))) {
+        this.notifyIfEnabled(task.tenantId, `“${task.title}”已有新结果。`);
+      }
       if (decision.status === 'done' && !task.parentTaskId && task.executionMode === 'standard') {
         const remoteResearchEngine = remoteEngines.includes(task.engine)
           ? task.engine

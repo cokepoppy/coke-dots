@@ -365,6 +365,11 @@ function App() {
     catch (e) { setError(String(e)); }
   }
 
+  async function setTaskCompletionNotification(task: Task, enabled: boolean) {
+    const updated = await request(`/tasks/${task.id}`, 'PATCH', { notifyOnCompletion: enabled }) as Task;
+    setState(current => ({ ...current, tasks: current.tasks.map(item => item.id === updated.id ? updated : item) }));
+  }
+
   async function submitVoiceTranscript(instruction: string, waitingTaskId?: string) {
     const task = waitingTaskId
       ? await request(`/tasks/${waitingTaskId}`, 'PATCH', { action: 'reply', message: instruction }) as Task
@@ -492,6 +497,7 @@ function App() {
       {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
         onCancelTask={task => void act(task, 'cancelSchedule')}
+        onSetTaskNotifications={setTaskCompletionNotification}
         onWatchAction={(watch, action) => void actWatch(watch.id, action)}
         onOpenTask={async task => {
           const response = await appFetch('/api/state');

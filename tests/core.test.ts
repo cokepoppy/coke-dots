@@ -887,6 +887,62 @@ test('routine notification preferences never hide work that needs a user reply',
   }
 });
 
+test('scheduled completion notices follow each task setting while needs-you notices remain enabled', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-scheduled-notifications-'));
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+  const modelServer = createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += String(chunk);
+    const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+    const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
+    const needsReply = prompt.includes('E2E scheduled notification — needs a reply');
+    const decision = needsReply
+      ? { status: 'waiting', message: 'Which release time should I use?' }
+      : { status: 'done', message: 'The scheduled check is complete.' };
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(decision) } }] }));
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '1';
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'test-model'; process.env.DOTS_MODEL_API_KEY = 'local-test-key';
+  const store = new Store(directory);
+  const user = store.signInGoogle({ subject: 'scheduled-notifications', email: 'scheduled-notifications@example.test', name: 'Scheduled Notifications' });
+  store.setSetting('desktopNotifications', 'true', user.tenant.id);
+  store.setSetting('modelBaseUrl', `http://127.0.0.1:${address.port}`, user.tenant.id);
+  store.setSetting('modelName', 'test-model', user.tenant.id);
+  const schedule = { frequency: 'interval' as const, intervalMinutes: 60 };
+  const due = new Date(Date.now() - 1_000).toISOString();
+  const enabledTask = store.createTask('E2E scheduled notification — enabled', 60, 'model', user.tenant.id, schedule, due, [], user.user.id);
+  const quietTask = store.createTask('E2E scheduled notification — quiet', 60, 'model', user.tenant.id, schedule, due, [], user.user.id);
+  const waitingTask = store.createTask('E2E scheduled notification — needs a reply', 60, 'model', user.tenant.id, schedule, due, [], user.user.id);
+  store.updateTask(quietTask.id, { notifyOnCompletion: false }, user.tenant.id);
+  store.updateTask(waitingTask.id, { notifyOnCompletion: false }, user.tenant.id);
+  const notifications: { title: string; body: string }[] = [];
+  const worker = new Worker(store, () => {}, undefined, (title, body) => notifications.push({ title, body }));
+  try {
+    worker.start();
+    await waitFor(() => store.getTask(enabledTask.id, user.tenant.id)?.status === 'scheduled'
+      && store.getTask(quietTask.id, user.tenant.id)?.status === 'scheduled'
+      && store.getTask(waitingTask.id, user.tenant.id)?.status === 'waiting');
+    assert.deepEqual(notifications.map(item => item.body).sort(), [
+      '“E2E scheduled notification — enabled”已有新结果。',
+      '“E2E scheduled notification — needs a reply”正在等待你的回复。',
+    ].sort(), 'Disabling completion notices must silence only successful scheduled results, not user decisions');
+  } finally {
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('background worker persists the next daily occurrence in the selected time zone', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-calendar-worker-'));
   const modelServer = createServer(async (_req, res) => {

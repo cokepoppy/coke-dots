@@ -739,6 +739,13 @@ const server = createServer(async (req, res) => {
     if (taskMatch && req.method === 'PATCH') {
       const old = store.getTask(taskMatch[1], session.tenant.id);
       if (!old) return reply(res, 404, { error: 'Task not found' });
+      if (Object.hasOwn(body, 'notifyOnCompletion')) {
+        if (typeof body.notifyOnCompletion !== 'boolean') return reply(res, 400, { error: 'notifyOnCompletion must be a boolean' });
+        if (!scheduleForTask(old.scheduleSpec, old.scheduleMinutes) && old.status !== 'scheduled') return reply(res, 409, { error: 'Only scheduled tasks can change completion notifications' });
+        const updated = store.updateTask(old.id, { notifyOnCompletion: body.notifyOnCompletion }, session.tenant.id);
+        publish();
+        return reply(res, 200, updated);
+      }
       const action = String(body.action || '');
       if (old.status === 'stopped') return reply(res, 409, { error: '这项工作已停止，不能继续或修改' });
       if (action === 'pause') {

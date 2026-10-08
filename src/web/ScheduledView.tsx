@@ -16,10 +16,11 @@ function taskStatusText(task: Task) {
     : statusText[task.status];
 }
 
-export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onOpenTask, onNewTask, onAddWatch }: {
+export function ScheduledView({ tasks, watches, onCancelTask, onSetTaskNotifications, onWatchAction, onOpenTask, onNewTask, onAddWatch }: {
   tasks: Task[];
   watches: Watch[];
   onCancelTask: (task: Task) => void;
+  onSetTaskNotifications: (task: Task, enabled: boolean) => Promise<void>;
   onWatchAction: (watch: Watch, action: 'pause' | 'resume') => void;
   onOpenTask: (task: Task) => void | Promise<void>;
   onNewTask: () => void;
@@ -34,6 +35,8 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
   const [watchError, setWatchError] = useState('');
   const [taskOpenBusy, setTaskOpenBusy] = useState(false);
   const [taskOpenError, setTaskOpenError] = useState(false);
+  const [notificationBusy, setNotificationBusy] = useState(false);
+  const [notificationError, setNotificationError] = useState('');
   const [itemPreview, setItemPreview] = useState<{ key: string; top: number; left: number } | null>(null);
 
   const items = useMemo<ScheduledItem[]>(() => [
@@ -84,6 +87,15 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
     } finally {
       setTaskOpenBusy(false);
     }
+  }
+
+  async function setCompletionNotification(task: Task, enabled: boolean) {
+    if (notificationBusy) return;
+    setNotificationBusy(true);
+    setNotificationError('');
+    try { await onSetTaskNotifications(task, enabled); }
+    catch (error) { setNotificationError(error instanceof Error ? error.message : String(error)); }
+    finally { setNotificationBusy(false); }
   }
 
   function showItemPreview(target: HTMLButtonElement, item: ScheduledItem) {
@@ -144,6 +156,11 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
         <h2>{selected.task.title}</h2>
         <p className="scheduled-instruction">{selected.task.instruction}</p>
         <div className="scheduled-detail-meta"><span>{scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes) ? describeSchedule(scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes)!) : 'One-time follow-up'}</span><span>Next run: {['failed', 'paused', 'waiting'].includes(selected.task.status) ? 'Not scheduled' : selected.task.nextRunAt ? new Date(selected.task.nextRunAt).toLocaleString() : 'Not scheduled'}</span></div>
+        <label className="scheduled-notification-toggle" data-testid="scheduled-completion-notification">
+          <input type="checkbox" aria-label="Notify me when this task completes" checked={selected.task.notifyOnCompletion} disabled={notificationBusy} onChange={event => void setCompletionNotification(selected.task, event.currentTarget.checked)} />
+          <span><strong>Notify me when this task completes</strong><small>Requests for your reply and task failures will still notify you.</small></span>
+        </label>
+        {notificationError && <p className="scheduled-detail-error" role="alert">{notificationError}</p>}
         {selected.task.error && <p className="scheduled-detail-error" role="alert">{selected.task.error}</p>}
         {selected.task.result && <div className="scheduled-result"><span>Latest result</span><p>{selected.task.result}</p></div>}
         <div className="scheduled-detail-actions">

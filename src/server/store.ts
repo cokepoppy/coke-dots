@@ -125,7 +125,8 @@ export class Store {
         schedule_minutes INTEGER, result TEXT, error TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         engine TEXT NOT NULL DEFAULT 'model', reasoning_effort TEXT NOT NULL DEFAULT 'high', agent_session_id TEXT, parent_task_id TEXT,
-        execution_mode TEXT NOT NULL DEFAULT 'standard', task_context TEXT NOT NULL DEFAULT '', created_by_user_id TEXT REFERENCES users(id)
+        execution_mode TEXT NOT NULL DEFAULT 'standard', task_context TEXT NOT NULL DEFAULT '', created_by_user_id TEXT REFERENCES users(id),
+        notify_on_completion INTEGER NOT NULL DEFAULT 1
       );
       CREATE TABLE IF NOT EXISTS proactive_research_reviews (
         source_task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
@@ -232,6 +233,7 @@ export class Store {
     this.addColumnIfMissing('tasks', 'created_by_user_id', 'TEXT REFERENCES users(id)');
     this.addColumnIfMissing('tasks', 'execution_mode', "TEXT NOT NULL DEFAULT 'standard'");
     this.addColumnIfMissing('tasks', 'task_context', "TEXT NOT NULL DEFAULT ''");
+    this.addColumnIfMissing('tasks', 'notify_on_completion', 'INTEGER NOT NULL DEFAULT 1');
     this.addColumnIfMissing('watches', 'last_content', 'TEXT');
     this.addColumnIfMissing('watches', 'last_task_id', 'TEXT');
     this.addColumnIfMissing('page_action_approvals', 'decided_by', 'TEXT REFERENCES users(id)');
@@ -1505,12 +1507,12 @@ export class Store {
     return Number(result.changes) === 1;
   }
 
-  updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes' | 'scheduleSpec' | 'agentSessionId'>>, tenantId = 'legacy'): Task | null {
+  updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes' | 'scheduleSpec' | 'agentSessionId' | 'notifyOnCompletion'>>, tenantId = 'legacy'): Task | null {
     const old = this.getTask(id, tenantId);
     if (!old) return null;
     const next = { ...old, ...change, updatedAt: new Date().toISOString() };
-    this.db.prepare('UPDATE tasks SET instruction=?,status=?,priority=?,next_run_at=?,schedule_minutes=?,schedule_json=?,result=?,error=?,updated_at=?,agent_session_id=? WHERE tenant_id=? AND id=?')
-      .run(next.instruction, next.status, next.priority, next.nextRunAt, next.scheduleMinutes, next.scheduleSpec ? JSON.stringify(next.scheduleSpec) : null, next.result, next.error, next.updatedAt, next.agentSessionId, tenantId, id);
+    this.db.prepare('UPDATE tasks SET instruction=?,status=?,priority=?,next_run_at=?,schedule_minutes=?,schedule_json=?,result=?,error=?,updated_at=?,agent_session_id=?,notify_on_completion=? WHERE tenant_id=? AND id=?')
+      .run(next.instruction, next.status, next.priority, next.nextRunAt, next.scheduleMinutes, next.scheduleSpec ? JSON.stringify(next.scheduleSpec) : null, next.result, next.error, next.updatedAt, next.agentSessionId, next.notifyOnCompletion ? 1 : 0, tenantId, id);
     return this.getTask(id, tenantId);
   }
 
@@ -1817,6 +1819,7 @@ function toTask(r: Record<string, unknown>): Task {
     nextRunAt: r.next_run_at == null ? null : String(r.next_run_at),
     scheduleMinutes: scheduleMinutes !== null ? scheduleMinutes : scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null,
     scheduleSpec,
+    notifyOnCompletion: r.notify_on_completion === undefined ? true : Number(r.notify_on_completion) !== 0,
     result: r.result == null ? null : String(r.result), error: r.error == null ? null : String(r.error),
     createdAt: String(r.created_at), updatedAt: String(r.updated_at),
   };

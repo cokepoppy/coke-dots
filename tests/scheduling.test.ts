@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/server/store.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../src/shared/scheduling.ts';
 
@@ -42,11 +43,33 @@ test('calendar recurrence survives SQLite reopen and old interval records remain
       frequency: 'daily', time: '09:00', timeZone: 'Asia/Shanghai', endDate: '2026-12-31',
     }, '2026-10-06T01:00:00.000Z');
     const interval = store.createTask('Check the page every hour', 60);
+    assert.equal(daily.notifyOnCompletion, true, 'Scheduled tasks should enable completion notices by default');
+    assert.equal(interval.notifyOnCompletion, true, 'Legacy interval tasks should enable completion notices by default');
+    store.updateTask(daily.id, { notifyOnCompletion: false });
     store.close();
     store = new Store(directory);
     assert.deepEqual(store.getTask(daily.id)?.scheduleSpec, { frequency: 'daily', time: '09:00', timeZone: 'Asia/Shanghai', endDate: '2026-12-31' });
+    assert.equal(store.getTask(daily.id)?.notifyOnCompletion, false, 'A disabled completion notice must survive a database reopen');
     assert.deepEqual(store.getTask(interval.id)?.scheduleSpec, { frequency: 'interval', intervalMinutes: 60 });
+    assert.equal(store.getTask(interval.id)?.notifyOnCompletion, true, 'A task setting change must not leak to another task');
     assert.deepEqual(scheduleForTask(null, 60), { frequency: 'interval', intervalMinutes: 60 });
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('old task tables migrate completion notices on without changing existing schedules', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-schedule-migration-'));
+  try {
+    let store = new Store(directory);
+    const task = store.createTask('Keep the legacy hourly check', 60);
+    store.close();
+    const database = new DatabaseSync(join(directory, 'dots.db'));
+    try { database.exec('ALTER TABLE tasks DROP COLUMN notify_on_completion'); }
+    finally { database.close(); }
+    store = new Store(directory);
+    const migrated = store.getTask(task.id);
+    assert.equal(migrated?.notifyOnCompletion, true, 'Existing tasks must receive the enabled default when the column is added');
+    assert.deepEqual(migrated?.scheduleSpec, { frequency: 'interval', intervalMinutes: 60 });
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
