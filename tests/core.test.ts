@@ -56,6 +56,46 @@ test('dot appearance is durable and isolated to its tenant', () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('proactive reviews are idempotent, tenant scoped, and stay quiet when they find nothing', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-proactive-review-'));
+  const store = new Store(directory);
+  try {
+    const alpha = store.signInGoogle({ subject: 'proactive-alpha', email: 'proactive-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'proactive-beta', email: 'proactive-beta@example.test', name: 'Beta' });
+    store.addPersonalDotMemory(alpha.user.id, 'Prefers concise Mandarin milestone updates.');
+    const ongoing = store.createTask('Keep the release date aligned with the rollout calendar', null, 'model', alpha.tenant.id, null, null, [], alpha.user.id);
+    const completed = store.createTask('Summarize the updated release plan', null, 'model', alpha.tenant.id, null, null, [], alpha.user.id);
+    store.updateTask(completed.id, { status: 'done', result: 'The release target is October 22.' }, alpha.tenant.id);
+
+    const review = store.createProactiveResearchReview(completed.id, alpha.tenant.id, 'dsh', 'high');
+    assert(review, 'A completed task with active work and private notes should queue a review');
+    assert.equal(review.executionMode, 'proactive-research');
+    assert.equal(review.engine, 'dsh');
+    assert.equal(store.createProactiveResearchReview(completed.id, alpha.tenant.id, 'pi', 'medium')?.id, review.id, 'Retrying review creation must reuse its original task');
+    const context = store.taskContext(review.id, alpha.tenant.id);
+    assert.match(context, /The release target is October 22/);
+    assert.match(context, /Keep the release date aligned with the rollout calendar/);
+    assert.match(context, /Prefers concise Mandarin milestone updates/);
+    assert.equal(store.snapshot(false, [], undefined, beta.tenant.id).tasks.some(task => task.id === review.id), false, 'A second account must not see the review');
+    assert.equal(store.createProactiveResearchReview(completed.id, beta.tenant.id, 'dsh', 'high'), null, 'A tenant must not create a review for another tenant task');
+
+    store.updateTask(review.id, { status: 'done', result: null }, alpha.tenant.id);
+    assert.equal(store.snapshot(false, [], undefined, alpha.tenant.id).tasks.some(task => task.id === review.id), false, 'A review without a finding should not appear as a user-facing task');
+
+    const shared = store.createWorkspace(alpha.user.id, 'Proactive shared context');
+    store.addTenantMemory(shared.id, alpha.user.id, 'Shared release notes use the approved date.');
+    const sharedTarget = store.createTask('Review the public rollout checklist', null, 'model', shared.id, null, null, [], alpha.user.id);
+    const sharedSource = store.createTask('Summarize the shared release update', null, 'model', shared.id, null, null, [], alpha.user.id);
+    store.updateTask(sharedSource.id, { status: 'done', result: 'The shared rollout date changed.' }, shared.id);
+    const sharedReview = store.createProactiveResearchReview(sharedSource.id, shared.id, 'pi', 'high');
+    assert(sharedReview);
+    const sharedContext = store.taskContext(sharedReview.id, shared.id);
+    assert.match(sharedContext, /Shared release notes use the approved date/);
+    assert.doesNotMatch(sharedContext, /Prefers concise Mandarin milestone updates/, 'A personal Dot note leaked into shared-workspace proactive research');
+    assert.match(sharedContext, new RegExp(sharedTarget.title));
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('profile migration preserves already-completed customization as the earlier setup stage', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-profile-migration-'));
   try {

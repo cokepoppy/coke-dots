@@ -83,6 +83,31 @@ test('Pi cloud browser tool uses only its scoped read-only bridge capability', a
   }
 });
 
+test('proactive review runs inside the Pi cloud kernel with every computer and file tool removed', async () => {
+  const { root, task } = await makeWorkspace();
+  const proactiveDecision = JSON.stringify({ status: 'done', message: 'The launch target conflicts with the active release task.', proactiveFinding: true });
+  const capturedOptions: { value: Record<string, any> | null } = { value: null };
+  const sdk = {
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+    ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+    SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-proactive-session' }), open: () => { throw new Error('unexpected'); } },
+    createAgentSession: async (options: Record<string, any>) => {
+      capturedOptions.value = options;
+      return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: proactiveDecision }] }], prompt: async () => undefined, dispose: () => undefined } };
+    },
+  };
+  try {
+    const output = await runCloudKernel({
+      engine: 'pi', executionMode: 'proactive-research', prompt: 'Review only the supplied work context.', cwd: task,
+      workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
+      computer: { openPublicPageUrl: 'https://must-not-be-available.test/', openPublicPageToken: 'blocked-token' },
+    }, { piSdk: sdk });
+    assert.equal(output.proactiveFinding, true);
+    assert.deepEqual(capturedOptions.value?.tools, [], 'Proactive research must not receive Pi file or browser tools');
+    assert.equal(capturedOptions.value?.customTools, undefined, 'A cloud-computer browser bridge must not be registered');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('DeepSeek Harness routes the shared OpenAI-compatible profile through its pi-ai adapter and a task-local runtime home', async () => {
   const { root, task } = await makeWorkspace();
   const captured: { launch: Record<string, any> | null; provider: string | null } = { launch: null, provider: null };
@@ -121,6 +146,34 @@ test('DeepSeek Harness routes the shared OpenAI-compatible profile through its p
     assert.equal(written.some(name => name.endsWith('.mjs')), false, 'Per-run browser plugins are removed after completion');
     assert.match(safetyPatch, /- id: tool-bash\n  disabled: true/);
     assert.match(safetyPatch, /- id: tool-fs-search\n  disabled: true/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('DeepSeek Harness proactive review receives no browser bridge or write-capable DSH tools', async () => {
+  const { root, task } = await makeWorkspace();
+  const proactiveDecision = JSON.stringify({ status: 'done', message: 'A conflict is supported by the supplied tasks.', proactiveFinding: true });
+  let safetyPatch = '';
+  const capturedEnvironment: { value: Record<string, string> | null } = { value: null };
+  // Capture the per-run patch via the configured profile arguments.
+  const WrappedHarness = class {
+    private args: string[];
+    constructor(options: Record<string, any>) { capturedEnvironment.value = options.launch.env; this.args = options.launch.args; }
+    async run() { safetyPatch = await readFile(this.args[3], 'utf8'); return { finalResponse: proactiveDecision, sessionId: 'dsh-proactive-session' }; }
+    async close() {}
+  };
+  try {
+    const output = await runCloudKernel({
+      engine: 'dsh', executionMode: 'proactive-research', prompt: 'Review only the supplied work context.', cwd: task,
+      workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
+      computer: { openPublicPageUrl: 'https://must-not-be-available.test/', openPublicPageToken: 'blocked-token' },
+    }, { dshSdk: { DeepSeekHarness: WrappedHarness } });
+    assert.equal(output.proactiveFinding, true);
+    assert.equal(capturedEnvironment.value?.COKE_DOTS_PUBLIC_PAGE_BRIDGE_URL, undefined, 'The cloud DSH process must not receive a browser capability');
+    assert.equal(capturedEnvironment.value?.COKE_DOTS_PUBLIC_PAGE_BRIDGE_TOKEN, undefined, 'The cloud DSH process must not receive a browser token');
+    assert.doesNotMatch(safetyPatch, /coke-dots-public-page/);
+    assert.match(safetyPatch, /- id: tool-web\n  disabled: true/);
+    assert.match(safetyPatch, /- id: tool-bash\n  disabled: true/);
+    assert.match(safetyPatch, /- id: tool-fs\n  disabled: true/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -7,6 +7,8 @@ const decisionStatuses = new Set(['done', 'waiting', 'scheduled', 'delegating'])
 
 export async function runCloudKernel(input, dependencies = {}) {
   const engine = String(input?.engine || '');
+  const executionMode = input?.executionMode || 'standard';
+  if (!['standard', 'read-only', 'proactive-research'].includes(executionMode)) throw new Error('Unsupported task execution mode');
   const model = validateModelConfig(input?.modelConfig);
   const cwd = await validateTaskDirectory(input?.cwd, input?.workspace);
   const prompt = typeof input?.prompt === 'string' ? input.prompt.trim() : '';
@@ -54,7 +56,7 @@ async function runPi(input, cwd, config, injectedSdk) {
   const sessionManager = selected
     ? sdk.SessionManager.open(await checkedChildPath(sessionDirectory, selected.path), sessionDirectory, cwd)
     : sdk.SessionManager.create(cwd, sessionDirectory);
-  const browserTool = publicPageTool(input.computer);
+  const browserTool = input.executionMode === 'proactive-research' ? null : publicPageTool(input.computer);
   const customTools = browserTool ? [browserTool] : undefined;
   const { session } = await sdk.createAgentSession({
     cwd,
@@ -62,7 +64,7 @@ async function runPi(input, cwd, config, injectedSdk) {
     authStorage,
     modelRegistry,
     model: selectedModel,
-    tools: ['read', 'grep', 'find', 'ls', ...(browserTool ? ['open_public_page'] : [])],
+    tools: input.executionMode === 'proactive-research' ? [] : ['read', 'grep', 'find', 'ls', ...(browserTool ? ['open_public_page'] : [])],
     ...(customTools ? { customTools } : {}),
     sessionManager,
   });
@@ -84,7 +86,7 @@ async function runPi(input, cwd, config, injectedSdk) {
 async function runDsh(input, cwd, config, injectedSdk) {
   const sdk = injectedSdk || await import('@deepseek-ai/dsh-sdk-client');
   const home = await createPrivateDirectory(cwd, '.coke-dots-agent-runtime/dsh-home');
-  const bridge = input.computer?.openPublicPageUrl && input.computer?.openPublicPageToken ? input.computer : null;
+  const bridge = input.executionMode !== 'proactive-research' && input.computer?.openPublicPageUrl && input.computer?.openPublicPageToken ? input.computer : null;
   const suffix = randomUUID().replaceAll('-', '');
   const patchFile = path.join(home, `coke-dots-${suffix}.cordis.yml`);
   let pluginFile = null;

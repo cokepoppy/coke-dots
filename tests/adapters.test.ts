@@ -171,6 +171,33 @@ test('read-only reviews mark source content untrusted and reject writes, delegat
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Ask another agent.', delegations: [{ title: 'Review', instruction: 'Inspect the changed paragraph.' }] }), undefined, options), /不能继续委派/);
 });
 
+test('proactive research is context-only and its structured result cannot request actions', () => {
+  const input: AgentRequest = {
+    prompt: 'Check for a useful connection.', priorResult: null, sessionId: null,
+    workspace: '/tmp/coke-dots-proactive-review', onEvent: () => {}, executionMode: 'proactive-research',
+    allowDelegation: true, allowPersonalDotMemoryUpdates: true, availableEngines: ['model'],
+    context: JSON.stringify({ sourceTask: { title: 'Release date', result: 'October 22' }, activeTasks: [{ title: 'Publish the calendar', instruction: 'Use October 21' }], personalDotNotes: ['Prefer concise Mandarin'] }),
+  };
+  const formatted = formatAgentPrompt(input);
+  assert.match(formatted, /Proactive research constraints/);
+  assert.match(formatted, /Do not browse, control a computer, read or modify files/);
+  assert.match(formatted, /Untrusted source context/);
+  assert.doesNotMatch(formatted, /open_public_page/);
+  const options = agentDecisionOptions(input);
+  assert.equal(options.allowDelegation, false);
+  assert.equal(options.allowPageActions, false);
+  assert.equal(options.allowScheduling, false);
+  assert.equal(options.allowWebsiteSignInRequest, false);
+  assert.equal(options.allowPersonalDotMemoryUpdates, false);
+  const result = parseDecision(JSON.stringify({ status: 'done', message: 'The release date differs.', proactiveFinding: true }), undefined, options);
+  assert.equal(result.proactiveFinding, true);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Nothing found.' }), undefined, options), /明确的发现标记/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'scheduled', message: 'Try again tomorrow.', proactiveFinding: false }), undefined, options), /明确的发现标记/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Found it.', proactiveFinding: true, pageAction: { action: 'create', title: 'Unexpected', content: 'Write' } }), undefined, options), /只读任务不能写入/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Found it.', websiteSignInRequest: { url: 'https://example.test/login', reason: 'Need access.' }, proactiveFinding: true }), undefined, options), /主动研究不能请求网站登录/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Found it.', proactiveFinding: true, delegations: [{ title: 'Other', instruction: 'Review.' }] }), undefined, options), /非委派状态不能包含子任务/);
+});
+
 test('agent Scratchpad actions require bounded page content and a valid tenant page ID', () => {
   const id = '01234567-89ab-cdef-0123-456789abcdef';
   const created = parseDecision(JSON.stringify({ status: 'done', message: 'I created your page.', pageAction: { action: 'create', title: 'Launch notes', content: '# Outline\n- Draft the intro' } }));

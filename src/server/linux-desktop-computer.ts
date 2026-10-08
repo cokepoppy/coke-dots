@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import type { ComputerRuntime, ComputerState } from './computer.ts';
 import { validatePublicHttpsUrl } from '../shared/public-web-policy.mjs';
+import type { TaskExecutionMode } from '../shared/types.ts';
 
 const workerPort = 8082;
 const vncPort = 6080;
@@ -146,7 +147,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     return this.connection ? this.connection.novncUrl : null;
   }
 
-  async runAgentTask(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; signal?: AbortSignal }) {
+  async runAgentTask(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; executionMode?: TaskExecutionMode; signal?: AbortSignal }) {
     await this.ensureConnection();
     const owner = await this.request('/v1/control');
     if (!owner.ok || (await owner.json() as { owner?: string }).owner !== 'agent') throw new Error('用户正在接管这台电脑，Agent 已暂停');
@@ -174,13 +175,13 @@ export class LinuxDesktopComputer implements ComputerRuntime {
       const response = await fetch(url, {
         method: 'POST',
         headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ engine: input.engine, taskId: input.taskId, executionId: input.executionId || input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, ...(input.modelConfig ? { modelConfig: input.modelConfig } : {}) }),
+        body: JSON.stringify({ engine: input.engine, taskId: input.taskId, executionId: input.executionId || input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, ...(input.executionMode ? { executionMode: input.executionMode } : {}), ...(input.modelConfig ? { modelConfig: input.modelConfig } : {}) }),
         signal: AbortSignal.any([AbortSignal.timeout(15 * 60_000), requestAbort.signal]),
       });
-      const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; websiteSignInRequest?: { url: string; reason: string } };
+      const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; websiteSignInRequest?: { url: string; reason: string }; proactiveFinding?: boolean };
       if (!response.ok) throw new Error(result.error || `Linux Agent 运行时返回 HTTP ${response.status}`);
       if (typeof result.status !== 'string' || typeof result.message !== 'string') throw new Error('Linux Agent 运行时返回了无效结果');
-      return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }), ...(result.websiteSignInRequest === undefined ? {} : { websiteSignInRequest: result.websiteSignInRequest }) };
+      return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }), ...(result.websiteSignInRequest === undefined ? {} : { websiteSignInRequest: result.websiteSignInRequest }), ...(result.proactiveFinding === undefined ? {} : { proactiveFinding: result.proactiveFinding }) };
     } finally {
       input.signal?.removeEventListener('abort', onAbort);
     }

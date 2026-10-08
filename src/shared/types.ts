@@ -8,6 +8,7 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return typeof value === 'string' && reasoningEfforts.includes(value as ReasoningEffort);
 }
 export type TaskStatus = 'queued' | 'working' | 'delegating' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused' | 'stopped';
+export type TaskExecutionMode = 'standard' | 'read-only' | 'proactive-research';
 export type ActionRuleMode = 'without-asking' | 'when-requested' | 'ask-before' | 'hand-off';
 export type { ScheduleSpec } from './scheduling.ts';
 
@@ -27,7 +28,7 @@ export interface Task {
   parentTaskId: string | null;
   engine: Engine;
   reasoningEffort: ReasoningEffort;
-  executionMode: 'standard' | 'read-only';
+  executionMode: TaskExecutionMode;
   agentSessionId: string | null;
   title: string;
   instruction: string;

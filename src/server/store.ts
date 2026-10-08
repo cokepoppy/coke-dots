@@ -127,6 +127,12 @@ export class Store {
         engine TEXT NOT NULL DEFAULT 'model', reasoning_effort TEXT NOT NULL DEFAULT 'high', agent_session_id TEXT, parent_task_id TEXT,
         execution_mode TEXT NOT NULL DEFAULT 'standard', task_context TEXT NOT NULL DEFAULT '', created_by_user_id TEXT REFERENCES users(id)
       );
+      CREATE TABLE IF NOT EXISTS proactive_research_reviews (
+        source_task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        review_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'legacy', task_id TEXT,
         kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, attachment_ids_json TEXT NOT NULL DEFAULT '[]'
@@ -920,7 +926,9 @@ export class Store {
         localComputer: this.getSetting('localComputerEnabled', tenantId) !== 'false',
         configured: this.getSetting('computerChoiceConfigured', tenantId) === 'true',
       },
-      tasks: (this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? ORDER BY priority DESC,created_at DESC').all(tenantId) as Record<string, unknown>[]).map(toTask),
+      tasks: (this.db.prepare(`SELECT * FROM tasks WHERE tenant_id=? AND (
+        execution_mode!='proactive-research' OR status IN ('queued','working','failed','paused','stopped') OR (status='done' AND result IS NOT NULL)
+      ) ORDER BY priority DESC,created_at DESC`).all(tenantId) as Record<string, unknown>[]).map(toTask),
       watches: (this.db.prepare('SELECT * FROM watches WHERE tenant_id=? ORDER BY rowid DESC').all(tenantId) as Record<string, unknown>[]).map(toWatch),
       entries: (this.db.prepare('SELECT id,tenant_id,task_id,kind,body,created_at,attachment_ids_json FROM entries WHERE tenant_id=? ORDER BY id DESC LIMIT 150').all(tenantId) as Record<string, unknown>[]).map(row => {
         const entry = toEntry(row);
@@ -1733,6 +1741,63 @@ export class Store {
     const row = this.db.prepare('SELECT task_context FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, id) as { task_context: string } | undefined;
     return row?.task_context || '';
   }
+
+  /** Queue one tenant-scoped, read-only context review after a completed top-level task. */
+  createProactiveResearchReview(sourceTaskId: string, tenantId: string, engine: Engine, reasoningEffort: ReasoningEffort): Task | null {
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const source = this.db.prepare(`SELECT title,instruction,result,status,parent_task_id AS parentTaskId,execution_mode AS executionMode,
+          schedule_json AS scheduleJson,schedule_minutes AS scheduleMinutes,created_by_user_id AS createdBy
+        FROM tasks WHERE tenant_id=? AND id=?`).get(tenantId, sourceTaskId) as {
+          title: string; instruction: string; result: string | null; status: string; parentTaskId: string | null;
+          executionMode: string; scheduleJson: string | null; scheduleMinutes: number | null; createdBy: string | null;
+        } | undefined;
+      if (!source || source.status !== 'done' || source.executionMode !== 'standard' || source.parentTaskId || source.scheduleJson || source.scheduleMinutes !== null || !source.createdBy) {
+        this.db.exec('COMMIT');
+        return null;
+      }
+      const existing = this.db.prepare('SELECT review_task_id AS reviewTaskId FROM proactive_research_reviews WHERE tenant_id=? AND source_task_id=?')
+        .get(tenantId, sourceTaskId) as { reviewTaskId: string } | undefined;
+      if (existing) {
+        this.db.exec('COMMIT');
+        return this.getTask(existing.reviewTaskId, tenantId);
+      }
+      const activeTasks = this.db.prepare(`SELECT title,instruction,status,result FROM tasks
+        WHERE tenant_id=? AND id<>? AND execution_mode!='proactive-research' AND status IN ('queued','working','delegating','waiting','scheduled')
+        ORDER BY priority DESC,updated_at DESC LIMIT 6`).all(tenantId, sourceTaskId) as {
+          title: string; instruction: string; status: string; result: string | null;
+        }[];
+      const workspaceNotes = this.db.prepare('SELECT note FROM tenant_memories WHERE tenant_id=? ORDER BY updated_at DESC,id DESC LIMIT 10')
+        .all(tenantId) as { note: string }[];
+      const privateContext = this.personalDotMemoryContext(tenantId);
+      const personalNotes = privateContext?.memories.slice(0, 10).map(memory => memory.note) || [];
+      if (!activeTasks.length && !workspaceNotes.length && !personalNotes.length) {
+        this.db.exec('COMMIT');
+        return null;
+      }
+
+      const id = randomUUID();
+      const title = 'Check for useful connections';
+      const instruction = 'Review the completed work against current responsibilities and permitted notes. Report only a concrete, useful connection, conflict, opportunity, or question that is supported by the supplied evidence. If nothing stands out, finish quietly without a finding.';
+      const context = JSON.stringify({
+        sourceTask: { id: sourceTaskId, title: source.title.slice(0, 120), instruction: source.instruction.slice(0, 800), result: (source.result || '').slice(0, 1600) },
+        activeTasks: activeTasks.map(task => ({ title: task.title.slice(0, 120), instruction: task.instruction.slice(0, 600), status: task.status, result: (task.result || '').slice(0, 1000) })),
+        workspaceNotes: workspaceNotes.map(row => row.note.slice(0, 600)),
+        personalDotNotes: personalNotes.map(note => note.slice(0, 600)),
+      });
+      this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,task_context,created_by_user_id)
+        VALUES (?,?,?,?, 'queued',0,?,NULL,NULL,NULL,?,?,?, ?,NULL,NULL,'proactive-research',?,?)`)
+        .run(id, tenantId, title, instruction, now, now, now, engine, reasoningEffort, context, source.createdBy);
+      this.db.prepare('INSERT INTO proactive_research_reviews(source_task_id,tenant_id,review_task_id,created_at) VALUES (?,?,?,?)')
+        .run(sourceTaskId, tenantId, id, now);
+      this.db.exec('COMMIT');
+      return this.getTask(id, tenantId);
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
 }
 
 function toTask(r: Record<string, unknown>): Task {
@@ -1744,7 +1809,7 @@ function toTask(r: Record<string, unknown>): Task {
   scheduleSpec = scheduleForTask(scheduleSpec, scheduleMinutes);
   return {
     id: String(r.id), tenantId: String(r.tenant_id), parentTaskId: r.parent_task_id == null ? null : String(r.parent_task_id), title: String(r.title), instruction: String(r.instruction),
-    executionMode: r.execution_mode === 'read-only' ? 'read-only' : 'standard',
+    executionMode: r.execution_mode === 'read-only' || r.execution_mode === 'proactive-research' ? r.execution_mode : 'standard',
     engine: r.engine as Engine, reasoningEffort: isReasoningEffort(r.reasoning_effort) ? r.reasoning_effort : 'high', agentSessionId: r.agent_session_id == null ? null : String(r.agent_session_id),
     status: r.status as TaskStatus, priority: Number(r.priority),
     nextRunAt: r.next_run_at == null ? null : String(r.next_run_at),

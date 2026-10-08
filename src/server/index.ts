@@ -56,7 +56,11 @@ const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
 const configuredDesktopEngines = () => configuredDesktopAgentEngines() as Engine[];
 const remoteFor = (tenantId: string) => effectiveModelConfig(tenantId) ? configuredDesktopEngines() : [];
-const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...remoteFor(tenantId)])];
+const availableFor = (tenantId: string) => {
+  const remote = remoteFor(tenantId);
+  const localKernelFallbacks = process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' ? new Set<Engine>(['pi', 'dsh']) : new Set<Engine>();
+  return [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => !localKernelFallbacks.has(id) && adapters[id].available(tenantId)), ...remote])];
+};
 
 function snapshot(tenantId: string, userId?: string) {
   loadSharedModelSettings(

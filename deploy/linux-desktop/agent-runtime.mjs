@@ -71,6 +71,7 @@ function taskFingerprint(input) {
   const normalizedPrompt = String(input.prompt || '').replace(/\nCurrent time: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, '\nCurrent time: <stable-run-time>');
   return createHash('sha256').update(JSON.stringify({
     taskId: String(input.taskId || ''), executionId: String(input.executionId || input.taskId || ''), engine: String(input.engine || ''), prompt: normalizedPrompt,
+    executionMode: typeof input.executionMode === 'string' ? input.executionMode : 'standard',
     sessionId: typeof input.sessionId === 'string' ? input.sessionId : null, cwd: String(input.cwd || '.'),
   })).digest('hex');
 }
@@ -153,6 +154,7 @@ async function executeKernel(input, slot) {
   if (!executionId || executionId.length > 256) throw new Error('Task execution id is invalid');
   const prompt = String(input.prompt || '').trim();
   if (!prompt || prompt.length > 20_000) throw new Error('Task prompt must contain 1–20000 characters');
+  const executionMode = ['standard', 'read-only', 'proactive-research'].includes(input.executionMode) ? input.executionMode : 'standard';
   const cached = await cachedResult(input);
   if (cached) return cached;
   const interruptedAfterCache = interruptionDecision(input, slot);
@@ -172,13 +174,13 @@ async function executeKernel(input, slot) {
   const builtInAdapter = isBuiltInAdapter(adapter);
   const modelConfig = builtInAdapter ? validateModelConfig(input.modelConfig) : undefined;
   const childEnv = await createAdapterEnvironment(cwd);
-  const browserBridge = builtInAdapter ? await startBrowserResearchBridge() : null;
+  const browserBridge = builtInAdapter && executionMode !== 'proactive-research' ? await startBrowserResearchBridge() : null;
   const abort = new AbortController();
   slot.abort = abort;
   let stdout = '';
   let stderr = '';
   const taskInput = {
-    engine, prompt, cwd, workspace, taskId, executionId,
+    engine, prompt, cwd, workspace, taskId, executionId, executionMode,
     sessionId: typeof input.sessionId === 'string' ? input.sessionId : null,
     ...(builtInAdapter ? { modelConfig } : {}),
     ...(browserBridge ? { computer: browserBridge.capability } : {}),
