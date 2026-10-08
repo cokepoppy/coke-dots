@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,7 +9,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { PNG } from 'pngjs';
+import { Entry } from '@napi-rs/keyring';
+import { formatAgentPrompt } from '../../src/server/adapters.ts';
 import { desktopResourceIdentity, LinuxDesktopComputer, type DesktopConnector } from '../../src/server/linux-desktop-computer.ts';
+import { Store } from '../../src/server/store.ts';
 import { compareRasters, cropRaster, resizeRaster } from '../../src/shared/reference-visual.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -20,6 +23,9 @@ const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-k3d-e2e-'));
 const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `k3d-cloud-computer-${new Date().toISOString().replace(/[:.]/g, '-')}`);
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
+const testKeychainService = `com.cokepoppy.coke-dots.e2e-k3d-${randomUUID()}`;
+const runLiveAgentKernels = process.env.DOTS_K3D_LIVE_AGENT_KERNELS === '1';
+let liveModelConfig: { apiKey: string; baseUrl: string; model: string } | null = null;
 const tokenSecret = randomBytes(32).toString('base64url');
 const researchFixtureUrl = 'https://research-fixture.dots.test/launch';
 process.env.NODE_ENV = 'test';
@@ -34,6 +40,29 @@ let page: Page | null = null;
 let appPort = 0;
 let kubectlNamespaceCreated = false;
 const logs: string[] = [];
+
+async function configureLiveAgentKernels() {
+  const sourceKeychainService = process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots';
+  const sourceStore = new Store(resolve(process.env.DOTS_DATA_DIR || './data'));
+  let baseUrl = '';
+  let model = '';
+  try {
+    baseUrl = sourceStore.getSetting('sharedModelBaseUrl', 'legacy') || sourceStore.getSetting('modelBaseUrl', 'legacy') || '';
+    model = sourceStore.getSetting('sharedModelName', 'legacy') || sourceStore.getSetting('modelName', 'legacy') || '';
+  } finally { sourceStore.close(); }
+  const apiKey = new Entry(sourceKeychainService, 'shared-model-api-key').getPassword()
+    || new Entry(sourceKeychainService, 'tenant-legacy-model-api-key').getPassword() || '';
+  assert(baseUrl && model && apiKey, 'Live cloud-kernel E2E needs the configured shared model endpoint, model, and Keychain credential.');
+  assert.equal(new URL(baseUrl).protocol, 'https:', 'Live cloud-kernel E2E requires an HTTPS model endpoint.');
+  new Entry(testKeychainService, 'shared-model-api-key').setPassword(apiKey);
+  const setupStore = new Store(dataDirectory);
+  setupStore.setSetting('sharedModelBaseUrl', baseUrl, 'legacy');
+  setupStore.setSetting('sharedModelName', model, 'legacy');
+  setupStore.setSetting('modelBaseUrl', baseUrl, 'legacy');
+  setupStore.setSetting('modelName', model, 'legacy');
+  setupStore.close();
+  liveModelConfig = { apiKey, baseUrl, model };
+}
 
 function command(args: string[]) {
   const result = spawnSync(args[0], args.slice(1), { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -56,14 +85,14 @@ async function startApp(): Promise<ChildProcess> {
     env: {
       ...process.env,
       NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL: researchFixtureUrl, DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(appPort),
-      DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.e2e-k3d-${randomUUID()}`,
+      DOTS_KEYCHAIN_SERVICE: testKeychainService,
       DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_LINUX_DESKTOP_TOKEN_SECRET: tokenSecret,
       DOTS_LINUX_DESKTOP_IMAGE: process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev',
       DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE: process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || cluster,
       DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX || '1',
       DOTS_LINUX_DESKTOP_TEST_WORKER_URL: '', DOTS_LINUX_DESKTOP_TEST_NOVNC_URL: '', DOTS_LINUX_DESKTOP_TEST_AGENT_URL: '',
-      DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
-      DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: 'node', args: ['-e', agentAdapterSource] } }),
+      DOTS_DESKTOP_AGENT_ADAPTERS: runLiveAgentKernels ? 'pi,dsh' : 'dsh',
+      DOTS_AGENT_KERNELS_JSON: runLiveAgentKernels ? '{}' : JSON.stringify({ dsh: { command: 'node', args: ['-e', agentAdapterSource] } }),
       GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: '', DOTS_MODEL_API_KEY: '', DOTS_MODEL: '', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -126,6 +155,7 @@ try {
   assert.equal(currentContext, `k3d-${cluster}`, 'The K3D smoke test must use the explicitly selected Coke sandbox cluster');
   command(['kubectl', 'get', 'nodes']);
   command(['docker', 'image', 'inspect', process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev']);
+  if (runLiveAgentKernels) await configureLiveAgentKernels();
   console.log(`K3D preflight passed: ${cluster}`);
   await mkdir(artifacts, { recursive: true });
   await writeFile(envFile, '');
@@ -155,6 +185,12 @@ try {
   assert.equal(computerStatus.status, 200, 'The cloud computer API must connect to the tenant desktop');
   const desktopPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert(desktopPod, `The tenant namespace ${namespace} must contain its desktop Pod`);
+  const desktopUid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'id', '-u']);
+  const agentUid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'id', '-u']);
+  assert.equal(desktopUid, '1000', 'The visible cloud desktop must run as its isolated non-root UID');
+  assert.equal(agentUid, '1001', 'Pi and DeepSeek Harness must run inside the Debian Pod as a separate non-root cloud Agent UID');
+  const agentCliVersion = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', '/usr/local/bin/dsh', '--version']);
+  assert.match(agentCliVersion, /\d+\.\d+/, 'The upstream DeepSeek Harness CLI must be installed inside the cloud Agent container');
   const osRelease = command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', '/etc/os-release']);
   assert.match(osRelease, /^ID=debian$/m, 'The running cloud computer must identify itself as Debian');
   assert.match(osRelease, /^VERSION_ID="13"$/m, 'The running cloud computer must be Debian 13');
@@ -254,21 +290,51 @@ try {
   assert(portForwardOutput.includes(`127.0.0.1:${agentPort}`), `Agent runtime port-forward did not become ready: ${portForwardOutput}`);
   const agentToken = createHmac('sha256', tokenSecret).update(`agent:${tenantId}`).digest('base64url');
   const runtimeTaskId = randomUUID();
+  const runtimePrompt = runLiveAgentKernels
+    ? formatAgentPrompt({ prompt: 'Do not use tools. Finish this check and return the result exactly as JSON with status done and message cloud-kernel-ok-dsh.', priorResult: null, sessionId: null, workspace: `/workspace/tasks/${runtimeTaskId}`, onEvent: () => {}, allowDelegation: false, executionMode: 'read-only' })
+    : 'real Debian 13 runtime smoke';
   const runtimeResponse = await fetch(`http://127.0.0.1:${agentPort}/v1/tasks/run`, {
     method: 'POST',
     headers: { authorization: `Bearer ${agentToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ engine: 'dsh', taskId: runtimeTaskId, prompt: 'real Debian 13 runtime smoke', sessionId: null, cwd: 'tasks/runtime-smoke' }),
+    body: JSON.stringify({ engine: 'dsh', taskId: runtimeTaskId, executionId: randomUUID(), prompt: runtimePrompt, sessionId: null, cwd: `tasks/${runtimeTaskId}`, ...(liveModelConfig ? { modelConfig: liveModelConfig } : {}) }),
+    signal: AbortSignal.timeout(14 * 60_000),
   });
   const runtimeResult = await runtimeResponse.json() as { status?: string; message?: string; engine?: string };
   assert.equal(runtimeResponse.status, 200, `The live Agent runtime must execute its configured adapter: ${JSON.stringify(runtimeResult)}`);
   assert.equal(runtimeResult.status, 'done');
   assert.equal(runtimeResult.engine, 'dsh');
-  assert.match(runtimeResult.message || '', /Adapter completed: real Debian 13 runtime smoke; runtime token visible to child: false/);
-  const workspacePath = `/workspace/tasks/runtime-smoke/runtime-persistence.txt`;
-  assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The real Agent runtime must leave its task artifact in the tenant workspace PVC');
+  if (runLiveAgentKernels) {
+    assert(liveModelConfig, 'The live shared model profile must be available to the cloud runtime test');
+    assert.match(runtimeResult.message || '', /cloud-kernel-ok-dsh/i, 'DeepSeek Harness must make a real model request from the Debian Agent container');
+    const dshFiles = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'find', `/workspace/tasks/${runtimeTaskId}/.coke-dots-agent-runtime`, '-type', 'f', '-printf', '%P\n']);
+    assert(dshFiles.trim(), 'DeepSeek Harness must persist its session inside the tenant cloud computer workspace');
+    const piTaskId = randomUUID();
+    const piResponse = await fetch(`http://127.0.0.1:${agentPort}/v1/tasks/run`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${agentToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ engine: 'pi', taskId: piTaskId, executionId: randomUUID(), prompt: formatAgentPrompt({ prompt: 'Do not use tools. Finish this check and return the result exactly as JSON with status done and message cloud-kernel-ok-pi.', priorResult: null, sessionId: null, workspace: `/workspace/tasks/${piTaskId}`, onEvent: () => {}, allowDelegation: false, executionMode: 'read-only' }), sessionId: null, cwd: `tasks/${piTaskId}`, modelConfig: liveModelConfig }),
+      signal: AbortSignal.timeout(14 * 60_000),
+    });
+    const piResult = await piResponse.json() as { status?: string; message?: string; engine?: string };
+    assert.equal(piResponse.status, 200, `The Pi kernel must execute inside the Debian Agent container: ${JSON.stringify(piResult)}`);
+    assert.equal(piResult.status, 'done');
+    assert.equal(piResult.engine, 'pi');
+    assert.match(piResult.message || '', /cloud-kernel-ok-pi/i, 'Pi must make a real model request from the Debian Agent container');
+    const piFiles = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'find', `/workspace/tasks/${piTaskId}/.coke-dots-agent-runtime`, '-type', 'f', '-printf', '%P\n']);
+    assert(piFiles.trim(), 'Pi must persist its native session inside the tenant cloud computer workspace');
+    console.log('Real DeepSeek Harness and Pi model calls completed inside the isolated Debian Agent container');
+  } else {
+    assert.match(runtimeResult.message || '', /Adapter completed: real Debian 13 runtime smoke; runtime token visible to child: false/);
+  }
+  const workspacePath = runLiveAgentKernels
+    ? `/workspace/.coke-dots-agent-runtime-state/${createHash('sha256').update(runtimeTaskId).digest('hex')}.json`
+    : `/workspace/tasks/${runtimeTaskId}/runtime-persistence.txt`;
+  const workspaceArtifactContainer = runLiveAgentKernels ? 'agent-runtime' : 'desktop';
+  const workspaceArtifact = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]);
+  assert(runLiveAgentKernels ? workspaceArtifact.includes('cloud-kernel-ok-dsh') : workspaceArtifact === runtimeTaskId, 'The completed Agent result must be persisted inside the tenant cloud computer PVC');
   agentPortForward.kill('SIGTERM');
   agentPortForward = null;
-  console.log('Live Agent runtime executed its configured adapter and kept the runtime token out of the child process');
+  console.log('Live Debian Agent runtime executed its configured kernel without exposing runtime tokens to the child');
 
   await page.getByRole('button', { name: 'Take over' }).click();
   const userControl = await page.getByRole('status').filter({ hasText: 'You have control' }).boundingBox();
@@ -426,9 +492,9 @@ try {
   command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', 'pod', '-l', 'app=desktop', '--timeout=120s']);
   const restartedPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
-  assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The tenant workspace artifact must survive a desktop Pod restart');
+  assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive a cloud computer Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
   logs.push(`Failure diagnostics: appServerExit=${appServer?.exitCode ?? 'running'} health=${health} page=${page?.url() ?? 'unavailable'}`);
@@ -445,6 +511,9 @@ try {
   }
   if (namespace && (kubectlNamespaceCreated || process.env.DOTS_K3D_CLEANUP_FAILED === '1')) {
     spawnSync('kubectl', ['delete', 'namespace', namespace, '--wait=true', '--timeout=120s'], { cwd: projectRoot, stdio: 'ignore' });
+  }
+  if (runLiveAgentKernels) {
+    try { new Entry(testKeychainService, 'shared-model-api-key').deletePassword(); } catch { /* The credential may not have been created if setup failed early. */ }
   }
   await rm(tempRoot, { recursive: true, force: true });
 }

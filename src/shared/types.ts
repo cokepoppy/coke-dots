@@ -89,6 +89,7 @@ export interface Snapshot {
   entries: Entry[];
   configured: boolean;
   availableEngines: Engine[];
+  remoteEngines: Engine[];
   modelSettings: { baseUrl: string; model: string; hasKey: boolean; canManage?: boolean };
 }
 

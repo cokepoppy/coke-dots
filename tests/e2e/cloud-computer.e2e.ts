@@ -203,7 +203,7 @@ async function startApp() {
       DOTS_LINUX_DESKTOP_TEST_AGENT_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/agent/`,
       DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
       DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: 'node', args: ['/tmp/dots-dsh-adapter.mjs'] } }),
-      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: '', DOTS_MODEL_API_KEY: '', DOTS_MODEL: '', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
+      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://api.deepseek.com', DOTS_MODEL_API_KEY: 'cloud-e2e-shared-api-key', DOTS_MODEL: 'deepseek-flash', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -274,8 +274,10 @@ try {
   });
 
   await signIn(page, 'cloud-alpha@example.test');
-  const availableEngines = await page.evaluate(async () => (await (await fetch('/api/state')).json()).availableEngines as string[]);
+  const engineState = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[] };
+  const availableEngines = engineState.availableEngines;
   assert(availableEngines.includes('dsh'), 'The cloud workspace should expose its configured DeepSeek Harness adapter');
+  assert(engineState.remoteEngines.includes('dsh'), 'The cloud workspace should identify DeepSeek Harness as running in its cloud computer');
   assert.equal(availableEngines.includes('claude'), false, 'Claude Code must remain unavailable in the cloud workspace UI and API');
   await page.evaluate(async () => {
     const response = await fetch('/api/computer-access', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ localComputer: false }) });
@@ -354,11 +356,12 @@ try {
   assert.equal(agentCalls.length, 1, `Expected one remote Agent dispatch; created=${JSON.stringify(created)}, state=${JSON.stringify(debugState.tasks.find(task => task.id === created.task.id))}, engines=${JSON.stringify(debugState.availableEngines)}, calls=${JSON.stringify(agentCalls)}, remotePaths=${JSON.stringify(remoteHttpPaths.slice(-40))}, logs=${logs.join('')}`);
   assert.equal(agentCalls[0].engine, 'dsh');
   assert.equal(agentCalls[0].cwd, `tasks/${created.task.id}`);
-  assert.equal((agentCalls[0].computer as { baseUrl: string }).baseUrl, 'http://127.0.0.1:8082');
+  assert.equal('computer' in agentCalls[0], false, 'The host must not forward a raw browser Worker token to the cloud Agent runtime');
   await page.screenshot({ path: join(artifacts, '03-agent-task-done.png') });
 
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
   await page.locator('.composer-bottom select').selectOption('dsh');
+  assert.equal(await page.locator('small.hint').textContent(), '任务由 Dot 的云电脑运行。', 'The composer must identify the actual remote execution location');
   await page.getByTestId('task-composer').fill(recoveryInstruction);
   await page.locator('button.send').click();
   await Promise.race([recoveryStarted, delay(20_000).then(() => { throw new Error('Chrome-created recovery task never reached the cloud Agent runtime'); })]);

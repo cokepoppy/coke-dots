@@ -5,7 +5,8 @@ import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts
 import { Store } from './store.ts';
 import { adapters, formatAgentPrompt, parseDecision, agentDecisionOptions, type AgentRequest, type Engine } from './adapters.ts';
 import type { ComputerRuntime } from './computer.ts';
-import { loadModelSettings, loadSharedModelSettings, missingModelSettings } from './model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, loadSharedModelSettings, missingModelSettings } from './model-settings.ts';
+import { configuredDesktopAgentEngines } from './linux-desktop-computer.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
 export class Worker {
@@ -175,7 +176,7 @@ export class Worker {
         };
       }
       const decision = useDesktopRuntime
-        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, signal })), task.agentSessionId || undefined, agentDecisionOptions(input))
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: effectiveModelConfig(task.tenantId) || undefined, signal })), task.agentSessionId || undefined, agentDecisionOptions(input))
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
@@ -289,11 +290,7 @@ export class Worker {
 }
 
 function parseRemoteEngines(): Engine[] {
-  if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [];
-  try {
-    const configured = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, unknown>;
-    return (Object.keys(configured) as string[]).filter((engine): engine is Engine => ['pi', 'dsh'].includes(engine) && Boolean(configured[engine]));
-  } catch { return []; }
+  return configuredDesktopAgentEngines();
 }
 
 function explicitScratchpadRequest(instruction: string) {

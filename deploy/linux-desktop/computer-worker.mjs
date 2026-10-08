@@ -137,9 +137,6 @@ async function fillPrivateSignIn(input) {
   await passwordField.fill(password);
   privateSignInFields = { page: browserPage, url: browserPage.url(), identifier: identifierField, password: passwordField };
   owner = 'user';
-  await fetch(`http://127.0.0.1:${process.env.DOTS_AGENT_RUNTIME_PORT || 8083}/v1/tasks/pause`, {
-    method: 'POST', headers: { authorization: `Bearer ${process.env.DOTS_AGENT_RUNTIME_TOKEN}` }, signal: AbortSignal.timeout(1500),
-  }).catch(() => undefined);
   return { ready: true, url: browserPage.url(), title: await browserPage.title().catch(() => ''), owner };
 }
 
@@ -172,11 +169,6 @@ http.createServer(async (req, res) => {
       if (input.owner !== 'agent' && input.owner !== 'user') return send(res, 400, { error: 'invalid control owner' });
       if (input.owner === 'agent') await clearPrivateSignInFields();
       owner = input.owner;
-      if (owner === 'user') {
-        await fetch(`http://127.0.0.1:${process.env.DOTS_AGENT_RUNTIME_PORT || 8083}/v1/tasks/pause`, {
-          method: 'POST', headers: { authorization: `Bearer ${process.env.DOTS_AGENT_RUNTIME_TOKEN}` }, signal: AbortSignal.timeout(1500),
-        }).catch(() => undefined);
-      }
       return send(res, 200, { owner });
     }
     if (req.method === 'POST' && pathname === '/v1/commands/private-sign-in') return send(res, 200, await fillPrivateSignIn(await body(req)));

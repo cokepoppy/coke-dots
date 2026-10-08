@@ -904,7 +904,7 @@ export class Store {
     }
   }
 
-  snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false }, tenantId = 'legacy'): Snapshot {
+  snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false }, tenantId = 'legacy', remoteEngines: Engine[] = []): Snapshot {
     const p = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory,character,pet,avatar_setup_completed_at AS avatarSetupCompletedAt,onboarding_completed_at AS onboardingCompletedAt,onboarding_completed_name AS onboardingCompletedName FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
     if (!p) throw new Error('Workspace profile is missing');
     const reasoningEffort = this.getSetting('reasoningEffort', tenantId);
@@ -928,7 +928,7 @@ export class Store {
         try { ids = JSON.parse(String(row.attachment_ids_json || '[]')) as string[]; } catch { /* Old malformed rows have no attachments. */ }
         return { ...entry, attachments: this.attachmentSummaries(ids, tenantId) };
       }).reverse(),
-      configured, availableEngines, modelSettings,
+      configured, availableEngines, remoteEngines, modelSettings,
     };
   }
 

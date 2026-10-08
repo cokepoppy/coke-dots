@@ -60,7 +60,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       "if (input.prompt === 'hold') await new Promise(resolve => setTimeout(resolve, 30000));",
       'await new Promise(resolve => setTimeout(resolve, 80));',
       "await appendFile(process.env.DOTS_TEST_MARKER, `end ${input.taskId}\\n`);",
-      "process.stdout.write(JSON.stringify({ status: 'done', message: process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'runtime token leaked' : 'runtime token isolated' }));",
+      "process.stdout.write(JSON.stringify({ status: 'done', message: `${process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'runtime token leaked' : 'runtime token isolated'}; ${process.env.LINUX_DESKTOP_WORKER_TOKEN ? 'worker token leaked' : 'worker token isolated'}` }));",
       '',
     ].join('\n'));
     child = spawn(process.execPath, [runtimePath], {
@@ -99,8 +99,8 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     const [first, second] = await Promise.all([submit(firstId, 'first'), submit(secondId, 'second')]);
     assert.deepEqual([first.status, second.status], [200, 200], JSON.stringify([first, second]));
     assert.equal(first.body.status, 'done');
-    assert.equal(first.body.message, 'runtime token isolated');
-    assert.equal(second.body.message, 'runtime token isolated');
+    assert.equal(first.body.message, 'runtime token isolated; worker token isolated');
+    assert.equal(second.body.message, 'runtime token isolated; worker token isolated');
     const events = (await readFile(markerPath, 'utf8')).trim().split('\n').map(line => line.split(' ')[0]);
     assert.deepEqual(events, ['start', 'end', 'start', 'end'], 'Only one adapter may use the tenant browser at a time');
     await stat(join(workspace, 'tasks', firstId));
@@ -209,7 +209,7 @@ test('cloud Agent runtime finishes disconnected work and replays the persisted r
     await assert.rejects(firstRequest, /aborted|abort/i, 'The simulated control-plane connection should close');
     await waitFor(async () => (await readFile(markerPath, 'utf8').catch(() => '')).includes(`end ${taskId}`));
 
-    const resultFile = join(workspace, '.coke-dots', 'agent-runtime', `${createHash('sha256').update(taskId).digest('hex')}.json`);
+    const resultFile = join(workspace, '.coke-dots-agent-runtime-state', `${createHash('sha256').update(taskId).digest('hex')}.json`);
     await waitFor(async () => {
       try {
         const saved = JSON.parse(await readFile(resultFile, 'utf8')) as { result?: { status?: string; message?: string } };

@@ -42,18 +42,25 @@ RUN apt-get -o Acquire::Retries=5 update \
 
 RUN install -d -o node -g node "$HOME" /workspace /opt/coke-dots /tmp/.X11-unix \
     && chmod 1777 /tmp/.X11-unix
+
+# Ship the upstream DeepSeek Harness CLI in the Debian computer. Pi and the
+# TypeScript Harness client are installed from this repository's lockfile.
+RUN npm install --global --omit=dev --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2 \
+    && test -x /usr/local/bin/dsh
 COPY --from=x11-helper-build /usr/local/bin/dots-set-window-decorations /usr/local/bin/dots-set-window-decorations
 
 WORKDIR /opt/coke-dots
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force
+RUN node --input-type=module -e "await import('@mariozechner/pi-coding-agent'); await import('@deepseek-ai/dsh-sdk-client')"
 
 COPY --chmod=0755 deploy/linux-desktop/start-desktop.sh /usr/local/bin/start-dots-desktop
 COPY --chmod=0644 deploy/linux-desktop/computer-worker.mjs /opt/coke-dots/computer-worker.mjs
 COPY --chmod=0644 src/shared/public-web-policy.mjs /opt/coke-dots/public-web-policy.mjs
 COPY --chmod=0644 src/server/computer-home.mjs /opt/coke-dots/computer-home.mjs
 COPY --chmod=0644 deploy/linux-desktop/agent-runtime.mjs /opt/coke-dots/agent-runtime.mjs
+COPY --chmod=0644 deploy/linux-desktop/cloud-kernel-adapter.mjs /opt/coke-dots/cloud-kernel-adapter.mjs
 COPY --chmod=0644 deploy/linux-desktop/coral-wallpaper.svg /opt/coke-dots/coral-wallpaper.svg
 COPY --chmod=0644 deploy/linux-desktop/dots-file-manager.desktop /opt/coke-dots/dots-file-manager.desktop
 RUN install -d -o node -g node -m 0755 /opt/coke-dots/icons

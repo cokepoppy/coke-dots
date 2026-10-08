@@ -24,11 +24,11 @@ rm -f "$profile_dir/SingletonLock" "$profile_dir/SingletonCookie" "$profile_dir/
 
 Xvfb "$DISPLAY" -screen 0 "${resolution}x24" -ac +extension GLX +render -noreset >/tmp/dots-xvfb.log 2>&1 &
 xvfb_pid=$!
-wm_pid=""; tint2_pid=""; vnc_pid=""; websockify_pid=""; chrome_pid=""; worker_pid=""; agent_pid=""
+wm_pid=""; tint2_pid=""; vnc_pid=""; websockify_pid=""; chrome_pid=""; worker_pid=""
 dbus_pid=""
 cleanup() {
   trap - EXIT INT TERM
-  kill "$xvfb_pid" "$wm_pid" "$tint2_pid" "$vnc_pid" "$websockify_pid" "$chrome_pid" "$worker_pid" "$agent_pid" "$dbus_pid" 2>/dev/null || true
+  kill "$xvfb_pid" "$wm_pid" "$tint2_pid" "$vnc_pid" "$websockify_pid" "$chrome_pid" "$worker_pid" "$dbus_pid" 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -102,8 +102,6 @@ if [[ "${COKE_DESKTOP_CHROME_NO_SANDBOX:-0}" == "1" ]]; then chrome_flags+=(--no
 chrome_pid=$!
 node /opt/coke-dots/computer-worker.mjs >/tmp/dots-worker.log 2>&1 &
 worker_pid=$!
-node /opt/coke-dots/agent-runtime.mjs >/tmp/dots-agent-runtime.log 2>&1 &
-agent_pid=$!
 banner_dismissed=0
 for _ in $(seq 1 45); do
   chrome_window="$(xdotool search --onlyvisible --name 'Welcome back, Dot' 2>/dev/null | head -n 1 || true)"
@@ -142,7 +140,7 @@ done
 if [[ "$banner_dismissed" == "1" ]]; then touch /tmp/dots-chrome-startup-ready; fi
 
 while true; do
-  for pid in "$wm_pid" "$tint2_pid" "$vnc_pid" "$websockify_pid" "$worker_pid" "$agent_pid"; do
+  for pid in "$wm_pid" "$tint2_pid" "$vnc_pid" "$websockify_pid" "$worker_pid"; do
     kill -0 "$pid" 2>/dev/null || { echo "desktop component exited" >&2; exit 1; }
   done
   if ! kill -0 "$chrome_pid" 2>/dev/null; then

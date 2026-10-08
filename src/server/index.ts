@@ -8,9 +8,9 @@ import { adapters } from './adapters.ts';
 import { isReasoningEffort, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
-import { hasSharedModelKey, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, publicModelSettings, saveSharedModelKey, setSharedModelMetadata } from './model-settings.ts';
+import { effectiveModelConfig, hasSharedModelKey, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, publicModelSettings, saveSharedModelKey, setSharedModelMetadata } from './model-settings.ts';
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
-import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
+import { configuredDesktopAgentEngines, LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
 import { TeamsService } from './teams.ts';
@@ -54,14 +54,9 @@ const teams = new TeamsService(store);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
-const configuredDesktopEngines = () => {
-  if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [] as Engine[];
-  try {
-    const configured = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, unknown>;
-    return Object.keys(configured).filter((id): id is Engine => ['pi', 'dsh'].includes(id) && Boolean(configured[id]));
-  } catch { return [] as Engine[]; }
-};
-const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...configuredDesktopEngines()])];
+const configuredDesktopEngines = () => configuredDesktopAgentEngines() as Engine[];
+const remoteFor = (tenantId: string) => effectiveModelConfig(tenantId) ? configuredDesktopEngines() : [];
+const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...remoteFor(tenantId)])];
 
 function snapshot(tenantId: string, userId?: string) {
   loadSharedModelSettings(
@@ -73,7 +68,7 @@ function snapshot(tenantId: string, userId?: string) {
   return store.snapshot(available.includes('model'), available, {
     ...publicModelSettings(tenantId),
     ...(userId ? { canManage: store.canManageInstanceModel(userId, tenantId) } : {}),
-  }, tenantId);
+  }, tenantId, remoteFor(tenantId));
 }
 
 function computerFor(tenantId: string): ComputerRuntime {
@@ -573,7 +568,7 @@ const server = createServer(async (req, res) => {
       const engine = String(body.engine || 'model') as Engine;
       if (!(engine in adapters)) return reply(res, 400, { error: 'Invalid engine' });
       if (engine === 'claude') return reply(res, 400, { error: 'Claude Code 暂未支持；可选择 Pi 或 DeepSeek Harness。' });
-      const remoteEngineAvailable = process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && configuredDesktopEngines().includes(engine);
+      const remoteEngineAvailable = configuredDesktopEngines().includes(engine) && Boolean(effectiveModelConfig(session.tenant.id));
       if (engine !== 'model' && !adapters[engine].available(session.tenant.id) && !remoteEngineAvailable) {
         return reply(res, 400, { error: '当前 Coke Dots 实例未启用此 Agent 内核，请检查实例级模型 API 配置和内核安装。' });
       }

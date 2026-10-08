@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -8,7 +8,10 @@ const token = String(process.env.DOTS_AGENT_RUNTIME_TOKEN || '');
 const port = Number(process.env.DOTS_AGENT_RUNTIME_PORT || 8083);
 const workerPort = Number(process.env.LINUX_DESKTOP_WORKER_PORT || 8082);
 const workspace = path.resolve(process.env.DOTS_AGENT_WORKSPACE || '/workspace');
-const runtimeStateDirectory = path.join(workspace, '.coke-dots', 'agent-runtime');
+// Keep recovery data outside the desktop user's existing .coke-dots tree. This
+// path is owned by the isolated runtime UID and survives Pod replacement on the
+// tenant PVC without exposing API-backed session state to the desktop process.
+const runtimeStateDirectory = path.join(workspace, '.coke-dots-agent-runtime-state');
 const supportedEngines = new Set(['pi', 'dsh']);
 const allowedEngines = parseEngineList(process.env.DOTS_DESKTOP_AGENT_ADAPTERS || '');
 const configured = parseAdapterConfig(process.env.DOTS_AGENT_KERNELS_JSON || '{}');
@@ -16,6 +19,10 @@ let active = null;
 const queue = [];
 
 if (!token) throw new Error('DOTS_AGENT_RUNTIME_TOKEN is required');
+
+// Shared task output is group-readable/writable by the desktop user. Private
+// runtime state below is still created with explicit 0700/0600 modes.
+process.umask(0o007);
 
 function parseEngineList(raw) {
   const engines = String(raw).split(',').map(value => value.trim()).filter(Boolean);
@@ -159,30 +166,35 @@ async function executeKernel(input, slot) {
   }
 
   const cwd = safeWorkspace(input.cwd);
-  await mkdir(cwd, { recursive: true, mode: 0o700 });
+  await mkdir(cwd, { recursive: true, mode: 0o770 });
   const interruptedAfterWorkspace = interruptionDecision(input, slot);
   if (interruptedAfterWorkspace) return interruptedAfterWorkspace;
-  const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'DOTS_AGENT_RUNTIME_TOKEN'));
-  const child = spawn(adapter.command, adapter.args, { cwd, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
+  const builtInAdapter = isBuiltInAdapter(adapter);
+  const modelConfig = builtInAdapter ? validateModelConfig(input.modelConfig) : undefined;
+  const childEnv = await createAdapterEnvironment(cwd);
+  const browserBridge = builtInAdapter ? await startBrowserResearchBridge() : null;
   const abort = new AbortController();
-  slot.child = child;
   slot.abort = abort;
   let stdout = '';
-  child.stdout.on('data', chunk => { stdout = (stdout + chunk.toString()).slice(-500_000); });
-  child.stderr.on('data', () => undefined);
-  child.stdin.end(JSON.stringify({
+  let stderr = '';
+  const taskInput = {
     engine, prompt, cwd, workspace, taskId, executionId,
     sessionId: typeof input.sessionId === 'string' ? input.sessionId : null,
-    computer: {
-      baseUrl: `http://127.0.0.1:${workerPort}`,
-      workerToken: process.env.LINUX_DESKTOP_WORKER_TOKEN,
-      actions: ['navigate', 'click', 'type', 'screenshot'],
-    },
-  }));
-  const timer = setTimeout(() => child.kill('SIGTERM'), 14 * 60_000);
-  const controlPoll = setInterval(() => { void controlOwner().then(owner => { if (owner === 'user') pauseActive(); }).catch(() => child.kill('SIGTERM')); }, 500);
-  abort.signal.addEventListener('abort', () => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2000).unref(); }, { once: true });
+    ...(builtInAdapter ? { modelConfig } : {}),
+    ...(browserBridge ? { computer: browserBridge.capability } : {}),
+  };
+  let child = null;
+  let timer;
+  let controlPoll;
   try {
+    child = spawn(adapter.command, adapter.args, { cwd, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
+    slot.child = child;
+    child.stdout.on('data', chunk => { stdout = (stdout + chunk.toString()).slice(-500_000); });
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8_000); });
+    child.stdin.end(JSON.stringify(taskInput));
+    timer = setTimeout(() => child.kill('SIGTERM'), 14 * 60_000);
+    controlPoll = setInterval(() => { void controlOwner().then(owner => { if (owner === 'user') pauseActive(); }).catch(() => child.kill('SIGTERM')); }, 500);
+    abort.signal.addEventListener('abort', () => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2000).unref(); }, { once: true });
     const code = await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('close', value => resolve(value ?? 1));
@@ -192,15 +204,95 @@ async function executeKernel(input, slot) {
       slot.persistResult = false;
       return { taskId, status: 'waiting', message: '我已暂停当前操作，因为你正在接管电脑。交还电脑后，请告诉我继续。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
     }
-    if (code !== 0) throw new Error(`Agent adapter exited with code ${code}`);
+    if (code !== 0) {
+      const diagnostic = redactDiagnostic(stderr, [modelConfig?.apiKey, process.env.DOTS_AGENT_RUNTIME_TOKEN, process.env.LINUX_DESKTOP_WORKER_TOKEN, browserBridge?.capability?.openPublicPageToken]);
+      throw new Error(`Agent adapter exited with code ${code}${diagnostic ? `: ${diagnostic}` : ''}`);
+    }
     let result;
     try { result = JSON.parse(stdout); } catch { throw new Error('Agent adapter must return a JSON decision'); }
     if (!['done', 'waiting', 'scheduled', 'delegating'].includes(result.status) || typeof result.message !== 'string' || !result.message.trim()) throw new Error('Agent adapter returned an invalid decision');
     return { taskId, ...result, engine, message: result.message.slice(0, 20_000), sessionId: typeof result.sessionId === 'string' ? result.sessionId : null };
   } finally {
-    clearTimeout(timer); clearInterval(controlPoll);
-    slot.child = null; slot.abort = null;
+    if (timer) clearTimeout(timer);
+    if (controlPoll) clearInterval(controlPoll);
+    if (slot.child === child) slot.child = null;
+    if (slot.abort === abort) slot.abort = null;
+    await browserBridge?.close();
   }
+}
+
+function redactDiagnostic(value, secrets) {
+  let safe = String(value || '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').trim();
+  for (const secret of secrets) if (typeof secret === 'string' && secret.length >= 4) safe = safe.replaceAll(secret, '[redacted]');
+  safe = safe.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[redacted-api-key]')
+    .replace(/(authorization\s*:\s*bearer\s+)\S+/ig, '$1[redacted]');
+  return safe.slice(-1200);
+}
+
+function isBuiltInAdapter(adapter) {
+  return adapter.command === 'node' && adapter.args.length === 1 && adapter.args[0] === '/opt/coke-dots/cloud-kernel-adapter.mjs';
+}
+
+function validateModelConfig(value) {
+  if (!value || typeof value !== 'object' || typeof value.apiKey !== 'string' || !value.apiKey || typeof value.model !== 'string' || !value.model.trim() || typeof value.baseUrl !== 'string') {
+    throw new Error('Shared Model API configuration is required for cloud Agent kernels');
+  }
+  let url;
+  try { url = new URL(value.baseUrl); } catch { throw new Error('Shared Model API endpoint is invalid'); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || value.apiKey.length > 4096 || value.model.length > 200) throw new Error('Shared Model API profile is invalid');
+  return { apiKey: value.apiKey, baseUrl: url.href.replace(/\/$/, ''), model: value.model.trim() };
+}
+
+async function createAdapterEnvironment(cwd) {
+  const home = path.join(cwd, '.coke-dots-agent-runtime', 'adapter-home');
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  const allowed = ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'DOTS_DSH_BIN', 'DOTS_DSH_PROFILE'];
+  const env = Object.fromEntries(allowed.filter(key => process.env[key]).map(key => [key, process.env[key]]));
+  env.HOME = home;
+  env.USERPROFILE = home;
+  if (process.env.NODE_ENV === 'test') env.NODE_ENV = 'test';
+  if (process.env.DOTS_TEST_MARKER) env.DOTS_TEST_MARKER = process.env.DOTS_TEST_MARKER;
+  return env;
+}
+
+async function startBrowserResearchBridge() {
+  const token = randomBytes(32).toString('base64url');
+  const server = http.createServer(async (req, res) => {
+    try {
+      if (req.method !== 'POST' || req.url !== '/open_public_page') return send(res, 404, { error: 'not found' });
+      if (!isAuthorized(req.headers.authorization, token)) return send(res, 401, { error: 'browser research token is invalid' });
+      if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'content type must be JSON' });
+      const body = await readJson(req);
+      if (Object.keys(body).some(key => key !== 'url') || typeof body.url !== 'string' || body.url.length > 2048) return send(res, 400, { error: 'public page URL is invalid' });
+      const response = await fetch(`http://127.0.0.1:${workerPort}/v1/research/open-public-page`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${process.env.LINUX_DESKTOP_WORKER_TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ url: body.url }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const result = await response.json().catch(() => ({}));
+      send(res, response.status, result);
+    } catch (error) {
+      send(res, 502, { error: error instanceof Error ? error.message.slice(0, 300) : 'public page research failed' });
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Could not start the cloud browser research bridge');
+  return {
+    capability: { openPublicPageUrl: `http://127.0.0.1:${address.port}/open_public_page`, openPublicPageToken: token },
+    close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+  };
+}
+
+function isAuthorized(value, token) {
+  if (typeof value !== 'string' || !value.startsWith('Bearer ')) return false;
+  const actual = Buffer.from(value.slice(7));
+  const expected = Buffer.from(token);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 function interruptTask(taskId, action) {

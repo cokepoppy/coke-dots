@@ -15,6 +15,19 @@ export interface DesktopConnection {
   agentToken: string;
 }
 
+const supportedAgentEngines = new Set(['pi', 'dsh']);
+
+/** The cloud desktop image ships these kernels unless an operator narrows the list. */
+export function configuredDesktopAgentEngines(): ('pi' | 'dsh')[] {
+  if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [];
+  let names = process.env.DOTS_DESKTOP_AGENT_ADAPTERS?.trim();
+  if (!names && process.env.DOTS_AGENT_KERNELS_JSON?.trim()) {
+    try { names = Object.keys(JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON) as Record<string, unknown>).join(','); }
+    catch { return []; }
+  }
+  return [...new Set((names || 'pi,dsh').split(',').map(name => name.trim()).filter((name): name is 'pi' | 'dsh' => supportedAgentEngines.has(name)))];
+}
+
 export interface DesktopConnector {
   connect(tenantId: string): Promise<DesktopConnection>;
   close?(): Promise<void>;
@@ -133,7 +146,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     return this.connection ? this.connection.novncUrl : null;
   }
 
-  async runAgentTask(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; signal?: AbortSignal }) {
+  async runAgentTask(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; signal?: AbortSignal }) {
     await this.ensureConnection();
     const owner = await this.request('/v1/control');
     if (!owner.ok || (await owner.json() as { owner?: string }).owner !== 'agent') throw new Error('用户正在接管这台电脑，Agent 已暂停');
@@ -161,7 +174,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
       const response = await fetch(url, {
         method: 'POST',
         headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ engine: input.engine, taskId: input.taskId, executionId: input.executionId || input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
+        body: JSON.stringify({ engine: input.engine, taskId: input.taskId, executionId: input.executionId || input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, ...(input.modelConfig ? { modelConfig: input.modelConfig } : {}) }),
         signal: AbortSignal.any([AbortSignal.timeout(15 * 60_000), requestAbort.signal]),
       });
       const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; websiteSignInRequest?: { url: string; reason: string } };
@@ -310,20 +323,23 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
   const pullPolicy = process.env.DOTS_LINUX_DESKTOP_IMAGE_PULL_POLICY || 'IfNotPresent';
   const volumeSize = process.env.DOTS_LINUX_DESKTOP_VOLUME_SIZE || '10Gi';
   const controlNamespace = process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || 'coke-dots';
-  const supportedAgentEngines = new Set(['pi', 'dsh']);
+  let kernels: Record<string, { command: string; args: string[] }> = {};
   let kernelNames: string[] = [];
   try {
-    const kernels = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}');
-    if (!kernels || typeof kernels !== 'object' || Array.isArray(kernels)) throw new Error('DOTS_AGENT_KERNELS_JSON must be an object');
+    const value = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('DOTS_AGENT_KERNELS_JSON must be an object');
+    kernels = value;
     kernelNames = Object.keys(kernels);
   } catch (error) {
     throw new Error(error instanceof Error ? error.message : 'DOTS_AGENT_KERNELS_JSON is invalid');
   }
-  const requestedAgentEngines = (process.env.DOTS_DESKTOP_AGENT_ADAPTERS || kernelNames.join(','))
+  const requestedAgentEngines = (process.env.DOTS_DESKTOP_AGENT_ADAPTERS || kernelNames.join(',') || 'pi,dsh')
     .split(',').map(value => value.trim()).filter(Boolean);
   const unsupportedAgentEngine = [...kernelNames, ...requestedAgentEngines].find(engine => !supportedAgentEngines.has(engine));
   if (unsupportedAgentEngine) throw new Error(`Linux 云端 Agent 暂只支持 Pi 和 DeepSeek Harness；不支持内核：${unsupportedAgentEngine}`);
   const agentEngines = [...new Set(requestedAgentEngines)].join(',');
+  const builtInAdapter = { command: 'node', args: ['/opt/coke-dots/cloud-kernel-adapter.mjs'] };
+  const kernelAdapters = Object.fromEntries(agentEngines.split(',').filter(Boolean).map(engine => [engine, kernels[engine] || builtInAdapter]));
   const objects: Record<string, unknown>[] = [
     {
       apiVersion: 'v1', kind: 'Secret', metadata: { name: 'desktop-runtime', namespace }, type: 'Opaque',
@@ -353,30 +369,65 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
           spec: {
             automountServiceAccountToken: false,
             securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: 'RuntimeDefault' } },
-            containers: [{
-              name, image, imagePullPolicy: pullPolicy,
-              env: [
-                { name: 'LINUX_DESKTOP_WORKER_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'LINUX_DESKTOP_WORKER_TOKEN' } } },
-                { name: 'DOTS_AGENT_RUNTIME_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'DOTS_AGENT_RUNTIME_TOKEN' } } },
-                ...(process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1' && process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL ? [
-                  { name: 'NODE_ENV', value: 'test' },
-                  { name: 'DOTS_E2E_AUTH', value: '1' },
-                  { name: 'DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL },
-                ] : []),
-                { name: 'COKE_DESKTOP_RESOLUTION', value: '1440x1080' },
-                { name: 'COKE_DESKTOP_VNC_AUTH_MODE', value: 'gateway' },
-                { name: 'COKE_DESKTOP_CHROME_NO_SANDBOX', value: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX === '1' ? '1' : '0' },
-                { name: 'DOTS_DESKTOP_AGENT_ADAPTERS', value: agentEngines },
-                ...(process.env.DOTS_AGENT_KERNELS_JSON ? [{ name: 'DOTS_AGENT_KERNELS_JSON', value: process.env.DOTS_AGENT_KERNELS_JSON }] : []),
-              ],
-              ports: [{ name: 'novnc', containerPort: 6080 }, { name: 'worker', containerPort: 8082 }, { name: 'agent', containerPort: 8083 }, { name: 'cdp', containerPort: 9222 }],
-              readinessProbe: { httpGet: { path: '/readyz', port: 'worker' }, initialDelaySeconds: 10, periodSeconds: 5, failureThreshold: 36 },
-              livenessProbe: { httpGet: { path: '/healthz', port: 'worker' }, initialDelaySeconds: 30, periodSeconds: 10 },
-              resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
-              securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: ['ALL'] } },
-              volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'shm', mountPath: '/dev/shm' }, { name: 'tmp', mountPath: '/tmp' }],
-            }],
-            volumes: [{ name: 'workspace', persistentVolumeClaim: { claimName: 'desktop-data' } }, { name: 'shm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } }, { name: 'tmp', emptyDir: { sizeLimit: '512Mi' } }],
+            containers: [
+              {
+                name, image, imagePullPolicy: pullPolicy,
+                env: [
+                  { name: 'LINUX_DESKTOP_WORKER_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'LINUX_DESKTOP_WORKER_TOKEN' } } },
+                  ...(process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1' && process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL ? [
+                    { name: 'NODE_ENV', value: 'test' },
+                    { name: 'DOTS_E2E_AUTH', value: '1' },
+                    { name: 'DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL },
+                  ] : []),
+                  { name: 'COKE_DESKTOP_RESOLUTION', value: '1440x1080' },
+                  { name: 'COKE_DESKTOP_VNC_AUTH_MODE', value: 'gateway' },
+                  { name: 'COKE_DESKTOP_CHROME_NO_SANDBOX', value: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX === '1' ? '1' : '0' },
+                ],
+                ports: [{ name: 'novnc', containerPort: 6080 }, { name: 'worker', containerPort: 8082 }, { name: 'cdp', containerPort: 9222 }],
+                readinessProbe: { httpGet: { path: '/readyz', port: 'worker' }, initialDelaySeconds: 10, periodSeconds: 5, failureThreshold: 36 },
+                livenessProbe: { httpGet: { path: '/healthz', port: 'worker' }, initialDelaySeconds: 30, periodSeconds: 10 },
+                resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
+                securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: ['ALL'] } },
+                volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'shm', mountPath: '/dev/shm' }, { name: 'tmp', mountPath: '/tmp' }],
+              },
+              {
+                name: 'agent-runtime', image, imagePullPolicy: pullPolicy,
+                command: ['/usr/bin/tini', '--', 'node', '/opt/coke-dots/agent-runtime.mjs'],
+                env: [
+                  { name: 'DOTS_AGENT_RUNTIME_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'DOTS_AGENT_RUNTIME_TOKEN' } } },
+                  { name: 'LINUX_DESKTOP_WORKER_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'LINUX_DESKTOP_WORKER_TOKEN' } } },
+                  { name: 'DOTS_AGENT_RUNTIME_PORT', value: '8083' },
+                  { name: 'LINUX_DESKTOP_WORKER_PORT', value: '8082' },
+                  { name: 'DOTS_AGENT_WORKSPACE', value: '/workspace' },
+                  { name: 'TMPDIR', value: '/tmp' },
+                  { name: 'HOME', value: '/tmp' },
+                  { name: 'XDG_CONFIG_HOME', value: '/tmp/.config' },
+                  { name: 'XDG_CACHE_HOME', value: '/tmp/.cache' },
+                  { name: 'XDG_DATA_HOME', value: '/tmp/.local/share' },
+                  { name: 'DOTS_DESKTOP_AGENT_ADAPTERS', value: agentEngines },
+                  { name: 'DOTS_AGENT_KERNELS_JSON', value: JSON.stringify(kernelAdapters) },
+                  { name: 'DOTS_DSH_BIN', value: process.env.DOTS_CLOUD_DSH_BIN || '/usr/local/bin/dsh' },
+                  { name: 'DOTS_DSH_PROFILE', value: process.env.DOTS_CLOUD_DSH_PROFILE || 'sdk' },
+                  ...(process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1' && process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL ? [
+                    { name: 'NODE_ENV', value: 'test' },
+                    { name: 'DOTS_E2E_AUTH', value: '1' },
+                    { name: 'DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL },
+                  ] : []),
+                ],
+                ports: [{ name: 'agent', containerPort: 8083 }],
+                readinessProbe: { httpGet: { path: '/healthz', port: 'agent' }, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 36 },
+                livenessProbe: { httpGet: { path: '/healthz', port: 'agent' }, initialDelaySeconds: 15, periodSeconds: 10 },
+                resources: { requests: { cpu: '250m', memory: '384Mi' }, limits: { cpu: '2', memory: '2Gi' } },
+                securityContext: { runAsNonRoot: true, runAsUser: 1001, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
+                volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'agent-tmp', mountPath: '/tmp' }],
+              },
+            ],
+            volumes: [
+              { name: 'workspace', persistentVolumeClaim: { claimName: 'desktop-data' } },
+              { name: 'shm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } },
+              { name: 'tmp', emptyDir: { sizeLimit: '512Mi' } },
+              { name: 'agent-tmp', emptyDir: { sizeLimit: '512Mi' } },
+            ],
           },
         },
       },

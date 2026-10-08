@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
-import { desktopResourceIdentity, desktopResources, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
+import { configuredDesktopAgentEngines, desktopResourceIdentity, desktopResources, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
 
 test('Linux desktop resources isolate tenant namespaces and never publish CDP', () => {
   const alpha = desktopResourceIdentity('alpha-workspace');
@@ -19,10 +19,53 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(service.spec.ports.some(port => port.port === 9222), false, 'Raw Chromium CDP must stay inside the Pod');
   const secret = list.items.find(item => item.kind === 'Secret') as { stringData: Record<string, string> };
   assert.deepEqual(secret.stringData, { LINUX_DESKTOP_WORKER_TOKEN: 'worker-secret', DOTS_AGENT_RUNTIME_TOKEN: 'agent-secret' });
-  const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { automountServiceAccountToken: boolean; containers: { securityContext: { runAsNonRoot: boolean; allowPrivilegeEscalation: boolean } }[] } } } };
+  const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { automountServiceAccountToken: boolean; shareProcessNamespace?: boolean; containers: { name: string; env: { name: string; value?: string; valueFrom?: unknown }[]; securityContext: { runAsNonRoot: boolean; runAsUser: number; allowPrivilegeEscalation: boolean; readOnlyRootFilesystem: boolean } }[] } } } };
   assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
-  assert.equal(deployment.spec.template.spec.containers[0].securityContext.runAsNonRoot, true);
-  assert.equal(deployment.spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation, false);
+  assert.equal(deployment.spec.template.spec.shareProcessNamespace, undefined, 'Desktop and Agent must not share a process namespace');
+  const [desktop, runtime] = deployment.spec.template.spec.containers;
+  assert.equal(desktop.name, 'desktop');
+  assert.equal(runtime.name, 'agent-runtime');
+  assert.equal(desktop.securityContext.runAsNonRoot, true);
+  assert.equal(desktop.securityContext.runAsUser, 1000);
+  assert.equal(desktop.securityContext.allowPrivilegeEscalation, false);
+  assert.equal(runtime.securityContext.runAsNonRoot, true);
+  assert.equal(runtime.securityContext.runAsUser, 1001);
+  assert.equal(runtime.securityContext.allowPrivilegeEscalation, false);
+  assert.equal(runtime.securityContext.readOnlyRootFilesystem, true);
+  const desktopEnv = desktop.env.map(item => item.name);
+  const runtimeEnv = runtime.env.map(item => item.name);
+  assert.equal(desktopEnv.includes('DOTS_AGENT_RUNTIME_TOKEN'), false);
+  assert.equal(desktopEnv.includes('DOTS_AGENT_KERNELS_JSON'), false);
+  assert.equal(runtimeEnv.includes('DOTS_AGENT_RUNTIME_TOKEN'), true);
+  assert.equal(runtimeEnv.includes('LINUX_DESKTOP_WORKER_TOKEN'), true);
+});
+
+test('a fresh Linux desktop ships the Pi and DeepSeek Harness cloud kernel adapters without copying the shared API key into Kubernetes', () => {
+  const previousBackend = process.env.DOTS_COMPUTER_BACKEND;
+  const previousEngines = process.env.DOTS_DESKTOP_AGENT_ADAPTERS;
+  const previousKernels = process.env.DOTS_AGENT_KERNELS_JSON;
+  process.env.DOTS_COMPUTER_BACKEND = 'linux-desktop';
+  delete process.env.DOTS_DESKTOP_AGENT_ADAPTERS;
+  delete process.env.DOTS_AGENT_KERNELS_JSON;
+  try {
+    assert.deepEqual(configuredDesktopAgentEngines(), ['pi', 'dsh']);
+    const list = desktopResources('cloud-agent-tenant', 'worker-secret', 'agent-secret')[1] as { items: Record<string, any>[] };
+    const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { containers: { name: string; env: { name: string; value?: string }[] }[] } } } };
+    const runtime = deployment.spec.template.spec.containers.find(container => container.name === 'agent-runtime');
+    assert(runtime, 'A fresh Debian Pod must place its Agent kernel in the isolated cloud runtime container');
+    const env = Object.fromEntries(runtime.env.filter(item => item.value !== undefined).map(item => [item.name, item.value]));
+    const kernels = JSON.parse(env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, { command: string; args: string[] }>;
+    assert.deepEqual(Object.keys(kernels), ['pi', 'dsh']);
+    assert.deepEqual(kernels.pi, { command: 'node', args: ['/opt/coke-dots/cloud-kernel-adapter.mjs'] });
+    assert.deepEqual(kernels.dsh, kernels.pi);
+    assert.equal(env.DOTS_DSH_BIN, '/usr/local/bin/dsh');
+    const secret = list.items.find(item => item.kind === 'Secret') as { stringData: Record<string, string> };
+    assert.deepEqual(Object.keys(secret.stringData).sort(), ['DOTS_AGENT_RUNTIME_TOKEN', 'LINUX_DESKTOP_WORKER_TOKEN']);
+  } finally {
+    if (previousBackend === undefined) delete process.env.DOTS_COMPUTER_BACKEND; else process.env.DOTS_COMPUTER_BACKEND = previousBackend;
+    if (previousEngines === undefined) delete process.env.DOTS_DESKTOP_AGENT_ADAPTERS; else process.env.DOTS_DESKTOP_AGENT_ADAPTERS = previousEngines;
+    if (previousKernels === undefined) delete process.env.DOTS_AGENT_KERNELS_JSON; else process.env.DOTS_AGENT_KERNELS_JSON = previousKernels;
+  }
 });
 
 test('Linux desktop provisioning rejects Claude Code kernel configuration', () => {
@@ -137,7 +180,8 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     assert.equal(agentInput[0].cwd, 'tasks/task-1');
     assert.equal(agentInput[0].executionId, 'task-1', 'Remote tasks need a stable execution identity for safe replay');
     assert.equal('signal' in agentInput[0], false, 'AbortSignal must control the HTTP request, not leak into the runtime payload');
-    assert.equal((agentInput[0].computer as { workerToken: string }).workerToken, 'scoped-worker-token');
+    assert.equal('computer' in agentInput[0], false, 'The control plane must not forward the raw desktop worker token to the Agent runtime');
+    assert.equal('workerToken' in agentInput[0], false, 'The Agent runtime must mint its own read-only browser capability');
     await computer.close();
   } finally {
     if (priorEnvironment.nodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorEnvironment.nodeEnv;
