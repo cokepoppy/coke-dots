@@ -15,7 +15,7 @@ const videoDirectory = join(artifactRoot, 'video');
 const showcaseVideos = await Promise.all([
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
-  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 10, minimumFrames: 60 },
+  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 13, minimumFrames: 90 },
 ].map(async video => {
   const bytes = await readFile(join(projectRoot, 'public', 'demos', video.file));
   const metadata = await sharp(bytes, { animated: true }).metadata();
@@ -215,11 +215,11 @@ try {
       assert.equal(await image.evaluate(element => (element as HTMLImageElement).naturalWidth), video.width, `${video.file} width`);
       assert.equal(await image.evaluate(element => (element as HTMLImageElement).naturalHeight), video.height, `${video.file} height`);
       const firstFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
-      await page!.waitForTimeout('minimumDurationSeconds' in video ? 4000 : 2500);
+      await page!.waitForTimeout('minimumDurationSeconds' in video ? 6500 : 2500);
       const laterFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
       assert.notEqual(firstFrame, laterFrame, `${video.file} should advance beyond its initial frame`);
       if ('minimumDurationSeconds' in video) {
-        await page!.waitForTimeout(4000);
+        await page!.waitForTimeout(5000);
         const laterActionFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
         assert.notEqual(laterFrame, laterActionFrame, `${video.file} should continue through the cloud computer actions at normal speed`);
       }

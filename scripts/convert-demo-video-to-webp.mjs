@@ -100,7 +100,7 @@ try {
   const outputWidth = Math.min(1152, stream.width);
   const outputHeight = Math.round(stream.height * outputWidth / stream.width);
   // Preserve normal-speed timing and enough frames to make visible UI actions readable.
-  const fps = Math.max(1, Math.min(12, Math.floor(220_000_000 / (outputWidth * outputHeight * visibleDuration))));
+  const fps = Math.max(1, Math.min(20, Math.floor(220_000_000 / (outputWidth * outputHeight * visibleDuration))));
   const graph = buildFilterGraph(segments, fps, outputWidth, outputHeight);
   console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > retainedStillSeconds + 0.05 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visibleDuration.toFixed(1)}s (removed ${removedSeconds.toFixed(1)}s), ${retainedStillSeconds.toFixed(1)}s readable holds, ${fps} fps`);
 
