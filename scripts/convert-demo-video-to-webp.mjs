@@ -4,11 +4,15 @@ import { tmpdir } from 'node:os';
 import { basename, resolve } from 'node:path';
 import sharp from 'sharp';
 
-const [sourceArgument, outputArgument, retainedStillArgument] = process.argv.slice(2);
-if (!sourceArgument || !outputArgument) throw new Error('Usage: node scripts/convert-demo-video-to-webp.mjs <input.webm> <output.webp> [readable-still-seconds]');
+const [sourceArgument, outputArgument, retainedStillArgument, activePlaybackRateArgument] = process.argv.slice(2);
+if (!sourceArgument || !outputArgument) throw new Error('Usage: node scripts/convert-demo-video-to-webp.mjs <input.webm> <output.webp> [readable-still-seconds] [active-playback-rate]');
 const retainedStillSeconds = retainedStillArgument === undefined ? 1.5 : Number(retainedStillArgument);
 if (!Number.isFinite(retainedStillSeconds) || retainedStillSeconds <= 0 || retainedStillSeconds > 10) {
   throw new Error('readable-still-seconds must be greater than 0 and at most 10');
+}
+const activePlaybackRate = activePlaybackRateArgument === undefined ? 1 : Number(activePlaybackRateArgument);
+if (!Number.isFinite(activePlaybackRate) || activePlaybackRate < 0.5 || activePlaybackRate > 1) {
+  throw new Error('active-playback-rate must be between 0.5 and 1');
 }
 const source = resolve(sourceArgument);
 const output = resolve(outputArgument);
@@ -73,9 +77,9 @@ function buildVisibleSegments(duration, freezes, retainedStillSeconds = 1.5) {
   return { segments, removedSeconds, visibleDuration: segments.reduce((sum, segment) => sum + segment.end - segment.start, 0) };
 }
 
-function buildFilterGraph(segments, fps, width, height) {
+function buildFilterGraph(segments, fps, width, height, activeRate) {
   const trims = segments.map((segment, index) =>
-    `[0:v]trim=start=${segment.start.toFixed(3)}:end=${segment.end.toFixed(3)},setpts=PTS-STARTPTS[v${index}]`,
+    `[0:v]trim=start=${segment.start.toFixed(3)}:end=${segment.end.toFixed(3)},setpts=(PTS-STARTPTS)/${index === 0 ? 1 : activeRate}[v${index}]`,
   );
   const concatInputs = segments.map((_, index) => `[v${index}]`).join('');
   const joined = segments.length === 1
@@ -97,12 +101,13 @@ try {
 
   const freezes = detectFrozenIntervals(source, sourceDuration);
   const { segments, removedSeconds, visibleDuration } = buildVisibleSegments(sourceDuration, freezes, retainedStillSeconds);
+  const expectedPlaybackDuration = segments.reduce((sum, segment, index) => sum + (segment.end - segment.start) / (index === 0 ? 1 : activePlaybackRate), 0);
   const outputWidth = Math.min(1152, stream.width);
   const outputHeight = Math.round(stream.height * outputWidth / stream.width);
-  // Preserve normal-speed timing and enough frames to make visible UI actions readable.
-  const fps = Math.max(1, Math.min(12, Math.floor(220_000_000 / (outputWidth * outputHeight * visibleDuration))));
-  const graph = buildFilterGraph(segments, fps, outputWidth, outputHeight);
-  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > retainedStillSeconds + 0.05 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visibleDuration.toFixed(1)}s (removed ${removedSeconds.toFixed(1)}s), ${retainedStillSeconds.toFixed(1)}s readable holds, ${fps} fps`);
+  // Keep the opening hold readable and slow later UI actions without changing their frame order.
+  const fps = Math.max(1, Math.min(12, Math.floor(220_000_000 / (outputWidth * outputHeight * expectedPlaybackDuration))));
+  const graph = buildFilterGraph(segments, fps, outputWidth, outputHeight, activePlaybackRate);
+  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > retainedStillSeconds + 0.05 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visibleDuration.toFixed(1)}s visible (${expectedPlaybackDuration.toFixed(1)}s playback, active segments at ${activePlaybackRate}x; removed ${removedSeconds.toFixed(1)}s), ${retainedStillSeconds.toFixed(1)}s readable holds, ${fps} fps`);
 
   runFfmpeg([
     '-hide_banner', '-loglevel', 'error', '-y', '-i', source,
@@ -133,8 +138,8 @@ try {
     throw new Error(`WebP output failed completeness checks: ${JSON.stringify({ format: metadata.format, codec: decoded.streams?.[0]?.codec_name, pages: metadata.pages, decodedFrames, width: metadata.width, height: metadata.pageHeight, bytes: info.size })}`);
   }
   const outputDuration = (metadata.delay || []).reduce((sum, delay) => sum + delay, 0) / 1000;
-  if (!Number.isFinite(outputDuration) || Math.abs(outputDuration - visibleDuration) > 0.2) {
-    throw new Error(`WebP timing must preserve normal-speed visible segments: expected ${visibleDuration.toFixed(2)}s, got ${outputDuration.toFixed(2)}s`);
+  if (!Number.isFinite(outputDuration) || Math.abs(outputDuration - expectedPlaybackDuration) > 0.2) {
+    throw new Error(`WebP timing must preserve expected visible playback: expected ${expectedPlaybackDuration.toFixed(2)}s, got ${outputDuration.toFixed(2)}s`);
   }
   const removedFreezes = freezes.map(freeze => {
     const isClosingHold = freeze.end >= sourceDuration - 0.05;
@@ -152,7 +157,7 @@ try {
   await writeFile(reportPath, `${JSON.stringify({
     source: { file: basename(source), durationSeconds: Number(sourceDuration.toFixed(2)), width: stream.width, height: stream.height, decodedFrames: sourceFrames },
     freezeTrim: { detector: 'ffmpeg freezedetect, -45 dB, 2 second minimum', retainedSecondsPerLongStill: retainedStillSeconds, removedSeconds: Number(removedSeconds.toFixed(2)), regions: removedFreezes },
-    output: { file: basename(output), format: metadata.format, codec: decoded.streams?.[0]?.codec_name, width: metadata.width, height: metadata.pageHeight, decodedFrames, durationSeconds: Number(outputDuration.toFixed(2)), sampledFramesPerSecond: fps, playbackSpeed: 1, bytes: info.size, fullDecodeSucceeded: true },
+    output: { file: basename(output), format: metadata.format, codec: decoded.streams?.[0]?.codec_name, width: metadata.width, height: metadata.pageHeight, decodedFrames, durationSeconds: Number(outputDuration.toFixed(2)), sampledFramesPerSecond: fps, openingSegmentPlaybackSpeed: 1, activePlaybackSpeed: activePlaybackRate, bytes: info.size, fullDecodeSucceeded: true },
   }, null, 2)}\n`);
   console.log(`Created and fully decoded ${output} (${metadata.width}x${metadata.pageHeight}, ${decodedFrames} frames, ${outputDuration.toFixed(1)}s, ${(info.size / 1024 / 1024).toFixed(2)} MiB)`);
   console.log(`Video completeness report: ${reportPath}`);
