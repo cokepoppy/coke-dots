@@ -764,6 +764,75 @@ test('one active background review cannot take the capacity reserved for assigne
   }
 });
 
+test('redirecting a working task aborts its old model call before the new instruction runs', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-running-redirect-'));
+  const envKeys = ['DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+  const prompts: string[] = [];
+  const originalInstruction = 'E2E running redirect — original direction';
+  const redirectedInstruction = 'E2E redirected direction — prioritize the risk register';
+  let releaseOriginal: (() => void) | null = null;
+  let originalResponseAborted = false;
+  const modelServer = createServer(async (request, response) => {
+    assert.equal(request.url, '/chat/completions');
+    let raw = '';
+    for await (const chunk of request) raw += String(chunk);
+    const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+    const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
+    prompts.push(prompt);
+    if (prompt.includes(originalInstruction)) {
+      response.once('close', () => { originalResponseAborted = !response.writableFinished; });
+      await new Promise<void>(resolve => { releaseOriginal = resolve; });
+      if (response.destroyed) return;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'Stale result from the original direction.' }) } }] }));
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'The risk register was prioritized under the new direction.' }) } }] }));
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'running-redirect-test-model';
+  process.env.DOTS_MODEL_API_KEY = 'running-redirect-test-key';
+  const store = new Store(directory);
+  const owner = store.signInGoogle({ subject: 'running-redirect-owner', email: 'running-redirect@example.test', name: 'Redirect Owner' });
+  const task = store.createTask(originalInstruction, null, 'model', owner.tenant.id, null, null, [], owner.user.id, 'read-only');
+  const worker = new Worker(store, () => {});
+  try {
+    worker.start();
+    await waitFor(() => prompts.length === 1 && store.getTask(task.id, owner.tenant.id)?.status === 'working');
+    store.updateTask(task.id, { instruction: redirectedInstruction, status: 'queued', nextRunAt: new Date().toISOString() }, owner.tenant.id);
+    worker.redirectTask(task.id);
+    store.addEntry('user', redirectedInstruction, task.id, owner.tenant.id);
+    await waitFor(() => originalResponseAborted);
+    const releaseAbortedResponse = releaseOriginal as (() => void) | null;
+    if (releaseAbortedResponse) releaseAbortedResponse();
+    releaseOriginal = null;
+    await waitFor(() => store.getTask(task.id, owner.tenant.id)?.status === 'done', 5_000);
+
+    assert.equal(prompts.length, 2, 'The old call should stop before the redirected task starts exactly one new call');
+    assert.equal((prompts[1] || '').includes(`Task: ${redirectedInstruction}\nPrior result:`), true, 'The fresh model request should use the new task direction');
+    const completed = store.getTask(task.id, owner.tenant.id)!;
+    assert.equal(completed.result, 'The risk register was prioritized under the new direction.');
+    const taskEntries = store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, owner.tenant.id).entries.filter(entry => entry.taskId === task.id);
+    assert.equal(taskEntries.some(entry => entry.kind === 'dot' && entry.body.includes('Stale result from the original direction.')), false, 'The aborted response must not be recorded');
+    assert.equal(taskEntries.some(entry => entry.kind === 'user' && entry.body === redirectedInstruction), true, 'The new direction should remain in the same task history');
+  } finally {
+    const releasePendingResponse = releaseOriginal as (() => void) | null;
+    if (releasePendingResponse) releasePendingResponse();
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('a one-off agent wake-up preserves its checkpoint and resumes with the same task', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-self-wake-'));
   const envKeys = ['DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;

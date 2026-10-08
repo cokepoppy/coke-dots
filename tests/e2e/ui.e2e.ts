@@ -69,6 +69,9 @@ let heldVoiceModelRelease: (() => void) | null = null;
 let voiceModelHeld = false;
 let heldStopModelRelease: (() => void) | null = null;
 let heldStopModelAborted = false;
+let heldRedirectModelRelease: (() => void) | null = null;
+let redirectModelAborted = false;
+let redirectModelHeld = false;
 let parallelModelReleases: (() => void)[] = [];
 let delegatedModelReleases = new Map<string, () => void>();
 let delegatedModelPrompts: string[] = [];
@@ -243,6 +246,8 @@ async function startMockModel() {
         const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
         const isPageChangeReview = prompt.includes('E2E page-change review');
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
+        const isRedirectOriginal = prompt.includes('E2E active redirect — original plan');
+        const isRedirectedTask = prompt.includes('E2E active redirect — prioritize the risk register');
         const isGlobalPauseTask = prompt.includes('E2E global pause — pause and resume the Dot');
         const isPauseDelegationParent = prompt.includes('E2E global pause delegation — parent');
         const isPauseDelegationAggregate = isPauseDelegationParent && prompt.includes('Delegated task results:');
@@ -291,6 +296,19 @@ async function startMockModel() {
           await new Promise<void>(resolvePromise => { heldStopModelRelease = resolvePromise; });
           heldStopModelRelease = null;
         }
+        if (isRedirectOriginal && !redirectModelHeld) {
+          redirectModelHeld = true;
+          redirectModelAborted = false;
+          response.once('close', () => {
+            if (!response.writableFinished) {
+              redirectModelAborted = true;
+              heldRedirectModelRelease?.();
+            }
+          });
+          await new Promise<void>(resolvePromise => { heldRedirectModelRelease = resolvePromise; });
+          heldRedirectModelRelease = null;
+          if (response.destroyed) return;
+        }
         if (isVoiceTask && !voiceModelHeld) {
           voiceModelHeld = true;
           await new Promise<void>(resolvePromise => { heldVoiceModelRelease = resolvePromise; });
@@ -304,7 +322,7 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || (isSelfWakeResponsibility && hasSelfWakeCheckpoint) || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isRedirectedTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || (isSelfWakeResponsibility && hasSelfWakeCheckpoint) || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isPauseDelegationParent && !isPauseDelegationAggregate ? { status: 'delegating', message: 'I started one independent research task.', delegations: [
           { title: 'Independent research', instruction: 'E2E global pause delegated child — keep running during pause', engine: 'model' },
@@ -313,6 +331,7 @@ async function startMockModel() {
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
         ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isSharedModelReuse ? 'The second Google account used the Coke Dots instance Model API configuration.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        if (isRedirectedTask) Object.assign(decision, { status: 'done', message: 'The risk register was prioritized under the new direction.' });
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isSelfWakeResponsibility) {
           if (!hasSelfWakeCheckpoint) Object.assign(decision, { status: 'scheduled', message: 'Checkpoint: I reviewed the timeline and will verify the approval response next.', nextMinutes: 30, notifyUser: false });
@@ -741,6 +760,12 @@ function releaseHeldStopModel() {
   const release = heldStopModelRelease as (() => void) | null;
   if (release) release();
   heldStopModelRelease = null;
+}
+
+function releaseHeldRedirectModel() {
+  const release = heldRedirectModelRelease as (() => void) | null;
+  if (release) release();
+  heldRedirectModelRelease = null;
 }
 
 function releaseHeldPauseModel() {
@@ -2829,6 +2854,48 @@ try {
     await screenshot(alphaPage!, '20-pause-resumed-task');
   });
 
+  await recordStep('Redirecting an active task aborts the old model call and continues with the new direction in Chrome', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    const originalInstruction = 'E2E active redirect — original plan';
+    const redirectedInstruction = 'E2E active redirect — prioritize the risk register';
+    const originalPromptCount = taskPrompts(originalInstruction).length;
+    const redirectedPromptCount = taskPrompts(redirectedInstruction).length;
+    redirectModelHeld = false;
+    redirectModelAborted = false;
+    await createTask(alphaPage!, originalInstruction);
+    await waitFor(() => taskPrompts(originalInstruction).length === originalPromptCount + 1, 10_000);
+    await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 5_000 });
+    const taskId = await alphaPage!.evaluate(async (goal: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string }[] };
+      return state.tasks.find(task => task.instruction === goal)?.id || null;
+    }, originalInstruction);
+    assert(taskId, 'The active redirect task was missing from its tenant state');
+
+    await clickNav(alphaPage!, 'Activity');
+    const card = alphaPage!.locator('.task-card').filter({ hasText: originalInstruction });
+    await card.getByRole('button', { name: /查看详情/ }).click();
+    await alphaPage!.getByPlaceholder('调整这项工作的要求').fill(redirectedInstruction);
+    await alphaPage!.getByRole('button', { name: '更新', exact: true }).click();
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: redirectedInstruction }).waitFor({ state: 'visible' });
+    await alphaPage!.getByText('任务操作：redirect', { exact: true }).waitFor({ state: 'visible' });
+    await waitFor(() => redirectModelAborted, 5_000);
+    releaseHeldRedirectModel();
+    await waitFor(() => taskPrompts(redirectedInstruction).length === redirectedPromptCount + 1, 10_000);
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+
+    assert.equal(taskPrompts(originalInstruction).length, originalPromptCount + 1, 'Redirect must not retry the old direction');
+    assert.equal(taskPrompts(redirectedInstruction).length, redirectedPromptCount + 1, 'Redirect should start exactly one request for the new direction');
+    const finalState = await alphaPage!.evaluate(async (id: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string; result: string | null }[]; entries: { taskId: string | null; kind: string; body: string }[] };
+      return { task: state.tasks.find(task => task.id === id) || null, entries: state.entries.filter(entry => entry.taskId === id) };
+    }, taskId);
+    assert.equal(finalState.task?.instruction, redirectedInstruction);
+    assert.equal(finalState.task?.result, 'The risk register was prioritized under the new direction.');
+    assert.equal(finalState.entries.some(entry => entry.kind === 'dot' && entry.body.includes('Stale result from the original direction.')), false, 'The cancelled response must not be recorded');
+    await screenshot(alphaPage!, '20b-active-task-redirected');
+  });
+
   await recordStep('Dot profile menu pauses the tenant, interrupts running work, and resumes it without affecting another tenant', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await clickNav(alphaPage!, '你的 dot');
@@ -3622,6 +3689,7 @@ try {
   releaseHeldGlobalPauseModel();
   releaseHeldGlobalPauseChild();
   releaseHeldStopModel();
+  releaseHeldRedirectModel();
   releaseHeldVoiceModel();
   releaseParallelModels();
   for (const release of delegatedModelReleases.values()) release();

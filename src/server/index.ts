@@ -778,6 +778,7 @@ const server = createServer(async (req, res) => {
         const instruction = String(body.instruction || '').trim();
         if (!instruction || instruction.length > 10000) return reply(res, 400, { error: 'Invalid instruction' });
         store.updateTask(old.id, { instruction, status: 'queued', nextRunAt: new Date().toISOString() }, session.tenant.id);
+        worker.redirectTask(old.id);
         store.addEntry('user', instruction, old.id, session.tenant.id);
       } else if (action === 'priority') {
         const priority = Number(body.priority);
