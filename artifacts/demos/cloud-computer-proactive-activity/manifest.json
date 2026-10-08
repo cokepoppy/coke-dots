@@ -8,7 +8,24 @@
   "productEvidence": "Official docs describe recurring tasks and a dedicated cloud computer/browser. Proactive research itself is read-only; this recording uses a user-assigned recurring task with an explicit, limited information-view action.",
   "fixtureDisclosure": "The activity page and all availability data are synthetic E2E fixtures served only inside the test cloud browser. No real registration, account change, or payment occurs.",
   "recording": "cloud-computer-proactive-activity.webp",
-  "sourceRecording": "Chrome E2E recording, converted to animated WebP",
+  "viewer": "cloud-computer-proactive-activity.html",
+  "sourceRecording": "Chrome E2E recording, cut to remove provisioning and model-wait time, cropped to remove the fixed capture strip, then converted to animated WebP",
+  "videoAudit": {
+    "format": "webp",
+    "width": 1152,
+    "height": 730,
+    "decodedFrames": 52,
+    "distinctDecodedFrames": 52,
+    "durationSeconds": 11.09,
+    "chromePlayback": {
+      "width": 1152,
+      "height": 730,
+      "samples": 22,
+      "distinctSamples": 21
+    },
+    "verified": true
+  },
+  "recordingMarkers": "recording-marks.json",
   "viewport": {
     "width": 1440,
     "height": 1000

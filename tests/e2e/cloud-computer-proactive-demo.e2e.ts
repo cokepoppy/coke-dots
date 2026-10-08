@@ -45,7 +45,14 @@ let runFailed = true;
 let uiEvidence: unknown = null;
 let taskDiagnostics: unknown = null;
 let recordingPath = '';
+let videoStartedAt = 0;
+const videoMarks: { name: string; atSeconds: number }[] = [];
 const computerApiResponses: { path: string; status: number; body?: unknown }[] = [];
+
+function markVideo(name: string) {
+  if (!videoStartedAt || videoMarks.some(mark => mark.name === name)) return;
+  videoMarks.push({ name, atSeconds: Number(((Date.now() - videoStartedAt) / 1000).toFixed(3)) });
+}
 
 async function reservePort() {
   const listener = createNetServer();
@@ -156,7 +163,7 @@ async function signIn(target: Page) {
   await target.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
 }
 
-async function waitForTask(target: Page, instruction = taskInstruction, expectedStatus: 'done' | 'scheduled' = 'scheduled', timeout = 240_000) {
+async function waitForTask(target: Page, instruction = taskInstruction, expectedStatus: 'done' | 'scheduled' = 'scheduled', timeout = 240_000, onPoll?: () => Promise<void>) {
   const deadline = Date.now() + timeout;
   let last: Record<string, unknown> | null = null;
   let previous = '';
@@ -168,6 +175,7 @@ async function waitForTask(target: Page, instruction = taskInstruction, expected
     }, instruction);
     const status = String(last?.status || 'not-created');
     if (status !== previous) { console.log(`TASK STATUS: ${status}`); previous = status; }
+    await onPoll?.();
     if (status === 'failed') throw new Error(`Pi cloud task failed: ${String(last?.error || last?.result || '(no error detail)')}`);
     if (status === expectedStatus && typeof last?.result === 'string' && last.result.trim()) return last;
     await new Promise(resolvePromise => setTimeout(resolvePromise, 500));
@@ -206,6 +214,7 @@ try {
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: recordingRoot, size: { width: 1440, height: 1000 } } });
   page = await context.newPage();
   pageVideo = page.video();
+  videoStartedAt = Date.now();
   const browserErrors: string[] = [];
   page.on('pageerror', error => browserErrors.push(error.message));
   page.on('response', async response => {
@@ -281,15 +290,36 @@ try {
   await page.locator('input.minutes').fill('60');
   await page.getByTestId('task-composer').fill(taskInstruction);
   await page.screenshot({ path: join(outputRoot, 'screenshots', '03-chinese-scheduled-task.png'), fullPage: true });
+  const workerBaseUrl = await startWorkerPortForward();
+  const workerToken = createHmac('sha256', tokenSecret).update(`worker:${tenantId}`).digest('base64url');
+  markVideo('demo-start');
+  await page.waitForTimeout(900);
   await page.locator('button.send').click();
   await page.locator('.timeline .message.user p').filter({ hasText: fixtureUrl }).waitFor({ state: 'visible', timeout: 15_000 });
   await page.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 20_000 });
+  markVideo('task-working');
   await page.screenshot({ path: join(outputRoot, 'screenshots', '04-task-working.png'), fullPage: true });
   console.log('STEP submitted Chinese hourly monitoring task to Pi');
 
   await page.getByRole('button', { name: '电脑', exact: true }).click();
   await page.getByTestId('computer-workspace').waitFor({ state: 'visible' });
-  const finalTask = await waitForTask(page);
+  let detailsVisible = false;
+  const finalTask = await waitForTask(page, taskInstruction, 'scheduled', 240_000, async () => {
+    const computerState = await page!.evaluate(async () => await (await fetch('/api/computer', { cache: 'no-store' })).json()).catch(() => null) as { url?: string } | null;
+    if (computerState?.url === fixtureUrl) markVideo('cloud-page-visible');
+    if (detailsVisible) return;
+    try {
+      const response = await fetch(`${workerBaseUrl}/v1/agent-ui/inspect`, {
+        method: 'POST', headers: { authorization: `Bearer ${workerToken}`, 'content-type': 'application/json' }, body: '{}',
+      });
+      if (!response.ok) return;
+      const evidence = await response.json() as { url?: string; text?: string };
+      if (evidence.url === fixtureUrl && evidence.text?.includes('报名状态：尚未报名') && evidence.text.includes('当前可用名额：2 个')) {
+        detailsVisible = true;
+        markVideo('details-visible');
+      }
+    } catch { /* The computer may still be starting its public page. */ }
+  });
   const resultText = String(finalTask.result || '');
   assert.match(resultText, /AI 助手上手分享/);
   assert.match(resultText, /10\s*月\s*14\s*日|2026/);
@@ -302,6 +332,8 @@ try {
   assert.equal(appComputer.owner, 'agent');
   assert.equal(appComputer.url, fixtureUrl, 'The Dot computer browser must be on the demonstration activity page.');
   assert.equal(appComputer.title, '公开活动机会 · 演示页面');
+  assert(videoMarks.some(mark => mark.name === 'cloud-page-visible'), 'The recording must capture the public activity page inside Dot’s computer.');
+  assert(videoMarks.some(mark => mark.name === 'details-visible'), 'The recording must capture the computer UI after the information button click.');
   const computerPng = Buffer.from(await page.evaluate(async () => Array.from(new Uint8Array(await (await fetch('/api/computer/screenshot', { cache: 'no-store' })).arrayBuffer()))));
   const remoteFrame = PNG.sync.read(computerPng);
   assert.equal(remoteFrame.width, 1440);
@@ -314,8 +346,6 @@ try {
   await page.waitForTimeout(2_000);
   await page.screenshot({ path: join(outputRoot, 'screenshots', '06-computer-browser-in-dots.png'), fullPage: true });
 
-  const workerBaseUrl = await startWorkerPortForward();
-  const workerToken = createHmac('sha256', tokenSecret).update(`worker:${tenantId}`).digest('base64url');
   const inspectResponse = await fetch(`${workerBaseUrl}/v1/agent-ui/inspect`, {
     method: 'POST', headers: { authorization: `Bearer ${workerToken}`, 'content-type': 'application/json' }, body: '{}',
   });
@@ -332,6 +362,7 @@ try {
   const card = page.locator('.task-card').filter({ hasText: taskTitle });
   await card.waitFor({ state: 'visible' });
   await card.getByText(resultText, { exact: true }).waitFor({ state: 'visible' });
+  markVideo('activity-result');
   await page.screenshot({ path: join(outputRoot, 'screenshots', '07-chinese-result-in-activity.png'), fullPage: true });
   await page.waitForTimeout(2_000);
   await page.getByRole('button', { name: 'Scheduled', exact: true }).click();
@@ -340,6 +371,7 @@ try {
   await scheduledItem.click();
   const scheduledDetail = page.getByTestId('scheduled-detail');
   await scheduledDetail.getByText('Every 60 minutes', { exact: true }).waitFor({ state: 'visible' });
+  markVideo('scheduled-confirmed');
   await page.screenshot({ path: join(outputRoot, 'screenshots', '08-hourly-follow-up-scheduled.png'), fullPage: true });
   await page.waitForTimeout(2_500);
 
@@ -367,6 +399,7 @@ try {
   const secret = liveModelApiKey;
   await writeFile(join(outputRoot, 'server.log'), secret ? serverLogs.join('').replaceAll(secret, '[REDACTED]') : serverLogs.join(''));
   await writeFile(join(outputRoot, 'e2e-debug.json'), JSON.stringify({ mode: 'live-pi-in-debian-13-cloud-computer', result: runFailed ? 'failed' : 'passed', cluster, namespace: tenantNamespace, providerModel: liveModelName, fixtureUrl, uiEvidence, tasks: taskDiagnostics, computerApiResponses, recording: recordingPath ? 'captured' : 'missing' }, null, 2).replace(secret || '\u0000', '[REDACTED]') + '\n');
+  await writeFile(join(outputRoot, 'recording-marks.json'), JSON.stringify({ events: videoMarks }, null, 2) + '\n');
   if (tenantNamespace && tenantNamespaceCreated) {
     const keepFailedNamespace = runFailed && process.env.DOTS_CLOUD_COMPUTER_DEMO_KEEP_FAILED_NAMESPACE === '1';
     if (keepFailedNamespace) console.log(`Preserved disposable namespace for diagnosis: ${tenantNamespace}`);
@@ -377,7 +410,10 @@ try {
 }
 
 assert(recordingPath && existsSync(recordingPath), 'Chrome did not produce the cloud computer demo recording');
-execFileSync(process.execPath, [join(projectRoot, 'scripts', 'convert-demo-video-to-webp.mjs'), recordingPath, join(outputRoot, 'cloud-computer-proactive-activity.webp')], { cwd: projectRoot, stdio: 'inherit' });
+execFileSync(process.execPath, [join(projectRoot, 'scripts', 'convert-demo-video-to-webp.mjs'), recordingPath, join(outputRoot, 'cloud-computer-proactive-activity.webp'), join(outputRoot, 'recording-marks.json')], { cwd: projectRoot, stdio: 'inherit' });
+execFileSync(process.execPath, [join(projectRoot, 'scripts', 'verify-demo-webp.mjs'), join(outputRoot, 'cloud-computer-proactive-activity.webp')], { cwd: projectRoot, stdio: 'inherit' });
+execFileSync(process.execPath, [join(projectRoot, 'scripts', 'create-demo-webp-viewer.mjs'), join(outputRoot, 'cloud-computer-proactive-activity.webp'), join(outputRoot, 'cloud-computer-proactive-activity.html')], { cwd: projectRoot, stdio: 'inherit' });
+const videoAudit = JSON.parse(await readFile(join(outputRoot, 'cloud-computer-proactive-activity.webp.audit.json'), 'utf8'));
 await rm(recordingRoot, { recursive: true, force: true });
 await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
   scenario: 'Dot runs an hourly check, finds a free place in a public activity listing, opens its details in the Debian cloud computer, and reports the date and availability in Chinese. It stops before registration or payment.',
@@ -389,7 +425,10 @@ await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
   productEvidence: 'Official docs describe recurring tasks and a dedicated cloud computer/browser. Proactive research itself is read-only; this recording uses a user-assigned recurring task with an explicit, limited information-view action.',
   fixtureDisclosure: 'The activity page and all availability data are synthetic E2E fixtures served only inside the test cloud browser. No real registration, account change, or payment occurs.',
   recording: 'cloud-computer-proactive-activity.webp',
-  sourceRecording: 'Chrome E2E recording, converted to animated WebP',
+  viewer: 'cloud-computer-proactive-activity.html',
+  sourceRecording: 'Chrome E2E recording, cut to remove provisioning and model-wait time, cropped to remove the fixed capture strip, then converted to animated WebP',
+  videoAudit,
+  recordingMarkers: 'recording-marks.json',
   viewport: { width: 1440, height: 1000 },
   screenshots: [
     'screenshots/00-signed-in.png', 'screenshots/01-pi-selected.png', 'screenshots/01b-dot-cloud-computer-onboarding.png', 'screenshots/02-cloud-computer-ready.png',
@@ -405,4 +444,5 @@ await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
   result: 'passed',
 }, null, 2) + '\n');
 assert(existsSync(join(outputRoot, 'cloud-computer-proactive-activity.webp')));
+assert(existsSync(join(outputRoot, 'cloud-computer-proactive-activity.html')));
 console.log(`Animated WebP: ${join(outputRoot, 'cloud-computer-proactive-activity.webp')}`);

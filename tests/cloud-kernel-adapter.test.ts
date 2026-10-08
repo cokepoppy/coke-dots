@@ -104,16 +104,21 @@ test('Pi cloud computer UI tool uses a scoped bridge and permits only inspect or
     ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
     SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-ui-session' }), open: () => { throw new Error('unexpected'); } },
     createAgentSession: async (options: Record<string, any>) => {
-      assert.deepEqual(options.tools, ['read', 'grep', 'find', 'ls', 'open_public_page', 'computer_ui']);
+    assert.deepEqual(options.tools, ['read', 'grep', 'find', 'ls', 'open_public_page', 'computer_ui']);
+      const publicPage = options.customTools.find((tool: { name: string }) => tool.name === 'open_public_page');
       const computerUi = options.customTools.find((tool: { name: string }) => tool.name === 'computer_ui');
-      toolResults.push(await computerUi.execute('inspect', { action: 'inspect' }));
+      const parallelResults = await Promise.all([
+        publicPage.execute('open', { url: 'https://example.test/activity' }),
+        computerUi.execute('inspect', { action: 'inspect' }),
+      ]);
+      toolResults.push(...parallelResults);
       toolResults.push(await computerUi.execute('click', { action: 'click_information_button', buttonName: '查看活动详情' }));
       return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
     },
   };
   try {
     await runCloudKernel({
-      engine: 'pi', prompt: 'Open the public page, inspect it, then click 查看活动详情.', cwd: task, workspace: root,
+      engine: 'pi', prompt: 'Open https://example.test/activity, inspect it, then click 查看活动详情.', cwd: task, workspace: root,
       taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
       computer: {
         openPublicPageUrl: `http://127.0.0.1:${address.port}/open_public_page`, openPublicPageToken: scopedToken,
@@ -121,6 +126,7 @@ test('Pi cloud computer UI tool uses a scoped bridge and permits only inspect or
       },
     }, { piSdk: sdk });
     assert.deepEqual(requests, [
+      { path: '/open_public_page', body: { url: 'https://example.test/activity' }, token: `Bearer ${scopedToken}` },
       { path: '/computer_ui/inspect', body: {}, token: `Bearer ${scopedToken}` },
       { path: '/computer_ui/click', body: { name: '查看活动详情' }, token: `Bearer ${scopedToken}` },
     ]);

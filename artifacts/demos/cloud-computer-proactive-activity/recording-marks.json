@@ -1,0 +1,28 @@
+{
+  "events": [
+    {
+      "name": "demo-start",
+      "atSeconds": 64.459
+    },
+    {
+      "name": "task-working",
+      "atSeconds": 65.464
+    },
+    {
+      "name": "cloud-page-visible",
+      "atSeconds": 67.186
+    },
+    {
+      "name": "details-visible",
+      "atSeconds": 69.341
+    },
+    {
+      "name": "activity-result",
+      "atSeconds": 74.163
+    },
+    {
+      "name": "scheduled-confirmed",
+      "atSeconds": 76.294
+    }
+  ]
+}

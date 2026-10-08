@@ -1,0 +1,15 @@
+{
+  "format": "webp",
+  "width": 1152,
+  "height": 730,
+  "decodedFrames": 52,
+  "distinctDecodedFrames": 52,
+  "durationSeconds": 11.09,
+  "chromePlayback": {
+    "width": 1152,
+    "height": 730,
+    "samples": 22,
+    "distinctSamples": 21
+  },
+  "verified": true
+}
