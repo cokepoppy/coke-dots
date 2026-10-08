@@ -132,13 +132,12 @@ export interface WorkspacePage {
   updatedAt: string;
 }
 
-export interface TenantActionRule {
+export interface PersonalActionRule {
   id: string;
-  tenantId: string;
+  userId: string;
   scope: 'scratchpad-write';
   instruction: string;
   mode: ActionRuleMode;
-  createdBy: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -178,4 +177,5 @@ export interface PageActionApproval {
   nextRunAt: string | null;
   createdAt: string;
   decidedAt: string | null;
+  canDecide?: boolean;
 }

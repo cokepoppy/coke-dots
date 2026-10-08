@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { ActionRuleMode, TenantActionRule } from '../shared/types.ts';
+import type { ActionRuleMode, PersonalActionRule } from '../shared/types.ts';
 import { appFetch } from './api.ts';
 import './permission-rules.css';
 
@@ -16,25 +16,23 @@ async function responseData<T>(response: Response): Promise<T> {
   return data;
 }
 
-export function PermissionRules({ tenantId, role }: { tenantId: string; role: string }) {
-  const [rule, setRule] = useState<TenantActionRule | null>(null);
+export function PermissionRules({ userId }: { userId: string }) {
+  const [rule, setRule] = useState<PersonalActionRule | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [instruction, setInstruction] = useState('');
   const [mode, setMode] = useState<ActionRuleMode>('when-requested');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const canManage = ['owner', 'admin'].includes(role);
-
   useEffect(() => {
     let active = true;
     setRule(null); setEditing(false); setError(''); setLoading(true);
-    void appFetch('/api/action-rule').then(response => responseData<TenantActionRule | null>(response)).then(next => {
+    void appFetch('/api/action-rule').then(response => responseData<PersonalActionRule | null>(response)).then(next => {
       if (active) setRule(next);
     }).catch(reason => { if (active) setError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [tenantId]);
+  }, [userId]);
 
   function startEdit() {
     setInstruction(rule?.instruction || 'For creating or updating pages in Scratchpad');
@@ -44,7 +42,7 @@ export function PermissionRules({ tenantId, role }: { tenantId: string; role: st
   async function save() {
     setBusy(true); setError('');
     try {
-      const saved = await responseData<TenantActionRule>(await appFetch('/api/action-rule', {
+      const saved = await responseData<PersonalActionRule>(await appFetch('/api/action-rule', {
         method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction, mode }),
       }));
       setRule(saved); setEditing(false);
@@ -62,9 +60,9 @@ export function PermissionRules({ tenantId, role }: { tenantId: string; role: st
   }
 
   return <>
-    <div className="section-heading model-heading"><h2>Permissions · Custom rules</h2><p>Set how Dot handles Scratchpad page writes in this workspace.</p></div>
+    <div className="section-heading model-heading"><h2>Permissions · Custom rules</h2><p>Set the ongoing action boundaries for your Dot. The rule follows your account across workspaces.</p></div>
     <div className="profile-card model-card permission-rule-card" data-testid="action-rule-manager">
-      <div className="permission-rule-scope"><span className="permission-rule-icon" aria-hidden="true">◇</span><div><strong>Create or update Scratchpad pages</strong><small>Rules in a shared workspace affect its members. Personal workspaces keep separate rules.</small></div></div>
+      <div className="permission-rule-scope"><span className="permission-rule-icon" aria-hidden="true">◇</span><div><strong>Create or update Scratchpad pages</strong><small>Your rule applies to tasks you start in every workspace you can access. Page content remains in its workspace.</small></div></div>
       {loading ? <p className="permission-rule-empty" role="status">Loading rules…</p> : editing ? <div className="permission-rule-form">
         <label>Rule description<textarea aria-label="规则说明" maxLength={1000} value={instruction} onChange={event => setInstruction(event.target.value)} placeholder="Describe when this page action should happen" /></label>
         <label>How should Dot handle this action?<select aria-label="规则处理方式" value={mode} onChange={event => setMode(event.target.value as ActionRuleMode)}>
@@ -73,9 +71,9 @@ export function PermissionRules({ tenantId, role }: { tenantId: string; role: st
         <div className="permission-rule-actions"><button className="primary" disabled={busy || !instruction.trim()} onClick={() => void save()}>{busy ? 'Saving…' : 'Save rule'}</button><button disabled={busy} onClick={() => setEditing(false)}>Cancel</button></div>
       </div> : rule ? <article className="permission-rule-row" data-testid="custom-action-rule">
         <div><p>{rule.instruction}</p><small>{modeLabels[rule.mode]}</small></div>
-        {canManage && <div className="permission-rule-actions"><button disabled={busy} onClick={startEdit}>Edit rule</button><button disabled={busy} onClick={() => void remove()}>Delete rule</button></div>}
-      </article> : <div className="permission-rule-default"><p>No custom rule is set. Dot acts on Scratchpad pages only when you explicitly ask.</p>{canManage && <button className="primary" onClick={startEdit}>Add rule</button>}</div>}
-      <small className="permission-rule-note">This first rule controls only local Scratchpad pages. It does not connect apps or grant external account access. Rules guide the agent; the app still checks supported actions.</small>
+        <div className="permission-rule-actions"><button disabled={busy} onClick={startEdit}>Edit rule</button><button disabled={busy} onClick={() => void remove()}>Delete rule</button></div>
+      </article> : <div className="permission-rule-default"><p>No custom rule is set. Dot acts on Scratchpad pages only when you explicitly ask.</p><button className="primary" onClick={startEdit}>Add rule</button></div>}
+      <small className="permission-rule-note">This currently controls only Scratchpad page writes. It does not grant workspace, app, or computer access. Rules guide the agent; the app still checks each supported action.</small>
       {error && <small role="alert" className="permission-rule-error">{error}</small>}
     </div>
   </>;

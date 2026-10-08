@@ -320,7 +320,7 @@ const server = createServer(async (req, res) => {
       }
       return reply(res, 200, store.activityPage(session.tenant.id, before, limit));
     }
-    if (path === '/api/action-rule' && req.method === 'GET') return reply(res, 200, store.tenantActionRule(session.tenant.id));
+    if (path === '/api/action-rule' && req.method === 'GET') return reply(res, 200, store.personalActionRule(session.user.id));
     if (path === '/api/memories' && req.method === 'GET') return reply(res, 200, store.tenantMemories(session.tenant.id));
     if (path === '/api/dot-memories' && req.method === 'GET') return reply(res, 200, store.personalDotMemories(session.user.id));
     if (path === '/api/pages' && req.method === 'GET') return reply(res, 200, store.tenantPages(session.tenant.id));
@@ -396,16 +396,14 @@ const server = createServer(async (req, res) => {
       return call ? reply(res, 200, call) : reply(res, 404, { error: 'Voice call not found' });
     }
     if (path === '/api/action-rule' && req.method === 'PUT') {
-      if (!store.isWorkspaceAdmin(session.tenant.id, session.user.id)) return reply(res, 403, { error: '只有工作区所有者或管理员可以修改权限规则' });
       try {
-        const rule = store.saveTenantActionRule(session.tenant.id, session.user.id, String(body.instruction || ''), String(body.mode || '') as ActionRuleMode);
+        const rule = store.savePersonalActionRule(session.user.id, String(body.instruction || ''), String(body.mode || '') as ActionRuleMode);
         publish();
         return reply(res, 200, rule);
       } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法保存权限规则' }); }
     }
     if (path === '/api/action-rule' && req.method === 'DELETE') {
-      const deleted = store.deleteTenantActionRule(session.tenant.id, session.user.id);
-      if (deleted === 'forbidden') return reply(res, 403, { error: '只有工作区所有者或管理员可以修改权限规则' });
+      store.deletePersonalActionRule(session.user.id);
       publish();
       return reply(res, 200, { ok: true });
     }
@@ -674,7 +672,8 @@ const server = createServer(async (req, res) => {
     const approvalMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/approval$/);
     if (approvalMatch && req.method === 'GET') {
       if (!store.getTask(approvalMatch[1], session.tenant.id)) return reply(res, 404, { error: 'Task not found' });
-      return reply(res, 200, store.pageActionApproval(session.tenant.id, approvalMatch[1]));
+      const approval = store.pageActionApproval(session.tenant.id, approvalMatch[1]);
+      return reply(res, 200, approval ? { ...approval, canDecide: store.canResolvePageActionApproval(session.tenant.id, approvalMatch[1], session.user.id) } : null);
     }
     if (approvalMatch && req.method === 'POST') {
       const task = store.getTask(approvalMatch[1], session.tenant.id);
@@ -682,6 +681,7 @@ const server = createServer(async (req, res) => {
       const decision = String(body.decision || '');
       if (decision !== 'approve' && decision !== 'decline') return reply(res, 400, { error: 'Invalid approval decision' });
       const result = store.resolvePageActionApproval(session.tenant.id, task.id, session.user.id, decision);
+      if (result === 'forbidden') return reply(res, 403, { error: '只有发起这项工作的人可以处理待批准操作' });
       if (!result) return reply(res, 404, { error: 'No pending Scratchpad approval' });
       publish();
       if (result.approval.resumeStatus === 'scheduled') void worker.tick();

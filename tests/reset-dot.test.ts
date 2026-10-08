@@ -39,7 +39,7 @@ test('reset deletes one owner’s personal Dot data and retains account and prov
     store.addTenantMemory(personalId, alpha.user.id, 'Private workspace note');
     store.addPersonalDotMemory(alpha.user.id, 'Personal preference to forget');
     store.createTenantPage(personalId, 'Dot page', 'Delete this page on reset.', alpha.user.id);
-    store.saveTenantActionRule(personalId, alpha.user.id, 'Ask before writing pages.', 'ask-before');
+    store.savePersonalActionRule(alpha.user.id, 'Ask before writing pages.', 'ask-before');
     const attachment = store.addPendingAttachment(personalId, alpha.user.id, 'brief.txt', 'text/plain', Buffer.from('private file'));
     assert.equal(store.pendingAttachments(personalId, alpha.user.id).some(item => item.id === attachment.id), true);
 
@@ -64,7 +64,7 @@ test('reset deletes one owner’s personal Dot data and retains account and prov
     assert.deepEqual(store.pendingAttachments(personalId, alpha.user.id), []);
     assert.equal(store.pageActionApproval(personalId, active.id), null);
     assert.equal(store.websiteSignInRequest(personalId, signInTask.id), null);
-    assert.equal(store.tenantActionRule(personalId), null);
+    assert.equal(store.personalActionRule(alpha.user.id)?.instruction, 'Ask before writing pages.', 'Account custom rules survive resetting one workspace Dot');
     assert.equal(store.getTask(scheduled.id, personalId), null);
     assert.equal(store.getTask(active.id, personalId), null);
     assert.equal(store.getTask(signInTask.id, personalId), null);

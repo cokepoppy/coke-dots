@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
+import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -125,7 +125,7 @@ export class Store {
         schedule_minutes INTEGER, result TEXT, error TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         engine TEXT NOT NULL DEFAULT 'model', reasoning_effort TEXT NOT NULL DEFAULT 'high', agent_session_id TEXT, parent_task_id TEXT,
-        execution_mode TEXT NOT NULL DEFAULT 'standard', task_context TEXT NOT NULL DEFAULT ''
+        execution_mode TEXT NOT NULL DEFAULT 'standard', task_context TEXT NOT NULL DEFAULT '', created_by_user_id TEXT REFERENCES users(id)
       );
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'legacy', task_id TEXT,
@@ -186,11 +186,17 @@ export class Store {
         created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         UNIQUE(tenant_id,scope)
       );
+      CREATE TABLE IF NOT EXISTS personal_action_rules (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), scope TEXT NOT NULL CHECK (scope='scratchpad-write'),
+        instruction TEXT NOT NULL, mode TEXT NOT NULL CHECK (mode IN ('without-asking','when-requested','ask-before','hand-off')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(user_id,scope)
+      );
       CREATE TABLE IF NOT EXISTS page_action_approvals (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id),
         action_json TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','approved','declined','cancelled')),
         resume_status TEXT NOT NULL CHECK (resume_status IN ('done','scheduled')), next_run_at TEXT,
-        created_at TEXT NOT NULL, decided_at TEXT, decided_by TEXT REFERENCES users(id)
+        created_at TEXT NOT NULL, decided_at TEXT, decided_by TEXT REFERENCES users(id), requested_by_user_id TEXT REFERENCES users(id)
       );
       CREATE INDEX IF NOT EXISTS page_action_approvals_task ON page_action_approvals(tenant_id,task_id,created_at DESC);
       CREATE UNIQUE INDEX IF NOT EXISTS page_action_approvals_one_pending ON page_action_approvals(tenant_id,task_id) WHERE status='pending';
@@ -217,11 +223,13 @@ export class Store {
     this.addColumnIfMissing('tasks', 'agent_session_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
     this.addColumnIfMissing('tasks', 'parent_task_id', 'TEXT');
+    this.addColumnIfMissing('tasks', 'created_by_user_id', 'TEXT REFERENCES users(id)');
     this.addColumnIfMissing('tasks', 'execution_mode', "TEXT NOT NULL DEFAULT 'standard'");
     this.addColumnIfMissing('tasks', 'task_context', "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing('watches', 'last_content', 'TEXT');
     this.addColumnIfMissing('watches', 'last_task_id', 'TEXT');
     this.addColumnIfMissing('page_action_approvals', 'decided_by', 'TEXT REFERENCES users(id)');
+    this.addColumnIfMissing('page_action_approvals', 'requested_by_user_id', 'TEXT REFERENCES users(id)');
     this.addColumnIfMissing('tenant_profiles', 'eyes', "TEXT NOT NULL DEFAULT 'classic'");
     this.addColumnIfMissing('tenant_profiles', 'glasses', "TEXT NOT NULL DEFAULT 'none'");
     this.addColumnIfMissing('tenant_profiles', 'accessory', "TEXT NOT NULL DEFAULT 'none'");
@@ -237,6 +245,7 @@ export class Store {
     if (oldProfile) this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color) SELECT 'legacy',name,shape,color FROM profile WHERE id=1");
     this.db.exec("INSERT OR IGNORE INTO tenant_profiles(tenant_id,name,shape,color,eyes,character,pet) VALUES ('legacy','Dot','circle','#c8cbd5','dot','ring','moss')");
     if (this.tableExists('settings')) this.db.exec("INSERT OR IGNORE INTO tenant_settings(tenant_id,key,value) SELECT 'legacy',key,value FROM settings");
+    this.migrateWorkspaceActionRulesToPersonal();
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS tasks_due ON tasks(status, next_run_at, priority);
       CREATE INDEX IF NOT EXISTS tasks_tenant ON tasks(tenant_id, created_at);
@@ -266,6 +275,21 @@ export class Store {
     if (!columns.some(column => column.name === name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${declaration}`);
   }
 
+  private migrateWorkspaceActionRulesToPersonal() {
+    if (this.getSetting('personalActionRulesMigrationV1', 'legacy') === 'true') return;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const legacyRules = this.db.prepare("SELECT id,created_by AS userId,scope,instruction,mode,created_at AS createdAt,updated_at AS updatedAt FROM tenant_action_rules ORDER BY updated_at DESC,id DESC")
+        .all() as unknown as PersonalActionRule[];
+      const insert = this.db.prepare('INSERT OR IGNORE INTO personal_action_rules(id,user_id,scope,instruction,mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?)');
+      for (const rule of legacyRules) {
+        insert.run(rule.id, rule.userId, rule.scope, rule.instruction, rule.mode, rule.createdAt, rule.updatedAt);
+      }
+      this.setSetting('personalActionRulesMigrationV1', 'true', 'legacy');
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
   private ensurePageApprovalCancellationStatus() {
     const schema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='page_action_approvals'").get() as { sql: string } | undefined;
     if (!schema || schema.sql.includes("'cancelled'")) return;
@@ -278,10 +302,10 @@ export class Store {
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id),
         action_json TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','approved','declined','cancelled')),
         resume_status TEXT NOT NULL CHECK (resume_status IN ('done','scheduled')), next_run_at TEXT,
-        created_at TEXT NOT NULL, decided_at TEXT, decided_by TEXT REFERENCES users(id)
+        created_at TEXT NOT NULL, decided_at TEXT, decided_by TEXT REFERENCES users(id), requested_by_user_id TEXT REFERENCES users(id)
       );
-      INSERT INTO page_action_approvals(id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at,decided_at,decided_by)
-        SELECT id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at,decided_at,decided_by FROM page_action_approvals_legacy;
+      INSERT INTO page_action_approvals(id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at,decided_at,decided_by,requested_by_user_id)
+        SELECT id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at,decided_at,decided_by,requested_by_user_id FROM page_action_approvals_legacy;
       DROP TABLE page_action_approvals_legacy;
       CREATE INDEX page_action_approvals_task ON page_action_approvals(tenant_id,task_id,created_at DESC);
       CREATE UNIQUE INDEX page_action_approvals_one_pending ON page_action_approvals(tenant_id,task_id) WHERE status='pending';
@@ -357,9 +381,9 @@ export class Store {
       const title = instruction.split(/[.!?。！？\n]/)[0].slice(0, 64) || 'Slack message';
       const effortSetting = this.getSetting('reasoningEffort', tenantId);
       const reasoningEffort = isReasoningEffort(effortSetting) ? effortSetting : 'high';
-      this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode)
-        VALUES (?,?,?,?, 'queued',0,?,NULL,NULL,NULL,?,?, 'model',?,NULL,NULL,'standard')`)
-        .run(id, tenantId, title, instruction, now, now, now, reasoningEffort);
+      this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,created_by_user_id)
+        VALUES (?,?,?,?, 'queued',0,?,NULL,NULL,NULL,?,?, 'model',?,NULL,NULL,'standard',?)`)
+        .run(id, tenantId, title, instruction, now, now, now, reasoningEffort, userId);
       this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,\'[]\')')
         .run(tenantId, id, 'user', instruction, now);
       this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,\'[]\')')
@@ -490,8 +514,8 @@ export class Store {
         const context = JSON.stringify({ source: 'Slack public channel event', teamName: monitor.team_name, channelId: event.channelId, channelName: monitor.channel_name, userId: event.slackUserId, timestamp: event.timestamp || null, message: userText });
         const effortSetting = this.getSetting('reasoningEffort', monitor.tenant_id);
         const reasoningEffort = isReasoningEffort(effortSetting) ? effortSetting : 'high';
-        this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,task_context)
-          VALUES (?,?,?,?,'queued',0,?,NULL,NULL,NULL,?,?,'model',?,NULL,NULL,'read-only',?)`)
+        this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,task_context,created_by_user_id)
+          VALUES (?,?,?,?,'queued',0,?,NULL,NULL,NULL,?,?,'model',?,NULL,NULL,'read-only',?,NULL)`)
           .run(id, monitor.tenant_id, title, instruction, now, now, now, reasoningEffort, context);
         this.db.prepare('UPDATE slack_monitor_events SET task_id=? WHERE event_id=? AND tenant_id=?').run(id, event.eventId, monitor.tenant_id);
         this.db.prepare('UPDATE slack_event_monitors SET last_event_at=?,last_task_id=?,updated_at=? WHERE tenant_id=? AND id=?')
@@ -568,10 +592,10 @@ export class Store {
         this.db.exec('COMMIT');
         return { status: 'duplicate' };
       }
-      const matches = this.db.prepare(`SELECT DISTINCT l.tenant_id AS tenantId,l.microsoft_user_id AS microsoftUserId
+      const matches = this.db.prepare(`SELECT DISTINCT l.tenant_id AS tenantId,l.microsoft_user_id AS microsoftUserId,l.user_id AS userId
         FROM teams_user_links l JOIN memberships m ON m.tenant_id=l.tenant_id AND m.user_id=l.user_id
         WHERE l.microsoft_tenant_id=? AND l.aad_object_id=?`)
-        .all(message.microsoftTenantId, message.aadObjectId) as { tenantId: string; microsoftUserId: string }[];
+        .all(message.microsoftTenantId, message.aadObjectId) as { tenantId: string; microsoftUserId: string; userId: string }[];
       const now = new Date().toISOString();
       if (matches.length !== 1 || !message.text.trim()) {
         this.db.prepare(`INSERT INTO teams_inbox_events(event_key,event_id,microsoft_tenant_id,microsoft_user_id,aad_object_id,conversation_id,service_url,status,created_at)
@@ -581,15 +605,15 @@ export class Store {
         return { status: 'ignored' };
       }
 
-      const { tenantId } = matches[0];
+      const { tenantId, userId } = matches[0];
       const instruction = message.text.trim().slice(0, 4000);
       const id = randomUUID();
       const title = instruction.split(/[.!?。！？\n]/)[0].slice(0, 64) || 'Microsoft Teams message';
       const effortSetting = this.getSetting('reasoningEffort', tenantId);
       const reasoningEffort = isReasoningEffort(effortSetting) ? effortSetting : 'high';
-      this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode)
-        VALUES (?,?,?,?, 'queued',0,?,NULL,NULL,NULL,?,?, 'model',?,NULL,NULL,'standard')`)
-        .run(id, tenantId, title, instruction, now, now, now, reasoningEffort);
+      this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,created_by_user_id)
+        VALUES (?,?,?,?, 'queued',0,?,NULL,NULL,NULL,?,?, 'model',?,NULL,NULL,'standard',?)`)
+        .run(id, tenantId, title, instruction, now, now, now, reasoningEffort, userId);
       this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,\'[]\')')
         .run(tenantId, id, 'user', instruction, now);
       this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,\'[]\')')
@@ -1076,33 +1100,38 @@ export class Store {
     return Boolean(this.db.prepare('SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=?').get(tenantId, userId));
   }
 
-  tenantActionRule(tenantId: string): TenantActionRule | null {
-    const row = this.db.prepare(`SELECT id,tenant_id AS tenantId,scope,instruction,mode,created_by AS createdBy,created_at AS createdAt,updated_at AS updatedAt
-      FROM tenant_action_rules WHERE tenant_id=? AND scope='scratchpad-write'`).get(tenantId) as (TenantActionRule & { createdBy: string }) | undefined;
+  personalActionRule(userId: string): PersonalActionRule | null {
+    const row = this.db.prepare(`SELECT id,user_id AS userId,scope,instruction,mode,created_at AS createdAt,updated_at AS updatedAt
+      FROM personal_action_rules WHERE user_id=? AND scope='scratchpad-write'`).get(userId) as PersonalActionRule | undefined;
     return row || null;
   }
 
-  saveTenantActionRule(tenantId: string, actorUserId: string, instruction: string, mode: ActionRuleMode): TenantActionRule {
+  personalActionRuleForTask(tenantId: string, taskId: string): PersonalActionRule | null {
+    const row = this.db.prepare(`SELECT r.id,r.user_id AS userId,r.scope,r.instruction,r.mode,r.created_at AS createdAt,r.updated_at AS updatedAt
+      FROM tasks t JOIN personal_action_rules r ON r.user_id=t.created_by_user_id AND r.scope='scratchpad-write'
+      WHERE t.tenant_id=? AND t.id=?`).get(tenantId, taskId) as PersonalActionRule | undefined;
+    return row || null;
+  }
+
+  savePersonalActionRule(userId: string, instruction: string, mode: ActionRuleMode): PersonalActionRule {
     const normalized = instruction.trim();
     if (!normalized || normalized.length > 1000) throw new Error('规则说明需为 1–1000 个字符');
     if (!['without-asking', 'when-requested', 'ask-before', 'hand-off'].includes(mode)) throw new Error('规则处理方式无效');
-    if (!this.isWorkspaceAdmin(tenantId, actorUserId)) throw new Error('只有工作区所有者或管理员可以修改权限规则');
     const now = new Date().toISOString();
-    const existing = this.db.prepare("SELECT id,created_by AS createdBy,created_at AS createdAt FROM tenant_action_rules WHERE tenant_id=? AND scope='scratchpad-write'")
-      .get(tenantId) as { id: string; createdBy: string; createdAt: string } | undefined;
+    const existing = this.db.prepare("SELECT id,created_at AS createdAt FROM personal_action_rules WHERE user_id=? AND scope='scratchpad-write'")
+      .get(userId) as { id: string; createdAt: string } | undefined;
     if (existing) {
-      this.db.prepare("UPDATE tenant_action_rules SET instruction=?,mode=?,updated_at=? WHERE tenant_id=? AND scope='scratchpad-write'")
-        .run(normalized, mode, now, tenantId);
+      this.db.prepare("UPDATE personal_action_rules SET instruction=?,mode=?,updated_at=? WHERE user_id=? AND scope='scratchpad-write'")
+        .run(normalized, mode, now, userId);
     } else {
-      this.db.prepare('INSERT INTO tenant_action_rules(id,tenant_id,scope,instruction,mode,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(randomUUID(), tenantId, 'scratchpad-write', normalized, mode, actorUserId, now, now);
+      this.db.prepare('INSERT INTO personal_action_rules(id,user_id,scope,instruction,mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?)')
+        .run(randomUUID(), userId, 'scratchpad-write', normalized, mode, now, now);
     }
-    return this.tenantActionRule(tenantId)!;
+    return this.personalActionRule(userId)!;
   }
 
-  deleteTenantActionRule(tenantId: string, actorUserId: string): boolean | 'forbidden' {
-    if (!this.isWorkspaceAdmin(tenantId, actorUserId)) return 'forbidden';
-    const result = this.db.prepare("DELETE FROM tenant_action_rules WHERE tenant_id=? AND scope='scratchpad-write'").run(tenantId);
+  deletePersonalActionRule(userId: string): boolean {
+    const result = this.db.prepare("DELETE FROM personal_action_rules WHERE user_id=? AND scope='scratchpad-write'").run(userId);
     return Number(result.changes) > 0;
   }
 
@@ -1112,6 +1141,17 @@ export class Store {
       FROM page_action_approvals WHERE tenant_id=? AND task_id=? ORDER BY created_at DESC,id DESC LIMIT 1`).get(tenantId, taskId) as (Omit<PageActionApproval, 'action'> & { action_json: string }) | undefined;
     if (!row) return null;
     return { ...row, action: JSON.parse(row.action_json) as ScratchpadPageAction };
+  }
+
+  canResolvePageActionApproval(tenantId: string, taskId: string, actorUserId: string): boolean {
+    if (!this.isTenantMember(tenantId, actorUserId)) return false;
+    const row = this.db.prepare(`SELECT a.requested_by_user_id AS requestedBy,t.status,t.created_by_user_id AS taskCreator
+      FROM page_action_approvals a JOIN tasks t ON t.tenant_id=a.tenant_id AND t.id=a.task_id
+      WHERE a.tenant_id=? AND a.task_id=? AND a.status='pending' ORDER BY a.created_at DESC,a.id DESC LIMIT 1`)
+      .get(tenantId, taskId) as { requestedBy: string | null; status: string; taskCreator: string | null } | undefined;
+    if (!row || row.status !== 'waiting') return false;
+    const requestedBy = row.requestedBy || row.taskCreator;
+    return requestedBy ? requestedBy === actorUserId : this.isWorkspaceAdmin(tenantId, actorUserId);
   }
 
   websiteSignInRequest(tenantId: string, taskId: string): WebsiteSignInRequest | null {
@@ -1194,11 +1234,11 @@ export class Store {
     const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const task = this.db.prepare('SELECT status FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, taskId) as { status: TaskStatus } | undefined;
+      const task = this.db.prepare('SELECT status,created_by_user_id AS createdByUserId FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, taskId) as { status: TaskStatus; createdByUserId: string | null } | undefined;
       if (!task || task.status !== 'working') throw new Error('当前工作已不在等待审批的状态');
       const id = randomUUID();
-      this.db.prepare(`INSERT INTO page_action_approvals(id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at)
-        VALUES (?,?,?,?,?,'pending',?,?,?)`).run(id, tenantId, taskId, JSON.stringify(action), message.slice(0, 2000), resumeStatus, nextRunAt, now);
+      this.db.prepare(`INSERT INTO page_action_approvals(id,tenant_id,task_id,action_json,message,status,resume_status,next_run_at,created_at,requested_by_user_id)
+        VALUES (?,?,?,?,?,'pending',?,?,?,?)`).run(id, tenantId, taskId, JSON.stringify(action), message.slice(0, 2000), resumeStatus, nextRunAt, now, task.createdByUserId);
       this.db.prepare("UPDATE tasks SET status='waiting',next_run_at=NULL,error=NULL,agent_session_id=COALESCE(?,agent_session_id),updated_at=? WHERE tenant_id=? AND id=?")
         .run(sessionId, now, tenantId, taskId);
       const verb = action.action === 'create' ? '创建' : '更新';
@@ -1211,15 +1251,21 @@ export class Store {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
-  resolvePageActionApproval(tenantId: string, taskId: string, actorUserId: string, decision: 'approve' | 'decline'): { approval: PageActionApproval; page: WorkspacePage | null } | null {
+  resolvePageActionApproval(tenantId: string, taskId: string, actorUserId: string, decision: 'approve' | 'decline'): { approval: PageActionApproval; page: WorkspacePage | null } | null | 'forbidden' {
     if (!this.isTenantMember(tenantId, actorUserId)) throw new Error('你不是该工作区成员');
     const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const row = this.db.prepare(`SELECT id,action_json,message,resume_status AS resumeStatus,next_run_at AS nextRunAt
+      const row = this.db.prepare(`SELECT id,action_json,message,resume_status AS resumeStatus,next_run_at AS nextRunAt,requested_by_user_id AS requestedBy
         FROM page_action_approvals WHERE tenant_id=? AND task_id=? AND status='pending' ORDER BY created_at DESC,id DESC LIMIT 1`)
-        .get(tenantId, taskId) as { id: string; action_json: string; message: string; resumeStatus: 'done' | 'scheduled'; nextRunAt: string | null } | undefined;
+        .get(tenantId, taskId) as { id: string; action_json: string; message: string; resumeStatus: 'done' | 'scheduled'; nextRunAt: string | null; requestedBy: string | null } | undefined;
       if (!row) { this.db.exec('ROLLBACK'); return null; }
+      const taskOwner = this.db.prepare('SELECT created_by_user_id AS createdByUserId FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, taskId) as { createdByUserId: string | null } | undefined;
+      const requestedBy = row.requestedBy || taskOwner?.createdByUserId || null;
+      if (requestedBy ? requestedBy !== actorUserId : !this.isWorkspaceAdmin(tenantId, actorUserId)) {
+        this.db.exec('ROLLBACK');
+        return 'forbidden';
+      }
       const task = this.db.prepare('SELECT status FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, taskId) as { status: TaskStatus } | undefined;
       if (!task || task.status !== 'waiting') throw new Error('这项工作已不在等待审批状态');
       let page: WorkspacePage | null = null;
@@ -1321,8 +1367,8 @@ export class Store {
         const total = this.db.prepare(`SELECT COALESCE(SUM(size),0) AS total FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).get(tenantId, uploaderId, ...attachmentIds) as { total: number };
         if (total.total > 512 * 1024) throw new Error('附件总大小不能超过 512 KB');
       }
-      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, reasoningEffort, null, taskSchedule ? JSON.stringify(taskSchedule) : null, executionMode);
+      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,created_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, reasoningEffort, null, taskSchedule ? JSON.stringify(taskSchedule) : null, executionMode, uploaderId || null);
       if (attachmentIds.length) {
         const placeholders = attachmentIds.map(() => '?').join(',');
         this.db.prepare(`UPDATE task_attachments SET task_id=? WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`)
@@ -1381,13 +1427,15 @@ export class Store {
       const parent = this.getTask(parentId, tenantId);
       if (!parent || parent.status !== 'working' || parent.parentTaskId || scheduleForTask(parent.scheduleSpec, parent.scheduleMinutes)) throw new Error('当前工作不能委派子任务');
       if (this.delegatedTasks(parentId, tenantId).length) throw new Error('此工作已经委派过子任务');
+      const parentOwner = this.db.prepare('SELECT created_by_user_id AS createdByUserId FROM tasks WHERE tenant_id=? AND id=?')
+        .get(tenantId, parentId) as { createdByUserId: string | null };
       const children: Task[] = [];
       for (const delegated of delegations) {
         const id = randomUUID();
         const title = delegated.title.trim();
         const instruction = delegated.instruction.trim();
-        this.db.prepare('INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,parent_task_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-          .run(id, tenantId, title, instruction, 'queued', parent.priority, now, null, null, null, now, now, delegated.engine || parent.engine, parent.reasoningEffort, null, null, parentId);
+        this.db.prepare('INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,parent_task_id,created_by_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, tenantId, title, instruction, 'queued', parent.priority, now, null, null, null, now, now, delegated.engine || parent.engine, parent.reasoningEffort, null, null, parentId, parentOwner.createdByUserId);
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
           .run(tenantId, id, 'system', `由「${parent.title}」委派；结果将返回给主任务。`, now);
         children.push(this.getTask(id, tenantId)!);

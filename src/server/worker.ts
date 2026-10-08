@@ -130,7 +130,7 @@ export class Worker {
         personalDotMemories: personalMemoryContext?.memories,
         allowPersonalDotMemoryUpdates: Boolean(personalMemoryContext),
         pages: this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
-        actionRule: this.store.tenantActionRule(task.tenantId),
+        actionRule: this.store.personalActionRuleForTask(task.tenantId, task.id),
         allowDelegation: task.executionMode !== 'read-only' && !task.parentTaskId && children.length === 0,
         executionMode: task.executionMode,
         reasoningEffort: task.reasoningEffort,
@@ -207,7 +207,7 @@ export class Worker {
         ? nextScheduleOccurrence(recurrence, new Date())
         : decision.status === 'scheduled' ? new Date(Date.now() + nextMinutes * 60_000).toISOString() : null;
       const status = shouldContinueSchedule ? nextRunAt ? 'scheduled' : 'done' : decision.status;
-      const actionRule = this.store.tenantActionRule(task.tenantId);
+      const actionRule = this.store.personalActionRuleForTask(task.tenantId, task.id);
       let outputMessage = decision.message;
       if (decision.pageAction) {
         if (actionRule?.mode === 'ask-before') {
@@ -220,7 +220,7 @@ export class Worker {
           const message = `我没有修改 Scratchpad。请由你自行${decision.pageAction.action === 'create' ? '创建' : '编辑'}页面「${decision.pageAction.title}」；完成后可以在这里告诉我继续。`;
           this.store.updateTask(task.id, { status: 'waiting', nextRunAt: null, error: null }, task.tenantId);
           this.store.addEntry('dot', message, task.id, task.tenantId);
-          this.store.addEntry('system', '按工作区规则将 Scratchpad 写入交由用户手动完成；页面未更改。', task.id, task.tenantId);
+          this.store.addEntry('system', '按发起账号的规则将 Scratchpad 写入交由用户手动完成；页面未更改。', task.id, task.tenantId);
           this.notifyIfEnabled(task.tenantId, `“${task.title}”需要你手动处理 Scratchpad 页面。`);
           this.onChange();
           return;
@@ -229,7 +229,7 @@ export class Worker {
           const message = '我没有修改 Scratchpad，因为当前规则只允许在你明确要求创建或更新页面时执行。请说明要创建或修改哪一页，我再继续。';
           this.store.updateTask(task.id, { status: 'waiting', nextRunAt: null, error: null }, task.tenantId);
           this.store.addEntry('dot', message, task.id, task.tenantId);
-          this.store.addEntry('system', '当前工作区规则要求明确的 Scratchpad 页面指令；页面未更改。', task.id, task.tenantId);
+          this.store.addEntry('system', '发起账号的规则要求明确的 Scratchpad 页面指令；页面未更改。', task.id, task.tenantId);
           this.notifyIfEnabled(task.tenantId, `“${task.title}”正在等待你确认 Scratchpad 页面操作。`);
           this.onChange();
           return;

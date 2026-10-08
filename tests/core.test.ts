@@ -389,7 +389,7 @@ test('Scratchpad pages persist per tenant and an agent task reuses its page on l
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('tenant action rules are admin managed and page approvals do not write until approved', () => {
+test('personal action rules follow one Google account across workspaces and approvals stay with the task owner', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-rules-'));
   try {
     const store = new Store(directory);
@@ -404,41 +404,55 @@ test('tenant action rules are admin managed and page approvals do not write unti
     assert.ok(store.acceptWorkspaceInvitation(workspace.id, betaSession, beta.user.id, beta.user.email));
     assert.equal(store.isWorkspaceAdmin(workspace.id, alpha.user.id), true);
     assert.equal(store.isWorkspaceAdmin(workspace.id, beta.user.id), false);
-    assert.throws(() => store.saveTenantActionRule(workspace.id, beta.user.id, 'Update release notes', 'ask-before'), /only workspaces owners|管理员/i);
-    const rule = store.saveTenantActionRule(workspace.id, alpha.user.id, 'Update release notes', 'ask-before');
+    const rule = store.savePersonalActionRule(alpha.user.id, 'Update release notes', 'ask-before');
     assert.equal(rule.mode, 'ask-before');
-    assert.equal(store.tenantActionRule(alpha.tenant.id), null, 'The shared-workspace rule leaked into the owner personal tenant');
-    assert.throws(() => store.saveTenantActionRule(workspace.id, alpha.user.id, 'x'.repeat(1001), 'ask-before'), /规则说明/);
+    assert.equal(store.personalActionRule(alpha.user.id)?.instruction, 'Update release notes', 'The same account rule remains available independently of its active tenant');
+    assert.equal(store.personalActionRule(beta.user.id), null, 'Alpha personal rules leaked to a different Google account');
+    const betaRule = store.savePersonalActionRule(beta.user.id, 'Only ask me about my own changes', 'when-requested');
+    assert.notEqual(betaRule.instruction, rule.instruction, 'A member can manage only their own account rule');
+    assert.equal(store.personalActionRule(alpha.user.id)?.instruction, 'Update release notes', 'Beta overwrote Alpha account preferences');
+    assert.throws(() => store.savePersonalActionRule(alpha.user.id, 'x'.repeat(1001), 'ask-before'), /规则说明/);
 
-    const task = store.createTask('Create a page with release notes', null, 'model', workspace.id);
+    const task = store.createTask('Create a page with release notes', null, 'model', workspace.id, null, null, [], alpha.user.id);
+    assert.equal(store.personalActionRuleForTask(workspace.id, task.id)?.userId, alpha.user.id, 'A task uses the rule owned by the Google account that started it');
     store.updateTask(task.id, { status: 'working' }, workspace.id);
     const proposal = { action: 'create' as const, title: 'Release notes', content: '# Draft\n- Publish Friday' };
     const approval = store.requestPageActionApproval(workspace.id, task.id, proposal, 'Prepare the release notes page.', 'done', null);
     assert.equal(approval.status, 'pending');
     assert.equal(store.getTask(task.id, workspace.id)?.status, 'waiting');
     assert.equal(store.tenantPages(workspace.id).length, 0, 'A page was written before approval');
+    assert.equal(store.canResolvePageActionApproval(workspace.id, task.id, alpha.user.id), true);
+    assert.equal(store.canResolvePageActionApproval(workspace.id, task.id, beta.user.id), false, 'Another workspace member cannot decide for the task owner');
     assert.equal(store.pageActionApproval(alpha.tenant.id, task.id), null, 'Another tenant retrieved a pending approval');
     assert.equal(store.resolvePageActionApproval(alpha.tenant.id, task.id, alpha.user.id, 'approve'), null, 'A different tenant resolved an approval by guessing its task ID');
 
-    const resolved = store.resolvePageActionApproval(workspace.id, task.id, beta.user.id, 'approve');
+    const unauthorized = store.resolvePageActionApproval(workspace.id, task.id, beta.user.id, 'approve');
+    assert.equal(unauthorized, 'forbidden', 'The database rejected approval from a different account');
+    assert.equal(store.tenantPages(workspace.id).length, 0, 'An unauthorized approval wrote the shared page');
+    const resolved = store.resolvePageActionApproval(workspace.id, task.id, alpha.user.id, 'approve');
+    assert.notEqual(resolved, 'forbidden');
+    if (!resolved || resolved === 'forbidden') throw new Error('Expected Alpha to approve the page action');
     assert.equal(resolved?.approval.status, 'approved');
     assert.equal(resolved?.page?.title, 'Release notes');
     assert.equal(store.getTask(task.id, workspace.id)?.status, 'done');
     assert.equal(store.tenantPages(workspace.id)[0]?.content, '# Draft\n- Publish Friday');
     assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, workspace.id).entries.some(entry => entry.taskId === task.id && /批准/.test(entry.body)));
 
-    const declinedTask = store.createTask('Create an unapproved page', null, 'model', workspace.id);
+    const declinedTask = store.createTask('Create an unapproved page', null, 'model', workspace.id, null, null, [], alpha.user.id);
     store.updateTask(declinedTask.id, { status: 'working' }, workspace.id);
     store.requestPageActionApproval(workspace.id, declinedTask.id, { ...proposal, title: 'Never saved' }, 'Proposed page.', 'done', null);
     const declined = store.resolvePageActionApproval(workspace.id, declinedTask.id, alpha.user.id, 'decline');
+    assert.notEqual(declined, 'forbidden');
+    if (!declined || declined === 'forbidden') throw new Error('Expected Alpha to decline the page action');
     assert.equal(declined?.approval.status, 'declined');
     assert.equal(declined?.page, null);
     assert.equal(store.tenantPage(workspace.id, declinedTask.id), null);
     assert.equal(store.tenantPages(workspace.id).length, 1, 'Declining the proposed write created page data');
-    assert.equal(store.deleteTenantActionRule(workspace.id, beta.user.id), 'forbidden');
-    assert.equal(store.deleteTenantActionRule(workspace.id, alpha.user.id), true);
+    assert.equal(store.deletePersonalActionRule(beta.user.id), true);
+    assert.equal(store.personalActionRule(alpha.user.id)?.instruction, 'Update release notes', 'Deleting another account rule cannot affect Alpha');
+    assert.equal(store.deletePersonalActionRule(alpha.user.id), true);
 
-    const stoppableTask = store.createTask('Prepare notes and wait for Scratchpad approval', null, 'model', workspace.id);
+    const stoppableTask = store.createTask('Prepare notes and wait for Scratchpad approval', null, 'model', workspace.id, null, null, [], alpha.user.id);
     store.updateTask(stoppableTask.id, { status: 'working' }, workspace.id);
     store.requestPageActionApproval(workspace.id, stoppableTask.id, { ...proposal, title: 'Cancelled notes' }, 'Proposed page.', 'done', null);
     const stopped = store.stopTask(stoppableTask.id, workspace.id, beta.user.id);
@@ -449,9 +463,32 @@ test('tenant action rules are admin managed and page approvals do not write unti
     assert.equal(store.tenantPages(workspace.id).length, 1, 'Stopping a pending approval wrote a page');
     assert.equal(store.stopTask(stoppableTask.id, alpha.tenant.id, alpha.user.id), null, 'A different tenant stopped a task by guessing its ID');
 
-    const recurringTask = store.createTask('Continue the weekly release review', 60, 'model', workspace.id);
+    const recurringTask = store.createTask('Continue the weekly release review', 60, 'model', workspace.id, null, null, [], alpha.user.id);
     assert.throws(() => store.stopTask(recurringTask.id, workspace.id, alpha.user.id), /Scheduled/);
     assert.equal(store.getTask(recurringTask.id, workspace.id)?.status, 'queued', 'Task stop removed a recurring schedule outside Scheduled');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('legacy workspace action rules migrate once to the latest rule per Google account', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-personal-rule-migration-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'rule-migration-alpha', email: 'rule-migration-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'rule-migration-beta', email: 'rule-migration-beta@example.test', name: 'Beta' });
+    const shared = store.createWorkspace(alpha.user.id, 'Alpha shared for rule migration');
+    const insert = store.db.prepare('INSERT INTO tenant_action_rules(id,tenant_id,scope,instruction,mode,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)');
+    insert.run('legacy-alpha-personal', alpha.tenant.id, 'scratchpad-write', 'Older Alpha rule', 'ask-before', alpha.user.id, '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z');
+    insert.run('legacy-alpha-shared', shared.id, 'scratchpad-write', 'Newest Alpha rule', 'when-requested', alpha.user.id, '2025-02-01T00:00:00.000Z', '2025-02-01T00:00:00.000Z');
+    insert.run('legacy-beta-personal', beta.tenant.id, 'scratchpad-write', 'Beta rule', 'hand-off', beta.user.id, '2025-01-15T00:00:00.000Z', '2025-01-15T00:00:00.000Z');
+    store.db.prepare("DELETE FROM tenant_settings WHERE tenant_id='legacy' AND key='personalActionRulesMigrationV1'").run();
+    store.close();
+
+    store = new Store(directory);
+    assert.equal(store.personalActionRule(alpha.user.id)?.instruction, 'Newest Alpha rule', 'The latest old workspace rule wins when one Google account had multiple copies');
+    assert.equal(store.personalActionRule(alpha.user.id)?.mode, 'when-requested');
+    assert.equal(store.personalActionRule(beta.user.id)?.instruction, 'Beta rule', 'Another Google account’s rule remains isolated');
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM personal_action_rules').get()?.count, 2);
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
@@ -523,23 +560,23 @@ test('Scratchpad write rules enforce no-ask, explicit-request, and hand-off mode
   const worker = new Worker(store, () => {});
   try {
     worker.start();
-    store.saveTenantActionRule(user.tenant.id, user.user.id, 'Prepare useful project notes.', 'without-asking');
-    const noAskTask = store.createTask('E2E permission mode one', null, 'model', user.tenant.id);
+    store.savePersonalActionRule(user.user.id, 'Prepare useful project notes.', 'without-asking');
+    const noAskTask = store.createTask('E2E permission mode one', null, 'model', user.tenant.id, null, null, [], user.user.id);
     void worker.tick();
     await waitFor(() => store.getTask(noAskTask.id, user.tenant.id)?.status === 'done');
     assert.equal(store.tenantPages(user.tenant.id).length, 1, 'The no-ask mode did not perform its supported page write');
     assert.match(prompts[0], /Take the Scratchpad page action without asking again/);
 
-    store.saveTenantActionRule(user.tenant.id, user.user.id, 'Create a page only if directly requested.', 'when-requested');
-    const explicitTask = store.createTask('E2E permission mode two', null, 'model', user.tenant.id);
+    store.savePersonalActionRule(user.user.id, 'Create a page only if directly requested.', 'when-requested');
+    const explicitTask = store.createTask('E2E permission mode two', null, 'model', user.tenant.id, null, null, [], user.user.id);
     void worker.tick();
     await waitFor(() => store.getTask(explicitTask.id, user.tenant.id)?.status === 'waiting');
     assert.equal(store.tenantPages(user.tenant.id).length, 1, 'A non-explicit page write bypassed the runtime check');
-    assert.match(prompts[1], /only when the user explicitly requests that action/);
+    assert.match(prompts[1], /only when the task owner explicitly requests that action/);
     assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, user.tenant.id).entries.some(entry => entry.taskId === explicitTask.id && /明确要求/.test(entry.body)));
 
-    store.saveTenantActionRule(user.tenant.id, user.user.id, 'Hand over page changes for manual editing.', 'hand-off');
-    const handoffTask = store.createTask('E2E permission mode three', null, 'model', user.tenant.id);
+    store.savePersonalActionRule(user.user.id, 'Hand over page changes for manual editing.', 'hand-off');
+    const handoffTask = store.createTask('E2E permission mode three', null, 'model', user.tenant.id, null, null, [], user.user.id);
     void worker.tick();
     await waitFor(() => store.getTask(handoffTask.id, user.tenant.id)?.status === 'waiting');
     assert.equal(store.tenantPages(user.tenant.id).length, 1, 'A hand-off rule allowed the agent page write');

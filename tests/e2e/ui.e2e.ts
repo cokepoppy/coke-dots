@@ -2587,7 +2587,7 @@ try {
     await alphaPage!.getByTestId('personal-dot-memory-manager').getByTestId('empty-personal-dot-memory-list').waitFor({ state: 'visible' });
   });
 
-  await recordStep('Workspace admins set a tenant rule and members can review its scope', async () => {
+  await recordStep('Custom rules follow each Google account across workspaces', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await openProfile(alphaPage!);
     const ruleManager = alphaPage!.getByTestId('action-rule-manager');
@@ -2597,18 +2597,34 @@ try {
     await ruleManager.getByLabel('规则处理方式').selectOption('ask-before');
     await ruleManager.getByRole('button', { name: 'Save rule' }).click();
     await ruleManager.getByTestId('custom-action-rule').getByText('Ask before taking action', { exact: true }).waitFor({ state: 'visible' });
-    await screenshot(alphaPage!, '18d-alpha-shared-scratchpad-rule');
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('action-rule-manager').getByText('Create or update the shared launch notes.').waitFor({ state: 'visible' });
 
     await selectTenant(betaPage!, 'Alpha Shared');
     await openProfile(betaPage!);
     const memberRuleManager = betaPage!.getByTestId('action-rule-manager');
-    await memberRuleManager.getByTestId('custom-action-rule').waitFor({ state: 'visible' });
-    assert.equal(await memberRuleManager.getByRole('button', { name: 'Edit rule' }).count(), 0, 'A regular workspace member received rule-management controls');
+    await memberRuleManager.getByText('No custom rule is set.', { exact: false }).waitFor({ state: 'visible' });
+    await memberRuleManager.getByRole('button', { name: 'Add rule' }).click();
+    await memberRuleManager.getByLabel('规则说明').fill('Keep my account changes separate.');
+    await memberRuleManager.getByLabel('规则处理方式').selectOption('ask-before');
+    await memberRuleManager.getByRole('button', { name: 'Save rule' }).click();
+    await memberRuleManager.getByTestId('custom-action-rule').getByText('Keep my account changes separate.').waitFor({ state: 'visible' });
+    await selectTenant(betaPage!, 'Beta workspace');
+    await openProfile(betaPage!);
+    await betaPage!.getByTestId('action-rule-manager').getByText('Keep my account changes separate.').waitFor({ state: 'visible' });
+    await selectTenant(betaPage!, 'Alpha Shared');
+    await openProfile(betaPage!);
+    assert.equal(await memberRuleManager.getByText('Create or update the shared launch notes.').count(), 0, 'Alpha personal rule leaked into Beta account settings');
+
     await selectTenant(alphaPage!, 'Alpha Shared');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('action-rule-manager').getByText('Create or update the shared launch notes.').waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '18d-alpha-account-scratchpad-rule');
     await clickNav(alphaPage!, '你的 dot');
   });
 
-  await recordStep('Scratchpad page actions wait for tenant approval and respect a decline', async () => {
+  await recordStep('Scratchpad approvals belong to the task owner account and respect a decline', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await clickNav(alphaPage!, '你的 dot');
     const instruction = 'E2E Scratchpad page — create the team launch notes';
@@ -2637,9 +2653,21 @@ try {
     const memberApproval = betaPage!.getByTestId('page-action-approval');
     await memberApproval.waitFor({ state: 'visible' });
     await screenshot(betaPage!, '18e-member-scratchpad-approval');
-    const pendingState = await betaPage!.evaluate(async (id: string) => fetch(`/api/tasks/${id}/approval`).then(response => response.json()), taskId) as { status: string };
+    const pendingState = await betaPage!.evaluate(async (id: string) => fetch(`/api/tasks/${id}/approval`).then(response => response.json()), taskId) as { status: string; canDecide: boolean };
     assert.equal(pendingState.status, 'pending');
-    await memberApproval.getByRole('button', { name: '批准并执行' }).click();
+    assert.equal(pendingState.canDecide, false, 'Another account must not be able to decide Alpha’s pending action');
+    assert.equal(await memberApproval.getByRole('button', { name: '批准并执行' }).count(), 0);
+    assert.match(await memberApproval.innerText(), /只有发起任务的账号可以批准或拒绝/);
+    const deniedDecision = await betaPage!.evaluate(async (id: string) => {
+      const response = await fetch(`/api/tasks/${id}/approval`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'approve' }) });
+      return { status: response.status, body: await response.json() as { error?: string } };
+    }, taskId);
+    assert.equal(deniedDecision.status, 403, 'The server rejected approval from another account');
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, 'Activity');
+    const ownerTask = alphaPage!.locator('.task-card').filter({ hasText: instruction });
+    await ownerTask.getByRole('button', { name: /查看详情/ }).click();
+    await alphaPage!.getByTestId('page-action-approval').getByRole('button', { name: '批准并执行' }).click();
     await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
     const approvedPages = await alphaPage!.evaluate(async () => fetch('/api/pages').then(response => response.json())) as { id: string; title: string; content: string }[];
     assert.equal(approvedPages.length, 1, 'Approval did not write exactly one page');
