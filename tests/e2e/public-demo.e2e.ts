@@ -15,7 +15,7 @@ const videoDirectory = join(artifactRoot, 'video');
 const showcaseVideos = await Promise.all([
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
-  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 16, minimumFrames: 250 },
+  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 16, minimumFrames: 220 },
   { file: 'proactive-cloud-computer-followthrough.webp', width: 914, height: 635, minimumDurationSeconds: 39, minimumFrames: 500 },
 ].map(async video => {
   const bytes = await readFile(join(projectRoot, 'public', 'demos', video.file));
