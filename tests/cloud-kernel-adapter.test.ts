@@ -47,6 +47,32 @@ test('Pi cloud kernel keeps the shared key in memory and the native session insi
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('Pi cloud kernel disposes its active session when the cloud runtime aborts a redirected task', async () => {
+  const { root, task } = await makeWorkspace();
+  let promptStarted!: () => void;
+  const promptStartedPromise = new Promise<void>(resolve => { promptStarted = resolve; });
+  let rejectPrompt!: (error: Error) => void;
+  let disposeCount = 0;
+  const sdk = {
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+    ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+    SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-abort-session' }), open: () => { throw new Error('unexpected resume'); } },
+    createAgentSession: async () => ({ session: {
+      messages: [],
+      prompt: () => { promptStarted(); return new Promise((_resolve, reject) => { rejectPrompt = reject; }); },
+      dispose: () => { disposeCount += 1; rejectPrompt?.(new Error('Pi session disposed')); },
+    } }),
+  };
+  const controller = new AbortController();
+  try {
+    const running = runCloudKernel({ engine: 'pi', prompt: 'old direction', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig, signal: controller.signal }, { piSdk: sdk });
+    await promptStartedPromise;
+    controller.abort(new Error('Task redirected by user'));
+    await assert.rejects(running, /Pi session disposed/);
+    assert(disposeCount >= 1, 'Pi must dispose the session that is performing the obsolete run');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('Pi cloud browser tool uses only its scoped read-only bridge capability', async () => {
   const { root, task } = await makeWorkspace();
   const requests: { url: string; token: string }[] = [];
@@ -244,6 +270,33 @@ test('DeepSeek Harness routes the shared OpenAI-compatible profile through its p
     assert.equal(written.some(name => name.endsWith('.mjs')), false, 'Per-run browser plugins are removed after completion');
     assert.match(safetyPatch, /- id: tool-bash\n  disabled: true/);
     assert.match(safetyPatch, /- id: tool-fs-search\n  disabled: true/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('DeepSeek Harness closes its active runtime when the cloud Agent process is interrupted', async () => {
+  const { root, task } = await makeWorkspace();
+  let runStarted!: () => void;
+  const runStartedPromise = new Promise<void>(resolve => { runStarted = resolve; });
+  let rejectRun!: (error: Error) => void;
+  let closeCount = 0;
+  class HangingHarness {
+    constructor(_options: Record<string, unknown>) {}
+    async run() {
+      runStarted();
+      return new Promise((_resolve, reject) => { rejectRun = reject; });
+    }
+    async close() {
+      closeCount += 1;
+      rejectRun?.(new Error('DeepSeek Harness runtime closed'));
+    }
+  }
+  const controller = new AbortController();
+  try {
+    const running = runCloudKernel({ engine: 'dsh', prompt: 'old direction', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig, signal: controller.signal }, { dshSdk: { DeepSeekHarness: HangingHarness } });
+    await runStartedPromise;
+    controller.abort(new Error('Task redirected by user'));
+    await assert.rejects(running, /DeepSeek Harness runtime closed/);
+    assert(closeCount >= 1, 'The DSH subprocess owner must close while its task is being cancelled');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

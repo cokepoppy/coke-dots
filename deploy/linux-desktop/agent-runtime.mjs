@@ -12,6 +12,7 @@ const workspace = path.resolve(process.env.DOTS_AGENT_WORKSPACE || '/workspace')
 // path is owned by the isolated runtime UID and survives Pod replacement on the
 // tenant PVC without exposing API-backed session state to the desktop process.
 const runtimeStateDirectory = path.join(workspace, '.coke-dots-agent-runtime-state');
+const adapterInterruptGraceMs = 12_000;
 const supportedEngines = new Set(['pi', 'dsh']);
 const allowedEngines = parseEngineList(process.env.DOTS_DESKTOP_AGENT_ADAPTERS || '');
 const configured = parseAdapterConfig(process.env.DOTS_AGENT_KERNELS_JSON || '{}');
@@ -196,7 +197,7 @@ async function executeKernel(input, slot) {
     child.stdin.end(JSON.stringify(taskInput));
     timer = setTimeout(() => child.kill('SIGTERM'), 14 * 60_000);
     controlPoll = setInterval(() => { void controlOwner().then(owner => { if (owner === 'user') pauseActive(); }).catch(() => child.kill('SIGTERM')); }, 500);
-    abort.signal.addEventListener('abort', () => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2000).unref(); }, { once: true });
+    abort.signal.addEventListener('abort', () => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), adapterInterruptGraceMs).unref(); }, { once: true });
     const code = await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('close', value => resolve(value ?? 1));
@@ -350,6 +351,13 @@ function interruptTask(taskId, action) {
   return true;
 }
 
+async function interruptTaskAndWait(taskId, action) {
+  const running = inFlight.get(taskId)?.promise;
+  const interrupted = interruptTask(taskId, action);
+  if (interrupted && running) await Promise.allSettled([running]);
+  return interrupted;
+}
+
 function interruptionDecision(input, slot) {
   const taskId = String(input.taskId || '');
   if (slot.stoppedByUser) throw new Error('Agent task was stopped by the user');
@@ -376,12 +384,14 @@ http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && pathname === '/v1/tasks/pause') {
       const body = await readJson(req);
-      const paused = body.taskId ? interruptTask(String(body.taskId), 'pause') : (pauseActive(), Boolean(active?.child));
+      const taskId = body.taskId ? String(body.taskId) : active?.taskId;
+      const paused = taskId ? await interruptTaskAndWait(taskId, 'pause') : (pauseActive(), false);
       return send(res, 200, { paused });
     }
     if (req.method === 'POST' && pathname === '/v1/tasks/stop') {
       const body = await readJson(req);
-      const stopped = body.taskId ? interruptTask(String(body.taskId), 'stop') : Boolean(active && interruptTask(active.taskId, 'stop'));
+      const taskId = body.taskId ? String(body.taskId) : active?.taskId;
+      const stopped = taskId ? await interruptTaskAndWait(taskId, 'stop') : false;
       return send(res, 200, { stopped });
     }
     return send(res, 404, { error: 'not found' });

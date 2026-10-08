@@ -7,6 +7,7 @@ import type { TaskExecutionMode } from '../shared/types.ts';
 
 const workerPort = 8082;
 const vncPort = 6080;
+const remoteTaskStopTimeoutMs = 15_000;
 
 export interface DesktopConnection {
   workerUrl: URL;
@@ -164,7 +165,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
         method: 'POST',
         headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
         body: JSON.stringify({ taskId: input.taskId }),
-        signal: AbortSignal.timeout(2000),
+        signal: AbortSignal.timeout(remoteTaskStopTimeoutMs),
       }).catch(() => undefined);
       requestAbort.abort(input.signal?.reason);
     };

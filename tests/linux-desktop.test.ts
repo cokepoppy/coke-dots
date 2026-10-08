@@ -193,6 +193,82 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
   }
 });
 
+test('aborting an active cloud Agent task waits for the remote runtime to stop before cancelling its HTTP run', async () => {
+  const events: string[] = [];
+  let runStarted!: () => void;
+  const runStartedPromise = new Promise<void>(resolve => { runStarted = resolve; });
+  let stopStarted!: () => void;
+  const stopStartedPromise = new Promise<void>(resolve => { stopStarted = resolve; });
+  let stopBody: Record<string, unknown> | null = null;
+  let stopAuthorization = '';
+  let workerServer!: ReturnType<typeof createServer>;
+  workerServer = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/v1/control') {
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ owner: 'agent' })); return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/state') {
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ready: true, owner: 'agent', url: 'about:blank', title: '' })); return;
+    }
+    res.writeHead(404); res.end();
+  });
+  const agentServer = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> : {};
+    if (req.method === 'POST' && req.url === '/v1/tasks/run') {
+      events.push('run-started');
+      res.once('close', () => { if (!res.writableEnded) events.push('run-aborted'); });
+      runStarted();
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/v1/tasks/stop') {
+      stopBody = body;
+      stopAuthorization = String(req.headers.authorization || '');
+      events.push('stop-requested');
+      stopStarted();
+      await new Promise(resolve => setTimeout(resolve, 180));
+      events.push('remote-stop-finished');
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ stopped: true }));
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise<void>(resolve => workerServer.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>(resolve => agentServer.listen(0, '127.0.0.1', resolve));
+  const workerAddress = workerServer.address();
+  const agentAddress = agentServer.address();
+  assert(workerAddress && typeof workerAddress !== 'string');
+  assert(agentAddress && typeof agentAddress !== 'string');
+  const computer = new LinuxDesktopComputer('tenant-redirect', {
+    async connect() {
+      return {
+        workerUrl: new URL(`http://127.0.0.1:${workerAddress.port}/`),
+        novncUrl: new URL(`http://127.0.0.1:${workerAddress.port}/`),
+        agentUrl: new URL(`http://127.0.0.1:${agentAddress.port}/`),
+        workerToken: 'redirect-worker-token', agentToken: 'redirect-agent-token',
+      };
+    },
+  });
+  const controller = new AbortController();
+  try {
+    const taskPromise = computer.runAgentTask({ engine: 'pi', taskId: '55555555-5555-4555-8555-555555555555', prompt: 'old direction', sessionId: null, signal: controller.signal });
+    await runStartedPromise;
+    controller.abort(new Error('Task redirected by user'));
+    await stopStartedPromise;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.deepEqual(events, ['run-started', 'stop-requested'], 'The old task request must stay open while the remote runtime handles stop');
+    assert.deepEqual(stopBody, { taskId: '55555555-5555-4555-8555-555555555555' });
+    assert.equal(stopAuthorization, 'Bearer redirect-agent-token', 'The remote stop must use only the Agent runtime token');
+    await assert.rejects(taskPromise, /Task redirected by user/);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(events, ['run-started', 'stop-requested', 'remote-stop-finished', 'run-aborted']);
+  } finally {
+    await computer.close();
+    await new Promise<void>(resolve => workerServer.close(() => resolve()));
+    await new Promise<void>(resolve => agentServer.close(() => resolve()));
+  }
+});
+
 test('Linux desktop reconnects after a stale worker port-forward fails', async () => {
   async function startWorker(title: string) {
     const server = createServer((req, res) => {

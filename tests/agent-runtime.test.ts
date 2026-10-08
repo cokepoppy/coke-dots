@@ -56,8 +56,16 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       "import { appendFile } from 'node:fs/promises';",
       "let raw = ''; for await (const chunk of process.stdin) raw += chunk;",
       'const input = JSON.parse(raw);',
-      "await appendFile(process.env.DOTS_TEST_MARKER, `start ${input.taskId}\\n`);",
-      "if (input.prompt === 'hold') await new Promise(resolve => setTimeout(resolve, 30000));",
+      "await appendFile(process.env.DOTS_TEST_MARKER, `start ${input.taskId} ${input.prompt}\\n`);",
+      "if (input.prompt === 'hold') {",
+      "  process.once('SIGTERM', async () => {",
+      "    await appendFile(process.env.DOTS_TEST_MARKER, `stop-start ${input.taskId}\\n`);",
+      "    await new Promise(resolve => setTimeout(resolve, 250));",
+      "    await appendFile(process.env.DOTS_TEST_MARKER, `stop-complete ${input.taskId}\\n`);",
+      "    process.exit(143);",
+      "  });",
+      "  await new Promise(resolve => setTimeout(resolve, 30000));",
+      "}",
       'await new Promise(resolve => setTimeout(resolve, 80));',
       "await appendFile(process.env.DOTS_TEST_MARKER, `end ${input.taskId}\\n`);",
       "process.stdout.write(JSON.stringify({ status: 'done', message: `${process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'runtime token leaked' : 'runtime token isolated'}; ${process.env.LINUX_DESKTOP_WORKER_TOKEN ? 'worker token leaked' : 'worker token isolated'}` }));",
@@ -120,15 +128,26 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     const stoppedId = '55555555-5555-4555-8555-555555555555';
     const stoppedPromise = submit(stoppedId, 'hold');
     await waitFor(async () => (await readFile(markerPath, 'utf8').catch(() => '')).includes(`start ${stoppedId}`));
-    const stopResponse = await fetch(`${runtimeUrl}/v1/tasks/stop`, {
+    let stopSettled = false;
+    const stopRequest = fetch(`${runtimeUrl}/v1/tasks/stop`, {
       method: 'POST', headers: { authorization: 'Bearer agent-test-token-never-print', 'content-type': 'application/json' },
       body: JSON.stringify({ taskId: stoppedId }),
-    });
+    }).then(response => { stopSettled = true; return response; });
+    await waitFor(async () => (await readFile(markerPath, 'utf8').catch(() => '')).includes(`stop-start ${stoppedId}`));
+    await new Promise(resolve => setTimeout(resolve, 75));
+    assert.equal(stopSettled, false, 'The stop acknowledgement must wait for the Agent process to release the cloud runtime');
+    const stopResponse = await stopRequest;
     assert.equal((await stopResponse.json() as { stopped?: boolean }).stopped, true, 'The tenant task stop endpoint must interrupt the named task');
     const stopped = await stoppedPromise;
     assert.equal(stopped.status, 400);
     assert.match(stopped.body.error || '', /stopped by the user/i);
-    assert.doesNotMatch(await readFile(markerPath, 'utf8'), new RegExp(`end ${stoppedId}`), 'A stopped adapter must not finish in the background');
+    const stoppedEvents = await readFile(markerPath, 'utf8');
+    assert.match(stoppedEvents, new RegExp(`stop-complete ${stoppedId}`), 'The Agent process must finish graceful cleanup before stop returns');
+    assert.doesNotMatch(stoppedEvents, new RegExp(`end ${stoppedId}`), 'A stopped adapter must not finish in the background');
+    const replacement = await submit(stoppedId, 'replacement direction');
+    assert.equal(replacement.status, 200, JSON.stringify(replacement));
+    assert.equal(replacement.body.status, 'done');
+    assert.match(await readFile(markerPath, 'utf8'), new RegExp(`start ${stoppedId} replacement direction`), 'The redirected task must be able to reuse its ID after the old kernel exits');
   } finally {
     if (child && child.exitCode === null) {
       child.kill('SIGTERM');
