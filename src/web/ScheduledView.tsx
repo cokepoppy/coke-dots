@@ -63,6 +63,7 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
   const selectedWatchReview = selected?.kind === 'watch' && selected.watch.lastTaskId
     ? tasks.find(task => task.id === selected.watch.lastTaskId) || null
     : null;
+  const hasPendingDelivery = taskRuns.some(run => run.deliveryStatus === 'pending');
 
   useEffect(() => {
     if (!selected || !filtered.some(item => item.key === selectedKey)) setSelectedKey(filtered[0]?.key || null);
@@ -94,6 +95,17 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
   // Scheduled history refreshes with task state; only an explicit row click marks it read.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedKey, selectedTaskUpdatedAt]);
+
+  useEffect(() => {
+    if (selected?.kind !== 'task' || !hasPendingDelivery) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      void onLoadTaskRuns(selected.task.id).then(runs => { if (!cancelled) setTaskRuns(runs); }).catch(() => undefined);
+    }, 5_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  // Poll only while the selected task has a durable result delivery awaiting completion.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKey, hasPendingDelivery]);
 
   async function submitWatch() {
     if (!watchUrl.trim() || watchBusy) return;
@@ -197,6 +209,10 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
         <h2>{selected.task.title}</h2>
         <p className="scheduled-instruction">{selected.task.instruction}</p>
         <div className="scheduled-detail-meta"><span>{scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes) ? describeSchedule(scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes)!) : 'One-time follow-up'}</span><span>Next run: {['failed', 'paused', 'waiting'].includes(selected.task.status) ? 'Not scheduled' : selected.task.nextRunAt ? new Date(selected.task.nextRunAt).toLocaleString() : 'Not scheduled'}</span></div>
+        {scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes) && <p className="scheduled-delivery-summary" data-testid="scheduled-delivery-summary">
+          Results: {selected.task.deliveryDestination.type === 'slack' ? `Slack DM · ${selected.task.deliveryDestination.teamName}` : 'Dots conversation'}
+          {' · '}{selected.task.notificationPolicy === 'every-run' ? 'Every run' : 'Only when attention is needed'}
+        </p>}
         {selected.task.error && <p className="scheduled-detail-error" role="alert">{selected.task.error}</p>}
         {selected.task.result && <div className="scheduled-result"><span>Latest result</span><p>{selected.task.result}</p></div>}
         {(runsLoading || runsError || taskRuns.length > 0) && <section className="scheduled-run-history" aria-label="Recent scheduled runs" data-testid="scheduled-run-history">
@@ -207,6 +223,9 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
           {!runsLoading && taskRuns.length > 0 && <ol className="scheduled-run-list">{taskRuns.map(run => <li key={run.id} className={`scheduled-run ${run.needsAttention && !run.readAt ? 'unread' : ''}`}>
             <div><strong>{run.status === 'waiting' ? 'Needs you' : run.status === 'failed' ? 'Failed' : 'Complete'}</strong><time dateTime={run.finishedAt}>{new Date(run.finishedAt).toLocaleString()}</time></div>
             {(run.error || run.result) && <p>{run.error || run.result}</p>}
+            {run.deliveryStatus && <small className={`scheduled-run-delivery ${run.deliveryStatus}`} data-testid={`scheduled-run-delivery-${run.id}`}>
+              Slack delivery: {run.deliveryStatus === 'sent' ? 'Sent' : run.deliveryStatus === 'pending' ? 'Sending' : 'Failed'}{run.deliveryError ? ` · ${run.deliveryError}` : ''}
+            </small>}
           </li>)}</ol>}
         </section>}
         <div className="scheduled-detail-actions">

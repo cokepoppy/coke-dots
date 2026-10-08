@@ -9,6 +9,8 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
 }
 export type TaskStatus = 'queued' | 'working' | 'delegating' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused' | 'stopped';
 export type TaskExecutionMode = 'standard' | 'read-only' | 'proactive-research';
+export type ScheduleNotificationPolicy = 'attention' | 'every-run';
+export type TaskDeliveryDestination = { type: 'chat' } | { type: 'slack'; teamId: string; teamName: string };
 export type ActionRuleMode = 'without-asking' | 'when-requested' | 'ask-before' | 'hand-off';
 export type { ScheduleSpec } from './scheduling.ts';
 
@@ -37,6 +39,8 @@ export interface Task {
   nextRunAt: string | null;
   scheduleMinutes: number | null;
   scheduleSpec: ScheduleSpec | null;
+  deliveryDestination: TaskDeliveryDestination;
+  notificationPolicy: ScheduleNotificationPolicy;
   result: string | null;
   error: string | null;
   createdAt: string;
@@ -57,6 +61,8 @@ export interface ScheduledTaskRun {
   readAt: string | null;
   startedAt: string;
   finishedAt: string;
+  deliveryStatus?: 'pending' | 'sent' | 'dead' | null;
+  deliveryError?: string | null;
 }
 
 export interface WebsiteSignInRequest {

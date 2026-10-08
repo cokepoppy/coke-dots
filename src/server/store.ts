@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScheduledTaskRun, type ScheduledTaskRunStatus, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
+import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleNotificationPolicy, type ScheduleSpec, type ScheduledTaskRun, type ScheduledTaskRunStatus, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskDeliveryDestination, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -20,6 +20,7 @@ export interface SlackInboxResult { status: 'queued' | 'ignored' | 'duplicate'; 
 export interface SlackMonitorEvent { eventId: string; teamId: string; channelId: string; slackUserId: string; text: string; timestamp?: string }
 export interface SlackMonitorResult { status: 'queued' | 'ignored' | 'duplicate'; taskIds: string[] }
 export interface SlackDeliveryCandidate { eventId: string; tenantId: string; teamId: string; replyChannelId: string; task: Task; attempts: number }
+export interface ScheduledTaskDeliveryCandidate { id: string; tenantId: string; taskId: string; executionKey: string; teamId: string; slackUserId: string | null; attempts: number; task: Task }
 export interface TeamsIdentity { tenantId: string; microsoftTenantId: string; microsoftUserId: string; aadObjectId: string; displayName: string; conversationId: string; serviceUrl: string; linkedAt: string }
 export interface TeamsInboundMessage { eventId: string; eventKey: string; microsoftTenantId: string; microsoftUserId: string; aadObjectId: string; displayName: string; conversationId: string; serviceUrl: string; text: string }
 export interface TeamsInboxResult { status: 'queued' | 'linked' | 'ignored' | 'duplicate'; tenantId?: string; taskId?: string }
@@ -136,6 +137,13 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS scheduled_task_runs_history ON scheduled_task_runs(tenant_id,task_id,finished_at DESC);
       CREATE INDEX IF NOT EXISTS scheduled_task_runs_unread ON scheduled_task_runs(tenant_id,task_id,needs_attention,read_at);
+      CREATE TABLE IF NOT EXISTS scheduled_task_deliveries (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        execution_key TEXT NOT NULL, team_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','sent','dead')),
+        attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, last_error TEXT, created_at TEXT NOT NULL, delivered_at TEXT,
+        UNIQUE(tenant_id,task_id,execution_key)
+      );
+      CREATE INDEX IF NOT EXISTS scheduled_task_deliveries_queue ON scheduled_task_deliveries(status,retry_at,created_at);
       CREATE TABLE IF NOT EXISTS proactive_research_reviews (
         source_task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
         tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -254,6 +262,8 @@ export class Store {
     this.addColumnIfMissing('tenant_profiles', 'onboarding_completed_at', 'TEXT');
     this.addColumnIfMissing('tenant_profiles', 'onboarding_completed_name', 'TEXT');
     this.addColumnIfMissing('tasks', 'active_scheduled_execution_key', 'TEXT');
+    this.addColumnIfMissing('tasks', 'delivery_destination_json', 'TEXT');
+    this.addColumnIfMissing('tasks', 'notification_policy', "TEXT NOT NULL DEFAULT 'attention'");
     this.db.exec('UPDATE tenant_profiles SET avatar_setup_completed_at=onboarding_completed_at WHERE avatar_setup_completed_at IS NULL AND onboarding_completed_at IS NOT NULL');
     this.db.exec("UPDATE tenant_profiles SET character='custom' WHERE character='classic'");
     this.ensurePageApprovalCancellationStatus();
@@ -368,6 +378,18 @@ export class Store {
     this.db.prepare(`INSERT INTO slack_user_links(tenant_id,team_id,slack_user_id,user_id,linked_at) VALUES (?,?,?,?,?)
       ON CONFLICT(tenant_id,team_id,slack_user_id) DO UPDATE SET user_id=excluded.user_id,linked_at=excluded.linked_at`)
       .run(tenantId, teamId, slackUserId, userId, linkedAt);
+  }
+
+  /** The active Slack contact workspace and the signed-in member's own linked identity. */
+  slackTaskDeliveryTarget(tenantId: string, userId: string, teamId?: string | null): Extract<TaskDeliveryDestination, { type: 'slack' }> | null {
+    const rows = this.db.prepare(`SELECT i.team_id AS teamId,i.team_name AS teamName
+      FROM slack_installations i
+      JOIN slack_user_links l ON l.tenant_id=i.tenant_id AND l.team_id=i.team_id AND l.user_id=?
+      JOIN memberships m ON m.tenant_id=l.tenant_id AND m.user_id=l.user_id
+      WHERE i.tenant_id=? AND i.contact_enabled=1 AND (? IS NULL OR i.team_id=?)
+      ORDER BY i.team_name COLLATE NOCASE,i.team_id`)
+      .all(userId, tenantId, teamId || null, teamId || null) as { teamId: string; teamName: string }[];
+    return rows.length === 1 ? { type: 'slack', teamId: rows[0]!.teamId, teamName: rows[0]!.teamName } : null;
   }
 
   createSlackInboxTask(message: SlackInboundMessage): SlackInboxResult {
@@ -1369,15 +1391,26 @@ export class Store {
     return this.tenantPage(tenantId, id)!;
   }
 
-  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], uploaderId = '', executionMode: Task['executionMode'] = 'standard', reasoningEffort: ReasoningEffort = 'high'): Task {
+  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], uploaderId = '', executionMode: Task['executionMode'] = 'standard', reasoningEffort: ReasoningEffort = 'high', requestedDeliveryDestination: TaskDeliveryDestination = { type: 'chat' }, requestedNotificationPolicy: ScheduleNotificationPolicy = 'attention'): Task {
     const now = new Date().toISOString();
     const id = randomUUID();
     const title = instruction.trim().split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
     const taskSchedule = scheduleForTask(scheduleSpec, scheduleMinutes);
     const scheduleMinutesValue = taskSchedule?.frequency === 'interval' ? taskSchedule.intervalMinutes : null;
     if (attachmentIds.length > 5 || new Set(attachmentIds).size !== attachmentIds.length) throw new Error('附件数量或列表无效');
+    if (requestedNotificationPolicy !== 'attention' && requestedNotificationPolicy !== 'every-run') throw new Error('Invalid scheduled notification policy');
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      let deliveryDestination: TaskDeliveryDestination = { type: 'chat' };
+      if (taskSchedule && requestedDeliveryDestination.type === 'slack') {
+        const target = this.slackTaskDeliveryTarget(tenantId, uploaderId, requestedDeliveryDestination.teamId);
+        if (!target) throw new Error('Slack delivery requires the task creator to be linked to the selected contact workspace');
+        deliveryDestination = target;
+      } else if (requestedDeliveryDestination.type !== 'chat' && requestedDeliveryDestination.type !== 'slack') {
+        throw new Error('Invalid result delivery destination');
+      } else if (!taskSchedule && requestedDeliveryDestination.type === 'slack') {
+        throw new Error('Slack delivery is available for scheduled tasks');
+      }
       if (attachmentIds.length) {
         if (!uploaderId) throw new Error('上传附件的用户无效');
         const placeholders = attachmentIds.map(() => '?').join(',');
@@ -1386,8 +1419,8 @@ export class Store {
         const total = this.db.prepare(`SELECT COALESCE(SUM(size),0) AS total FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).get(tenantId, uploaderId, ...attachmentIds) as { total: number };
         if (total.total > 512 * 1024) throw new Error('附件总大小不能超过 512 KB');
       }
-      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,created_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, reasoningEffort, null, taskSchedule ? JSON.stringify(taskSchedule) : null, executionMode, uploaderId || null);
+      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,created_by_user_id,delivery_destination_json,notification_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, reasoningEffort, null, taskSchedule ? JSON.stringify(taskSchedule) : null, executionMode, uploaderId || null, JSON.stringify(deliveryDestination), taskSchedule ? requestedNotificationPolicy : 'attention');
       if (attachmentIds.length) {
         const placeholders = attachmentIds.map(() => '?').join(',');
         this.db.prepare(`UPDATE task_attachments SET task_id=? WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`)
@@ -1534,25 +1567,85 @@ export class Store {
   recordScheduledTaskRun(tenantId: string, taskId: string, executionKey: string, run: {
     status: ScheduledTaskRunStatus; result?: string | null; error?: string | null; needsAttention: boolean; startedAt: string; finishedAt?: string;
   }): ScheduledTaskRun {
-    if (!this.getTask(taskId, tenantId)) throw new Error('Scheduled task not found');
-    const id = randomUUID();
-    const finishedAt = run.finishedAt || new Date().toISOString();
-    this.db.prepare(`INSERT INTO scheduled_task_runs(id,tenant_id,task_id,execution_key,status,result,error,needs_attention,read_at,started_at,finished_at)
-      VALUES (?,?,?,?,?,?,?,?,NULL,?,?)
-      ON CONFLICT(tenant_id,task_id,execution_key) DO UPDATE SET status=excluded.status,result=excluded.result,error=excluded.error,
-      needs_attention=MAX(scheduled_task_runs.needs_attention,excluded.needs_attention),finished_at=excluded.finished_at`)
-      .run(id, tenantId, taskId, executionKey, run.status, run.result ?? null, run.error ?? null, run.needsAttention ? 1 : 0, run.startedAt, finishedAt);
-    const row = this.db.prepare('SELECT * FROM scheduled_task_runs WHERE tenant_id=? AND task_id=? AND execution_key=?')
-      .get(tenantId, taskId, executionKey) as Record<string, unknown>;
-    this.db.prepare('UPDATE tasks SET active_scheduled_execution_key=NULL WHERE tenant_id=? AND id=? AND active_scheduled_execution_key=?')
-      .run(tenantId, taskId, executionKey);
-    return toScheduledTaskRun(row);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const task = this.getTask(taskId, tenantId);
+      if (!task) throw new Error('Scheduled task not found');
+      const id = randomUUID();
+      const finishedAt = run.finishedAt || new Date().toISOString();
+      const needsAttention = run.needsAttention || task.notificationPolicy === 'every-run';
+      this.db.prepare(`INSERT INTO scheduled_task_runs(id,tenant_id,task_id,execution_key,status,result,error,needs_attention,read_at,started_at,finished_at)
+        VALUES (?,?,?,?,?,?,?,?,NULL,?,?)
+        ON CONFLICT(tenant_id,task_id,execution_key) DO UPDATE SET status=excluded.status,result=excluded.result,error=excluded.error,
+        needs_attention=MAX(scheduled_task_runs.needs_attention,excluded.needs_attention),finished_at=excluded.finished_at`)
+        .run(id, tenantId, taskId, executionKey, run.status, run.result ?? null, run.error ?? null, needsAttention ? 1 : 0, run.startedAt, finishedAt);
+      if (task.deliveryDestination.type === 'slack' && (task.notificationPolicy === 'every-run' || run.needsAttention)) {
+        this.db.prepare(`INSERT OR IGNORE INTO scheduled_task_deliveries(id,tenant_id,task_id,execution_key,team_id,status,created_at)
+          VALUES (?,?,?,?,?,'pending',?)`)
+          .run(randomUUID(), tenantId, taskId, executionKey, task.deliveryDestination.teamId, finishedAt);
+      }
+      this.db.prepare('UPDATE tasks SET active_scheduled_execution_key=NULL WHERE tenant_id=? AND id=? AND active_scheduled_execution_key=?')
+        .run(tenantId, taskId, executionKey);
+      const row = this.db.prepare(`SELECT r.*,d.status AS delivery_status,d.last_error AS delivery_error
+        FROM scheduled_task_runs r LEFT JOIN scheduled_task_deliveries d
+          ON d.tenant_id=r.tenant_id AND d.task_id=r.task_id AND d.execution_key=r.execution_key
+        WHERE r.tenant_id=? AND r.task_id=? AND r.execution_key=?`)
+        .get(tenantId, taskId, executionKey) as Record<string, unknown>;
+      this.db.exec('COMMIT');
+      return toScheduledTaskRun(row);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   scheduledTaskRuns(tenantId: string, taskId: string, limit = 20): ScheduledTaskRun[] {
     const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
-    return (this.db.prepare('SELECT * FROM scheduled_task_runs WHERE tenant_id=? AND task_id=? ORDER BY finished_at DESC,id DESC LIMIT ?')
+    return (this.db.prepare(`SELECT r.*,d.status AS delivery_status,d.last_error AS delivery_error
+      FROM scheduled_task_runs r LEFT JOIN scheduled_task_deliveries d
+        ON d.tenant_id=r.tenant_id AND d.task_id=r.task_id AND d.execution_key=r.execution_key
+      WHERE r.tenant_id=? AND r.task_id=? ORDER BY r.finished_at DESC,r.id DESC LIMIT ?`)
       .all(tenantId, taskId, boundedLimit) as Record<string, unknown>[]).map(toScheduledTaskRun);
+  }
+
+  scheduledTaskDeliveryCandidates(now = new Date().toISOString(), limit = 20): ScheduledTaskDeliveryCandidate[] {
+    const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const rows = this.db.prepare(`SELECT d.id AS delivery_id,d.tenant_id AS delivery_tenant_id,d.task_id AS delivery_task_id,
+        d.execution_key AS delivery_execution_key,d.team_id AS delivery_team_id,d.attempts AS delivery_attempts,
+        r.status AS run_status,r.result AS run_result,r.error AS run_error,l.slack_user_id AS recipient_slack_user_id,t.*
+      FROM scheduled_task_deliveries d
+      JOIN tasks t ON t.tenant_id=d.tenant_id AND t.id=d.task_id
+      JOIN scheduled_task_runs r ON r.tenant_id=d.tenant_id AND r.task_id=d.task_id AND r.execution_key=d.execution_key
+      LEFT JOIN memberships m ON m.tenant_id=t.tenant_id AND m.user_id=t.created_by_user_id
+      LEFT JOIN (
+        SELECT tenant_id,team_id,user_id,MIN(slack_user_id) AS slack_user_id
+        FROM slack_user_links GROUP BY tenant_id,team_id,user_id HAVING COUNT(*)=1
+      ) l ON l.tenant_id=d.tenant_id AND l.team_id=d.team_id AND l.user_id=m.user_id
+      WHERE d.status='pending' AND (d.retry_at IS NULL OR d.retry_at<=?)
+      ORDER BY d.created_at,d.id LIMIT ?`).all(now, boundedLimit) as Record<string, unknown>[];
+    return rows.map(row => {
+      const task = toTask(row);
+      task.status = row.run_status === 'failed' ? 'failed' : row.run_status === 'waiting' ? 'waiting' : 'done';
+      task.result = row.run_result == null ? null : String(row.run_result);
+      task.error = row.run_error == null ? null : String(row.run_error);
+      return {
+        id: String(row.delivery_id), tenantId: String(row.delivery_tenant_id), taskId: String(row.delivery_task_id),
+        executionKey: String(row.delivery_execution_key), teamId: String(row.delivery_team_id),
+        slackUserId: row.recipient_slack_user_id == null ? null : String(row.recipient_slack_user_id),
+        attempts: Number(row.delivery_attempts), task,
+      };
+    });
+  }
+
+  markScheduledTaskDeliverySent(deliveryId: string, deliveredAt = new Date().toISOString()) {
+    this.db.prepare("UPDATE scheduled_task_deliveries SET status='sent',delivered_at=?,last_error=NULL,retry_at=NULL WHERE id=? AND status='pending'")
+      .run(deliveredAt, deliveryId);
+  }
+
+  markScheduledTaskDeliveryFailed(deliveryId: string, error: string, retryAt: string | null, maxAttempts = 5) {
+    const row = this.db.prepare("SELECT attempts FROM scheduled_task_deliveries WHERE id=? AND status='pending'").get(deliveryId) as { attempts: number } | undefined;
+    if (!row) return;
+    const attempts = row.attempts + 1;
+    const dead = attempts >= maxAttempts;
+    this.db.prepare("UPDATE scheduled_task_deliveries SET attempts=?,retry_at=?,last_error=?,status=? WHERE id=? AND status='pending'")
+      .run(attempts, dead ? null : retryAt, error.slice(0, 300), dead ? 'dead' : 'pending', deliveryId);
   }
 
   markScheduledTaskRunsRead(tenantId: string, taskId: string): number {
@@ -1856,6 +1949,15 @@ function toTask(r: Record<string, unknown>): Task {
     try { scheduleSpec = validateScheduleSpec(JSON.parse(r.schedule_json)); } catch { scheduleSpec = null; }
   }
   scheduleSpec = scheduleForTask(scheduleSpec, scheduleMinutes);
+  let deliveryDestination: TaskDeliveryDestination = { type: 'chat' };
+  if (typeof r.delivery_destination_json === 'string') {
+    try {
+      const parsed = JSON.parse(r.delivery_destination_json) as Record<string, unknown>;
+      if (parsed.type === 'slack' && typeof parsed.teamId === 'string' && /^[A-Z0-9]{2,32}$/.test(parsed.teamId) && typeof parsed.teamName === 'string') {
+        deliveryDestination = { type: 'slack', teamId: parsed.teamId, teamName: parsed.teamName.slice(0, 100) };
+      }
+    } catch { /* A legacy or malformed destination falls back to the in-app conversation. */ }
+  }
   return {
     id: String(r.id), tenantId: String(r.tenant_id), parentTaskId: r.parent_task_id == null ? null : String(r.parent_task_id), title: String(r.title), instruction: String(r.instruction),
     executionMode: r.execution_mode === 'read-only' || r.execution_mode === 'proactive-research' ? r.execution_mode : 'standard',
@@ -1864,6 +1966,8 @@ function toTask(r: Record<string, unknown>): Task {
     nextRunAt: r.next_run_at == null ? null : String(r.next_run_at),
     scheduleMinutes: scheduleMinutes !== null ? scheduleMinutes : scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null,
     scheduleSpec,
+    deliveryDestination,
+    notificationPolicy: r.notification_policy === 'every-run' ? 'every-run' : 'attention',
     result: r.result == null ? null : String(r.result), error: r.error == null ? null : String(r.error),
     createdAt: String(r.created_at), updatedAt: String(r.updated_at), unreadScheduledRunCount: Number(r.unread_scheduled_run_count || 0),
   };
@@ -1875,6 +1979,8 @@ function toScheduledTaskRun(r: Record<string, unknown>): ScheduledTaskRun {
     result: r.result == null ? null : String(r.result), error: r.error == null ? null : String(r.error),
     needsAttention: Number(r.needs_attention) === 1, readAt: r.read_at == null ? null : String(r.read_at),
     startedAt: String(r.started_at), finishedAt: String(r.finished_at),
+    deliveryStatus: r.delivery_status === 'pending' || r.delivery_status === 'sent' || r.delivery_status === 'dead' ? r.delivery_status : null,
+    deliveryError: r.delivery_error == null ? null : String(r.delivery_error),
   };
 }
 

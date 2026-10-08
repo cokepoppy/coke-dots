@@ -29,8 +29,12 @@ export class SlackService {
     } catch { return false; }
   }
 
-  snapshot(tenantId: string) {
-    return { configured: this.configured(), eventsConfigured: Boolean(this.signingSecret), installations: this.store.slackInstallations(tenantId), monitors: this.store.slackEventMonitors(tenantId) };
+  snapshot(tenantId: string, userId?: string) {
+    return {
+      configured: this.configured(), eventsConfigured: Boolean(this.signingSecret),
+      installations: this.store.slackInstallations(tenantId), monitors: this.store.slackEventMonitors(tenantId),
+      deliveryTarget: userId ? this.store.slackTaskDeliveryTarget(tenantId, userId) : null,
+    };
   }
 
   async publicChannels(tenantId: string, teamId: string, session: AuthSession) {
@@ -149,7 +153,7 @@ export class SlackService {
     if (!/^[A-Z0-9]{2,32}$/.test(teamId) || !this.store.setSlackContactWorkspace(session.tenant.id, teamId)) {
       return { status: 404, error: 'Slack 工作区不存在' };
     }
-    return { status: 200, value: this.snapshot(session.tenant.id) };
+    return { status: 200, value: this.snapshot(session.tenant.id, session.user.id) };
   }
 
   clearTenant(tenantId: string) {
@@ -248,6 +252,40 @@ export class SlackService {
           const attempts = candidate.attempts + 1;
           const backoffSeconds = failure.retryAfterSeconds ?? Math.min(300, 2 ** Math.min(attempts, 8));
           this.store.markSlackDeliveryFailed(candidate.eventId, failure.message, new Date(Date.now() + backoffSeconds * 1000).toISOString());
+        }
+      }
+      for (const candidate of this.store.scheduledTaskDeliveryCandidates()) {
+        try {
+          const installation = this.store.slackInstallation(candidate.tenantId, candidate.teamId);
+          if (!installation) throw new SlackApiFailure('Slack workspace connection was removed');
+          if (!candidate.slackUserId) throw new SlackApiFailure('The scheduled task creator is no longer linked to a Slack user in this workspace');
+          const token = tokenEntry(candidate.tenantId, candidate.teamId).getPassword();
+          if (!token) throw new SlackApiFailure('Slack bot token is unavailable');
+          const message = replyForTask(candidate.task);
+          if (!message) throw new SlackApiFailure('Scheduled task run produced no reply');
+          const openedResponse = await fetch(this.webApiUrl('conversations.open'), {
+            method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ users: candidate.slackUserId }), signal: AbortSignal.timeout(10_000),
+          });
+          let opened: { ok?: boolean; error?: string; channel?: { id?: string } } = {};
+          try { opened = await openedResponse.json() as typeof opened; } catch { /* Keep invalid Slack responses visible as retryable failures. */ }
+          if (!openedResponse.ok || opened.ok !== true || !opened.channel?.id) {
+            throw new SlackApiFailure(opened.error || `Slack could not open the task creator's private DM (HTTP ${openedResponse.status})`, openedResponse.status === 429 ? openedResponse.headers.get('retry-after') : null);
+          }
+          const response = await fetch(this.webApiUrl('chat.postMessage'), {
+            method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ channel: opened.channel.id, text: message.slice(0, 4000), client_msg_id: candidate.id }),
+            signal: AbortSignal.timeout(10_000),
+          });
+          let result: { ok?: boolean; error?: string } = {};
+          try { result = await response.json() as typeof result; } catch { /* Keep the failure visible in Scheduled. */ }
+          if (!response.ok || result.ok !== true) throw new SlackApiFailure(result.error || `Slack API returned HTTP ${response.status}`, response.status === 429 ? response.headers.get('retry-after') : null);
+          this.store.markScheduledTaskDeliverySent(candidate.id);
+        } catch (error) {
+          const failure = error instanceof SlackApiFailure ? error : new SlackApiFailure('Slack scheduled-result delivery request failed');
+          const attempts = candidate.attempts + 1;
+          const backoffSeconds = failure.retryAfterSeconds ?? Math.min(300, 2 ** Math.min(attempts, 8));
+          this.store.markScheduledTaskDeliveryFailed(candidate.id, failure.message, new Date(Date.now() + backoffSeconds * 1000).toISOString());
         }
       }
     } catch (error) {

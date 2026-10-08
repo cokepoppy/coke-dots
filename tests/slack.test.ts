@@ -58,6 +58,84 @@ test('Slack installations and selected contact workspace stay isolated between C
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('scheduled Slack results are durable, idempotent, delivered to the task creator, and tenant scoped', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-scheduled-slack-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'scheduled-slack-alpha', email: 'scheduled-slack-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'scheduled-slack-beta', email: 'scheduled-slack-beta@example.test', name: 'Beta' });
+    for (const tenantId of [alpha.tenant.id, beta.tenant.id]) {
+      store.installSlackWorkspace({ tenantId, teamId: 'TASPI', teamName: 'ASPI', scopes: ['chat:write', 'im:write'], installedAt: '2026-10-09T00:00:00.000Z' });
+      store.setSlackContactWorkspace(tenantId, 'TASPI');
+    }
+    store.linkSlackUser(alpha.tenant.id, 'TASPI', 'UALPHA', alpha.user.id);
+    const target = store.slackTaskDeliveryTarget(alpha.tenant.id, alpha.user.id, 'TASPI');
+    assert.deepEqual(target, { type: 'slack', teamId: 'TASPI', teamName: 'ASPI' });
+    assert.equal(store.slackTaskDeliveryTarget(beta.tenant.id, beta.user.id, 'TASPI'), null, 'A Slack identity linked in one Coke Dots tenant cannot be reused by another tenant');
+
+    assert.throws(() => store.createTask('Private Beta schedule', 60, 'model', beta.tenant.id, null, null, [], beta.user.id, 'standard', 'high', { type: 'slack', teamId: 'TASPI', teamName: 'ASPI' }, 'every-run'), /Slack delivery requires/,
+      'A caller cannot target a workspace without linking their own Slack identity');
+    const task = store.createTask('Check the release status', 60, 'model', alpha.tenant.id, null, null, [], alpha.user.id, 'standard', 'high', target!, 'every-run');
+    const firstKey = '2026-10-09T01:00:00.000Z';
+    const firstRun = store.recordScheduledTaskRun(alpha.tenant.id, task.id, firstKey, {
+      status: 'complete', result: 'Release remains on track.', needsAttention: false, startedAt: firstKey, finishedAt: firstKey,
+    });
+    assert.equal(firstRun.needsAttention, true, 'Every-run notification preference keeps each run unread in Scheduled');
+    assert.equal(firstRun.deliveryStatus, 'pending', 'The run and its durable delivery are committed together');
+    const firstDelivery = store.scheduledTaskDeliveryCandidates().find(candidate => candidate.executionKey === firstKey);
+    assert(firstDelivery);
+    assert.equal(firstDelivery.slackUserId, 'UALPHA', 'Delivery resolves to the linked identity of the task creator');
+    assert.equal(firstDelivery.task.result, 'Release remains on track.');
+
+    const attentionTask = store.createTask('Notify only on meaningful changes', 60, 'model', alpha.tenant.id, null, null, [], alpha.user.id, 'standard', 'high', target!, 'attention');
+    const quietKey = '2026-10-09T01:30:00.000Z';
+    const quietRun = store.recordScheduledTaskRun(alpha.tenant.id, attentionTask.id, quietKey, {
+      status: 'complete', result: 'No change found.', needsAttention: false, startedAt: quietKey,
+    });
+    assert.equal(quietRun.deliveryStatus, null, 'Attention-only schedules must not enqueue ordinary unchanged results');
+    assert.equal(store.scheduledTaskDeliveryCandidates().some(candidate => candidate.taskId === attentionTask.id), false);
+    const attentionKey = '2026-10-09T02:30:00.000Z';
+    const attentionRun = store.recordScheduledTaskRun(alpha.tenant.id, attentionTask.id, attentionKey, {
+      status: 'waiting', result: 'I need your decision.', needsAttention: true, startedAt: attentionKey,
+    });
+    assert.equal(attentionRun.deliveryStatus, 'pending', 'Attention-only schedules must deliver results that need the user');
+    assert.equal(store.scheduledTaskDeliveryCandidates().find(candidate => candidate.taskId === attentionTask.id)?.task.result, 'I need your decision.');
+
+    store.updateTask(task.id, { status: 'scheduled', result: 'A later run has a different result.' }, alpha.tenant.id);
+    assert.equal(store.scheduledTaskDeliveryCandidates().find(candidate => candidate.executionKey === firstKey)?.task.result, 'Release remains on track.',
+      'A delayed delivery must use its own run result instead of a newer task result');
+    const secondKey = '2026-10-09T02:00:00.000Z';
+    store.recordScheduledTaskRun(alpha.tenant.id, task.id, secondKey, {
+      status: 'complete', result: 'A later run has a different result.', needsAttention: false, startedAt: secondKey, finishedAt: secondKey,
+    });
+    store.recordScheduledTaskRun(alpha.tenant.id, task.id, firstKey, {
+      status: 'complete', result: 'Release remains on track.', needsAttention: false, startedAt: firstKey, finishedAt: firstKey,
+    });
+    assert.equal(store.scheduledTaskDeliveryCandidates().filter(candidate => candidate.taskId === task.id).length, 2,
+      'Replaying one scheduled execution must not enqueue a duplicate Slack message');
+    assert.deepEqual(store.scheduledTaskRuns(beta.tenant.id, task.id), [], 'Run and delivery history cannot cross tenant boundaries');
+
+    store.markScheduledTaskDeliverySent(firstDelivery.id);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const retry = store.scheduledTaskDeliveryCandidates().find(candidate => candidate.executionKey === secondKey);
+      assert(retry, `Retry ${attempt + 1} should remain available before the dead-letter limit`);
+      store.markScheduledTaskDeliveryFailed(retry.id, 'Slack rate limit', new Date(Date.now() - 1_000).toISOString());
+    }
+    const runs = store.scheduledTaskRuns(alpha.tenant.id, task.id);
+    assert.equal(runs.find(run => run.startedAt === firstKey)?.deliveryStatus, 'sent');
+    assert.equal(runs.find(run => run.startedAt === secondKey)?.deliveryStatus, 'dead');
+    assert.equal(runs.find(run => run.startedAt === secondKey)?.deliveryError, 'Slack rate limit');
+    assert.deepEqual(store.scheduledTaskDeliveryCandidates().filter(candidate => candidate.taskId === task.id), [], 'Dead-lettered deliveries must stop retrying');
+    store.close();
+
+    store = new Store(directory);
+    assert.deepEqual(store.getTask(task.id, alpha.tenant.id)?.deliveryDestination, target, 'Destination and policy survive SQLite reopen');
+    assert.equal(store.getTask(task.id, alpha.tenant.id)?.notificationPolicy, 'every-run');
+    assert.equal(store.scheduledTaskRuns(alpha.tenant.id, task.id).find(run => run.startedAt === firstKey)?.deliveryStatus, 'sent');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('Slack inbound events map only linked users to one selected tenant, deduplicate, and wait for the actual task result', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-slack-inbox-'));
   try {

@@ -3066,26 +3066,70 @@ try {
   await recordStep('Recurring work runs again automatically and remains cancellable in Chrome', async () => {
     await selectTenant(alphaPage!, 'Alpha workspace');
     const instruction = 'E2E recurring run — verify due work reruns automatically';
+    const betaTarget = await betaPage!.evaluate(async () => await (await fetch('/api/slack')).json()) as { deliveryTarget: unknown };
+    assert.equal(betaTarget.deliveryTarget, null, 'A different Google account cannot see another tenant member Slack identity');
+    const betaTaskCount = await betaPage!.evaluate(async () => (await fetch('/api/state').then(response => response.json()) as { tasks: unknown[] }).tasks.length);
+    const forbiddenSlackTask = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        instruction: 'E2E must not deliver to another tenant Slack account', scheduleMinutes: 60,
+        deliveryDestination: { type: 'slack', teamId: 'TASPIE2E' }, notificationPolicy: 'every-run',
+      }) });
+      return { status: response.status, body: await response.json() };
+    });
+    assert.equal(forbiddenSlackTask.status, 409, 'A task cannot use a Slack workspace that is not linked to its creator in the active tenant');
+    assert.equal(await betaPage!.evaluate(async () => (await fetch('/api/state').then(response => response.json()) as { tasks: unknown[] }).tasks.length), betaTaskCount,
+      'Rejected cross-tenant Slack delivery must not create a task');
     const promptCount = () => taskPrompts(instruction).length;
     const initialCount = promptCount();
     await clickNav(alphaPage!, '你的 dot');
     await alphaPage!.getByLabel('定期检查').check();
     await alphaPage!.getByLabel('重复频率').selectOption('interval');
     await alphaPage!.locator('input.minutes').fill('1');
+    const deliveryPicker = alphaPage!.getByLabel('结果送达位置');
+    await deliveryPicker.locator('option[value="slack"]').waitFor({ state: 'attached' });
+    await waitFor(async () => !(await deliveryPicker.locator('option[value="slack"]').isDisabled()), 10_000);
+    await deliveryPicker.selectOption('slack');
+    await alphaPage!.getByLabel('结果通知条件').selectOption('every-run');
+    await screenshot(alphaPage!, 'schedule-result-delivery-editor');
+    const slackPostsBefore = mockSlackPostedMessages.length;
+    const slackDmsBefore = mockSlackOpenedDms.length;
     await alphaPage!.getByTestId('task-composer').fill(instruction);
     await alphaPage!.locator('button.send').click();
     await alphaPage!.locator('.timeline .message.dot p').filter({ hasText: 'The recurring check completed.' }).waitFor({ state: 'visible', timeout: 15_000 });
     await alphaPage!.locator('.timeline .pill.scheduled').waitFor({ state: 'visible', timeout: 15_000 });
     await waitFor(() => promptCount() === initialCount + 1, 15_000);
+    await waitFor(() => mockSlackPostedMessages.slice(slackPostsBefore).filter(message => message.text === 'The recurring check completed.').length === 1, 15_000);
     await screenshot(alphaPage!, '07d-recurring-run-completed');
 
     await waitFor(() => promptCount() === initialCount + 2, 80_000);
+    await waitFor(() => mockSlackPostedMessages.slice(slackPostsBefore).filter(message => message.text === 'The recurring check completed.').length === 2, 15_000);
     await waitForAsyncPredicate(alphaPage!, async instructionText => {
       const response = await fetch('/api/state');
-      const state = await response.json() as { tasks: { instruction: string; status: string; nextRunAt: string | null }[] };
+      const state = await response.json() as { tasks: { id: string; instruction: string; status: string; nextRunAt: string | null; deliveryDestination: { type: string; teamId?: string; teamName?: string }; notificationPolicy: string }[] };
       const task = state.tasks.find(item => item.instruction === instructionText);
-      return task?.status === 'scheduled' && Boolean(task.nextRunAt) && Date.parse(task.nextRunAt!) > Date.now();
+      return task?.status === 'scheduled' && Boolean(task.nextRunAt) && Date.parse(task.nextRunAt!) > Date.now()
+        && task.deliveryDestination.type === 'slack' && task.deliveryDestination.teamId === 'TASPIE2E'
+        && task.notificationPolicy === 'every-run';
     }, instruction, { timeout: 20_000 });
+    const scheduledPosts = mockSlackPostedMessages.slice(slackPostsBefore).filter(message => message.text === 'The recurring check completed.');
+    assert.equal(scheduledPosts.length, 2, 'Every-run policy must send one DM for each completed scheduled execution');
+    assert(scheduledPosts.every(message => message.channel === 'DAPPDM'), 'Scheduled results must use a private DM channel');
+    assert.equal(new Set(scheduledPosts.map(message => message.client_msg_id)).size, 2, 'Each execution must use its own stable Slack idempotency key');
+    assert.deepEqual(mockSlackOpenedDms.slice(slackDmsBefore).filter(userId => userId === 'UINSTALLER1').length, 2,
+      'The only Slack recipient must be the creator’s linked identity');
+    const scheduledTaskIdFromState = await alphaPage!.evaluate(async goal => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string }[] };
+      return state.tasks.find(task => task.instruction === goal)?.id || null;
+    }, instruction);
+    assert(scheduledTaskIdFromState);
+    const deliveryDb = new DatabaseSync(join(testDataDir, 'dots.db'), { readOnly: true });
+    let deliveryRows: { execution_key: string; team_id: string; status: string; attempts: number }[];
+    try {
+      deliveryRows = deliveryDb.prepare('SELECT execution_key,team_id,status,attempts FROM scheduled_task_deliveries WHERE tenant_id=? AND task_id=? ORDER BY created_at,id')
+        .all(oauthTestState.alphaSession!.tenant.id, scheduledTaskIdFromState) as { execution_key: string; team_id: string; status: string; attempts: number }[];
+    } finally { deliveryDb.close(); }
+    assert.equal(deliveryRows.length, 2, 'Each scheduled execution must have a durable outbox record');
+    assert(deliveryRows.every(row => row.team_id === 'TASPIE2E' && row.status === 'sent' && row.attempts === 0), 'Both results must reach Slack exactly once');
 
     await clickNav(alphaPage!, 'Activity');
     const activityCard = alphaPage!.locator('.task-card').filter({ hasText: instruction });
@@ -3138,9 +3182,12 @@ try {
     await unreadMarker.waitFor({ state: 'detached' });
     const detail = alphaPage!.getByTestId('scheduled-detail');
     await detail.getByText('Every 1 minute', { exact: true }).waitFor({ state: 'visible' });
+    const deliverySummary = await detail.getByTestId('scheduled-delivery-summary').textContent();
+    assert.match(deliverySummary || '', /Slack DM · ASPI.*Every run/, 'Scheduled detail must preserve the selected Slack destination and notification condition');
     await detail.locator('.scheduled-result').getByText('The recurring check completed.', { exact: true }).waitFor({ state: 'visible' });
     await detail.getByTestId('scheduled-run-history').locator('.scheduled-run').nth(1).waitFor({ state: 'visible' });
     assert.equal(await detail.locator('.scheduled-run').count(), 2, 'Scheduled should show both recent executions');
+    assert.equal(await detail.locator('.scheduled-run-delivery.sent').count(), 2, 'Scheduled run history must show both Slack deliveries as sent');
     const readRuns = await alphaPage!.evaluate(async id => fetch(`/api/tasks/${id}/scheduled-runs`).then(response => response.json()), scheduledTaskId.id) as { readAt: string | null }[];
     assert(readRuns.every(run => Boolean(run.readAt)), 'Opening the task should persist the read state for its attention results');
     await alphaPage!.unroute(scheduledRunsRoute);

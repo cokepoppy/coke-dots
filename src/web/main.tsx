@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, ScheduleSpec, ScheduledTaskRun, Snapshot, Task, TaskStatus, VoiceCallSession, WebsiteSignInRequest } from '../shared/types.ts';
+import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, ScheduleNotificationPolicy, ScheduleSpec, ScheduledTaskRun, Snapshot, Task, TaskDeliveryDestination, TaskStatus, VoiceCallSession, WebsiteSignInRequest } from '../shared/types.ts';
 import { appFetch, appPath } from './api.ts';
 import './style.css';
 import './chat-theme.css';
@@ -115,6 +115,10 @@ function App() {
   const [scheduleTimeZone, setScheduleTimeZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
   const [scheduleWeekdays, setScheduleWeekdays] = useState<number[]>([]);
   const [scheduleEndDate, setScheduleEndDate] = useState('');
+  const [scheduleDelivery, setScheduleDelivery] = useState<'chat' | 'slack'>('chat');
+  const [scheduleNotificationPolicy, setScheduleNotificationPolicy] = useState<ScheduleNotificationPolicy>('attention');
+  const [slackDeliveryTarget, setSlackDeliveryTarget] = useState<Extract<TaskDeliveryDestination, { type: 'slack' }> | null>(null);
+  const [slackDeliveryTargetLoaded, setSlackDeliveryTargetLoaded] = useState(false);
   const [engine, setEngine] = useState<Engine>('model');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -128,6 +132,17 @@ function App() {
       .then(setAuthContext).catch(() => setAuthContext(null)).finally(() => setAuthChecked(true));
     void appFetch('/api/auth/config').then(response => response.json()).then(data => { setGoogleConfigured(Boolean(data.googleConfigured)); setE2eAuthAvailable(Boolean(data.e2eAuthAvailable)); }).catch(() => { setGoogleConfigured(false); setE2eAuthAvailable(false); });
   }, []);
+
+  useEffect(() => {
+    if (!schedule || !authContext?.tenant.id) return;
+    let cancelled = false;
+    setSlackDeliveryTargetLoaded(false);
+    void appFetch('/api/slack').then(async response => response.ok ? await response.json() as { deliveryTarget?: Extract<TaskDeliveryDestination, { type: 'slack' }> | null } : null)
+      .then(data => { if (!cancelled) setSlackDeliveryTarget(data?.deliveryTarget || null); })
+      .catch(() => { if (!cancelled) setSlackDeliveryTarget(null); })
+      .finally(() => { if (!cancelled) setSlackDeliveryTargetLoaded(true); });
+    return () => { cancelled = true; };
+  }, [schedule, authContext?.tenant.id]);
 
   useEffect(() => {
     if (!authContext) return;
@@ -325,8 +340,12 @@ function App() {
         : frequency === 'daily'
           ? { frequency, time: scheduleTime, timeZone: scheduleTimeZone, endDate: scheduleEndDate || null }
           : { frequency, weekdays: scheduleWeekdays, time: scheduleTime, timeZone: scheduleTimeZone, endDate: scheduleEndDate || null };
-      const task = await request('/tasks', 'POST', { instruction: draft, scheduleSpec, scheduleMinutes: schedule && frequency === 'interval' ? minutes : null, engine, reasoningEffort: state.preferences.reasoningEffort, attachmentIds: pendingAttachments.map(attachment => attachment.id) }) as Task;
-      setDraft(''); setPendingAttachments([]); setSelected(task.id); setSelectedPageId(null); setView('chat'); setSchedule(false); setFrequency('interval'); setMinutes(60); setScheduleWeekdays([]); setScheduleEndDate('');
+      if (schedule && scheduleDelivery === 'slack' && !slackDeliveryTarget) throw new Error('请先将自己的 Slack 账号连接到当前工作区。');
+      const deliveryDestination = schedule && scheduleDelivery === 'slack' && slackDeliveryTarget
+        ? { type: 'slack', teamId: slackDeliveryTarget.teamId }
+        : { type: 'chat' };
+      const task = await request('/tasks', 'POST', { instruction: draft, scheduleSpec, scheduleMinutes: schedule && frequency === 'interval' ? minutes : null, deliveryDestination, notificationPolicy: schedule ? scheduleNotificationPolicy : 'attention', engine, reasoningEffort: state.preferences.reasoningEffort, attachmentIds: pendingAttachments.map(attachment => attachment.id) }) as Task;
+      setDraft(''); setPendingAttachments([]); setSelected(task.id); setSelectedPageId(null); setView('chat'); setSchedule(false); setFrequency('interval'); setMinutes(60); setScheduleWeekdays([]); setScheduleEndDate(''); setScheduleDelivery('chat'); setScheduleNotificationPolicy('attention');
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 
@@ -486,7 +505,7 @@ function App() {
         </div>}
         <div className="composer-wrap">
           {pendingAttachments.length > 0 && <ul className="pending-attachments" data-testid="pending-attachments" aria-label="待发送附件">{pendingAttachments.map(attachment => <li key={attachment.id} data-testid="pending-attachment"><span aria-hidden="true">▤</span><span className="attachment-name" title={attachment.name}>{attachment.name}</span><button type="button" aria-label={`移除附件 ${attachment.name}`} onClick={() => void removePendingAttachment(attachment)}>×</button></li>)}</ul>}
-          <div className="composer"><input ref={attachmentInputRef} className="attachment-input" data-testid="attachment-input" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.go,.rs,.java,.sql,.sh,.toml,.ini,.log,.c,.h,.cpp,.hpp" onChange={event => void uploadAttachments(event.currentTarget.files)} /><button className="attachment-button" data-testid="attachment-button" type="button" onMouseDown={event => event.preventDefault()} aria-label="添加附件" title="添加附件" disabled={uploadingAttachments || pendingAttachments.length >= 5} onClick={() => attachmentInputRef.current?.click()}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></button><textarea data-testid="task-composer" ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder={view === 'home' ? 'Ask ChatGPT' : 'Type a message'} />{engine === 'model' && <label className="reasoning-picker" title="Reasoning effort"><select aria-label="Reasoning effort" data-testid="reasoning-effort" value={state.preferences.reasoningEffort} onChange={event => void updateReasoningEffort(event.target.value as ReasoningEffort)}><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High</option></select><span aria-hidden="true">⌄</span></label>}<DictationButton draft={draft} setDraft={setDraft} onError={setError} textareaRef={composerRef} /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="voice-call-launch" data-testid="voice-call-launch" type="button" onMouseDown={event => event.preventDefault()} aria-label={`拨打 ${state.profile.name}`} title={`拨打 ${state.profile.name}`} onClick={() => setVoiceCallOpen(true)}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg></button><button className="send" onMouseDown={event => event.preventDefault()} disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint">{state.remoteEngines.includes(engine) ? '任务由 Dot 的云电脑运行。' : state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
+          <div className="composer"><input ref={attachmentInputRef} className="attachment-input" data-testid="attachment-input" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.go,.rs,.java,.sql,.sh,.toml,.ini,.log,.c,.h,.cpp,.hpp" onChange={event => void uploadAttachments(event.currentTarget.files)} /><button className="attachment-button" data-testid="attachment-button" type="button" onMouseDown={event => event.preventDefault()} aria-label="添加附件" title="添加附件" disabled={uploadingAttachments || pendingAttachments.length >= 5} onClick={() => attachmentInputRef.current?.click()}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></button><textarea data-testid="task-composer" ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder={view === 'home' ? 'Ask ChatGPT' : 'Type a message'} />{engine === 'model' && <label className="reasoning-picker" title="Reasoning effort"><select aria-label="Reasoning effort" data-testid="reasoning-effort" value={state.preferences.reasoningEffort} onChange={event => void updateReasoningEffort(event.target.value as ReasoningEffort)}><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High</option></select><span aria-hidden="true">⌄</span></label>}<DictationButton draft={draft} setDraft={setDraft} onError={setError} textareaRef={composerRef} /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="voice-call-launch" data-testid="voice-call-launch" type="button" onMouseDown={event => event.preventDefault()} aria-label={`拨打 ${state.profile.name}`} title={`拨打 ${state.profile.name}`} onClick={() => setVoiceCallOpen(true)}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg></button><button className="send" onMouseDown={event => event.preventDefault()} disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} delivery={scheduleDelivery} setDelivery={setScheduleDelivery} notificationPolicy={scheduleNotificationPolicy} setNotificationPolicy={setScheduleNotificationPolicy} slackTarget={slackDeliveryTarget} slackTargetLoaded={slackDeliveryTargetLoaded} />}</div><small className="hint">{state.remoteEngines.includes(engine) ? '任务由 Dot 的云电脑运行。' : state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
       </section>{view === 'chat' && selectedPageId ? <div className="scratchpad-page-split" data-testid="scratchpad-page-split"><ScratchpadNavigationPane tenantId={authContext.tenant.id} selectedPageId={selectedPageId} refreshKey={pageIndexVersion} onOpen={setSelectedPageId} onBack={() => { setSelectedPageId(null); setView('pages'); }} /><PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => { setSelectedPageId(null); setView('pages'); }} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /></div> : view === 'chat' && (selectedTask || hasConversationHistory) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onStartCall={() => setVoiceCallOpen(true)} onOpenSlack={() => setSlackModalOpen(true)} onOpenTeams={() => setTeamsModalOpen(true)} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
       {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
       {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
@@ -673,7 +692,7 @@ function WorkspaceSwitcher({ auth, onSwitch, onCreate, onError }: { auth: AuthCo
   return <div className="workspace-switcher"><label><span>工作区</span><select value={auth.tenant.id} onChange={event => void onSwitch(event.target.value)}>{auth.tenants.map(tenant => <option key={tenant.id} value={tenant.id}>{tenant.name} · {tenant.role}</option>)}</select></label>{creating ? <form onSubmit={event => { event.preventDefault(); void onCreate(name.trim()).then(() => { setName(''); setCreating(false); }).catch(error => onError(String(error))); }}><input aria-label="新工作区名称" autoFocus maxLength={60} value={name} onChange={event => setName(event.target.value)} placeholder="工作区名称" /><button disabled={!name.trim()}>创建</button><button type="button" onClick={() => setCreating(false)}>取消</button></form> : <button className="new-workspace" onClick={() => setCreating(true)}>＋ 新建工作区</button>}</div>;
 }
 
-function RecurrenceEditor({ frequency, setFrequency, minutes, setMinutes, time, setTime, timeZone, setTimeZone, weekdays, setWeekdays, endDate, setEndDate }: {
+function RecurrenceEditor({ frequency, setFrequency, minutes, setMinutes, time, setTime, timeZone, setTimeZone, weekdays, setWeekdays, endDate, setEndDate, delivery, setDelivery, notificationPolicy, setNotificationPolicy, slackTarget, slackTargetLoaded }: {
   frequency: 'interval' | 'daily' | 'weekly';
   setFrequency: React.Dispatch<React.SetStateAction<'interval' | 'daily' | 'weekly'>>;
   minutes: number; setMinutes: React.Dispatch<React.SetStateAction<number>>;
@@ -681,6 +700,9 @@ function RecurrenceEditor({ frequency, setFrequency, minutes, setMinutes, time, 
   timeZone: string; setTimeZone: React.Dispatch<React.SetStateAction<string>>;
   weekdays: number[]; setWeekdays: React.Dispatch<React.SetStateAction<number[]>>;
   endDate: string; setEndDate: React.Dispatch<React.SetStateAction<string>>;
+  delivery: 'chat' | 'slack'; setDelivery: React.Dispatch<React.SetStateAction<'chat' | 'slack'>>;
+  notificationPolicy: ScheduleNotificationPolicy; setNotificationPolicy: React.Dispatch<React.SetStateAction<ScheduleNotificationPolicy>>;
+  slackTarget: Extract<TaskDeliveryDestination, { type: 'slack' }> | null; slackTargetLoaded: boolean;
 }) {
   const zones = useMemo(() => {
     const supported = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
@@ -695,6 +717,14 @@ function RecurrenceEditor({ frequency, setFrequency, minutes, setMinutes, time, 
       {frequency === 'weekly' && <fieldset className="schedule-weekdays"><legend>重复日</legend>{dayLabels.map((label, day) => <label key={day}><input aria-label={label} type="checkbox" checked={weekdays.includes(day)} onChange={event => setWeekdays(current => event.target.checked ? [...current, day] : current.filter(value => value !== day))} />{label.slice(2)}</label>)}</fieldset>}
       <label>结束日期（可选）<input aria-label="结束日期" type="date" value={endDate} onChange={event => setEndDate(event.target.value)} /></label>
     </>}
+    <label>结果送达位置<select aria-label="结果送达位置" data-testid="schedule-delivery-destination" value={delivery} onChange={event => setDelivery(event.target.value as 'chat' | 'slack')}>
+      <option value="chat">Dots 对话</option>
+      <option value="slack" disabled={!slackTarget}>Slack 私信{slackTarget ? ` · ${slackTarget.teamName}` : slackTargetLoaded ? ' · 请先连接并绑定本人账号' : ' · 正在检查连接'}</option>
+    </select></label>
+    <label>通知条件<select aria-label="结果通知条件" data-testid="schedule-notification-policy" value={notificationPolicy} onChange={event => setNotificationPolicy(event.target.value as ScheduleNotificationPolicy)}>
+      <option value="attention">仅需要我处理时</option><option value="every-run">每次运行后</option>
+    </select></label>
+    <small className="schedule-delivery-hint">Slack 结果只会私信给创建任务且已绑定的本人。</small>
   </div>;
 }
 

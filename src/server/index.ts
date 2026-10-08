@@ -5,7 +5,7 @@ import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
-import { isReasoningEffort, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
+import { isReasoningEffort, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleNotificationPolicy, type ScheduleSpec, type TaskDeliveryDestination } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 import { effectiveModelConfig, hasSharedModelKey, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, publicModelSettings, saveSharedModelKey, setSharedModelMetadata } from './model-settings.ts';
@@ -217,7 +217,7 @@ const server = createServer(async (req, res) => {
     if (result.taskCreated) void worker.tick();
     return reply(res, result.status, result.body);
   }
-  if (path === '/api/slack' && req.method === 'GET') return reply(res, 200, slack.snapshot(session.tenant.id));
+  if (path === '/api/slack' && req.method === 'GET') return reply(res, 200, slack.snapshot(session.tenant.id, session.user.id));
   if (path === '/api/slack/channels' && req.method === 'GET') {
     const result = await slack.publicChannels(session.tenant.id, url.searchParams.get('teamId') || '', session);
     return result.status === 200 ? reply(res, 200, { channels: result.value }) : reply(res, result.status, { error: result.error });
@@ -568,6 +568,23 @@ const server = createServer(async (req, res) => {
       } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : 'Invalid schedule' }); }
       if (scheduleSpec?.frequency === 'interval' && requestedMinutes !== null && requestedMinutes !== scheduleSpec.intervalMinutes) return reply(res, 400, { error: 'Schedule interval does not match' });
       if (scheduleSpec && scheduleSpec.frequency !== 'interval' && requestedMinutes !== null) return reply(res, 400, { error: 'Use scheduleSpec for calendar schedules' });
+      const notificationPolicy = body.notificationPolicy === undefined ? 'attention' : body.notificationPolicy;
+      if (notificationPolicy !== 'attention' && notificationPolicy !== 'every-run') return reply(res, 400, { error: 'Invalid notification policy' });
+      let deliveryDestination: TaskDeliveryDestination = { type: 'chat' };
+      if (body.deliveryDestination !== undefined) {
+        const requestedDestination = body.deliveryDestination;
+        if (!requestedDestination || typeof requestedDestination !== 'object' || Array.isArray(requestedDestination)) return reply(res, 400, { error: 'Invalid result delivery destination' });
+        const type = (requestedDestination as Record<string, unknown>).type;
+        if (type === 'chat') deliveryDestination = { type: 'chat' };
+        else if (type === 'slack') {
+          const teamId = (requestedDestination as Record<string, unknown>).teamId;
+          if (!scheduleSpec) return reply(res, 400, { error: 'Slack delivery is available for scheduled tasks' });
+          if (typeof teamId !== 'string' || !/^[A-Z0-9]{2,32}$/.test(teamId)) return reply(res, 400, { error: 'Invalid Slack workspace selection' });
+          const target = store.slackTaskDeliveryTarget(session.tenant.id, session.user.id, teamId);
+          if (!target) return reply(res, 409, { error: '请先在当前工作区绑定自己的 Slack 账号，并将该 Slack 工作区设为联系工作区。' });
+          deliveryDestination = target;
+        } else return reply(res, 400, { error: 'Invalid result delivery destination' });
+      }
       const minutes = scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null;
       const engine = String(body.engine || 'model') as Engine;
       if (!(engine in adapters)) return reply(res, 400, { error: 'Invalid engine' });
@@ -586,8 +603,11 @@ const server = createServer(async (req, res) => {
       const firstRunAt = scheduleSpec && scheduleSpec.frequency !== 'interval' ? nextScheduleOccurrence(scheduleSpec, now) : now.toISOString();
       if (scheduleSpec && !firstRunAt) return reply(res, 400, { error: 'No future run falls on or before the schedule end date' });
       let task;
-      try { task = store.createTask(instruction, minutes, engine, session.tenant.id, scheduleSpec, firstRunAt, attachmentIds, session.user.id, 'standard', reasoningEffort); }
-      catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法创建任务' }); }
+      try { task = store.createTask(instruction, minutes, engine, session.tenant.id, scheduleSpec, firstRunAt, attachmentIds, session.user.id, 'standard', reasoningEffort, deliveryDestination, notificationPolicy as ScheduleNotificationPolicy); }
+      catch (error) {
+        const message = error instanceof Error ? error.message : '无法创建任务';
+        return reply(res, message.startsWith('Slack delivery requires') ? 409 : 400, { error: message });
+      }
       publish(); void worker.tick();
       return reply(res, 201, task);
     }
