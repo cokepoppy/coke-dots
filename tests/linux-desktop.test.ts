@@ -148,3 +148,107 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     await new Promise<void>(resolve => agentServer.close(() => resolve()));
   }
 });
+
+test('Linux desktop reconnects after a stale worker port-forward fails', async () => {
+  async function startWorker(title: string) {
+    const server = createServer((req, res) => {
+      if (req.url === '/v1/state') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ready: true, owner: 'agent', url: 'about:blank', title }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert(address && typeof address !== 'string');
+    return { server, port: address.port };
+  }
+
+  const first = await startWorker('First desktop');
+  let workerPort = first.port;
+  let connectionCount = 0;
+  let closeCount = 0;
+  const connector: DesktopConnector = {
+    async connect() {
+      connectionCount += 1;
+      const workerUrl = new URL(`http://127.0.0.1:${workerPort}/`);
+      return { workerUrl, novncUrl: workerUrl, agentUrl: workerUrl, workerToken: 'worker', agentToken: 'agent' };
+    },
+    async close() { closeCount += 1; },
+  };
+  const computer = new LinuxDesktopComputer('tenant-reconnect', connector);
+
+  try {
+    assert.equal((await computer.state()).title, 'First desktop');
+    await new Promise<void>((resolve, reject) => first.server.close(error => error ? reject(error) : resolve()));
+    const second = await startWorker('Recovered desktop');
+    workerPort = second.port;
+
+    const recovered = await computer.state();
+    assert.equal(recovered.title, 'Recovered desktop');
+    assert.equal(connectionCount, 2, 'A safe status read should reconnect once and retry');
+    assert.equal(closeCount, 1, 'The failed port-forward should be closed before reconnecting');
+
+    await computer.close();
+    await new Promise<void>(resolve => second.server.close(() => resolve()));
+  } finally {
+    await computer.close();
+    if (first.server.listening) await new Promise<void>(resolve => first.server.close(() => resolve()));
+  }
+});
+
+test('Linux desktop never replays a command after a port-forward transport failure', async () => {
+  let commandCount = 0;
+  const failedWorker = createServer((req, res) => {
+    if (req.url === '/v1/commands' && req.method === 'POST') {
+      commandCount += 1;
+      res.destroy();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ready: true, owner: 'agent', url: 'about:blank', title: 'Recovered desktop' }));
+  });
+  await new Promise<void>(resolve => failedWorker.listen(0, '127.0.0.1', resolve));
+  const firstAddress = failedWorker.address();
+  assert(firstAddress && typeof firstAddress !== 'string');
+
+  async function startRecoveredWorker() {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ready: true, owner: 'agent', url: 'about:blank', title: 'Recovered desktop' }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert(address && typeof address !== 'string');
+    return { server, port: address.port };
+  }
+
+  let workerPort = firstAddress.port;
+  let connectionCount = 0;
+  const connector: DesktopConnector = {
+    async connect() {
+      connectionCount += 1;
+      const workerUrl = new URL(`http://127.0.0.1:${workerPort}/`);
+      return { workerUrl, novncUrl: workerUrl, agentUrl: workerUrl, workerToken: 'worker', agentToken: 'agent' };
+    },
+    async close() {},
+  };
+  const computer = new LinuxDesktopComputer('tenant-no-replay', connector);
+  let recovered: Awaited<ReturnType<typeof startRecoveredWorker>> | null = null;
+  try {
+    await assert.rejects(computer.open('Dot'), /fetch failed/);
+    assert.equal(commandCount, 1, 'An open command with an unknown delivery result must never be replayed');
+    assert.equal(connectionCount, 1, 'Unsafe writes must not trigger an automatic retry');
+
+    await new Promise<void>((resolve, reject) => failedWorker.close(error => error ? reject(error) : resolve()));
+    recovered = await startRecoveredWorker();
+    workerPort = recovered.port;
+    assert.equal((await computer.state()).title, 'Recovered desktop');
+    assert.equal(connectionCount, 2, 'The next safe read can establish a new connection');
+  } finally {
+    await computer.close();
+    if (failedWorker.listening) await new Promise<void>(resolve => failedWorker.close(() => resolve()));
+    if (recovered?.server.listening) await new Promise<void>(resolve => recovered!.server.close(() => resolve()));
+  }
+});

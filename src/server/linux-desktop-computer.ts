@@ -29,6 +29,7 @@ export interface DesktopConnector {
 export class LinuxDesktopComputer implements ComputerRuntime {
   private connection: DesktopConnection | null = null;
   private connecting: Promise<DesktopConnection> | null = null;
+  private resetting: Promise<void> | null = null;
   private owner: 'agent' | 'user' = 'agent';
 
   constructor(private readonly tenantId: string, private readonly connector: DesktopConnector = defaultDesktopConnector()) {}
@@ -175,6 +176,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
   async close() {
     this.owner = 'agent';
     await this.connecting?.catch(() => undefined);
+    await this.resetting?.catch(() => undefined);
     this.connection = null;
     await this.connector.close?.();
   }
@@ -198,19 +200,44 @@ export class LinuxDesktopComputer implements ComputerRuntime {
   }
 
   private async request(path: string, init: RequestInit = {}) {
-    this.assertOpen();
-    const timeout = AbortSignal.timeout(30_000);
-    return fetch(endpointUrl(this.connection!.workerUrl, path), {
-      ...init,
-      headers: { authorization: `Bearer ${this.connection!.workerToken}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
-      signal: init.signal ? AbortSignal.any([timeout, init.signal]) : timeout,
-    });
+    const connection = this.connection;
+    if (!connection) throw new Error('电脑尚未打开');
+    const method = (init.method || 'GET').toUpperCase();
+    const send = (target: DesktopConnection) => {
+      const timeout = AbortSignal.timeout(30_000);
+      return fetch(endpointUrl(target.workerUrl, path), {
+        ...init,
+        headers: { authorization: `Bearer ${target.workerToken}`, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
+        signal: init.signal ? AbortSignal.any([timeout, init.signal]) : timeout,
+      });
+    };
+
+    try {
+      return await send(connection);
+    } catch (error) {
+      if (!isDesktopTransportFailure(error)) throw error;
+      await this.invalidateConnection(connection);
+      // Reads are safe to retry after rebuilding a dead kubectl port-forward.
+      // Commands and private sign-in may already have reached the desktop, so
+      // surface their transport failure without replaying them.
+      if (method !== 'GET') throw error;
+
+      const reconnected = await this.ensureConnection();
+      try {
+        return await send(reconnected);
+      } catch (retryError) {
+        if (isDesktopTransportFailure(retryError)) await this.invalidateConnection(reconnected);
+        throw retryError;
+      }
+    }
   }
 
   private assertOpen() { if (!this.connection) throw new Error('电脑尚未打开'); }
   private assertUserControl() { this.assertOpen(); if (this.owner !== 'user') throw new Error('请先选择“接管”以使用鼠标和键盘'); }
 
   private async ensureConnection() {
+    if (this.connection) return this.connection;
+    await this.resetting?.catch(() => undefined);
     if (this.connection) return this.connection;
     if (!this.connecting) {
       const connecting = this.connector.connect(this.tenantId).then(connection => {
@@ -223,6 +250,22 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     }
     return this.connecting;
   }
+
+  private async invalidateConnection(connection: DesktopConnection) {
+    if (this.connection !== connection) return;
+    this.connection = null;
+    const resetting = Promise.resolve(this.connector.close?.()).then(() => undefined, () => undefined);
+    this.resetting = resetting;
+    try {
+      await resetting;
+    } finally {
+      if (this.resetting === resetting) this.resetting = null;
+    }
+  }
+}
+
+function isDesktopTransportFailure(error: unknown): boolean {
+  return error instanceof TypeError && error.message === 'fetch failed';
 }
 
 function endpointUrl(baseValue: URL, path: string) {
