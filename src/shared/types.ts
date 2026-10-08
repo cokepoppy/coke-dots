@@ -11,6 +11,8 @@ export type TaskStatus = 'queued' | 'working' | 'delegating' | 'waiting' | 'sche
 export type TaskExecutionMode = 'standard' | 'read-only' | 'proactive-research';
 export type ScheduleNotificationPolicy = 'attention' | 'every-run';
 export type TaskDeliveryDestination = { type: 'chat' } | { type: 'slack'; teamId: string; teamName: string };
+export type GitHubPullRequestAction = 'opened' | 'reopened' | 'synchronize' | 'ready_for_review' | 'closed';
+export const githubPullRequestActions: GitHubPullRequestAction[] = ['opened', 'reopened', 'synchronize', 'ready_for_review', 'closed'];
 export type ActionRuleMode = 'without-asking' | 'when-requested' | 'ask-before' | 'hand-off';
 export type { ScheduleSpec } from './scheduling.ts';
 
@@ -109,10 +111,12 @@ export interface Snapshot {
   computerAccess: { dotComputer: true; localComputer: boolean; configured: boolean };
   tasks: Task[];
   watches: Watch[];
+  githubTriggers: GitHubPullRequestTrigger[];
   entries: Entry[];
   configured: boolean;
   availableEngines: Engine[];
   remoteEngines: Engine[];
+  eventTriggerEngines: Extract<Engine, 'pi' | 'dsh'>[];
   modelSettings: { baseUrl: string; model: string; hasKey: boolean; canManage?: boolean };
 }
 
@@ -137,6 +141,22 @@ export interface SlackEventMonitor {
   channelId: string;
   channelName: string;
   instructions: string;
+  status: 'active' | 'paused';
+  createdAt: string;
+  updatedAt: string;
+  lastEventAt: string | null;
+  lastTaskId: string | null;
+}
+
+/** Tenant-owned GitHub pull-request event trigger. Webhook secrets are never included here. */
+export interface GitHubPullRequestTrigger {
+  id: string;
+  tenantId: string;
+  repository: string;
+  actions: GitHubPullRequestAction[];
+  condition: string;
+  prompt: string;
+  engine: Extract<Engine, 'pi' | 'dsh'>;
   status: 'active' | 'paused';
   createdAt: string;
   updatedAt: string;

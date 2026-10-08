@@ -5,7 +5,7 @@ import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
-import { isReasoningEffort, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleNotificationPolicy, type ScheduleSpec, type TaskDeliveryDestination } from '../shared/types.ts';
+import { githubPullRequestActions, isReasoningEffort, type ActionRuleMode, type DotAppearance, type Engine, type GitHubPullRequestAction, type ScheduleNotificationPolicy, type ScheduleSpec, type TaskDeliveryDestination } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 import { effectiveModelConfig, hasSharedModelKey, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, publicModelSettings, saveSharedModelKey, setSharedModelMetadata } from './model-settings.ts';
@@ -14,6 +14,7 @@ import { configuredDesktopAgentEngines, LinuxDesktopComputer } from './linux-des
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
 import { TeamsService } from './teams.ts';
+import { GitHubWebhookService } from './github.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -51,11 +52,20 @@ initializeModelSettings();
 const auth = new AuthService(store, port);
 const slack = new SlackService(store, port);
 const teams = new TeamsService(store);
+const github = new GitHubWebhookService(store);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
 const configuredDesktopEngines = () => configuredDesktopAgentEngines() as Engine[];
 const remoteFor = (tenantId: string) => effectiveModelConfig(tenantId) ? configuredDesktopEngines() : [];
+const eventTriggerEnginesFor = (tenantId: string) => {
+  const remote = remoteFor(tenantId).filter((engine): engine is 'pi' | 'dsh' => engine === 'pi' || engine === 'dsh');
+  if (remote.length) return remote;
+  if (process.env.NODE_ENV === 'test' && auth.e2eAuthAvailable()) {
+    return availableFor(tenantId).filter((engine): engine is 'pi' | 'dsh' => engine === 'pi' || engine === 'dsh');
+  }
+  return [];
+};
 const availableFor = (tenantId: string) => {
   const remote = remoteFor(tenantId);
   const localKernelFallbacks = process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' ? new Set<Engine>(['pi', 'dsh']) : new Set<Engine>();
@@ -69,10 +79,11 @@ function snapshot(tenantId: string, userId?: string) {
   );
   loadModelSettings(store.getSetting('modelBaseUrl', tenantId), store.getSetting('modelName', tenantId), tenantId);
   const available = availableFor(tenantId);
+  const remote = remoteFor(tenantId);
   return store.snapshot(available.includes('model'), available, {
     ...publicModelSettings(tenantId),
     ...(userId ? { canManage: store.canManageInstanceModel(userId, tenantId) } : {}),
-  }, tenantId, remoteFor(tenantId));
+  }, tenantId, remote, eventTriggerEnginesFor(tenantId));
 }
 
 function computerFor(tenantId: string): ComputerRuntime {
@@ -165,6 +176,18 @@ const server = createServer(async (req, res) => {
     if (result.taskCreated) void worker.tick();
     return reply(res, result.status, result.body);
   }
+  const githubEventMatch = path.match(/^\/github\/events\/([a-f0-9-]{36})$/i);
+  if (githubEventMatch && req.method === 'POST') {
+    let rawBody: Buffer;
+    try { rawBody = await readBytes(req, 128 * 1024); }
+    catch { return reply(res, 413, { error: 'GitHub pull request event body is too large' }); }
+    const eventName = typeof req.headers['x-github-event'] === 'string' ? req.headers['x-github-event'] : '';
+    const deliveryId = typeof req.headers['x-github-delivery'] === 'string' ? req.headers['x-github-delivery'] : '';
+    const signature = typeof req.headers['x-hub-signature-256'] === 'string' ? req.headers['x-hub-signature-256'] : '';
+    const result = github.acceptEvent(githubEventMatch[1]!, rawBody, eventName, deliveryId, signature);
+    if (result.taskCreated) { publish(); void worker.tick(); }
+    return reply(res, result.status, result.body);
+  }
   if (path === '/teams/messages' && req.method === 'POST') {
     let rawBody: Buffer;
     try { rawBody = await readBytes(req, 128 * 1024); }
@@ -251,6 +274,47 @@ const server = createServer(async (req, res) => {
     publish();
     return reply(res, 200, monitor);
   }
+  if (path === '/api/github-triggers' && req.method === 'POST') {
+    if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以管理 GitHub 事件任务' });
+    const body = await readJson(req);
+    const repository = String(body.repository || '').trim();
+    const condition = String(body.condition || '').trim();
+    const prompt = String(body.prompt || '').trim();
+    const engine = body.engine;
+    const actionsInput = Array.isArray(body.actions) ? body.actions : [];
+    const actions = actionsInput.filter((action): action is GitHubPullRequestAction => typeof action === 'string' && githubPullRequestActions.includes(action as GitHubPullRequestAction));
+    if (actions.length !== actionsInput.length || actions.length === 0) return reply(res, 400, { error: '请选择至少一个有效的 Pull Request 事件' });
+    if (repository.length > 201 || !/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(repository)) return reply(res, 400, { error: 'GitHub 仓库必须使用 owner/repo 格式' });
+    if (condition.length < 3 || condition.length > 500) return reply(res, 400, { error: '触发条件需要 3–500 个字符' });
+    if (prompt.length < 3 || prompt.length > 2000) return reply(res, 400, { error: '任务指令需要 3–2000 个字符' });
+    if (engine !== 'pi' && engine !== 'dsh') return reply(res, 400, { error: 'GitHub 事件任务必须使用 Pi 或 DeepSeek Harness' });
+    if (!eventTriggerEnginesFor(session.tenant.id).includes(engine)) return reply(res, 409, { error: '请先为此工作区配置 Debian 云电脑 Agent 内核 Pi 或 DeepSeek Harness' });
+    try {
+      const created = github.createTrigger({
+        tenantId: session.tenant.id, createdByUserId: session.user.id, repository,
+        actions, condition, prompt, engine,
+      });
+      publish();
+      return reply(res, 201, created);
+    } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法创建 GitHub 事件任务' }); }
+  }
+  const githubTriggerMatch = path.match(/^\/api\/github-triggers\/([a-f0-9-]{36})$/i);
+  if (githubTriggerMatch && req.method === 'PATCH') {
+    if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以管理 GitHub 事件任务' });
+    const body = await readJson(req);
+    const action = body.action;
+    if (action !== 'pause' && action !== 'resume') return reply(res, 400, { error: 'Invalid GitHub trigger action' });
+    const trigger = store.updateGitHubPullRequestTrigger(githubTriggerMatch[1]!, session.tenant.id, action);
+    if (!trigger) return reply(res, 404, { error: 'GitHub trigger not found' });
+    publish();
+    return reply(res, 200, trigger);
+  }
+  if (githubTriggerMatch && req.method === 'DELETE') {
+    if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以管理 GitHub 事件任务' });
+    if (!github.deleteTrigger(githubTriggerMatch[1]!, session.tenant.id)) return reply(res, 404, { error: 'GitHub trigger not found' });
+    publish();
+    return reply(res, 200, { ok: true });
+  }
   if (path === '/api/teams' && req.method === 'GET') return reply(res, 200, teams.snapshot(session));
   if (path === '/api/teams/link-code' && req.method === 'POST') {
     const result = teams.createLinkCode(session);
@@ -290,6 +354,7 @@ const server = createServer(async (req, res) => {
         else await computer?.close();
         computers.delete(tenantId);
         slack.clearTenant(tenantId);
+        github.clearTenant(tenantId);
         teams.clearTenant(tenantId);
         await clearTenantRuntimeDirectories(runtimeDirectories);
         const reset = store.resetPersonalDot(tenantId, session.user.id);

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ScheduledTaskRun, Task, Watch } from '../shared/types.ts';
+import { githubPullRequestActions, type GitHubPullRequestAction, type GitHubPullRequestTrigger, type ScheduledTaskRun, type Task, type Watch } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask } from '../shared/scheduling.ts';
+import { appFetch, appPath } from './api.ts';
 
 type ScheduledItem =
   | { key: string; kind: 'task'; title: string; searchable: string; updatedAt: string; task: Task }
-  | { key: string; kind: 'watch'; title: string; searchable: string; updatedAt: string; watch: Watch };
+  | { key: string; kind: 'watch'; title: string; searchable: string; updatedAt: string; watch: Watch }
+  | { key: string; kind: 'github-trigger'; title: string; searchable: string; updatedAt: string; trigger: GitHubPullRequestTrigger };
 
 const statusText: Record<Task['status'], string> = {
   queued: 'Queued', working: 'Working', delegating: 'Parallel work', waiting: 'Needs you', scheduled: 'Monitoring', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
@@ -16,9 +18,12 @@ function taskStatusText(task: Task) {
     : statusText[task.status];
 }
 
-export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onOpenTask, onLoadTaskRuns, onMarkTaskRunsRead, onNewTask, onAddWatch }: {
+export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngines, canManageGitHubTriggers, onCancelTask, onWatchAction, onOpenTask, onLoadTaskRuns, onMarkTaskRunsRead, onNewTask, onAddWatch }: {
   tasks: Task[];
   watches: Watch[];
+  githubTriggers: GitHubPullRequestTrigger[];
+  eventTriggerEngines: Extract<GitHubPullRequestTrigger['engine'], 'pi' | 'dsh'>[];
+  canManageGitHubTriggers: boolean;
   onCancelTask: (task: Task) => void;
   onWatchAction: (watch: Watch, action: 'pause' | 'resume') => void;
   onOpenTask: (task: Task) => void | Promise<void>;
@@ -30,6 +35,16 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
   const [query, setQuery] = useState('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [showWatchForm, setShowWatchForm] = useState(false);
+  const [showGitHubForm, setShowGitHubForm] = useState(false);
+  const [repository, setRepository] = useState('');
+  const [githubActions, setGitHubActions] = useState<GitHubPullRequestAction[]>(['opened', 'synchronize', 'reopened']);
+  const [triggerCondition, setTriggerCondition] = useState('');
+  const [triggerPrompt, setTriggerPrompt] = useState('');
+  const [triggerEngine, setTriggerEngine] = useState<GitHubPullRequestTrigger['engine'] | ''>(eventTriggerEngines[0] || '');
+  const [githubBusy, setGitHubBusy] = useState(false);
+  const [githubError, setGitHubError] = useState('');
+  const [createdWebhook, setCreatedWebhook] = useState<{ trigger: GitHubPullRequestTrigger; secret: string } | null>(null);
+  const [copyStatus, setCopyStatus] = useState('');
   const [watchUrl, setWatchUrl] = useState('');
   const [watchMinutes, setWatchMinutes] = useState(60);
   const [watchBusy, setWatchBusy] = useState(false);
@@ -53,7 +68,12 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
       searchable: `${watch.url} ${watch.lastStatus || ''} ${watch.status}`,
       updatedAt: watch.lastCheckedAt || '', watch,
     })),
-  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [tasks, watches]);
+    ...githubTriggers.map(trigger => ({
+      key: `github-trigger:${trigger.id}`, kind: 'github-trigger' as const, title: `${trigger.repository} · Pull requests`,
+      searchable: `${trigger.repository} ${trigger.condition} ${trigger.prompt} ${trigger.status} GitHub pull request`,
+      updatedAt: trigger.updatedAt, trigger,
+    })),
+  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [tasks, watches, githubTriggers]);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return normalized ? items.filter(item => item.searchable.toLocaleLowerCase().includes(normalized)) : items;
@@ -68,6 +88,10 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
   useEffect(() => {
     if (!selected || !filtered.some(item => item.key === selectedKey)) setSelectedKey(filtered[0]?.key || null);
   }, [filtered, selected, selectedKey]);
+
+  useEffect(() => {
+    if (!triggerEngine || !eventTriggerEngines.includes(triggerEngine)) setTriggerEngine(eventTriggerEngines[0] || '');
+  }, [eventTriggerEngines, triggerEngine]);
 
   useEffect(() => {
     if (explicitTaskSelection.current) {
@@ -116,6 +140,58 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
     } catch (error) {
       setWatchError(error instanceof Error ? error.message : String(error));
     } finally { setWatchBusy(false); }
+  }
+
+  function toggleGitHubAction(action: GitHubPullRequestAction) {
+    setGitHubActions(current => current.includes(action) ? current.filter(item => item !== action) : [...current, action]);
+  }
+
+  async function submitGitHubTrigger() {
+    if (!canManageGitHubTriggers || githubBusy || !triggerEngine || !repository.trim() || githubActions.length === 0) return;
+    setGitHubBusy(true); setGitHubError(''); setCopyStatus('');
+    try {
+      const response = await appFetch('/api/github-triggers', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ repository: repository.trim(), actions: githubActions, condition: triggerCondition.trim(), prompt: triggerPrompt.trim(), engine: triggerEngine }),
+      });
+      const data = await response.json() as { trigger?: GitHubPullRequestTrigger; secret?: string; error?: string };
+      if (!response.ok || !data.trigger || !data.secret) throw new Error(data.error || 'Unable to create GitHub event task');
+      setCreatedWebhook({ trigger: data.trigger, secret: data.secret });
+      setRepository(''); setTriggerCondition(''); setTriggerPrompt('');
+      setShowGitHubForm(false);
+      setSelectedKey(`github-trigger:${data.trigger.id}`);
+    } catch (error) {
+      setGitHubError(error instanceof Error ? error.message : String(error));
+    } finally { setGitHubBusy(false); }
+  }
+
+  async function changeGitHubTrigger(trigger: GitHubPullRequestTrigger, action: 'pause' | 'resume' | 'delete') {
+    if (!canManageGitHubTriggers || githubBusy) return;
+    setGitHubBusy(true); setGitHubError('');
+    try {
+      const response = await appFetch(`/api/github-triggers/${trigger.id}`, action === 'delete'
+        ? { method: 'DELETE' }
+        : { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error || 'Unable to update GitHub event task');
+      if (action === 'delete') {
+        setSelectedKey(null);
+        setCreatedWebhook(current => current?.trigger.id === trigger.id ? null : current);
+      }
+    } catch (error) {
+      setGitHubError(error instanceof Error ? error.message : String(error));
+    } finally { setGitHubBusy(false); }
+  }
+
+  async function copyValue(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyStatus(`${label} copied`);
+    } catch { setCopyStatus('Select the value and copy it manually.'); }
+  }
+
+  function githubWebhookUrl(trigger: GitHubPullRequestTrigger) {
+    return new URL(appPath(`/github/events/${trigger.id}`), window.location.origin).toString();
   }
 
   async function openTask(task: Task) {
@@ -169,11 +245,13 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
       <div className="scheduled-dot"><span className="scheduled-dot-mark" aria-hidden="true">●</span>Your dot <span aria-hidden="true">⌄</span></div>
       <div className="scheduled-items" aria-label="Scheduled tasks">
         {filtered.map(item => {
-          const status = item.kind === 'task' ? taskStatusText(item.task) : item.watch.status === 'active' ? 'Monitoring' : item.watch.status === 'paused' ? 'Paused' : 'Failed';
+          const status = item.kind === 'task' ? taskStatusText(item.task)
+            : item.kind === 'watch' ? item.watch.status === 'active' ? 'Monitoring' : item.watch.status === 'paused' ? 'Paused' : 'Failed'
+              : item.trigger.status === 'active' ? 'Monitoring' : 'Paused';
           const unreadRuns = item.kind === 'task' ? item.task.unreadScheduledRunCount || 0 : 0;
-          return <button key={item.key} className={`scheduled-item ${selectedKey === item.key ? 'selected' : ''}`} aria-pressed={selectedKey === item.key} onMouseEnter={event => showItemPreview(event.currentTarget, item)} onMouseLeave={() => clearItemPreview(item.key)} onFocus={event => showItemPreview(event.currentTarget, item)} onBlur={() => clearItemPreview(item.key)} onClick={() => { setTaskOpenError(false); if (item.kind === 'task') { if (selectedKey !== item.key) explicitTaskSelection.current = true; setSelectedKey(item.key); void reviewRunsAgain(item.task.id); } else setSelectedKey(item.key); }}>
+          return <button key={item.key} className={`scheduled-item ${selectedKey === item.key ? 'selected' : ''}`} aria-pressed={selectedKey === item.key} onMouseEnter={event => showItemPreview(event.currentTarget, item)} onMouseLeave={() => clearItemPreview(item.key)} onFocus={event => showItemPreview(event.currentTarget, item)} onBlur={() => clearItemPreview(item.key)} onClick={() => { setTaskOpenError(false); if (item.kind === 'task') { if (selectedKey !== item.key) explicitTaskSelection.current = true; setSelectedKey(item.key); void reviewRunsAgain(item.task.id); } else { setShowGitHubForm(false); setSelectedKey(item.key); } }}>
             <span className="scheduled-item-copy"><strong>{item.title}</strong><small>{status}</small></span>
-            {unreadRuns > 0 && <span className="scheduled-item-unread" data-testid={`scheduled-unread-${item.kind}-${item.kind === 'task' ? item.task.id : item.watch.id}`} aria-label={`${unreadRuns} unread scheduled run${unreadRuns === 1 ? '' : 's'}`} title={`${unreadRuns} unread run${unreadRuns === 1 ? '' : 's'}`} />}
+            {unreadRuns > 0 && item.kind === 'task' && <span className="scheduled-item-unread" data-testid={`scheduled-unread-task-${item.task.id}`} aria-label={`${unreadRuns} unread scheduled run${unreadRuns === 1 ? '' : 's'}`} title={`${unreadRuns} unread run${unreadRuns === 1 ? '' : 's'}`} />}
             <span className="scheduled-item-menu" aria-hidden="true">···</span>
             {itemPreview?.key === item.key && <span className="scheduled-hover-preview" data-testid="scheduled-item-preview" aria-hidden="true" style={{ top: itemPreview.top, left: itemPreview.left }}>
               <strong>{item.title}</strong>
@@ -188,7 +266,9 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
         <div className="scheduled-suggestion"><strong>Email monitor</strong><span>Scan my emails and let me know anything that needs my attention</span></div>
         <div className="scheduled-suggestion"><strong>AI tools industry pulse</strong><span>Give me a concise weekly briefing on AI changes that matter for my YouTube coverage</span></div>
       </div>
-      <button className="scheduled-add-watch" onClick={() => setShowWatchForm(value => !value)} aria-expanded={showWatchForm}>＋ Monitor a page</button>
+      <button className="scheduled-add-watch" onClick={() => { setShowWatchForm(value => !value); setShowGitHubForm(false); }} aria-expanded={showWatchForm}>＋ Monitor a page</button>
+      {canManageGitHubTriggers && <button className="scheduled-add-watch" data-testid="add-github-trigger" onClick={() => { setShowGitHubForm(value => !value); setShowWatchForm(false); setGitHubError(''); setCreatedWebhook(null); }} aria-expanded={showGitHubForm}>＋ GitHub pull request trigger</button>}
+      {canManageGitHubTriggers && eventTriggerEngines.length === 0 && <p className="scheduled-trigger-note">Configure Pi or DeepSeek Harness in the Debian cloud computer to add GitHub event tasks.</p>}
     </aside>
 
     <div className="scheduled-detail-pane">
@@ -197,6 +277,26 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
         {selected?.kind === 'task' && <button type="button" onClick={() => void openTask(selected.task)} disabled={taskOpenBusy}>Try again</button>}
         {selectedWatchReview && <button type="button" onClick={() => void openTask(selectedWatchReview)} disabled={taskOpenBusy}>Try again</button>}
       </div>}
+      {showGitHubForm && <form className="scheduled-watch-form github-trigger-form" data-testid="github-trigger-form" onSubmit={event => { event.preventDefault(); void submitGitHubTrigger(); }}>
+        <div className="scheduled-watch-form-heading"><strong>GitHub Pull Request trigger</strong><button type="button" aria-label="Close GitHub trigger form" onClick={() => { setShowGitHubForm(false); setGitHubError(''); }}>×</button></div>
+        <p className="scheduled-trigger-note">Create a repository webhook using the URL and one-time secret shown after saving. Event runs use read-only Pi or DeepSeek Harness in the tenant’s Debian cloud computer.</p>
+        <label>Repository<input aria-label="GitHub repository" value={repository} onChange={event => setRepository(event.target.value)} placeholder="owner/repo" autoComplete="off" required /></label>
+        <fieldset className="github-trigger-actions"><legend>Pull request events</legend>{githubPullRequestActions.map(action => <label key={action}><input type="checkbox" checked={githubActions.includes(action)} onChange={() => toggleGitHubAction(action)} />{action}</label>)}</fieldset>
+        <label>Condition<textarea aria-label="GitHub trigger condition" value={triggerCondition} onChange={event => setTriggerCondition(event.target.value)} maxLength={500} placeholder="For example: the change affects the release process" required /></label>
+        <label>Task instructions<textarea aria-label="GitHub trigger instructions" value={triggerPrompt} onChange={event => setTriggerPrompt(event.target.value)} maxLength={2000} placeholder="For example: summarize the change and flag any release decision I need to make" required /></label>
+        <label>Cloud agent kernel<select aria-label="Cloud agent kernel" value={triggerEngine} onChange={event => setTriggerEngine(event.target.value as GitHubPullRequestTrigger['engine'])} required>{eventTriggerEngines.map(engine => <option value={engine} key={engine}>{engine === 'pi' ? 'Pi' : 'DeepSeek Harness'}</option>)}</select></label>
+        {githubError && <p className="scheduled-watch-error" role="alert">{githubError}</p>}
+        <button className="scheduled-primary" type="submit" disabled={githubBusy || !triggerEngine || eventTriggerEngines.length === 0 || !repository.trim() || githubActions.length === 0 || triggerCondition.trim().length < 3 || triggerPrompt.trim().length < 3}>{githubBusy ? 'Creating…' : 'Create trigger'}</button>
+      </form>}
+      {createdWebhook && <section className="scheduled-detail github-webhook-created" data-testid="github-webhook-created" aria-label="GitHub webhook setup">
+        <div className="scheduled-detail-top"><span className="scheduled-detail-label">Webhook setup</span><span className="scheduled-status active">Secret shown once</span><button type="button" aria-label="Close webhook setup" onClick={() => setCreatedWebhook(null)}>×</button></div>
+        <h2>Connect {createdWebhook.trigger.repository}</h2>
+        <p className="scheduled-instruction">In the repository’s Settings → Webhooks, add a webhook with content type application/json, paste this URL and secret, then subscribe to Pull requests.</p>
+        <label>Payload URL<div className="github-webhook-value"><input aria-label="GitHub webhook URL" readOnly value={githubWebhookUrl(createdWebhook.trigger)} /><button type="button" onClick={() => void copyValue(githubWebhookUrl(createdWebhook.trigger), 'URL')}>Copy</button></div></label>
+        <label>Webhook secret<div className="github-webhook-value"><input aria-label="GitHub webhook secret" readOnly value={createdWebhook.secret} /><button type="button" onClick={() => void copyValue(createdWebhook.secret, 'Secret')}>Copy</button></div></label>
+        {copyStatus && <p role="status" className="scheduled-trigger-note">{copyStatus}</p>}
+        <p className="scheduled-trigger-warning">The secret is stored in the Mac Keychain and will not appear again. If you lose it, delete this trigger and create a replacement. Webhook events provide PR metadata only; Coke Dots does not fetch private code or publish comments.</p>
+      </section>}
       {showWatchForm && <form className="scheduled-watch-form" onSubmit={event => { event.preventDefault(); void submitWatch(); }}>
         <div className="scheduled-watch-form-heading"><strong>Monitor a page</strong><button type="button" aria-label="Close monitor form" onClick={() => { setShowWatchForm(false); setWatchError(''); }}>×</button></div>
         <label>HTTPS URL<input aria-label="HTTPS URL" type="url" placeholder="https://example.com/page" value={watchUrl} onChange={event => setWatchUrl(event.target.value)} required /></label>
@@ -245,6 +345,24 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
         <div className="scheduled-detail-actions">
           {selectedWatchReview && <button data-testid="watch-open-review" onClick={() => void openTask(selectedWatchReview)} disabled={taskOpenBusy}>Open latest review</button>}
           <button className="scheduled-primary" onClick={() => onWatchAction(selected.watch, selected.watch.status === 'active' ? 'pause' : 'resume')}>{selected.watch.status === 'active' ? 'Pause monitor' : 'Resume monitor'}</button>
+        </div>
+      </article>}
+      {!taskOpenError && selected?.kind === 'github-trigger' && <article className="scheduled-detail" data-testid="github-trigger-detail" data-item-id={selected.trigger.id}>
+        <div className="scheduled-detail-top"><span className="scheduled-detail-label">Your dot</span><span className={`scheduled-status ${selected.trigger.status}`}>{selected.trigger.status === 'active' ? 'Monitoring' : 'Paused'}</span></div>
+        <h2>{selected.trigger.repository} · Pull requests</h2>
+        <p className="scheduled-instruction">Run when {selected.trigger.actions.join(', ')} occurs. The task evaluates the condition, then follows your instructions using webhook metadata in a read-only cloud session.</p>
+        <div className="scheduled-detail-meta"><span>Kernel: {selected.trigger.engine === 'pi' ? 'Pi' : 'DeepSeek Harness'}</span><span>Last event: {selected.trigger.lastEventAt ? new Date(selected.trigger.lastEventAt).toLocaleString() : 'None yet'}</span></div>
+        <section className="github-trigger-summary"><h3>Condition</h3><p>{selected.trigger.condition}</p><h3>Instructions</h3><p>{selected.trigger.prompt}</p></section>
+        <label className="github-detail-url">Payload URL<input aria-label="Configured GitHub webhook URL" readOnly value={githubWebhookUrl(selected.trigger)} /></label>
+        {githubError && <p className="scheduled-watch-error" role="alert">{githubError}</p>}
+        <p className="scheduled-trigger-warning">This trigger creates a task from pull request metadata only. It does not fetch repository code or send comments. Remove the repository webhook in GitHub separately when deleting this trigger.</p>
+        <div className="scheduled-detail-actions">
+          {selected.trigger.lastTaskId && <button onClick={() => {
+            const task = tasks.find(item => item.id === selected.trigger.lastTaskId);
+            if (task) void openTask(task);
+          }}>Open latest task</button>}
+          {canManageGitHubTriggers && <button className="scheduled-primary" disabled={githubBusy} onClick={() => void changeGitHubTrigger(selected.trigger, selected.trigger.status === 'active' ? 'pause' : 'resume')}>{selected.trigger.status === 'active' ? 'Pause trigger' : 'Resume trigger'}</button>}
+          {canManageGitHubTriggers && <button className="scheduled-danger" disabled={githubBusy} onClick={() => void changeGitHubTrigger(selected.trigger, 'delete')}>Delete trigger</button>}
         </div>
       </article>}
       {!taskOpenError && !selected && <div className="scheduled-empty-detail"><div className="scheduled-empty-icon" aria-hidden="true">◷</div><h2>{items.length ? 'No matching tasks' : 'No scheduled tasks yet'}</h2><p>{items.length ? 'Try a different search.' : 'Create a recurring task or monitor a page to see it here.'}</p><button className="scheduled-primary" onClick={onNewTask}>＋ New task</button></div>}
