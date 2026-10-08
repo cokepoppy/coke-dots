@@ -1854,6 +1854,10 @@ try {
       assert(delivered, 'The completed task result must be returned to the inbound Slack DM');
       assert.equal(delivered.text, 'Slack connector E2E reply received.');
       assert.match(delivered.client_msg_id, /^[a-f0-9-]{36}$/);
+      await waitFor(() => {
+        const current = database.prepare('SELECT status FROM slack_inbox_events WHERE event_id=?').get('EvChromeSlackE2E001') as { status: string } | undefined;
+        return current?.status === 'delivered';
+      }, 5_000);
       const row = database.prepare(`SELECT e.status,e.tenant_id,e.slack_user_id,e.task_id,t.status AS task_status,t.result
         FROM slack_inbox_events e JOIN tasks t ON t.id=e.task_id AND t.tenant_id=e.tenant_id WHERE e.event_id=?`).get('EvChromeSlackE2E001') as
         { status: string; tenant_id: string; slack_user_id: string; task_id: string; task_status: string; result: string };
@@ -1864,6 +1868,10 @@ try {
         eventId: 'EvChromeMentionE2E002', eventType: 'app_mention', channel: 'CANNOUNCEMENT', text: '<@UAPPBOT> E2E Slack inbox request — answer with the connector result.',
       });
       await waitFor(() => mockSlackOpenedDms.includes('UINSTALLER1') && mockSlackPostedMessages.some(message => message.channel === 'DAPPDM' && message.text === 'Slack connector E2E reply received.'), 15_000);
+      await waitFor(() => {
+        const current = database.prepare('SELECT status FROM slack_inbox_events WHERE event_id=?').get('EvChromeMentionE2E002') as { status: string } | undefined;
+        return current?.status === 'delivered';
+      }, 5_000);
       const mention = database.prepare(`SELECT e.status,e.tenant_id,t.status AS task_status,t.result FROM slack_inbox_events e
         JOIN tasks t ON t.id=e.task_id AND t.tenant_id=e.tenant_id WHERE e.event_id=?`).get('EvChromeMentionE2E002') as
         { status: string; tenant_id: string; task_status: string; result: string };
