@@ -17,10 +17,12 @@ import { desktopResourceIdentity } from '../../src/server/linux-desktop-computer
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const outputRoot = join(projectRoot, 'artifacts', 'demos', 'proactive-release-date-conflict');
 const videoOutput = join(outputRoot, 'proactive-release-date-conflict.webp');
-const sourceDraft = 'Draft the launch announcement using October 21 as the launch date. Keep it open and wait for approval before sending.';
-const sourceDecision = 'The release team confirmed today that launch moves to October 22. Summarize the decision for me.';
-const finding = 'I noticed the release decision moves launch to October 22, while the open launch announcement still says October 21. Would you like me to update that draft? I have not changed or sent it.';
+const sourceDraft = '请起草一份内部发布公告，发布日期写 10 月 21 日。草稿先保留并等待我审批，不要发送、发布，也不要修改其他内容。处理后请用中文告诉我草稿在等待审批，而且没有发送。';
+const sourceDecision = '发布团队今天确认发布日期改为 10 月 22 日。请用一句中文记录这个决定，不要编辑或发送公告。';
+const finding = '我发现发布团队把发布日期改为 10 月 22 日，但待审批的发布公告仍写着 10 月 21 日。要我更新这份草稿吗？我还没有修改或发送。';
 const liveK3d = process.env.DOTS_PROACTIVE_DEMO_LIVE_KERNELS === '1';
+const liveEngine = process.env.DOTS_PROACTIVE_DEMO_ENGINE?.trim() || 'dsh';
+assert(['pi', 'dsh'].includes(liveEngine), 'DOTS_PROACTIVE_DEMO_ENGINE must be pi or dsh.');
 const cluster = process.env.DOTS_K3D_CLUSTER || 'tp1121-sandbox-dev';
 const tokenSecret = randomBytes(32).toString('base64url');
 const keychainService = `com.cokepoppy.coke-dots.proactive-demo-${randomUUID()}`;
@@ -70,8 +72,8 @@ async function startModel() {
         let decision: Record<string, unknown>;
         const isProactiveResearch = system.includes('Proactive research constraints') || user.includes('Proactive research constraints');
         if (isProactiveResearch) {
-          assert.match(user, /October 21/);
-          assert.match(user, /October 22/);
+          assert.match(user, /10\s*月\s*21\s*日/);
+          assert.match(user, /10\s*月\s*22\s*日/);
           assert.match(user, /Do not browse, control a computer, read or modify files/);
           assert.doesNotMatch(JSON.stringify(payload.tools || []), /open_public_page|computer|write|send/i);
           decision = { status: 'done', message: finding, proactiveFinding: true };
@@ -153,16 +155,16 @@ async function startServer(port: number, modelBaseUrl: string) {
       DOTS_MODEL_BASE_URL: liveK3d ? '' : modelBaseUrl,
       DOTS_MODEL_API_KEY: liveK3d ? '' : 'e2e-proactive-demo-only',
       DOTS_MODEL: liveK3d ? '' : 'proactive-demo-model',
-      DOTS_PI_ENABLED: '0',
+      DOTS_PI_ENABLED: liveK3d && liveEngine === 'pi' ? '1' : '0',
       DOTS_COMPUTER_BACKEND: liveK3d ? 'linux-desktop' : '',
       DOTS_LINUX_DESKTOP_TOKEN_SECRET: liveK3d ? tokenSecret : '',
       DOTS_LINUX_DESKTOP_IMAGE: process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev',
       DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE: liveK3d ? cluster : '',
       DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX || (liveK3d ? '1' : ''),
-      DOTS_DESKTOP_AGENT_ADAPTERS: liveK3d ? 'dsh' : '',
+      DOTS_DESKTOP_AGENT_ADAPTERS: liveK3d ? liveEngine : '',
       DOTS_AGENT_KERNELS_JSON: '',
       DOTS_DSH_BIN: '',
-      DOTS_DSH_PROFILE: liveK3d ? (process.env.DOTS_LIVE_DSH_PROFILE?.trim() || process.env.DOTS_DSH_PROFILE?.trim() || 'sdk') : '',
+      DOTS_DSH_PROFILE: liveK3d && liveEngine === 'dsh' ? (process.env.DOTS_LIVE_DSH_PROFILE?.trim() || process.env.DOTS_DSH_PROFILE?.trim() || 'sdk') : '',
       GOOGLE_CLIENT_ID: '',
       GOOGLE_CLIENT_SECRET: '',
     },
@@ -284,35 +286,36 @@ try {
     assert.notEqual(existingNamespace.status, 0, `Refusing to reuse pre-existing tenant desktop namespace ${tenantNamespace}`);
     assert.match(existingNamespace.stderr, /NotFound/i, `Could not safely verify new namespace ${tenantNamespace}: ${(existingNamespace.stderr || existingNamespace.stdout).slice(-800)}`);
     tenantNamespaceCreated = true;
-    await page.locator('.composer-bottom select').selectOption('dsh');
+    await page.locator('.composer-bottom select').selectOption(liveEngine);
     const engines = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[] };
-    assert(engines.availableEngines.includes('dsh') && engines.remoteEngines.includes('dsh'), 'DeepSeek Harness must be available and marked as a remote cloud-computer kernel.');
-    console.log(`STEP selected DeepSeek Harness for tenant cloud computer ${tenantNamespace}`);
+    assert(engines.availableEngines.includes(liveEngine) && engines.remoteEngines.includes(liveEngine), `${liveEngine} must be available and marked as a remote cloud-computer kernel.`);
+    console.log(`STEP selected ${liveEngine} for tenant cloud computer ${tenantNamespace}`);
   }
   await new Promise(resolvePromise => setTimeout(resolvePromise, 900));
   await page.screenshot({ path: join(outputRoot, 'screenshots', '00-dot-ready.png') });
 
-  const draftInstruction = liveK3d
-    ? 'Prepare an internal launch announcement draft that says the launch date is October 21. Do not send, publish, or change anything outside this task. Keep the work waiting for my approval, and tell me clearly that the October 21 draft is waiting and nothing has been sent. Return status="waiting".'
-    : sourceDraft;
+  const draftInstruction = sourceDraft;
   await submitTask(page, draftInstruction);
   console.log('STEP waiting for the launch draft task to reach a stable review state');
   await waitForTask(page, { instruction: draftInstruction, statuses: ['waiting', 'failed', 'done'] });
   if (!liveK3d) await page.locator('.timeline .message.dot p').filter({ hasText: 'Draft ready for review' }).waitFor({ state: 'visible' });
-  const waitingTask = await page.evaluate(async instruction => {
-    const state = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string }[] };
-    return state.tasks.find(task => task.instruction === instruction)?.status;
+  const waitingSnapshot = await page.evaluate(async instruction => {
+    const state = await (await fetch('/api/state')).json() as {
+      tasks: { id: string; instruction: string; status: string }[];
+      entries: { taskId: string | null; kind: string; body: string }[];
+    };
+    const task = state.tasks.find(row => row.instruction === instruction);
+    return { task, replies: task ? state.entries.filter(entry => entry.taskId === task.id && entry.kind === 'dot').map(entry => entry.body) : [] };
   }, draftInstruction);
-  assert.equal(waitingTask, 'waiting', 'The launch draft must remain open for approval.');
+  assert.equal(waitingSnapshot.task?.status, 'waiting', 'The launch draft must remain open for approval.');
+  if (liveK3d) assert.match(waitingSnapshot.replies.at(-1) || '', /[\u3400-\u9fff]/, 'Pi must reply in Chinese to the Chinese draft request.');
   await page.screenshot({ path: join(outputRoot, 'screenshots', '01-launch-draft-waiting.png') });
   console.log('STEP open launch draft is waiting');
   await new Promise(resolvePromise => setTimeout(resolvePromise, 1_200));
 
   await page.getByRole('button', { name: '新聊天', exact: true }).click();
   console.log('STEP opened a fresh chat');
-  const decisionInstruction = liveK3d
-    ? 'The release team confirmed today that launch moves to October 22. Summarize this decision in one sentence. Do not edit or send the announcement. Return status="done".'
-    : sourceDecision;
+  const decisionInstruction = sourceDecision;
   await submitTask(page, decisionInstruction);
   console.log('STEP submitted the new release decision');
   if (!liveK3d) await page.locator('.timeline .message.dot p').filter({ hasText: 'The release decision moves launch to October 22.' }).waitFor({ state: 'visible' });
@@ -328,20 +331,23 @@ try {
   console.log('STEP proactive review found the conflicting dates');
   const state = await page.evaluate(async () => await (await fetch('/api/state')).json()) as {
     tasks: { id: string; instruction: string; status: string; executionMode: string; engine: string; result: string | null }[];
+    entries: { taskId: string | null; kind: string; body: string }[];
   };
   const draftTask = state.tasks.find(task => task.instruction === draftInstruction);
   const decisionTask = state.tasks.find(task => task.instruction === decisionInstruction);
   const reviewTask = state.tasks.find(task => task.executionMode === 'proactive-research');
   assert.equal(draftTask?.status, 'waiting', 'The original draft must remain open for approval');
   assert.equal(decisionTask?.status, 'done');
+  if (liveK3d) assert.match(decisionTask?.result || '', /[\u3400-\u9fff]/, 'Pi must record the new release decision in Chinese.');
   assert(reviewTask, 'The completed work should trigger an autonomous context review');
   assert.equal(reviewTask.status, 'done', `The proactive review failed: ${reviewTask.result || '(no result)'}`);
   if (liveK3d) {
-    assert.equal(draftTask.engine, 'dsh', 'The open draft task must use the selected cloud kernel.');
-    assert.equal(decisionTask.engine, 'dsh', 'The release decision task must use the selected cloud kernel.');
-    assert.equal(reviewTask.engine, 'dsh', 'The autonomous review must use the same DeepSeek Harness cloud kernel.');
+    assert.equal(draftTask.engine, liveEngine, 'The open draft task must use the selected cloud kernel.');
+    assert.equal(decisionTask.engine, liveEngine, 'The release decision task must use the selected cloud kernel.');
+    assert.equal(reviewTask.engine, liveEngine, 'The autonomous review must use the same cloud kernel.');
   }
-  assert.match(reviewTask.result || '', /October 22.*October 21|October 21.*October 22/);
+  assert.match(reviewTask.result || '', /10\s*月\s*22\s*日.*10\s*月\s*21\s*日|10\s*月\s*21\s*日.*10\s*月\s*22\s*日/);
+  if (liveK3d) assert.match(reviewTask.result || '', /[\u3400-\u9fff]/, 'Pi must report its proactive finding in Chinese.');
   assert.equal(await page.evaluate(async () => await fetch('/api/pages').then(response => response.json()).then((pages: unknown[]) => pages.length)), 0, 'The proactive review must not write a Scratchpad page');
   assert.equal(await page.evaluate(async () => await fetch('/api/dot-memories').then(response => response.json()).then((notes: unknown[]) => notes.length)), 0, 'The proactive review must not write personal Dot memory');
   if (!liveK3d) assert.equal(modelRequests.filter(request => request.user.includes('Proactive research constraints')).length, 1);
@@ -353,11 +359,13 @@ try {
     const osRelease = command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'cat', '/etc/os-release']);
     assert.match(osRelease, /^ID=debian$/m);
     assert.match(osRelease, /^VERSION_ID="13"$/m);
-    assert.match(command(['kubectl', '-n', tenantNamespace, 'exec', pod, '-c', 'agent-runtime', '--', '/usr/local/bin/dsh', '--version']), /\d+\.\d+/);
+    if (liveEngine === 'dsh') assert.match(command(['kubectl', '-n', tenantNamespace, 'exec', pod, '-c', 'agent-runtime', '--', '/usr/local/bin/dsh', '--version']), /\d+\.\d+/);
+    else assert.equal(command(['kubectl', '-n', tenantNamespace, 'exec', pod, '-c', 'agent-runtime', '--', 'sh', '-lc', "cd /opt/coke-dots && node --input-type=module -e \"await import('@mariozechner/pi-coding-agent'); console.log('pi-sdk-ok')\""]), 'pi-sdk-ok');
     const sessionFiles = command(['kubectl', '-n', tenantNamespace, 'exec', pod, '-c', 'agent-runtime', '--', 'find', `/workspace/tasks/${reviewTask.id}/.coke-dots-agent-runtime`, '-type', 'f', '-printf', '%P\\n']);
-    assert(sessionFiles, 'The proactive DSH session must persist inside the tenant cloud-computer workspace.');
+    assert(sessionFiles, `The proactive ${liveEngine} session must persist inside the tenant cloud-computer workspace.`);
+    if (liveEngine === 'pi') assert.match(sessionFiles, /pi-sessions/, 'Pi session history must live in the Debian cloud computer workspace.');
     assert(liveModelConfig, 'The shared model profile must be loaded for the live cloud kernel.');
-    console.log(`STEP verified DSH task session inside Debian 13 tenant computer ${tenantNamespace}`);
+    console.log(`STEP verified ${liveEngine} task session inside Debian 13 tenant computer ${tenantNamespace}`);
   }
 
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
@@ -379,8 +387,8 @@ try {
   assert.deepEqual(mockErrors, [], `Model fixture errors: ${mockErrors.join('; ')}`);
   if (!liveK3d) {
     assert.equal(modelRequests.length, 3, `Expected draft, decision and autonomous review calls; received ${modelRequests.length}`);
-    assert.match(modelRequests[2].user, /October 21/);
-    assert.match(modelRequests[2].user, /October 22/);
+    assert.match(modelRequests[2].user, /10\s*月\s*21\s*日/);
+    assert.match(modelRequests[2].user, /10\s*月\s*22\s*日/);
   }
 
   runFailed = false;
@@ -403,7 +411,7 @@ try {
   if (modelServer) await new Promise<void>(resolvePromise => modelServer!.close(() => resolvePromise()));
   const secret = liveModelApiKey;
   await writeFile(join(outputRoot, 'server.log'), secret ? serverLogs.join('').replaceAll(secret, '[REDACTED]') : serverLogs.join(''));
-  await writeFile(join(outputRoot, 'e2e-debug.json'), JSON.stringify({ mode: liveK3d ? 'live-deepseek-harness-in-debian-k3d' : 'deterministic-local-model-fixture', result: runFailed ? 'failed' : 'passed', mockErrors, fixtureModelCalls: liveK3d ? undefined : modelRequests.length, liveProviderModel: liveK3d ? liveModelName : undefined, proactiveReviewSeen: liveK3d ? undefined : modelRequests.some(request => request.user.includes('Proactive research constraints')), tenantNamespace: liveK3d ? tenantNamespace : undefined, tasks: taskDiagnostics }, null, 2).replace(secret || '\u0000', '[REDACTED]') + '\n');
+  await writeFile(join(outputRoot, 'e2e-debug.json'), JSON.stringify({ mode: liveK3d ? `live-${liveEngine}-in-debian-k3d` : 'deterministic-local-model-fixture', result: runFailed ? 'failed' : 'passed', mockErrors, fixtureModelCalls: liveK3d ? undefined : modelRequests.length, liveEngine: liveK3d ? liveEngine : undefined, liveProviderModel: liveK3d ? liveModelName : undefined, proactiveReviewSeen: liveK3d ? undefined : modelRequests.some(request => request.user.includes('Proactive research constraints')), tenantNamespace: liveK3d ? tenantNamespace : undefined, tasks: taskDiagnostics }, null, 2).replace(secret || '\u0000', '[REDACTED]') + '\n');
   const preserveFailedNamespace = liveK3d && runFailed && process.env.DOTS_PROACTIVE_DEMO_KEEP_FAILED_NAMESPACE === '1';
   if (tenantNamespace && tenantNamespaceCreated && !preserveFailedNamespace) spawnSync('kubectl', ['delete', 'namespace', tenantNamespace, '--wait=true', '--timeout=120s'], { cwd: projectRoot, stdio: 'ignore' });
   else if (preserveFailedNamespace) console.log(`Preserved temporary K3D namespace for diagnosis: ${tenantNamespace}`);
@@ -423,7 +431,7 @@ await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
   sourceRecording: 'Playwright Chrome recording, converted to animated WebP',
   viewport: { width: 1440, height: 1000 },
   screenshots: ['screenshots/00-dot-ready.png', 'screenshots/01-launch-draft-waiting.png', 'screenshots/02-proactive-finding-in-activity.png', 'screenshots/03-proactive-finding-detail.png'],
-  kernel: liveK3d ? 'DeepSeek Harness running in the tenant-isolated Debian 13 cloud-computer Pod' : 'Local deterministic E2E model fixture',
+  kernel: liveK3d ? `${liveEngine} running in the tenant-isolated Debian 13 cloud-computer Pod` : 'Local deterministic E2E model fixture',
   model: liveK3d ? liveModelName : 'Deterministic local E2E fixture; no live provider request',
   providerMode: liveK3d ? 'Live shared Model API credentials reused by this and other tenants' : 'Local deterministic fixture; no provider request',
   fixtureModelCalls: liveK3d ? undefined : modelRequests.length,

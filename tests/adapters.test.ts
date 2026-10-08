@@ -20,6 +20,16 @@ test('agent output must specify a real task state', () => {
   assert.throws(() => parseDecision('{"status":"done","message":""}'));
 });
 
+test('agent JSON parsing escapes raw control characters inside strings and preserves real JSON escapes', () => {
+  const raw = '{"status":"done","message":"first line\nsecond line\tcolumn\rend"}';
+  assert.equal(parseDecision(raw).message, 'first line\nsecond line\tcolumn\rend');
+
+  const withOtherControl = `{"status":"done","message":"safe${String.fromCharCode(1)} text"}`;
+  assert.equal(parseDecision(withOtherControl).message, `safe${String.fromCharCode(1)} text`);
+  assert.equal(parseDecision('Result:\n```json\n{"status":"done","message":"the draft says {October 21}"}\n```').message, 'the draft says {October 21}');
+  assert.throws(() => parseDecision('{"status":"done" "message":"missing comma"}'), /不是有效 JSON/);
+});
+
 test('website sign-in requests wait for the user and contain only a safe public login address', () => {
   const result = parseDecision(JSON.stringify({
     status: 'waiting', message: 'Please sign in to continue.',

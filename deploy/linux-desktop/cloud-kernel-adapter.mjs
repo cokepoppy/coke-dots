@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Type } from 'typebox';
+import { parseAgentDecisionJson } from './agent-decision-json.mjs';
 
 const decisionStatuses = new Set(['done', 'waiting', 'scheduled', 'delegating']);
 
@@ -247,13 +248,7 @@ async function checkedChildPath(parent, candidate) {
 }
 
 function parseDecision(text) {
-  if (typeof text !== 'string') throw new Error(`Agent did not return a structured result (response type: ${typeof text})`);
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) {
-    const preview = process.env.NODE_ENV === 'test' ? `: ${text.replace(/\s+/g, ' ').slice(0, 400)}` : '';
-    throw new Error(`Agent did not return a structured result${preview}`);
-  }
-  const value = JSON.parse(match[0]);
+  const value = parseAgentDecisionJson(text);
   if (!decisionStatuses.has(value.status) || typeof value.message !== 'string' || !value.message.trim()) throw new Error('Agent returned an invalid task decision');
   return value;
 }

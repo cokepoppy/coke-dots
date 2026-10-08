@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Type } from 'typebox';
 import type { PersonalActionRule, PersonalDotMemory, PersonalDotMemoryUpdate, ReasoningEffort, ScratchpadPageAction, TaskExecutionMode } from '../shared/types.ts';
+import { parseAgentDecisionJson } from '../../deploy/linux-desktop/agent-decision-json.mjs';
 import { startDshPublicPageBridge, writeDshPublicPagePatch } from './dsh-browser-bridge.ts';
 import { configuredInstanceModelConfig, effectiveModelConfig } from './model-settings.ts';
 
@@ -275,9 +276,7 @@ export function agentDecisionOptions(input: Pick<AgentRequest, 'allowDelegation'
 }
 
 export function parseDecision(raw: string, sessionId?: string, options: { allowDelegation?: boolean; allowPageActions?: boolean; allowScheduling?: boolean; allowWebsiteSignInRequest?: boolean; allowProactiveFinding?: boolean; availableEngines?: readonly Engine[]; allowPersonalDotMemoryUpdates?: boolean; personalDotMemoryIds?: readonly string[] } = {}): AgentDecision {
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('代理没有返回结构化结果');
-  const value = JSON.parse(match[0]) as Partial<AgentDecision>;
+  const value = parseAgentDecisionJson(raw) as Partial<AgentDecision>;
   const status = value.status;
   if (!status || !(['done', 'waiting', 'scheduled', 'delegating'] as const).includes(status) || typeof value.message !== 'string' || !value.message.trim()) throw new Error('代理返回的任务状态无效');
   if (options.allowProactiveFinding === true && (status !== 'done' || typeof value.proactiveFinding !== 'boolean')) throw new Error('主动研究必须以完成状态和明确的发现标记结束');
