@@ -83,6 +83,55 @@ test('Pi cloud browser tool uses only its scoped read-only bridge capability', a
   }
 });
 
+test('Pi cloud computer UI tool uses a scoped bridge and permits only inspect or information-button actions', async () => {
+  const { root, task } = await makeWorkspace();
+  const requests: { path: string; body: unknown; token: string }[] = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+    requests.push({ path: new URL(request.url || '/', 'http://127.0.0.1').pathname, body, token: String(request.headers.authorization || '') });
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ url: 'https://example.test/activity', title: 'Public activity', text: 'AI 助手上手分享\n活动详情\n免费名额：2 个' }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const scopedToken = 'task-scoped-computer-ui-token';
+  const toolResults: unknown[] = [];
+  const sdk = {
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+    ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+    SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-ui-session' }), open: () => { throw new Error('unexpected'); } },
+    createAgentSession: async (options: Record<string, any>) => {
+      assert.deepEqual(options.tools, ['read', 'grep', 'find', 'ls', 'open_public_page', 'computer_ui']);
+      const computerUi = options.customTools.find((tool: { name: string }) => tool.name === 'computer_ui');
+      toolResults.push(await computerUi.execute('inspect', { action: 'inspect' }));
+      toolResults.push(await computerUi.execute('click', { action: 'click_information_button', buttonName: '查看活动详情' }));
+      return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
+    },
+  };
+  try {
+    await runCloudKernel({
+      engine: 'pi', prompt: 'Open the public page, inspect it, then click 查看活动详情.', cwd: task, workspace: root,
+      taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
+      computer: {
+        openPublicPageUrl: `http://127.0.0.1:${address.port}/open_public_page`, openPublicPageToken: scopedToken,
+        computerUiUrl: `http://127.0.0.1:${address.port}/computer_ui`, computerUiToken: scopedToken,
+      },
+    }, { piSdk: sdk });
+    assert.deepEqual(requests, [
+      { path: '/computer_ui/inspect', body: {}, token: `Bearer ${scopedToken}` },
+      { path: '/computer_ui/click', body: { name: '查看活动详情' }, token: `Bearer ${scopedToken}` },
+    ]);
+    assert.match(JSON.stringify(toolResults), /免费名额：2 个/);
+    assert.match(JSON.stringify(toolResults), /查看活动详情/);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('proactive review runs inside the Pi cloud kernel with every computer and file tool removed', async () => {
   const { root, task } = await makeWorkspace();
   const proactiveDecision = JSON.stringify({ status: 'done', message: 'The launch target conflicts with the active release task.', proactiveFinding: true });

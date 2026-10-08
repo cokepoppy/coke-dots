@@ -505,7 +505,7 @@ function App() {
         onNewTask={() => { setSchedule(true); setView('chat'); requestAnimationFrame(() => composerRef.current?.focus()); }}
         onAddWatch={addScheduledWatch} />}
       {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onSetDotPaused={setDotPaused} onResetDot={returnToFreshDotChat} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} onStartCall={() => setVoiceCallOpen(true)} />}
-      {view === 'computer' && <ComputerView dotName={state.profile.name} localComputerEnabled={state.computerAccess.localComputer} onManageAccess={() => setComputerAccessOpen(true)} onError={setError} />}
+      {view === 'computer' && <ComputerView dotName={state.profile.name} localComputerEnabled={state.computerAccess.localComputer} cloudComputerEnabled={state.remoteEngines.length > 0} onManageAccess={() => setComputerAccessOpen(true)} onError={setError} />}
     </main>
     {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, false, true)} />}
     {computerAccessOpen && <DotComputerChoice localComputer={state.computerAccess.localComputer} mode="settings" onSave={saveComputerAccess} onCancel={() => setComputerAccessOpen(false)} />}

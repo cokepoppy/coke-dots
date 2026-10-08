@@ -69,6 +69,16 @@ test('public browser capability is described as read-only evidence only when exp
   assert.match(prompt, /Never sign in, click, type, submit forms, download files/);
 });
 
+test('computer UI instructions are enabled only for an explicitly computer-directed standard task', () => {
+  const base = { prompt: 'Inspect a page.', priorResult: null, sessionId: null, workspace: '/tmp/coke-dots-computer-ui-prompt', onEvent: () => {} };
+  assert.doesNotMatch(formatAgentPrompt(base), /restricted computer_ui tool/);
+  const prompt = formatAgentPrompt({ ...base, executionMode: 'standard', computerUiEnabled: true });
+  assert.match(prompt, /restricted computer_ui tool is available for this explicitly computer-directed task/);
+  assert.match(prompt, /visible non-submit information button/);
+  assert.match(prompt, /Never type, submit a form, sign in, register, book, buy, pay/);
+  assert.doesNotMatch(formatAgentPrompt({ ...base, computerUiEnabled: true, executionMode: 'proactive-research' }), /restricted computer_ui tool/);
+});
+
 test('personal Dot memory updates are bounded, private-workspace only, and limited to listed note ids', () => {
   const memory = { id: randomUUID(), note: 'Prefers concise Mandarin updates.', sourceTaskId: null, createdAt: '', updatedAt: '' };
   const options = agentDecisionOptions({

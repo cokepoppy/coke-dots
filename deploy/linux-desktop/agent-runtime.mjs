@@ -261,15 +261,25 @@ async function startBrowserResearchBridge() {
   const token = randomBytes(32).toString('base64url');
   const server = http.createServer(async (req, res) => {
     try {
-      if (req.method !== 'POST' || req.url !== '/open_public_page') return send(res, 404, { error: 'not found' });
+      if (req.method !== 'POST' || !['/open_public_page', '/computer_ui/inspect', '/computer_ui/click'].includes(req.url || '')) return send(res, 404, { error: 'not found' });
       if (!isAuthorized(req.headers.authorization, token)) return send(res, 401, { error: 'browser research token is invalid' });
       if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'content type must be JSON' });
       const body = await readJson(req);
-      if (Object.keys(body).some(key => key !== 'url') || typeof body.url !== 'string' || body.url.length > 2048) return send(res, 400, { error: 'public page URL is invalid' });
-      const response = await fetch(`http://127.0.0.1:${workerPort}/v1/research/open-public-page`, {
+      let workerPath;
+      if (req.url === '/open_public_page') {
+        if (Object.keys(body).some(key => key !== 'url') || typeof body.url !== 'string' || body.url.length > 2048) return send(res, 400, { error: 'public page URL is invalid' });
+        workerPath = '/v1/research/open-public-page';
+      } else if (req.url === '/computer_ui/inspect') {
+        if (Object.keys(body).length) return send(res, 400, { error: 'The UI inspect request does not accept parameters' });
+        workerPath = '/v1/agent-ui/inspect';
+      } else {
+        if (Object.keys(body).some(key => key !== 'name') || typeof body.name !== 'string' || body.name.length > 120) return send(res, 400, { error: 'The UI click target is invalid' });
+        workerPath = '/v1/agent-ui/click-information-button';
+      }
+      const response = await fetch(`http://127.0.0.1:${workerPort}${workerPath}`, {
         method: 'POST',
         headers: { authorization: `Bearer ${process.env.LINUX_DESKTOP_WORKER_TOKEN}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ url: body.url }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(30_000),
       });
       const result = await response.json().catch(() => ({}));
@@ -285,7 +295,12 @@ async function startBrowserResearchBridge() {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Could not start the cloud browser research bridge');
   return {
-    capability: { openPublicPageUrl: `http://127.0.0.1:${address.port}/open_public_page`, openPublicPageToken: token },
+    capability: {
+      openPublicPageUrl: `http://127.0.0.1:${address.port}/open_public_page`,
+      openPublicPageToken: token,
+      computerUiUrl: `http://127.0.0.1:${address.port}/computer_ui`,
+      computerUiToken: token,
+    },
     close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
   };
 }

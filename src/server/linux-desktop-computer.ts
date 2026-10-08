@@ -341,6 +341,12 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
   const agentEngines = [...new Set(requestedAgentEngines)].join(',');
   const builtInAdapter = { command: 'node', args: ['/opt/coke-dots/cloud-kernel-adapter.mjs'] };
   const kernelAdapters = Object.fromEntries(agentEngines.split(',').filter(Boolean).map(engine => [engine, kernels[engine] || builtInAdapter]));
+  const e2eComputerFixtureEnv = process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1' ? [
+    { name: 'NODE_ENV', value: 'test' },
+    { name: 'DOTS_E2E_AUTH', value: '1' },
+    ...(process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL ? [{ name: 'DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL }] : []),
+    ...(process.env.DOTS_E2E_COMPUTER_UI_FIXTURE_URL ? [{ name: 'DOTS_E2E_COMPUTER_UI_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_UI_FIXTURE_URL }] : []),
+  ] : [];
   const objects: Record<string, unknown>[] = [
     {
       apiVersion: 'v1', kind: 'Secret', metadata: { name: 'desktop-runtime', namespace }, type: 'Opaque',
@@ -375,11 +381,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 name, image, imagePullPolicy: pullPolicy,
                 env: [
                   { name: 'LINUX_DESKTOP_WORKER_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'LINUX_DESKTOP_WORKER_TOKEN' } } },
-                  ...(process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1' && process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL ? [
-                    { name: 'NODE_ENV', value: 'test' },
-                    { name: 'DOTS_E2E_AUTH', value: '1' },
-                    { name: 'DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL },
-                  ] : []),
+                  ...e2eComputerFixtureEnv,
                   { name: 'COKE_DESKTOP_RESOLUTION', value: '1440x1080' },
                   { name: 'COKE_DESKTOP_VNC_AUTH_MODE', value: 'gateway' },
                   { name: 'COKE_DESKTOP_CHROME_NO_SANDBOX', value: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX === '1' ? '1' : '0' },
@@ -409,11 +411,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                   { name: 'DOTS_AGENT_KERNELS_JSON', value: JSON.stringify(kernelAdapters) },
                   { name: 'DOTS_DSH_BIN', value: process.env.DOTS_CLOUD_DSH_BIN || '/usr/local/bin/dsh' },
                   { name: 'DOTS_DSH_PROFILE', value: process.env.DOTS_CLOUD_DSH_PROFILE || 'sdk' },
-                  ...(process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1' && process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL ? [
-                    { name: 'NODE_ENV', value: 'test' },
-                    { name: 'DOTS_E2E_AUTH', value: '1' },
-                    { name: 'DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL },
-                  ] : []),
+                  ...e2eComputerFixtureEnv,
                 ],
                 ports: [{ name: 'agent', containerPort: 8083 }],
                 readinessProbe: { httpGet: { path: '/healthz', port: 'agent' }, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 36 },

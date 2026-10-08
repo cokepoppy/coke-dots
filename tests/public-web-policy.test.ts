@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fetchPublicPageHtml, isE2EBrowserResearchFixture, isPublicIpAddress, sanitizePublicHtml, validatePublicHttpsUrl } from '../src/shared/public-web-policy.mjs';
+import { fetchPublicPageHtml, isE2EBrowserResearchFixture, isE2EComputerUiFixture, isPublicIpAddress, sanitizePublicHtml, validatePublicHttpsUrl } from '../src/shared/public-web-policy.mjs';
 
 const publicLookup = async () => [{ address: '8.8.8.8', family: 4 }];
 
@@ -39,6 +39,14 @@ test('E2E web fixture is enabled only for its exact URL in authenticated test mo
   assert.equal(isE2EBrowserResearchFixture('https://research-fixture.dots.test/launch?extra=1', environment), false);
   assert.equal(isE2EBrowserResearchFixture('https://research-fixture.dots.test/launch', { ...environment, DOTS_E2E_AUTH: '0' }), false);
   assert.equal(isE2EBrowserResearchFixture('https://research-fixture.dots.test/launch', { ...environment, NODE_ENV: 'production' }), false);
+});
+
+test('cloud computer UI demo fixture is enabled only for its exact URL in authenticated test mode', async () => {
+  const environment = { NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_COMPUTER_UI_FIXTURE_URL: 'https://activity-fixture.dots.test/open' } as NodeJS.ProcessEnv;
+  assert.equal(isE2EComputerUiFixture('https://activity-fixture.dots.test/open', environment), true);
+  assert.equal(isE2EComputerUiFixture('https://activity-fixture.dots.test/open?extra=1', environment), false);
+  assert.equal(isE2EComputerUiFixture('https://activity-fixture.dots.test/open', { ...environment, DOTS_E2E_AUTH: '0' }), false);
+  assert.equal(await validatePublicHttpsUrl('https://activity-fixture.dots.test/open', { environment }), 'https://activity-fixture.dots.test/open');
 });
 
 test('webpage snapshot sanitizer keeps readable text but removes executable and network-capable markup', () => {

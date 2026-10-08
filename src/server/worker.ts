@@ -141,6 +141,7 @@ export class Worker {
         actionRule: proactiveResearch ? null : this.store.personalActionRuleForTask(task.tenantId, task.id),
         allowDelegation: task.executionMode === 'standard' && !task.parentTaskId && children.length === 0,
         executionMode: task.executionMode,
+        computerUiEnabled: useDesktopRuntime && task.engine === 'pi' && task.executionMode === 'standard',
         reasoningEffort: task.reasoningEffort,
         context: this.store.taskContext(task.id, task.tenantId),
         availableEngines,

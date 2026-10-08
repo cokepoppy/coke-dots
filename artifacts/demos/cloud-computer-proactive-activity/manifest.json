@@ -1,0 +1,35 @@
+{
+  "scenario": "Dot runs an hourly check, finds a free place in a public activity listing, opens its details in the Debian cloud computer, and reports the date and availability in Chinese. It stops before registration or payment.",
+  "reference": [
+    "https://learn.chatgpt.com/docs/dots/tasks-and-memory",
+    "https://learn.chatgpt.com/docs/dots/computers-and-apps",
+    "https://learn.chatgpt.com/docs/dots/controls"
+  ],
+  "productEvidence": "Official docs describe recurring tasks and a dedicated cloud computer/browser. Proactive research itself is read-only; this recording uses a user-assigned recurring task with an explicit, limited information-view action.",
+  "fixtureDisclosure": "The activity page and all availability data are synthetic E2E fixtures served only inside the test cloud browser. No real registration, account change, or payment occurs.",
+  "recording": "cloud-computer-proactive-activity.webp",
+  "sourceRecording": "Chrome E2E recording, converted to animated WebP",
+  "viewport": {
+    "width": 1440,
+    "height": 1000
+  },
+  "screenshots": [
+    "screenshots/00-signed-in.png",
+    "screenshots/01-pi-selected.png",
+    "screenshots/01b-dot-cloud-computer-onboarding.png",
+    "screenshots/02-cloud-computer-ready.png",
+    "screenshots/02b-pi-cloud-kernel-ready.png",
+    "screenshots/03-chinese-scheduled-task.png",
+    "screenshots/04-task-working.png",
+    "screenshots/05-cloud-computer-after-click.png",
+    "screenshots/06-computer-browser-in-dots.png",
+    "screenshots/07-chinese-result-in-activity.png",
+    "screenshots/08-hourly-follow-up-scheduled.png"
+  ],
+  "kernel": "Pi runs inside the tenant-isolated Debian 13 cloud computer; the Pi session is stored in that task workspace.",
+  "model": "deepseek-flash",
+  "providerMode": "Live shared Model API credentials reused across tenants",
+  "browserAction": "Pi inspected the visible page and used xdotool to click the exact non-submit “查看活动详情” button through the cloud computer desktop.",
+  "resultLanguage": "Chinese input and Chinese output",
+  "result": "passed"
+}

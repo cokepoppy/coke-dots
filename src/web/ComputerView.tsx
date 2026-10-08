@@ -5,7 +5,7 @@ import './computer.css';
 
 interface ComputerState { ready: boolean; owner: 'agent' | 'user'; url: string; title: string; backend?: 'local' | 'linux-desktop'; width?: number; height?: number }
 
-export function ComputerView({ dotName, localComputerEnabled, onManageAccess, onError }: { dotName: string; localComputerEnabled: boolean; onManageAccess: () => void; onError: (message: string) => void }) {
+export function ComputerView({ dotName, localComputerEnabled, cloudComputerEnabled, onManageAccess, onError }: { dotName: string; localComputerEnabled: boolean; cloudComputerEnabled: boolean; onManageAccess: () => void; onError: (message: string) => void }) {
   const [state, setState] = useState<ComputerState>({ ready: false, owner: 'agent', url: '', title: '' });
   const [url, setUrl] = useState('');
   const [frame, setFrame] = useState(0);
@@ -65,7 +65,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
     }
   }
 
-  if (!localComputerEnabled && state.backend !== 'linux-desktop') return <section className="computer-view"><div className="computer-empty" data-testid="computer-access-disabled"><div className="computer-icon">▣</div><h2>本机 Chrome 工作区已关闭</h2><p>此工作区尚未允许 Dot 使用本机上的隔离 Chrome 浏览器。</p><button onClick={onManageAccess}>更改电脑访问</button></div></section>;
+  if (!localComputerEnabled && !cloudComputerEnabled && state.backend !== 'linux-desktop') return <section className="computer-view"><div className="computer-empty" data-testid="computer-access-disabled"><div className="computer-icon">▣</div><h2>本机 Chrome 工作区已关闭</h2><p>此工作区尚未允许 Dot 使用本机上的隔离 Chrome 浏览器。</p><button onClick={onManageAccess}>更改电脑访问</button></div></section>;
 
   return <section className="computer-view" aria-label={`${dotName} 的电脑`}>
       {!state.ready && busy && state.backend === 'linux-desktop' ? <div className="computer-boot-stage" data-testid="computer-boot-screen" role="status" aria-label="正在打开云电脑"><span aria-hidden="true" /></div> : !state.ready ? <div className="computer-empty"><div className="computer-icon">▣</div><h2>打开独立电脑</h2><p>{state.backend === 'linux-desktop' ? '这台 Debian 云电脑和 Agent 运行时在独立工作区内持续运行。' : '工作区会话保存在 Coke Dots 专用 Chrome 配置中。'}</p><button disabled={busy} onClick={() => void action('open', { dotName })}>打开电脑</button></div> : <div className={`computer-workspace${state.owner === 'user' ? ' has-user-control' : ''}${state.backend === 'linux-desktop' ? ' is-linux-desktop-workspace' : ''}`} data-testid="computer-workspace">
