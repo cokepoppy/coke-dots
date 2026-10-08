@@ -16,7 +16,7 @@ const showcaseVideos = await Promise.all(([
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
   { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 36, minimumFrames: 260, minimumReadablePauseCount: 3, minimumReadablePauseDurationMs: 7_900 },
-  { file: 'proactive-cloud-computer-followthrough.webp', minimumWidth: 900, minimumHeight: 625, minimumDurationSeconds: 35, minimumFrames: 500 },
+  { file: 'proactive-cloud-computer-followthrough.webp', minimumWidth: 900, minimumHeight: 625, minimumDurationSeconds: 40, minimumFrames: 500, minimumReadablePauseCount: 4, minimumReadablePauseDurationMs: 3_900 },
 ] as { file: string; width?: number; height?: number; minimumWidth?: number; minimumHeight?: number; minimumDurationSeconds?: number; minimumFrames?: number; minimumReadablePauseCount?: number; minimumReadablePauseDurationMs?: number }[]).map(async video => {
   const bytes = await readFile(join(projectRoot, 'public', 'demos', video.file));
   const metadata = await sharp(bytes, { animated: true, limitInputPixels: 600_000_000 }).metadata();

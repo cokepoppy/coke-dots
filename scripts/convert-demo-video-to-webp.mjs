@@ -148,12 +148,10 @@ try {
   // reducing the resolution of ordinary clips. Include a small frame margin
   // for timestamp rounding at segment boundaries.
   const animationPixelLimit = 900_000_000;
-  // Long readable holds are encoded as a single WebP frame with a longer delay,
-  // so they should not count as one new image per source-fps tick when sizing
-  // the animation. Count only moving footage plus a small frame margin.
-  const movingPlaybackDuration = segments.reduce((sum, segment, index) =>
-    sum + (segment.end - segment.start) / (index === 0 ? 1 : activePlaybackRate), 0);
-  const expectedFrames = Math.ceil(movingPlaybackDuration * fps) + pausePoints.length + 10;
+  // Readable holds are expanded into cloned frames in the intermediate GIF,
+  // so include the full playback duration when sizing the animation. Otherwise
+  // sharp may reject the GIF before it can collapse identical frames in WebP.
+  const expectedFrames = Math.ceil(expectedPlaybackDuration * fps) + 10;
   const pixelsPerWidthSquared = stream.height / stream.width * expectedFrames;
   const maxWidthForAnimation = Math.floor(Math.sqrt(animationPixelLimit / pixelsPerWidthSquared));
   const outputWidth = Math.min(1152, stream.width, maxWidthForAnimation);
