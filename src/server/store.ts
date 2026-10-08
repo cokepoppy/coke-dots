@@ -1519,6 +1519,29 @@ export class Store {
     return row?.value || null;
   }
 
+  modelSettingsTenants() {
+    return this.db.prepare(`SELECT t.id AS tenantId,COALESCE(base.value,'') AS baseUrl,model.value AS model,
+        (SELECT m.user_id FROM memberships m WHERE m.tenant_id=t.id AND m.role='owner' ORDER BY m.created_at,m.user_id LIMIT 1) AS ownerUserId
+      FROM tenants t JOIN tenant_settings model ON model.tenant_id=t.id AND model.key='modelName'
+      LEFT JOIN tenant_settings base ON base.tenant_id=t.id AND base.key='modelBaseUrl'
+      WHERE t.id<>'legacy' AND model.value<>'' ORDER BY t.created_at ASC,t.id ASC`)
+      .all() as { tenantId: string; baseUrl: string; model: string; ownerUserId: string | null }[];
+  }
+
+  canManageInstanceModel(userId: string, tenantId: string) {
+    const manager = this.getSetting('sharedModelAdminUserId', 'legacy');
+    if (manager) return manager === userId;
+    return Boolean(this.db.prepare("SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=? AND role IN ('owner','admin')")
+      .get(tenantId, userId));
+  }
+
+  claimInstanceModelManager(userId: string, tenantId: string) {
+    if (!this.canManageInstanceModel(userId, tenantId)) return false;
+    this.db.prepare("INSERT OR IGNORE INTO tenant_settings(tenant_id,key,value) VALUES ('legacy','sharedModelAdminUserId',?)")
+      .run(userId);
+    return this.getSetting('sharedModelAdminUserId', 'legacy') === userId;
+  }
+
   setSetting(key: string, value: string, tenantId = 'legacy') {
     this.db.prepare('INSERT INTO tenant_settings(tenant_id,key,value) VALUES (?,?,?) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value').run(tenantId, key, value);
   }

@@ -1,16 +1,16 @@
 # DeepSeek model credential record
 
-Configured on 2026-10-07 for the `可乐可乐 workspace · owner` workspace through the Coke Dots model settings UI.
+Originally configured on 2026-10-07 through the `可乐可乐 workspace · owner` profile. The Coke Dots shared-default migration promotes that existing profile to the local service's shared Model API configuration so other Google accounts can reuse it.
 
 | Field | Recorded value |
 | --- | --- |
 | Provider | DeepSeek |
 | API base URL | `https://api.deepseek.com` |
 | Model | `deepseek-flash` |
-| Credential storage | Tenant-scoped application Keychain entry; the secret value is intentionally not copied into this repository or this record. |
+| Credential storage | One instance-wide application Keychain entry reused by Model API, Pi, and DeepSeek Harness; the secret value is intentionally not copied into this repository or this record. |
 | Verification | Submitted a real task through the workspace; it completed and returned the requested Chinese confirmation. |
 
-To rotate the credential, update the API key under **Profile → Model API** for the same workspace. The application stores the key separately from task data and reveals only whether a key is saved.
+To rotate the shared credential, the instance model manager updates the API key under **Profile → Model API**. The change applies to all Google accounts on this Coke Dots instance. The application stores the key separately from task data and reveals only whether a key is saved.
 
 ## Local development verification
 

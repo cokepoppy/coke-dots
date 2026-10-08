@@ -5,7 +5,7 @@ import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts
 import { Store } from './store.ts';
 import { adapters, formatAgentPrompt, parseDecision, agentDecisionOptions, type AgentRequest, type Engine } from './adapters.ts';
 import type { ComputerRuntime } from './computer.ts';
-import { loadModelSettings, missingModelSettings } from './model-settings.ts';
+import { loadModelSettings, loadSharedModelSettings, missingModelSettings } from './model-settings.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
 export class Worker {
@@ -83,6 +83,10 @@ export class Worker {
   }
 
   private async run(task: Task, signal: AbortSignal) {
+    loadSharedModelSettings(
+      this.store.getSetting('sharedModelBaseUrl', 'legacy') || this.store.getSetting('modelBaseUrl', 'legacy'),
+      this.store.getSetting('sharedModelName', 'legacy') || this.store.getSetting('modelName', 'legacy'),
+    );
     loadModelSettings(this.store.getSetting('modelBaseUrl', task.tenantId), this.store.getSetting('modelName', task.tenantId), task.tenantId);
     const adapter = adapters[task.engine];
     const computer = this.computerFor?.(task.tenantId);

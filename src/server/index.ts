@@ -8,7 +8,7 @@ import { adapters } from './adapters.ts';
 import { isReasoningEffort, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
-import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
+import { hasSharedModelKey, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, publicModelSettings, saveSharedModelKey, setSharedModelMetadata } from './model-settings.ts';
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { AuthService } from './auth.ts';
@@ -28,6 +28,26 @@ const publicHost = process.env.DOTS_PUBLIC_HOST?.trim().toLowerCase() || '';
 const trustedProxyToken = process.env.DOTS_TRUSTED_PROXY_TOKEN || '';
 const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
+function initializeModelSettings() {
+  loadModelSettings(store.getSetting('modelBaseUrl', 'legacy'), store.getSetting('modelName', 'legacy'), 'legacy');
+  for (const tenant of store.modelSettingsTenants()) loadModelSettings(tenant.baseUrl, tenant.model, tenant.tenantId);
+  const legacyProfile = { tenantId: 'legacy', baseUrl: store.getSetting('modelBaseUrl', 'legacy') || '', model: store.getSetting('modelName', 'legacy') || '' };
+  const existingProfiles = [{ ...legacyProfile, ownerUserId: null as string | null }, ...store.modelSettingsTenants()];
+  if (!hasSharedModelKey()) {
+    for (const profile of existingProfiles) {
+      if (!profile.model || !migrateWorkspaceModelToShared(profile.tenantId, profile.baseUrl, profile.model)) continue;
+      store.setSetting('sharedModelBaseUrl', profile.baseUrl, 'legacy');
+      store.setSetting('sharedModelName', profile.model, 'legacy');
+      if (profile.ownerUserId) store.setSetting('sharedModelAdminUserId', profile.ownerUserId, 'legacy');
+      break;
+    }
+  }
+  loadSharedModelSettings(
+    store.getSetting('sharedModelBaseUrl', 'legacy') || store.getSetting('modelBaseUrl', 'legacy'),
+    store.getSetting('sharedModelName', 'legacy') || store.getSetting('modelName', 'legacy'),
+  );
+}
+initializeModelSettings();
 const auth = new AuthService(store, port);
 const slack = new SlackService(store, port);
 const teams = new TeamsService(store);
@@ -43,10 +63,17 @@ const configuredDesktopEngines = () => {
 };
 const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...configuredDesktopEngines()])];
 
-function snapshot(tenantId: string) {
+function snapshot(tenantId: string, userId?: string) {
+  loadSharedModelSettings(
+    store.getSetting('sharedModelBaseUrl', 'legacy') || store.getSetting('modelBaseUrl', 'legacy'),
+    store.getSetting('sharedModelName', 'legacy') || store.getSetting('modelName', 'legacy'),
+  );
   loadModelSettings(store.getSetting('modelBaseUrl', tenantId), store.getSetting('modelName', tenantId), tenantId);
   const available = availableFor(tenantId);
-  return store.snapshot(available.includes('model'), available, publicModelSettings(tenantId), tenantId);
+  return store.snapshot(available.includes('model'), available, {
+    ...publicModelSettings(tenantId),
+    ...(userId ? { canManage: store.canManageInstanceModel(userId, tenantId) } : {}),
+  }, tenantId);
 }
 
 function computerFor(tenantId: string): ComputerRuntime {
@@ -64,7 +91,7 @@ function publish() {
   for (const [client, tokenHash] of clients) {
     const session = store.getSession(tokenHash);
     if (!session) { client.end(); clients.delete(client); continue; }
-    try { client.write(`data: ${JSON.stringify(snapshot(session.tenant.id))}\n\n`); }
+    try { client.write(`data: ${JSON.stringify(snapshot(session.tenant.id, session.user.id))}\n\n`); }
     catch { client.end(); clients.delete(client); }
   }
 }
@@ -278,11 +305,11 @@ const server = createServer(async (req, res) => {
     if (path === '/api/events' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'Cache-Control': 'no-store' });
       clients.set(res, session.tokenHash);
-      res.write(`data: ${JSON.stringify(snapshot(session.tenant.id))}\n\n`);
+      res.write(`data: ${JSON.stringify(snapshot(session.tenant.id, session.user.id))}\n\n`);
       req.on('close', () => clients.delete(res));
       return;
     }
-    if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot(session.tenant.id));
+    if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot(session.tenant.id, session.user.id));
     if (path === '/api/voice-calls' && req.method === 'GET') return reply(res, 200, store.voiceCalls(session.tenant.id, session.user.id));
     if (path === '/api/activity' && req.method === 'GET') {
       const limit = Number(url.searchParams.get('limit') || 50);
@@ -626,7 +653,7 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, snapshot(session.tenant.id).computerAccess);
     }
     if (path === '/api/model-settings' && req.method === 'PATCH') {
-      if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以修改模型 API 凭据' });
+      if (!store.canManageInstanceModel(session.user.id, session.tenant.id)) return reply(res, 403, { error: '只有实例模型管理员可以修改共享模型 API 凭据' });
       const baseUrl = String(body.baseUrl || '').trim().replace(/\/$/, '');
       const model = String(body.model || '').trim();
       const apiKey = String(body.apiKey || '').trim();
@@ -634,10 +661,13 @@ const server = createServer(async (req, res) => {
       try { parsed = new URL(baseUrl); } catch { return reply(res, 400, { error: '模型地址无效' }); }
       const localHttp = parsed.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(parsed.hostname);
       if ((!localHttp && parsed.protocol !== 'https:') || parsed.username || parsed.password || !model || model.length > 120 || apiKey.length > 5000) return reply(res, 400, { error: '模型配置无效' });
-      if (apiKey) saveModelKey(apiKey, session.tenant.id);
-      store.setSetting('modelBaseUrl', baseUrl, session.tenant.id);
-      store.setSetting('modelName', model, session.tenant.id);
-      setModelMetadata(baseUrl, model, session.tenant.id);
+      if (!store.claimInstanceModelManager(session.user.id, session.tenant.id)) return reply(res, 403, { error: '只有实例模型管理员可以修改共享模型 API 凭据' });
+      if (apiKey) {
+        saveSharedModelKey(apiKey);
+      }
+      store.setSetting('sharedModelBaseUrl', baseUrl, 'legacy');
+      store.setSetting('sharedModelName', model, 'legacy');
+      setSharedModelMetadata(baseUrl, model);
       publish();
       return reply(res, 200, publicModelSettings(session.tenant.id));
     }

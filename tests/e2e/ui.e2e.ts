@@ -230,6 +230,7 @@ async function startMockModel() {
         const isPersonalMemoryUpdate = prompt.includes('E2E personal Dot memory — remember my response preferences');
         const isPersonalMemoryRead = prompt.includes('E2E personal Dot memory — use my saved preferences');
         const isSharedMemoryIsolation = prompt.includes('E2E shared task — do not receive personal Dot notes');
+        const isSharedModelReuse = prompt.includes('E2E shared Model API — second Google account runs a task');
         const isQuietNotificationCheck = prompt.includes('E2E notification criteria — routine success');
         const isSlackInboxTask = prompt.includes('E2E Slack inbox request — answer with the connector result.');
         const isSlackMonitorTask = prompt.includes('E2E Slack monitor — investigate new bug reports');
@@ -301,7 +302,7 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isPauseDelegationParent && !isPauseDelegationAggregate ? { status: 'delegating', message: 'I started one independent research task.', delegations: [
           { title: 'Independent research', instruction: 'E2E global pause delegated child — keep running during pause', engine: 'model' },
@@ -309,7 +310,7 @@ async function startMockModel() {
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isSharedModelReuse ? 'The second Google account used the Coke Dots instance Model API configuration.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isSlackMonitorTask) Object.assign(decision, { message: 'Read-only review: this report describes a regression blocking checkout in #incidents.' });
         if (isDecisionNotificationCheck) Object.assign(decision, { status: 'waiting', message: 'Should I continue or pause?', notifyUser: false });
@@ -1747,7 +1748,7 @@ try {
       return { status: response.status, body: await response.json() as { error?: string } };
     });
     assert.equal(memberModelSettingsWrite.status, 403, 'The API must enforce workspace-admin access to shared model credentials');
-    assert.match(memberModelSettingsWrite.body.error || '', /只有工作区所有者或管理员可以修改模型 API 凭据/);
+    assert.match(memberModelSettingsWrite.body.error || '', /只有实例模型管理员可以修改共享模型 API 凭据/);
     const memberModelSettingsAfterWrite = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean } };
     assert.equal(memberModelSettingsAfterWrite.modelSettings.hasKey, false, 'A rejected member change modified the shared model credential');
     const memberComputerWrite = await betaPage!.evaluate(async () => {
@@ -3093,7 +3094,7 @@ try {
     await screenshot(alphaPage!, '16-computer-returned');
   });
 
-  await recordStep('Pi and DeepSeek Harness use the selected workspace credential without leaking into another tenant', async () => {
+  await recordStep('Pi and DeepSeek Harness reuse the instance credential across tenant-isolated runtimes', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await openProfile(alphaPage!);
     await alphaPage!.getByLabel('API 地址').fill('https://api.deepseek.com/v1');
@@ -3104,15 +3105,17 @@ try {
       const state = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
       return state.availableEngines.includes('pi') && state.availableEngines.includes('dsh');
     }, 10_000);
-    const configuredState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { hasKey: boolean } };
+    const configuredState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { hasKey: boolean; canManage?: boolean } };
     assert.equal(configuredState.modelSettings.hasKey, true);
+    assert.equal(configuredState.modelSettings.canManage, true, 'The account that first configures the profile becomes its instance manager');
     assert(configuredState.availableEngines.includes('pi'));
     assert(configuredState.availableEngines.includes('dsh'));
 
     await selectTenant(betaPage!, 'Beta workspace');
-    const personalState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
-    assert.equal(personalState.availableEngines.includes('pi'), false, 'Beta inherited Alpha’s Pi credential');
-    assert.equal(personalState.availableEngines.includes('dsh'), false, 'Beta inherited Alpha’s DeepSeek Harness credential');
+    const personalState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { canManage?: boolean } };
+    assert(personalState.availableEngines.includes('pi'), 'A second Google account should reuse the instance Pi model credential');
+    assert(personalState.availableEngines.includes('dsh'), 'A second Google account should reuse the instance DeepSeek Harness model credential');
+    assert.equal(personalState.modelSettings.canManage, false, 'A second account can use but cannot replace the instance model profile');
 
     await selectTenant(betaPage!, 'Alpha Shared');
     const memberState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
@@ -3162,6 +3165,37 @@ try {
     await selectTenant(betaPage!, 'Beta workspace');
     const betaComputer = await betaPage!.evaluate(async () => await (await fetch('/api/computer')).json()) as { url?: string };
     assert.notEqual(betaComputer.url, 'https://research-fixture.dots.test/launch', 'A different personal tenant inherited Alpha Shared browser state');
+  });
+
+  await recordStep('A second Google account can run a Model API task using the Coke Dots shared default', async () => {
+    await selectTenant(betaPage!, 'Beta workspace');
+    const state = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { baseUrl: string; model: string; hasKey: boolean; canManage?: boolean } };
+    assert.equal(state.modelSettings.hasKey, true, 'A newly signed-in account should inherit the instance Model API configuration');
+    assert.equal(state.modelSettings.baseUrl, testModelBaseUrl);
+    assert.equal(state.modelSettings.model, testModelName);
+    assert(state.availableEngines.includes('model'), 'The shared Model API should be available to the second account');
+    assert.equal(state.modelSettings.canManage, false, 'The second personal-workspace owner cannot replace the shared credential');
+
+    await openProfile(betaPage!);
+    assert.equal(await betaPage!.getByRole('button', { name: '保存模型设置' }).isDisabled(), true, 'The second account can use the shared profile but cannot edit it');
+    const deniedGlobalModelWrite = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/model-settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://api.deepseek.com', model: 'unauthorized-replacement', apiKey: 'e2e-rejected-key' }) });
+      return { status: response.status, body: await response.json() as { error?: string } };
+    });
+    assert.equal(deniedGlobalModelWrite.status, 403);
+    assert.match(deniedGlobalModelWrite.body.error || '', /只有实例模型管理员可以修改共享模型 API 凭据/);
+
+    await betaPage!.getByRole('button', { name: 'New chat', exact: true }).click();
+    await betaPage!.getByTestId('chat-home').waitFor({ state: 'visible' });
+    const instruction = 'E2E shared Model API — second Google account runs a task';
+    const promptCount = mockModelPrompts.length;
+    await createTask(betaPage!, instruction);
+    await clickNav(betaPage!, 'Activity');
+    const card = betaPage!.locator('.task-card').filter({ hasText: instruction });
+    await card.locator('.pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await card.getByText('The second Google account used the Coke Dots instance Model API configuration.', { exact: true }).waitFor({ state: 'visible' });
+    await waitFor(() => mockModelPrompts.slice(promptCount).some(prompt => prompt.includes(instruction)), 10_000);
+    await screenshot(betaPage!, 'model-api-shared-with-second-google-account');
   });
 
   await recordStep('Pi researches a public page through its native tool and renders the result in Chrome', async () => {
@@ -3298,7 +3332,7 @@ try {
       const dotMemoryResponse = await fetch('/api/dot-memories', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ note: 'E2E reset fixture private note' }) });
       const pageResponse = await fetch('/api/pages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'E2E reset fixture page', content: 'This page should be removed by Dot reset.' }) });
       const watchResponse = await fetch('/api/watches', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: 'https://example.test/e2e-page-change', intervalMinutes: 60 }) });
-      const modelResponse = await fetch('/api/model-settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-reset-test', apiKey: '' }) });
+      const modelResponse = await fetch('/api/model-settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://api.deepseek.com/v1', model: 'unauthorized-reset-test', apiKey: '' }) });
       const attachmentResponse = await fetch('/api/attachments', { method: 'POST', headers: { 'content-type': 'text/plain', 'x-attachment-name': 'reset-fixture.txt' }, body: 'E2E private attachment' });
       return {
         userId: me.user.id, tenantId: me.tenant.id, tenantKind: me.tenant.kind,
@@ -3313,7 +3347,7 @@ try {
     assert.equal(seeded.dotMemoryStatus, 201);
     assert.equal(seeded.pageStatus, 201);
     assert.equal(seeded.watchStatus, 201);
-    assert.equal(seeded.modelStatus, 200);
+    assert.equal(seeded.modelStatus, 403, 'A personal-workspace owner must not replace the shared instance model during reset setup');
     assert.equal(seeded.attachmentStatus, 201);
 
     const sharedTenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
@@ -3379,9 +3413,9 @@ try {
     assert.deepEqual(cleared.pages, []);
     assert.deepEqual(cleared.attachments, []);
     assert.equal(cleared.state.profile.name, 'Dot');
-    assert.equal(cleared.state.modelSettings.baseUrl, 'https://api.deepseek.com/v1');
-    assert.equal(cleared.state.modelSettings.model, 'deepseek-reset-test');
-    assert.equal(cleared.state.modelSettings.hasKey, true, 'Reset keeps local model credentials configured outside Dot memory');
+    assert.equal(cleared.state.modelSettings.baseUrl, testModelBaseUrl);
+    assert.equal(cleared.state.modelSettings.model, testModelName);
+    assert.equal(cleared.state.modelSettings.hasKey, true, 'Reset preserves the shared instance model profile');
     assert.equal(existsSync(join(testDataDir, 'tenants', seeded.tenantId)), false, 'Reset removes only the personal computer and agent runtime directories');
     assert.equal(existsSync(join(testDataDir, 'workspaces', seeded.tenantId)), false, 'Reset removes the personal task workspaces');
     assert.equal(existsSync(join(sharedRuntime, 'preserve-fixture.json')), true, 'Reset must preserve another tenant’s runtime data');

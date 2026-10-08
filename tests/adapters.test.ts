@@ -7,8 +7,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Entry } from '@napi-rs/keyring';
 import { adapters, agentDecisionOptions, createPiWorkspaceModelRuntime, createTenantDshEnvironment, formatAgentPrompt, isDshSessionCollision, parseDecision, providerReasoningEffort, resolveTenantAgentDirectory, type AgentRequest } from '../src/server/adapters.ts';
-import { loadModelSettings, saveModelKey } from '../src/server/model-settings.ts';
+import { loadModelSettings, loadSharedModelSettings, saveModelKey, saveSharedModelKey } from '../src/server/model-settings.ts';
 import { Store } from '../src/server/store.ts';
+
+process.env.DOTS_KEYCHAIN_SERVICE = `${process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots.test'}.adapters-${process.pid}`;
 
 const testKeychainEntry = (tenantId: string) => new Entry(process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots', `tenant-${tenantId}-model-api-key`);
 
@@ -275,24 +277,29 @@ test('DSH recognizes only an SDK session collision as recoverable', () => {
   assert.equal(isDshSessionCollision(collision.message), false);
 });
 
-test('Pi and DSH require an explicit workspace key outside the local bootstrap tenant', { skip: !import.meta.resolve('@mariozechner/pi-coding-agent').startsWith('file:') || !import.meta.resolve('@deepseek-ai/dsh-sdk-client').startsWith('file:') }, () => {
+test('Pi and DSH reuse the shared instance model credential across authenticated tenants', { skip: !import.meta.resolve('@mariozechner/pi-coding-agent').startsWith('file:') || !import.meta.resolve('@deepseek-ai/dsh-sdk-client').startsWith('file:') }, () => {
   const previous = {
     pi: process.env.DOTS_PI_ENABLED, dshBin: process.env.DOTS_DSH_BIN, dshConfig: process.env.DOTS_DSH_READ_ONLY_CONFIG,
     nodeEnv: process.env.NODE_ENV, e2eAuth: process.env.DOTS_E2E_AUTH,
   };
+  const sharedEntry = new Entry(process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots', 'shared-model-api-key');
   const alpha = `engine-alpha-${randomUUID()}`;
   const beta = `engine-beta-${randomUUID()}`;
   process.env.DOTS_PI_ENABLED = '1'; process.env.DOTS_DSH_BIN = process.execPath; process.env.DOTS_DSH_READ_ONLY_CONFIG = '/read-only-profile';
-  process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '1';
+  process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '0';
+  sharedEntry.deletePassword();
   try {
     loadModelSettings('https://api.deepseek.com/v1', 'deepseek-flash', alpha);
     loadModelSettings('https://api.deepseek.com/v1', 'deepseek-flash', beta);
-    saveModelKey('alpha-only-key', alpha);
+    loadSharedModelSettings('https://api.deepseek.com/v1', 'deepseek-flash');
+    saveSharedModelKey('shared-instance-test-key');
     assert.equal(adapters.pi.available(alpha), true);
     assert.equal(adapters.dsh.available(alpha), true);
-    assert.equal(adapters.pi.available(beta), false);
-    assert.equal(adapters.dsh.available(beta), false);
+    assert.equal(adapters.pi.available(beta), true);
+    assert.equal(adapters.dsh.available(beta), true);
   } finally {
+    sharedEntry.deletePassword();
+    loadSharedModelSettings(null, null);
     testKeychainEntry(alpha).deletePassword();
     for (const [key, value] of [['DOTS_PI_ENABLED', previous.pi], ['DOTS_DSH_BIN', previous.dshBin], ['DOTS_DSH_READ_ONLY_CONFIG', previous.dshConfig], ['NODE_ENV', previous.nodeEnv], ['DOTS_E2E_AUTH', previous.e2eAuth]] as const) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;

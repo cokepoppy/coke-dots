@@ -826,6 +826,7 @@ function Profile({ state, auth, onError, onSetDotPaused, onResetDot, onEditAppea
   const [dotResetBusy, setDotResetBusy] = useState(false);
   const [dotResetError, setDotResetError] = useState('');
   const canManageDot = ['owner', 'admin'].includes(auth.tenant.role);
+  const canManageModelSettings = state.modelSettings.canManage ?? canManageDot;
   const canResetDot = auth.tenant.kind === 'personal' && auth.tenant.role === 'owner' && members.length === 1 && members[0]?.id === auth.user.id;
   const refreshMembers = async () => {
     const response = await appFetch(`/api/tenants/${auth.tenant.id}/members`);
@@ -1013,13 +1014,13 @@ function Profile({ state, auth, onError, onSetDotPaused, onResetDot, onEditAppea
       {membersError && <small className="member-error">{membersError}</small>}
       {!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以添加成员。</small>}
     </div>
-    <div className="section-heading model-heading"><h2>模型 API</h2><p>此 API 密钥只用于当前工作区，并保存在 macOS 钥匙串。已启用的 Pi 和 DeepSeek Harness 使用此工作区凭据，并将运行配置隔离到当前工作区。</p></div>
+    <div className="section-heading model-heading"><h2>模型 API</h2><p>模型 API 配置保存在系统钥匙串，由此 Coke Dots 实例下的所有 Google 账号和工作区共用。模型 API、Pi 和 DeepSeek Harness 都复用这套凭据，各账号的任务与运行目录仍彼此隔离。</p></div>
     <div className="profile-card model-card">
-      <label>API 地址<input value={baseUrl} disabled={!canManageDot} onChange={e => setBaseUrl(e.target.value)} /></label>
-      <label>模型名称<input value={model} disabled={!canManageDot} onChange={e => setModel(e.target.value)} /></label>
-      <label>API 密钥<input type="password" autoComplete="off" disabled={!canManageDot} placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label>
-      <button className="primary" disabled={!canManageDot} onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存模型设置</button>
-      {!canManageDot && <small>只有工作区所有者或管理员可以修改共享模型凭据。</small>}
+      <label>API 地址<input value={baseUrl} disabled={!canManageModelSettings} onChange={e => setBaseUrl(e.target.value)} /></label>
+      <label>模型名称<input value={model} disabled={!canManageModelSettings} onChange={e => setModel(e.target.value)} /></label>
+      <label>API 密钥<input type="password" autoComplete="off" disabled={!canManageModelSettings} placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label>
+      <button className="primary" disabled={!canManageModelSettings} onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存模型设置</button>
+      {!canManageModelSettings && <small>模型 API 凭据由 Coke Dots 实例管理员统一管理，所有账号都可以使用。</small>}
     </div>
     {dotResetOpen && <div className="dot-reset-overlay" data-testid="dot-reset-overlay"><section className="dot-reset-dialog" role="dialog" aria-modal="true" aria-labelledby="dot-reset-title" onKeyDown={event => { if (event.key === 'Escape' && !dotResetBusy) setDotResetOpen(false); }}>
       <h2 id="dot-reset-title">Reset this dot?</h2>
