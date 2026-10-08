@@ -66,6 +66,6 @@ This smoke does not authenticate a Google user, validate OAuth consent, inspect 
 
 ## Cloud-computer Agent demo playback refresh
 
-- On 2026-10-09, the 14-second version still felt rushed because the visible computer actions occupy only the final part of the recording. The action sequence now plays at 0.75× while the initial readable hold stays at 1×; the 58.28 seconds of frozen AI waiting remain trimmed.
-- The generated 1,152×784 WebP should decode as a complete animation of at least 16 seconds. The expected total is about 16.83 seconds: 5.52 seconds at the opening 1× rate plus 8.48 seconds of later footage at 0.75×. The report at `artifacts/demos/cloud-computer-agent-actions/cloud-computer-agent-actions.video-check.json` records the frame count, total duration, opening rate, active rate, and full-decode result.
-- `npm run test:e2e:public-demo` requires at least 16 seconds for this video and verifies that Chrome displays changing frames across playback. The public deployment must match the local SHA-256 and return HTTP 200 with `image/webp`.
+- On 2026-10-09, after the 0.75× revision still appeared rushed, the action segments were reduced to 0.5×. Retained stills stay at 1× so pauses do not get stretched; long frozen waits are trimmed (65.38 seconds removed from the 72.28-second source).
+- The resulting 1,152×784 WebP is about 9.3 seconds with 86 decoded frames. The full file decodes successfully. The report at `artifacts/demos/cloud-computer-agent-actions/cloud-computer-agent-actions.video-check.json` records the measured duration, frame count, action and still speeds, and full-decode result.
+- `npm run test:e2e:public-demo` requires at least 9 seconds and 80 frames for this video, verifies that Chrome displays changing frames, and compares the deployed bytes with the locally verified SHA-256. The public deployment must return HTTP 200 with `image/webp`.
