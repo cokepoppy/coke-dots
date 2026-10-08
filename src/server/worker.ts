@@ -137,6 +137,7 @@ export class Worker {
         tenantId: task.tenantId, prompt: `${task.instruction}${attachmentContext}`, memories: proactiveResearch ? [] : this.store.tenantMemories(task.tenantId).map(memory => memory.note),
         personalDotMemories: personalMemoryContext?.memories,
         allowPersonalDotMemoryUpdates: Boolean(personalMemoryContext),
+        allowComputerActions: useDesktopRuntime && task.executionMode === 'standard',
         pages: proactiveResearch ? [] : this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
         actionRule: proactiveResearch ? null : this.store.personalActionRuleForTask(task.tenantId, task.id),
         allowDelegation: task.executionMode === 'standard' && !task.parentTaskId && children.length === 0,
@@ -159,6 +160,7 @@ export class Worker {
       const browserResearchEnabled = !proactiveResearch && !useDesktopRuntime && hasLocalBrowserResearchAdapter && Boolean(computer?.openPublicPageForAgent) &&
         (process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' || this.store.getSetting('localComputerEnabled', task.tenantId) !== 'false');
       let browserResearchUsed = false;
+      let browserResearchHost = '';
       let browserResearchInterrupted = false;
       if (browserResearchEnabled && computer?.openPublicPageForAgent) {
         input.openPublicPage = async (url, toolSignal) => {
@@ -172,6 +174,7 @@ export class Worker {
               if (state.owner === 'user') throw new Error('电脑目前由你控制；交还电脑后，Agent 才能继续浏览。');
               const page = await computer.openPublicPageForAgent!(url, activeSignal);
               browserResearchUsed = true;
+              browserResearchHost = new URL(page.url).hostname;
               const latest = await computer.state();
               if (latest.owner === 'user') throw new Error('电脑由你接管了；我已暂停网页研究，交还后可以继续。');
               return page;
@@ -187,6 +190,13 @@ export class Worker {
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
+      if (browserResearchUsed && browserResearchHost && !(decision.computerActions || []).some(action => action.action === 'navigate')) {
+        this.store.addEntry('system', `Dot 打开了云电脑中的公开网页（${browserResearchHost}）。`, task.id, task.tenantId);
+      }
+      for (const action of decision.computerActions || []) {
+        const label = action.action === 'navigate' ? '打开了云电脑中的公开网页' : action.action === 'click' ? '点击了云电脑公开网页中的安全控件' : '检查了云电脑当前的公开网页';
+        this.store.addEntry('system', `Dot ${label}（${action.host}）。`, task.id, task.tenantId);
+      }
       if (proactiveResearch) {
         if (decision.status !== 'done' || typeof decision.proactiveFinding !== 'boolean') throw new Error('主动研究未返回有效的发现结果');
         const message = decision.proactiveFinding ? decision.message : null;

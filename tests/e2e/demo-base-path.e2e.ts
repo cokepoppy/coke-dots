@@ -82,7 +82,7 @@ try {
   assert.equal(wrongOrigin.status, 403, 'A trusted proxy request must still enforce the public origin');
   const forwardedHealth = await requestWithHeaders(`${baseUrl}/dots-demo/api/health`, { Host: 'demo.test', Origin: 'https://demo.test', 'x-dots-proxy-token': proxyToken });
   assert.equal(forwardedHealth.status, 200, 'The trusted public reverse proxy should reach the subpath API');
-  for (const file of ['proactive-release-date-conflict.webp', 'cloud-computer-handoff.webp']) {
+  for (const file of ['proactive-release-date-conflict.webp', 'cloud-computer-handoff.webp', 'cloud-computer-agent-actions.webp']) {
     const showcaseVideo = await fetch(`${baseUrl}/dots-demo/demos/${file}`);
     assert.equal(showcaseVideo.status, 200, `${file} must be included in the base-path build`);
     assert.match(showcaseVideo.headers.get('content-type') || '', /^image\/webp/i, `${file} must be served with its WebP MIME type`);

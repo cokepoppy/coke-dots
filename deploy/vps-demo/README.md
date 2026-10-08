@@ -25,7 +25,7 @@ Add the Google OAuth client ID and secret to this file before enabling sign-in. 
 
 `DOTS_GOOGLE_OAUTH_PROXY_URL` is optional and applies only to server-side Google token and certificate requests. It does not change Chrome, Nginx, SSH tunneling, or other services. The configured proxy must be reachable from the Mac service; keep the environment file at mode `0600`.
 
-Run `sync-demo-app.sh` after `npm run build:demo`; it copies only `src`, `dist`, `node_modules`, and `package.json` into the private Application Support runtime so macOS background processes do not need access to the `Documents` checkout. Then install `com.coke.dots.demo.plist` as `~/Library/LaunchAgents/com.coke.dots.demo.plist`. It restarts the server if it exits. Logs go to `~/Library/Logs/coke-dots-demo.*.log`.
+Run `sync-demo-app.sh` after `npm run build:demo`; it copies `src`, `dist`, `node_modules`, `package.json`, and the single Linux Agent decision parser imported by the server into the private Application Support runtime so macOS background processes do not need access to the `Documents` checkout. Then install `com.coke.dots.demo.plist` as `~/Library/LaunchAgents/com.coke.dots.demo.plist`. It restarts the server if it exits. Logs go to `~/Library/Logs/coke-dots-demo.*.log`.
 
 ## Public smoke test
 

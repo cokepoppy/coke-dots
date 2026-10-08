@@ -14,6 +14,7 @@ const videoDirectory = join(artifactRoot, 'video');
 const showcaseVideos = await Promise.all([
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
+  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784 },
 ].map(async video => ({ ...video, sha256: createHash('sha256').update(await readFile(join(projectRoot, 'public', 'demos', video.file))).digest('hex') })));
 const baseUrl = new URL(process.env.DOTS_PUBLIC_DEMO_URL || 'https://codex.cokeagent.com/dots-demo/');
 const basePath = baseUrl.pathname.endsWith('/') ? baseUrl.pathname : `${baseUrl.pathname}/`;

@@ -19,6 +19,7 @@
     "test:e2e:live-model": "npm run build && node --import tsx tests/e2e/live-model.e2e.ts",
     "test:e2e:live-dsh-delegation": "npm run build && DOTS_LIVE_MODEL_ENGINE=dsh DOTS_LIVE_DSH_DELEGATION=1 node --import tsx tests/e2e/live-model.e2e.ts",
     "test:e2e:k3d": "npm run build && node --import tsx tests/e2e/k3d-cloud-computer.e2e.ts",
+    "test:e2e:k3d:agent-actions": "npm run build && sh scripts/run-cloud-computer-agent-actions-e2e.sh",
     "test:live-model": "node --import tsx scripts/live-model-smoke.ts",
     "teams:configure": "tsx scripts/configure-teams-secret.ts",
     "compare:reference": "node --import tsx scripts/compare-reference.ts",

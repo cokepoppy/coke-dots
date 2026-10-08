@@ -35,7 +35,7 @@ export interface ComputerRuntime {
   close(): Promise<void>;
   reset?(): Promise<void>;
   novncTarget?(): Promise<URL | null>;
-  runAgentTask?(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; executionMode?: TaskExecutionMode; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; websiteSignInRequest?: { url: string; reason: string }; proactiveFinding?: boolean }>;
+  runAgentTask?(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; executionMode?: TaskExecutionMode; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; websiteSignInRequest?: { url: string; reason: string }; proactiveFinding?: boolean; computerActions?: { action: 'inspect' | 'navigate' | 'click'; host: string }[] }>;
 }
 
 const execFileAsync = promisify(execFile);

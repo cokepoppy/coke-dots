@@ -10,6 +10,8 @@ for directory in src dist node_modules; do
   rsync -a --delete "$repo_root/$directory/" "$app_root/$directory/"
 done
 cp "$repo_root/package.json" "$app_root/package.json"
+mkdir -p "$app_root/deploy/linux-desktop"
+cp "$repo_root/deploy/linux-desktop/agent-decision-json.mjs" "$app_root/deploy/linux-desktop/agent-decision-json.mjs"
 cat > "$app_root/run-demo-server.sh" <<'EOF'
 #!/bin/sh
 set -eu

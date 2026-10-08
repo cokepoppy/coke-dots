@@ -208,6 +208,27 @@ test('proactive research is context-only and its structured result cannot reques
   assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Found it.', proactiveFinding: true, delegations: [{ title: 'Other', instruction: 'Review.' }] }), undefined, options), /非委派状态不能包含子任务/);
 });
 
+test('computer action activity is accepted only for a standard task with explicit desktop-runtime authorization', () => {
+  const task: AgentRequest = {
+    prompt: 'Use Dot computer to inspect the public source.', priorResult: null, sessionId: null,
+    workspace: '/tmp/coke-dots-computer-actions', onEvent: () => {}, executionMode: 'standard',
+    allowComputerActions: true,
+  };
+  const options = agentDecisionOptions(task);
+  assert.equal(options.allowComputerActions, true);
+  assert.deepEqual(parseDecision(JSON.stringify({ status: 'done', message: '我已检查网页。', computerActions: [
+    { action: 'navigate', host: 'research-fixture.dots.test' }, { action: 'click', host: 'research-fixture.dots.test' },
+  ] }), undefined, options).computerActions, [
+    { action: 'navigate', host: 'research-fixture.dots.test' }, { action: 'click', host: 'research-fixture.dots.test' },
+  ]);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Forged', computerActions: [{ action: 'click', host: 'example.test' }] })), /未授权/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Invalid', computerActions: [{ action: 'type', host: 'example.test' }] }), undefined, options), /无效的云电脑操作记录/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Invalid', computerActions: [{ action: 'click', host: 'example.test/path' }] }), undefined, options), /无效的云电脑操作记录/);
+  const proactive = agentDecisionOptions({ ...task, executionMode: 'proactive-research' });
+  assert.equal(proactive.allowComputerActions, false);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Finding', proactiveFinding: true, computerActions: [{ action: 'click', host: 'example.test' }] }), undefined, { ...proactive, allowProactiveFinding: true }), /未授权/);
+});
+
 test('agent Scratchpad actions require bounded page content and a valid tenant page ID', () => {
   const id = '01234567-89ab-cdef-0123-456789abcdef';
   const created = parseDecision(JSON.stringify({ status: 'done', message: 'I created your page.', pageAction: { action: 'create', title: 'Launch notes', content: '# Outline\n- Draft the intro' } }));
