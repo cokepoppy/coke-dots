@@ -34,6 +34,7 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
   const [watchError, setWatchError] = useState('');
   const [taskOpenBusy, setTaskOpenBusy] = useState(false);
   const [taskOpenError, setTaskOpenError] = useState(false);
+  const [itemPreview, setItemPreview] = useState<{ key: string; top: number; left: number } | null>(null);
 
   const items = useMemo<ScheduledItem[]>(() => [
     ...tasks.filter(task => scheduleForTask(task.scheduleSpec, task.scheduleMinutes) !== null || task.status === 'scheduled').map(task => ({
@@ -85,6 +86,17 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
     }
   }
 
+  function showItemPreview(target: HTMLButtonElement, item: ScheduledItem) {
+    const row = target.getBoundingClientRect();
+    const list = target.closest('.scheduled-list-pane')?.getBoundingClientRect();
+    if (!list) return;
+    setItemPreview({ key: item.key, top: Math.round(row.top), left: Math.round(list.right + 2) });
+  }
+
+  function clearItemPreview(key: string) {
+    setItemPreview(current => current?.key === key ? null : current);
+  }
+
   return <section className="scheduled-hub" aria-label="Scheduled workspace" data-testid="scheduled-hub">
     <aside className="scheduled-list-pane">
       <div className="scheduled-heading"><h1>Scheduled</h1><span aria-hidden="true">☷</span></div>
@@ -95,9 +107,13 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
       <div className="scheduled-items" aria-label="Scheduled tasks">
         {filtered.map(item => {
           const status = item.kind === 'task' ? taskStatusText(item.task) : item.watch.status === 'active' ? 'Monitoring' : item.watch.status === 'paused' ? 'Paused' : 'Failed';
-          return <button key={item.key} className={`scheduled-item ${selectedKey === item.key ? 'selected' : ''}`} aria-pressed={selectedKey === item.key} onClick={() => { setSelectedKey(item.key); setTaskOpenError(false); }}>
+          return <button key={item.key} className={`scheduled-item ${selectedKey === item.key ? 'selected' : ''}`} aria-pressed={selectedKey === item.key} onMouseEnter={event => showItemPreview(event.currentTarget, item)} onMouseLeave={() => clearItemPreview(item.key)} onFocus={event => showItemPreview(event.currentTarget, item)} onBlur={() => clearItemPreview(item.key)} onClick={() => { setSelectedKey(item.key); setTaskOpenError(false); }}>
             <span className="scheduled-item-copy"><strong>{item.title}</strong><small>{status}</small></span>
             <span className="scheduled-item-menu" aria-hidden="true">···</span>
+            {itemPreview?.key === item.key && <span className="scheduled-hover-preview" data-testid="scheduled-item-preview" aria-hidden="true" style={{ top: itemPreview.top, left: itemPreview.left }}>
+              <strong>{item.title}</strong>
+              <small><span className="scheduled-preview-clock" aria-hidden="true">◷</span>{status}</small>
+            </span>}
           </button>;
         })}
         {filtered.length === 0 && <p className="scheduled-no-results">{items.length ? 'No matching tasks' : 'No scheduled tasks yet'}</p>}

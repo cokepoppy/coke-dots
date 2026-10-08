@@ -1,0 +1,9 @@
+{
+  "id": "futurepedia-scheduled-preview-v1-1002",
+  "reference": "../frames/futurepedia-v1-1002-scheduled-player.png",
+  "referenceRect": { "x": 365, "y": 282, "width": 356, "height": 66 },
+  "implementationRect": { "x": 356, "y": 250, "width": 344, "height": 64 },
+  "output": "../../artifacts/reference-comparison/futurepedia-scheduled-preview-v1-1002",
+  "threshold": 32,
+  "note": "The reference is a compressed YouTube player crop from a Chrome replay. The crop targets only the observed preview card; the implementation uses a fixed 1440 by 1000 viewport. Resizing aligns the two crops for diagnosis and does not establish original CSS-pixel dimensions or prove that hover was the product's trigger. The task title/status are traced to the frame; hover and keyboard focus are Coke Dots interaction interpretations."
+}

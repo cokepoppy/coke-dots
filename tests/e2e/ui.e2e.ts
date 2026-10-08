@@ -1583,7 +1583,7 @@ try {
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: redirectedText }).waitFor({ state: 'visible' });
   });
 
-  const scheduledTask = 'E2E scheduled responsibility — report on the next review';
+  const scheduledTask = 'Summarize DevDay launches';
   await recordStep('Scheduled view exposes a recurring task and its cancellation control', async () => {
     await clickNav(alphaPage!, '你的 dot');
     await createTask(alphaPage!, scheduledTask, true);
@@ -1605,6 +1605,28 @@ try {
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => getComputedStyle(element).display), 'none', 'Scheduled should use the compact single-rail work layout');
     assert.equal(await alphaPage!.locator('.icon-rail').evaluate(element => Math.round(element.getBoundingClientRect().width)), 44);
     assert.equal(await alphaPage!.getByTestId('surface-switcher').isVisible(), false, 'The Chat/Work switch should be hidden inside Scheduled');
+    const itemPreview = item.getByTestId('scheduled-item-preview');
+    await alphaPage!.mouse.move(900, 500);
+    await search.focus();
+    assert.equal(await itemPreview.isVisible().catch(() => false), false, 'The task preview should remain hidden while the pointer and keyboard focus are elsewhere');
+    await item.hover();
+    await itemPreview.waitFor({ state: 'visible' });
+    assert.equal((await itemPreview.getByText(scheduledTask, { exact: true }).textContent())?.trim(), scheduledTask);
+    assert.equal((await itemPreview.locator('small').textContent())?.trim(), '◷Failed');
+    const previewBox = await itemPreview.boundingBox();
+    const listPaneBox = await alphaPage!.locator('.scheduled-list-pane').boundingBox();
+    assert.ok(previewBox && listPaneBox, 'The observed preview card should have measurable bounds');
+    assert.equal(Math.round(previewBox!.width), 344, 'The preview card should match the observed compact card width');
+    assert.equal(Math.round(previewBox!.height), 64, 'The preview card should match the observed compact card height');
+    assert.equal(Math.round(previewBox!.x), Math.round(listPaneBox!.x + listPaneBox!.width + 2), 'The preview card should sit directly beside the Scheduled list');
+    await screenshot(alphaPage!, '07-scheduled-hover-preview');
+    await alphaPage!.mouse.move(900, 500);
+    await search.focus();
+    await alphaPage!.keyboard.press('Tab');
+    await alphaPage!.keyboard.press('Tab');
+    assert.equal(await item.evaluate(element => element === document.activeElement), true, 'The first scheduled task should be reachable in normal keyboard order');
+    await itemPreview.waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '07-scheduled-keyboard-preview');
     await openAccountMenu(alphaPage!);
     assert.equal(await alphaPage!.getByTestId('theme-toggle').isVisible(), true, 'Theme control should remain available inside Scheduled');
     assert.equal(await alphaPage!.locator('.workspace-switcher select').isVisible(), true, 'Workspace switching should remain available inside Scheduled');
@@ -1641,6 +1663,11 @@ try {
     await openError.waitFor({ state: 'visible' });
     assert.match(await openError.innerText(), /Couldn't open this chat\. Try again\./);
     await screenshot(alphaPage!, '07-scheduled-open-error');
+    assert.equal(await itemPreview.isVisible().catch(() => false), false, 'The preview should be hidden while the pointer is over the main pane');
+    await item.hover();
+    await itemPreview.waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '07-scheduled-open-error-preview');
+    await alphaPage!.mouse.move(900, 500);
     await openError.getByRole('button', { name: 'Try again' }).click();
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: scheduledTask }).waitFor({ state: 'visible' });
     await alphaPage!.unroute('**/api/state');
