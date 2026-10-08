@@ -317,6 +317,14 @@ export function desktopResourceIdentity(tenantId: string) {
   return { namespace, tenantHash };
 }
 
+function testMemoryRequest(name: string, fallback: string) {
+  if (process.env.NODE_ENV !== 'test' || process.env.DOTS_E2E_AUTH !== '1') return fallback;
+  const value = process.env[name]?.trim();
+  if (!value) return fallback;
+  if (!/^\d+(?:Mi|Gi)$/.test(value)) throw new Error(`${name} must be a whole Mi or Gi quantity`);
+  return value;
+}
+
 export function desktopResources(tenantId: string, workerToken: string, agentToken: string) {
   const identity = desktopResourceIdentity(tenantId);
   const namespace = identity.namespace;
@@ -388,7 +396,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 ports: [{ name: 'novnc', containerPort: 6080 }, { name: 'worker', containerPort: 8082 }, { name: 'cdp', containerPort: 9222 }],
                 readinessProbe: { httpGet: { path: '/readyz', port: 'worker' }, initialDelaySeconds: 10, periodSeconds: 5, failureThreshold: 36 },
                 livenessProbe: { httpGet: { path: '/healthz', port: 'worker' }, initialDelaySeconds: 30, periodSeconds: 10 },
-                resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
+                resources: { requests: { cpu: '500m', memory: testMemoryRequest('DOTS_E2E_DESKTOP_MEMORY_REQUEST', '1Gi') }, limits: { cpu: '2', memory: '4Gi' } },
                 securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: ['ALL'] } },
                 volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'shm', mountPath: '/dev/shm' }, { name: 'tmp', mountPath: '/tmp' }],
               },
@@ -419,7 +427,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 ports: [{ name: 'agent', containerPort: 8083 }],
                 readinessProbe: { httpGet: { path: '/healthz', port: 'agent' }, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 36 },
                 livenessProbe: { httpGet: { path: '/healthz', port: 'agent' }, initialDelaySeconds: 15, periodSeconds: 10 },
-                resources: { requests: { cpu: '250m', memory: '384Mi' }, limits: { cpu: '2', memory: '2Gi' } },
+                resources: { requests: { cpu: '250m', memory: testMemoryRequest('DOTS_E2E_AGENT_RUNTIME_MEMORY_REQUEST', '384Mi') }, limits: { cpu: '2', memory: '2Gi' } },
                 securityContext: { runAsNonRoot: true, runAsUser: 1001, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
                 volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'agent-tmp', mountPath: '/tmp' }],
               },

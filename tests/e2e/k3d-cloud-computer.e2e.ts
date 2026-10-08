@@ -5,7 +5,7 @@ import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page, type Video } from 'playwright-core';
 import { PNG } from 'pngjs';
@@ -20,11 +20,20 @@ const cluster = process.env.DOTS_K3D_CLUSTER || 'tp1121-sandbox-dev';
 const demoScenario = process.env.DOTS_K3D_DEMO_SCENARIO?.trim() || 'cloud-computer-handoff';
 const demoRecording = process.env.DOTS_K3D_DEMO_RECORDING === '1' || Boolean(process.env.DOTS_K3D_DEMO_SCENARIO?.trim());
 if (!['cloud-computer-handoff', 'cloud-computer-agent-actions'].includes(demoScenario)) throw new Error(`Unsupported cloud computer demo scenario: ${demoScenario}`);
+const demoArtifactsRoot = resolve(projectRoot, 'artifacts', 'demos');
+const configuredDemoArtifacts = process.env.DOTS_K3D_DEMO_OUTPUT_DIR?.trim();
+const demoArtifacts = resolve(projectRoot, configuredDemoArtifacts || join('artifacts', 'demos', demoScenario));
+if (demoRecording) {
+  const relativeToDemoRoot = relative(demoArtifactsRoot, demoArtifacts);
+  if (!relativeToDemoRoot || relativeToDemoRoot.startsWith('..') || isAbsolute(relativeToDemoRoot)) {
+    throw new Error('DOTS_K3D_DEMO_OUTPUT_DIR must name a new directory inside artifacts/demos.');
+  }
+}
 let tenantId = '';
 let namespace = '';
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-k3d-e2e-'));
 const artifacts = demoRecording
-  ? resolve(projectRoot, 'artifacts', 'demos', demoScenario)
+  ? demoArtifacts
   : resolve(projectRoot, 'artifacts', 'e2e', `k3d-cloud-computer-${new Date().toISOString().replace(/[:.]/g, '-')}`);
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
@@ -93,6 +102,8 @@ async function startApp(): Promise<ChildProcess> {
     env: {
       ...process.env,
       NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL: researchFixtureUrl, DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(appPort),
+      DOTS_E2E_DESKTOP_MEMORY_REQUEST: runLiveAgentKernels ? process.env.DOTS_E2E_DESKTOP_MEMORY_REQUEST || '512Mi' : '',
+      DOTS_E2E_AGENT_RUNTIME_MEMORY_REQUEST: runLiveAgentKernels ? process.env.DOTS_E2E_AGENT_RUNTIME_MEMORY_REQUEST || '256Mi' : '',
       DOTS_KEYCHAIN_SERVICE: testKeychainService,
       DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_LINUX_DESKTOP_TOKEN_SECRET: tokenSecret,
       DOTS_LINUX_DESKTOP_IMAGE: process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev',

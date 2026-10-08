@@ -40,6 +40,38 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(runtimeEnv.includes('LINUX_DESKTOP_WORKER_TOKEN'), true);
 });
 
+test('lower Linux desktop memory requests are limited to authenticated E2E runs', () => {
+  const names = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_E2E_DESKTOP_MEMORY_REQUEST', 'DOTS_E2E_AGENT_RUNTIME_MEMORY_REQUEST'] as const;
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  const memoryRequests = () => {
+    const list = desktopResources('memory-request-test', 'worker-secret', 'agent-secret')[1] as { items: Record<string, any>[] };
+    const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { containers: { name: string; resources: { requests: { memory: string }; limits: { memory: string } } }[] } } } };
+    return Object.fromEntries(deployment.spec.template.spec.containers.map(container => [container.name, container.resources]));
+  };
+  try {
+    process.env.NODE_ENV = 'production';
+    process.env.DOTS_E2E_AUTH = '1';
+    process.env.DOTS_E2E_DESKTOP_MEMORY_REQUEST = '512Mi';
+    process.env.DOTS_E2E_AGENT_RUNTIME_MEMORY_REQUEST = '256Mi';
+    assert.equal(memoryRequests().desktop.requests.memory, '1Gi', 'Production desktop requests must keep their normal memory floor');
+    assert.equal(memoryRequests()['agent-runtime'].requests.memory, '384Mi', 'Production Agent runtime requests must keep their normal memory floor');
+
+    process.env.NODE_ENV = 'test';
+    assert.equal(memoryRequests().desktop.requests.memory, '512Mi');
+    assert.equal(memoryRequests()['agent-runtime'].requests.memory, '256Mi');
+    assert.equal(memoryRequests().desktop.limits.memory, '4Gi', 'The test override must not lower the desktop memory limit');
+    assert.equal(memoryRequests()['agent-runtime'].limits.memory, '2Gi', 'The test override must not lower the Agent runtime limit');
+
+    process.env.DOTS_E2E_DESKTOP_MEMORY_REQUEST = '512';
+    assert.throws(() => desktopResources('memory-request-test', 'worker-secret', 'agent-secret'), /whole Mi or Gi quantity/);
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
 test('a fresh Linux desktop ships the Pi and DeepSeek Harness cloud kernel adapters without copying the shared API key into Kubernetes', () => {
   const previousBackend = process.env.DOTS_COMPUTER_BACKEND;
   const previousEngines = process.env.DOTS_DESKTOP_AGENT_ADAPTERS;
