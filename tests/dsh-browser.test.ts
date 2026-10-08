@@ -8,8 +8,11 @@ import { test } from 'node:test';
 import { Entry } from '@napi-rs/keyring';
 import { adapters } from '../src/server/adapters.ts';
 import { startDshPublicPageBridge } from '../src/server/dsh-browser-bridge.ts';
-import { loadModelSettings, saveModelKey } from '../src/server/model-settings.ts';
+import { loadModelSettings, loadSharedModelSettings, saveModelKey, saveSharedModelKey } from '../src/server/model-settings.ts';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+
+process.env.DOTS_KEYCHAIN_SERVICE = `${process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots.test'}.dsh-browser-${process.pid}`;
+const sharedKeychainEntry = () => new Entry(process.env.DOTS_KEYCHAIN_SERVICE!, 'shared-model-api-key');
 
 async function listen(server: ReturnType<typeof createServer>) {
   await new Promise<void>((resolvePromise, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
@@ -119,12 +122,16 @@ test('DeepSeek Harness loads the isolated browser-tool patch and returns page ev
     dataDirectory: process.env.DOTS_DATA_DIR,
   };
   let pageReads = 0;
+  const sharedEntry = sharedKeychainEntry();
+  sharedEntry.deletePassword();
   try {
     process.env.DOTS_DSH_BIN = dshBin!;
     process.env.DOTS_DSH_PROFILE = 'sdk';
     delete process.env.DOTS_DSH_READ_ONLY_CONFIG;
     process.env.DOTS_DATA_DIR = dataDirectory;
-    loadModelSettings(`http://127.0.0.1:${port}/v1`, 'dsh-browser-test', tenantId);
+    loadSharedModelSettings(`http://127.0.0.1:${port}/v1`, 'dsh-browser-shared-model');
+    saveSharedModelKey('dsh-browser-shared-instance-test-key');
+    loadModelSettings('https://tenant-override.invalid/v1', 'tenant-override-model', tenantId);
     saveModelKey('dsh-browser-test-only-key', tenantId);
     const result = await adapters.dsh.run({
       tenantId,
@@ -143,6 +150,7 @@ test('DeepSeek Harness loads the isolated browser-tool patch and returns page ev
     assert.match(result.message, /hardened session recovery/);
     assert.equal(pageReads, 1, 'The DSH tool must call the tenant browser bridge exactly once');
     assert.equal(requestBodies.length, 2, 'The browser result must reach the follow-up model turn');
+    assert.equal((JSON.parse(requestBodies[0]) as { model?: string }).model, 'dsh-browser-shared-model');
     assert.match(requestBodies[0], /open_public_page/, 'The injected tool schema was not sent to the model');
     const firstTurn = JSON.parse(requestBodies[0]) as { tools?: { function?: { name?: string; parameters?: { type?: string; properties?: Record<string, { type?: string }>; required?: string[]; additionalProperties?: boolean } }; name?: string }[] };
     const exposedToolNames = (firstTurn.tools || []).map(tool => tool.function?.name || tool.name || '');
@@ -156,7 +164,7 @@ test('DeepSeek Harness loads the isolated browser-tool patch and returns page ev
       `Task-local DSH browser research must not grant general shell, write, web, or delegation tools to the model: ${exposedToolNames.join(', ')}`);
     assert.match(requestBodies[1], /untrusted webpage content/);
     assert.match(requestBodies[1], /Release criteria: harden session recovery\./);
-    assert.doesNotMatch(requestBodies[0] + requestBodies[1], /dsh-browser-test-only-key/);
+    assert.doesNotMatch(requestBodies[0] + requestBodies[1], /dsh-browser-shared-instance-test-key|dsh-browser-test-only-key/);
 
     const withoutBrowser = await adapters.dsh.run({
       tenantId,
@@ -174,6 +182,8 @@ test('DeepSeek Harness loads the isolated browser-tool patch and returns page ev
     assert.ok(!noBrowserToolNames.some(name => /(?:^|[-_])(?:bash|pwsh|write|edit|web|subagent|workflow)(?:[-_]|$)/i.test(name)),
       `A DSH task without browser access still exposed a general capability: ${noBrowserToolNames.join(', ')}`);
   } finally {
+    sharedEntry.deletePassword();
+    loadSharedModelSettings(null, null);
     if (previous.bin === undefined) delete process.env.DOTS_DSH_BIN; else process.env.DOTS_DSH_BIN = previous.bin;
     if (previous.profile === undefined) delete process.env.DOTS_DSH_PROFILE; else process.env.DOTS_DSH_PROFILE = previous.profile;
     if (previous.config === undefined) delete process.env.DOTS_DSH_READ_ONLY_CONFIG; else process.env.DOTS_DSH_READ_ONLY_CONFIG = previous.config;

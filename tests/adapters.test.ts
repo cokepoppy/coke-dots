@@ -121,7 +121,7 @@ test('model API runs bounded public browser research calls and returns untrusted
   process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}/v1`;
   process.env.DOTS_MODEL_API_KEY = 'adapter-test-key';
   process.env.DOTS_MODEL = 'adapter-test-model';
-  loadModelSettings(process.env.DOTS_MODEL_BASE_URL, process.env.DOTS_MODEL, 'legacy');
+  loadSharedModelSettings(process.env.DOTS_MODEL_BASE_URL, process.env.DOTS_MODEL);
   const openedUrls: string[] = [];
   try {
     const decision = await adapters.model.run({
@@ -137,7 +137,7 @@ test('model API runs bounded public browser research calls and returns untrusted
     assert.equal(requests[1].messages?.at(-1)?.role, 'tool');
   } finally {
     server.close();
-    loadModelSettings('', '', 'legacy');
+    loadSharedModelSettings('', '');
     if (prior.base === undefined) delete process.env.DOTS_MODEL_BASE_URL; else process.env.DOTS_MODEL_BASE_URL = prior.base;
     if (prior.key === undefined) delete process.env.DOTS_MODEL_API_KEY; else process.env.DOTS_MODEL_API_KEY = prior.key;
     if (prior.model === undefined) delete process.env.DOTS_MODEL; else process.env.DOTS_MODEL = prior.model;
@@ -230,7 +230,7 @@ test('Pi availability recognizes the installed ESM-only SDK', { skip: !import.me
   }
 });
 
-test('Pi workspace model runtime keeps the workspace key in memory and binds only its endpoint and model', () => {
+test('Pi model runtime keeps the shared instance key in memory and binds only its endpoint and model', () => {
   const registered: { provider?: string; config?: Record<string, unknown> } = {};
   const runtimeKey: { provider?: string; value?: string } = {};
   const authStorage = { setRuntimeApiKey(provider: string, value: string) { runtimeKey.provider = provider; runtimeKey.value = value; } };
@@ -307,7 +307,7 @@ test('Pi and DSH reuse the shared instance model credential across authenticated
   }
 });
 
-test('DeepSeek Harness SDK launches with one workspace credential and the selected model route', { skip: !import.meta.resolve('@deepseek-ai/dsh-sdk-client').startsWith('file:'), timeout: 20_000 }, async () => {
+test('DeepSeek Harness SDK uses the shared instance credential and selected model route', { skip: !import.meta.resolve('@deepseek-ai/dsh-sdk-client').startsWith('file:'), timeout: 20_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'coke-dots-dsh-tenant-runtime-'));
   const tenantId = `dsh-tenant-${randomUUID()}`;
   const dataDirectory = join(root, 'data');
@@ -369,8 +369,12 @@ test('DeepSeek Harness SDK launches with one workspace credential and the select
   process.env.DOTS_DATA_DIR = dataDirectory;
   process.env.OPENAI_API_KEY = 'host-openai-must-not-cross-tenant-boundary';
   process.env.GOOGLE_CLIENT_SECRET = 'host-google-must-not-cross-tenant-boundary';
+  const sharedEntry = new Entry(process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots', 'shared-model-api-key');
+  sharedEntry.deletePassword();
   try {
-    loadModelSettings('https://api.deepseek.com/v1', 'tenant-dsh-model', tenantId);
+    loadSharedModelSettings('https://api.deepseek.com/v1', 'shared-dsh-model');
+    saveSharedModelKey('dsh-shared-instance-test-key');
+    loadModelSettings('https://tenant-override.invalid/v1', 'tenant-override-model', tenantId);
     saveModelKey('tenant-dsh-only-test-key', tenantId);
     const firstResult = await adapters.dsh.run({
       tenantId,
@@ -402,18 +406,20 @@ test('DeepSeek Harness SDK launches with one workspace credential and the select
     assert.equal(audit.cwd, realpathSync(workspace));
     assert.equal(audit.env.HOME, runtimeHome);
     assert.equal(audit.env.DSH_HOME, runtimeHome);
-    assert.equal(audit.env.DEEPSEEK_API_KEY, 'tenant-dsh-only-test-key');
+    assert.equal(audit.env.DEEPSEEK_API_KEY, 'dsh-shared-instance-test-key');
     assert.equal(audit.env.DEEPSEEK_BASE_URL, 'https://api.deepseek.com/v1');
-    assert.equal(audit.env.DSH_MODEL, 'tenant-dsh-model');
+    assert.equal(audit.env.DSH_MODEL, 'shared-dsh-model');
     assert.equal(audit.env.OPENAI_API_KEY, undefined);
     assert.equal(audit.env.GOOGLE_CLIENT_SECRET, undefined);
-    assert.deepEqual(audit.route, { cwd: workspace, provider: 'deepseek-official', model: 'tenant-dsh-model' });
+    assert.deepEqual(audit.route, { cwd: workspace, provider: 'deepseek-official', model: 'shared-dsh-model' });
     assert.equal(audit.promptSessionIds.length, 3, 'Resuming a persisted SDK session in a new runtime must retry once before queueing the prompt.');
     assert.equal(audit.promptSessionIds[0], firstResult.sessionId);
     assert.equal(audit.promptSessionIds[1], firstResult.sessionId);
     assert.notEqual(audit.promptSessionIds[2], firstResult.sessionId, 'Recovery must use a newly minted session ID.');
     assert.equal(result.sessionId, audit.promptSessionIds[2]);
   } finally {
+    sharedEntry.deletePassword();
+    loadSharedModelSettings(null, null);
     testKeychainEntry(tenantId).deletePassword();
     for (const [key, value] of [
       ['DOTS_DSH_BIN', previous.dshBin], ['DOTS_DSH_READ_ONLY_CONFIG', previous.dshConfig],

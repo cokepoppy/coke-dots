@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { Type } from 'typebox';
 import type { PersonalDotMemory, PersonalDotMemoryUpdate, ReasoningEffort, ScratchpadPageAction, TenantActionRule } from '../shared/types.ts';
 import { startDshPublicPageBridge, writeDshPublicPagePatch } from './dsh-browser-bridge.ts';
-import { configuredWorkspaceModelConfig, effectiveModelConfig } from './model-settings.ts';
+import { configuredInstanceModelConfig, effectiveModelConfig } from './model-settings.ts';
 
 const require = createRequire(import.meta.url);
 const bootstrapTenantId = 'legacy';
@@ -100,10 +100,10 @@ interface PiSdk {
   }>;
 }
 
-export interface WorkspaceModelConfig { apiKey: string; model: string; baseUrl: string }
+export interface SharedModelConfig { apiKey: string; model: string; baseUrl: string }
 
-/** Create a Pi model registry with only this workspace's in-memory credential. */
-export function createPiWorkspaceModelRuntime(sdk: Pick<PiSdk, 'AuthStorage' | 'ModelRegistry'>, config: WorkspaceModelConfig) {
+/** Create an isolated tenant Pi runtime that receives only the shared key in memory. */
+export function createPiWorkspaceModelRuntime(sdk: Pick<PiSdk, 'AuthStorage' | 'ModelRegistry'>, config: SharedModelConfig) {
   const provider = 'coke-dots-workspace';
   const authStorage = sdk.AuthStorage.inMemory();
   authStorage.setRuntimeApiKey(provider, config.apiKey);
@@ -126,12 +126,12 @@ export function createPiWorkspaceModelRuntime(sdk: Pick<PiSdk, 'AuthStorage' | '
     }],
   });
   const model = modelRegistry.find(provider, config.model);
-  if (!model) throw new Error('Pi 无法加载当前工作区的模型配置');
+  if (!model) throw new Error('Pi 无法加载 Coke Dots 实例模型配置');
   return { authStorage, modelRegistry, model };
 }
 
-/** Keep host-only credentials out of a tenant's DeepSeek Harness child process. */
-export function createTenantDshEnvironment(homePath: string, config: WorkspaceModelConfig, parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+/** Give the tenant-isolated Harness process the shared provider config and no unrelated host secrets. */
+export function createTenantDshEnvironment(homePath: string, config: SharedModelConfig, parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const home = resolve(homePath);
   const environment: NodeJS.ProcessEnv = {};
   for (const key of ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS']) {
@@ -422,12 +422,12 @@ export const adapters: Record<Engine, AgentAdapter> = {
     available: tenantId => {
       const id = tenantId || 'legacy';
       const installed = process.env.DOTS_PI_ENABLED === '1' && packageAvailable('@mariozechner/pi-coding-agent');
-      return installed && (canUseHostKernel(id) || Boolean(configuredWorkspaceModelConfig(id)));
+      return installed && (canUseHostKernel(id) || Boolean(configuredInstanceModelConfig(id)));
     },
     async run(input) {
       const tenantId = input.tenantId || 'legacy';
-      const modelConfig = canUseHostKernel(tenantId) ? effectiveModelConfig(tenantId) : configuredWorkspaceModelConfig(tenantId);
-      if (!canUseHostKernel(tenantId) && !modelConfig) throw new Error('请先在当前工作区配置模型 API 密钥和模型名称');
+      const modelConfig = canUseHostKernel(tenantId) ? effectiveModelConfig(tenantId) : configuredInstanceModelConfig(tenantId);
+      if (!canUseHostKernel(tenantId) && !modelConfig) throw new Error('请先为 Coke Dots 实例配置共享模型 API 密钥和模型名称');
       const moduleName = '@mariozechner/pi-coding-agent';
       const sdk = await import(moduleName) as unknown as PiSdk;
       const sessionManager = await resolvePiSessionManager(sdk, input.workspace, input.sessionId);
@@ -462,7 +462,7 @@ export const adapters: Record<Engine, AgentAdapter> = {
       const id = tenantId || 'legacy';
       const profile = process.env.DOTS_DSH_PROFILE?.trim();
       const installed = Boolean(process.env.DOTS_DSH_BIN && (profile || process.env.DOTS_DSH_READ_ONLY_CONFIG) && packageAvailable('@deepseek-ai/dsh-sdk-client'));
-      return installed && (canUseHostKernel(id) || Boolean(configuredWorkspaceModelConfig(id)));
+      return installed && (canUseHostKernel(id) || Boolean(configuredInstanceModelConfig(id)));
     },
     async run(input) {
       const tenantId = input.tenantId || 'legacy';
@@ -471,8 +471,8 @@ export const adapters: Record<Engine, AgentAdapter> = {
       const profile = process.env.DOTS_DSH_PROFILE?.trim();
       if (!bin || (!profile && !config)) throw new Error('DeepSeek Harness 需要配置运行程序和只读 profile');
       if (profile && !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profile)) throw new Error('DeepSeek Harness profile 名称无效');
-      const modelConfig = canUseHostKernel(tenantId) ? effectiveModelConfig(tenantId) : configuredWorkspaceModelConfig(tenantId);
-      if (!canUseHostKernel(tenantId) && !modelConfig) throw new Error('请先在当前工作区配置模型 API 密钥和模型名称');
+      const modelConfig = canUseHostKernel(tenantId) ? effectiveModelConfig(tenantId) : configuredInstanceModelConfig(tenantId);
+      if (!canUseHostKernel(tenantId) && !modelConfig) throw new Error('请先为 Coke Dots 实例配置共享模型 API 密钥和模型名称');
       if (config) accessSync(config, constants.R_OK);
       const privateHome = modelConfig ? resolveTenantAgentDirectory(tenantId, 'dsh') : null;
       let bridge: Awaited<ReturnType<typeof startDshPublicPageBridge>> | null = null;

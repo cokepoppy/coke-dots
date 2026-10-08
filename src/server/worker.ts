@@ -94,10 +94,10 @@ export class Worker {
     const useDesktopRuntime = Boolean(computer?.runAgentTask && process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && remoteEngines.includes(task.engine));
     if (!useDesktopRuntime && !adapter?.available(task.tenantId)) {
       const engineName = ({ model: '模型 API', claude: 'Claude Code', pi: 'Pi', dsh: 'DeepSeek Harness' } as const)[task.engine];
-      const missing = task.engine === 'model' ? missingModelSettings(task.tenantId) : [];
+      const missing = ['model', 'pi', 'dsh'].includes(task.engine) ? missingModelSettings(task.tenantId) : [];
       const reason = missing.length
-        ? `当前工作区缺少${missing.join('和')}。请在“模型 API”设置中补全配置后重试。`
-        : `${engineName} 尚未配置或安装，请检查工作区设置后重试。`;
+        ? `当前 Coke Dots 实例缺少${missing.join('和')}。请由实例模型管理员在“模型 API”设置中补全共享配置后重试。`
+        : `${engineName} 尚未配置或安装，请检查本机内核安装和实例模型设置后重试。`;
       const errorMessage = `${engineName} 内核不可用，任务没有执行。${reason}`;
       this.store.updateTask(task.id, { status: 'failed', error: errorMessage }, task.tenantId);
       this.store.addEntry('system', errorMessage, task.id, task.tenantId);

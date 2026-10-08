@@ -22,13 +22,19 @@ if (keychain) {
 async function runFromKeychain() {
   const { resolve } = await import('node:path');
   const { Store } = await import('../src/server/store.ts');
-  const { effectiveModelConfig, loadModelSettings } = await import('../src/server/model-settings.ts');
+  const { effectiveModelConfig, hasSharedModelKey, loadSharedModelSettings, migrateWorkspaceModelToShared } = await import('../src/server/model-settings.ts');
   const store = new Store(resolve(process.env.DOTS_DATA_DIR || './data'));
   try {
-    loadModelSettings(store.getSetting('modelBaseUrl', 'legacy'), store.getSetting('modelName', 'legacy'), 'legacy');
+    const baseUrl = store.getSetting('sharedModelBaseUrl', 'legacy') || store.getSetting('modelBaseUrl', 'legacy') || '';
+    const model = store.getSetting('sharedModelName', 'legacy') || store.getSetting('modelName', 'legacy') || '';
+    loadSharedModelSettings(baseUrl, model);
+    if (!hasSharedModelKey()) {
+      migrateWorkspaceModelToShared('legacy', baseUrl, model);
+      loadSharedModelSettings(baseUrl, model);
+    }
     const config = effectiveModelConfig('legacy');
     if (!config) {
-      console.error('The legacy workspace needs a saved model name and a Keychain API key before this check can run.');
+      console.error('The Coke Dots instance needs a shared model name and a Keychain API key before this check can run.');
       process.exitCode = 2;
       return;
     }

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Entry } from '@napi-rs/keyring';
 import { Store } from '../src/server/store.ts';
-import { configuredWorkspaceModelConfig, effectiveModelConfig, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, missingModelSettings, publicModelSettings, saveModelKey, saveSharedModelKey, setModelMetadata } from '../src/server/model-settings.ts';
+import { configuredInstanceModelConfig, effectiveModelConfig, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, missingModelSettings, publicModelSettings, saveModelKey, saveSharedModelKey, setModelMetadata } from '../src/server/model-settings.ts';
 
 process.env.DOTS_KEYCHAIN_SERVICE = `${process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots.test'}.model-settings-${process.pid}`;
 
@@ -29,7 +29,7 @@ test('environment model credential is used without appearing in public settings'
   process.env.DOTS_MODEL_API_KEY = 'test-secret';
   process.env.DOTS_MODEL = 'env-model';
   try {
-    setModelMetadata('https://example.com/v1', '', 'legacy');
+    loadSharedModelSettings('https://example.com/v1', '');
     assert.equal(effectiveModelConfig()?.model, 'env-model');
     assert.equal(effectiveModelConfig()?.apiKey === 'test-secret', true, 'The environment credential should take effect without exposing its value in assertion output');
     assert.equal(JSON.stringify(publicModelSettings()).includes('test-secret'), false);
@@ -42,6 +42,7 @@ test('the shared E2E model fixture can serve disposable test tenants without wri
   process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '1';
   process.env.DOTS_MODEL_BASE_URL = 'http://127.0.0.1:43191/v1'; process.env.DOTS_MODEL = 'fixture-model'; process.env.DOTS_MODEL_API_KEY = 'fixture-only-key';
   try {
+    loadSharedModelSettings(null, null);
     loadModelSettings(null, null, tenantId);
     assert.deepEqual(effectiveModelConfig(tenantId), { apiKey: 'fixture-only-key', model: 'fixture-model', baseUrl: 'http://127.0.0.1:43191/v1' });
     assert.equal(publicModelSettings(tenantId).hasKey, true);
@@ -54,18 +55,23 @@ test('the shared E2E model fixture can serve disposable test tenants without wri
   }
 });
 
-test('missing model setup reports only which tenant fields need configuration', () => {
+test('tenant-local legacy model settings are not used as runtime credentials or displayed as active settings', () => {
   const tenantId = `missing-model-config-${randomUUID()}`;
   const envKeys = ['DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
   const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
   for (const key of envKeys) delete process.env[key];
   try {
+    loadSharedModelSettings(null, null);
     loadModelSettings(null, null, tenantId);
     assert.deepEqual(missingModelSettings(tenantId), ['API 密钥', '模型名称']);
     setModelMetadata('https://api.example.test/v1', 'example-model', tenantId);
-    assert.deepEqual(missingModelSettings(tenantId), ['API 密钥']);
-    assert.deepEqual(publicModelSettings(tenantId), { baseUrl: 'https://api.example.test/v1', model: 'example-model', hasKey: false }, 'Public settings should expose key presence without exposing a secret');
+    saveModelKey('legacy-tenant-only-secret', tenantId);
+    assert.deepEqual(missingModelSettings(tenantId), ['API 密钥', '模型名称'], 'Old workspace settings do not satisfy the shared instance profile');
+    assert.equal(effectiveModelConfig(tenantId), null, 'A workspace-only key must not activate a tenant-specific runtime');
+    assert.deepEqual(publicModelSettings(tenantId), { baseUrl: '', model: '', hasKey: false }, 'The UI shows only the instance profile');
   } finally {
+    new Entry(process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots', `tenant-${tenantId}-model-api-key`).deletePassword();
+    loadSharedModelSettings(null, null);
     for (const [key, value] of previousEnv) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
@@ -85,12 +91,12 @@ test('Pi and DeepSeek Harness reuse one instance credential across tenant-isolat
     loadSharedModelSettings('https://instance.example.test/v1', 'instance-model');
     loadModelSettings('https://tenant.example.test/v1', 'tenant-model', alpha);
     loadModelSettings('https://tenant.example.test/v1', 'tenant-model', beta);
-    assert.equal(configuredWorkspaceModelConfig(alpha), null, 'Test environment credentials stay unavailable without the explicit E2E auth fixture');
+    assert.equal(configuredInstanceModelConfig(alpha), null, 'Test environment credentials stay unavailable without the explicit E2E auth fixture');
     saveSharedModelKey('shared-instance-key');
-    assert.deepEqual(configuredWorkspaceModelConfig(alpha), {
+    assert.deepEqual(configuredInstanceModelConfig(alpha), {
       apiKey: 'shared-instance-key', model: 'instance-model', baseUrl: 'https://instance.example.test/v1',
     });
-    assert.deepEqual(configuredWorkspaceModelConfig(beta), configuredWorkspaceModelConfig(alpha), 'A second tenant must reuse the shared API profile for Pi and DeepSeek Harness');
+    assert.deepEqual(configuredInstanceModelConfig(beta), configuredInstanceModelConfig(alpha), 'A second tenant must reuse the shared API profile for Pi and DeepSeek Harness');
   } finally {
     sharedEntry.deletePassword();
     new Entry(service, `tenant-${alpha}-model-api-key`).deletePassword();

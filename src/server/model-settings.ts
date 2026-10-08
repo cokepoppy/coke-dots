@@ -9,17 +9,16 @@ const environmentModelAllowed = (tenantId: string) => process.env.NODE_ENV !== '
 
 /** Load the Coke Dots instance-wide Model API profile. Its secret stays in Keychain. */
 export function loadSharedModelSettings(baseUrl: string | null, model: string | null) {
-  const envAllowed = environmentModelAllowed('legacy');
   stored.set('shared', {
-    baseUrl: baseUrl || (envAllowed ? process.env.DOTS_MODEL_BASE_URL?.trim() : '') || '',
-    model: model || (envAllowed ? process.env.DOTS_MODEL?.trim() : '') || '',
-    hasKey: Boolean(readSharedKey() || (envAllowed && process.env.DOTS_MODEL_API_KEY?.trim())),
+    baseUrl: baseUrl || '',
+    model: model || '',
+    hasKey: Boolean(readSharedKey()),
   });
 }
 
-/** Retain old workspace profiles so an existing installation can migrate them. */
+/** Read old workspace profiles for one-time promotion into the instance profile. */
 export function loadModelSettings(baseUrl: string | null, model: string | null, tenantId = 'legacy') {
-  stored.set(tenantId, { baseUrl: baseUrl || '', model: model || '', hasKey: Boolean(readTenantKey(tenantId)) });
+  stored.set(tenantId, { baseUrl: baseUrl || '', model: model || '', hasKey: false });
 }
 
 export function saveSharedModelKey(value: string) {
@@ -49,7 +48,7 @@ export function hasSharedModelKey() {
   catch { return Boolean(environmentModelAllowed('legacy') && process.env.DOTS_MODEL_API_KEY?.trim()); }
 }
 
-/** Legacy workspace-only writer remains for Pi and DeepSeek Harness profiles. */
+/** Legacy writer retained for migration coverage; runtime adapters never resolve this credential. */
 export function saveModelKey(value: string, tenantId = 'legacy') {
   if (!value.trim()) throw new Error('密钥不能为空');
   keychainFor(tenantId).setPassword(value.trim());
@@ -66,38 +65,35 @@ export function publicModelSettings(tenantId = 'legacy'): ModelSettings {
   const config = effectiveModelConfig(tenantId);
   if (config) return { baseUrl: config.baseUrl, model: config.model, hasKey: true };
   const shared = sharedSettings(tenantId);
-  const local = stored.get(tenantId) || { baseUrl: '', model: '', hasKey: false };
   return {
-    baseUrl: shared.model ? shared.baseUrl : local.baseUrl,
-    model: shared.model || local.model,
+    baseUrl: shared.baseUrl,
+    model: shared.model,
     hasKey: false,
   };
 }
 
 export function missingModelSettings(tenantId = 'legacy') {
   const envAllowed = environmentModelAllowed(tenantId);
-  const apiKey = readSharedKey() || (envAllowed ? process.env.DOTS_MODEL_API_KEY?.trim() : '') || readTenantKey(tenantId);
-  const model = sharedSettings(tenantId).model || stored.get(tenantId)?.model || '';
+  const apiKey = readSharedKey() || (envAllowed ? process.env.DOTS_MODEL_API_KEY?.trim() : '');
+  const model = sharedSettings(tenantId).model;
   return [
     ...(!apiKey ? ['API 密钥'] : []),
     ...(!model ? ['模型名称'] : []),
   ];
 }
 
-/** Model API requests use the shared instance profile for every tenant. */
+/** Model API requests use only the shared instance profile for every tenant. */
 export function effectiveModelConfig(tenantId = 'legacy') {
   const envAllowed = environmentModelAllowed(tenantId);
   const shared = sharedSettings(tenantId);
   const sharedKey = readSharedKey() || (envAllowed ? process.env.DOTS_MODEL_API_KEY?.trim() : '') || '';
-  const local = stored.get(tenantId) || { baseUrl: '', model: '', hasKey: false };
-  const apiKey = sharedKey || readTenantKey(tenantId) || '';
-  const model = shared.model || local.model;
-  const baseUrl = shared.baseUrl || local.baseUrl || 'https://api.openai.com/v1';
-  return apiKey && model ? { apiKey, model, baseUrl: baseUrl.replace(/\/$/, '') } : null;
+  const model = shared.model;
+  const baseUrl = shared.baseUrl || 'https://api.openai.com/v1';
+  return sharedKey && model ? { apiKey: sharedKey, model, baseUrl: baseUrl.replace(/\/$/, '') } : null;
 }
 
-/** Pi and DeepSeek Harness reuse the shared instance model profile, with old tenant keys as fallback. */
-export function configuredWorkspaceModelConfig(tenantId: string) {
+/** Pi and DeepSeek Harness reuse the shared instance model profile. */
+export function configuredInstanceModelConfig(tenantId: string) {
   return effectiveModelConfig(tenantId);
 }
 
@@ -112,7 +108,7 @@ function sharedSettings(tenantId = 'legacy'): ModelSettings {
 }
 
 function readSharedKey(): string | null {
-  try { return sharedKeychainFor().getPassword() || readTenantKey('legacy'); }
+  try { return sharedKeychainFor().getPassword(); }
   catch { return null; }
 }
 

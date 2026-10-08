@@ -77,15 +77,18 @@ try {
   let baseUrl = '';
   let model = '';
   try {
-    baseUrl = sourceStore.getSetting('modelBaseUrl', 'legacy') || '';
-    model = sourceStore.getSetting('modelName', 'legacy') || '';
+    baseUrl = sourceStore.getSetting('sharedModelBaseUrl', 'legacy') || sourceStore.getSetting('modelBaseUrl', 'legacy') || '';
+    model = sourceStore.getSetting('sharedModelName', 'legacy') || sourceStore.getSetting('modelName', 'legacy') || '';
   } finally { sourceStore.close(); }
-  apiKeyForRedaction = new Entry(keychainService, 'tenant-legacy-model-api-key').getPassword() || '';
+  apiKeyForRedaction = new Entry(keychainService, 'shared-model-api-key').getPassword()
+    || new Entry(keychainService, 'tenant-legacy-model-api-key').getPassword() || '';
   const hasKeychainKey = Boolean(apiKeyForRedaction);
-  assert(baseUrl && model && hasKeychainKey, 'The local legacy workspace must have a model endpoint, model name, and Keychain key.');
+  assert(baseUrl && model && hasKeychainKey, 'The Coke Dots instance must have a model endpoint, model name, and shared or migratable Keychain key.');
   assert.equal(new URL(baseUrl).protocol, 'https:', 'The live model test requires HTTPS.');
 
   const setupStore = new Store(dataDirectory);
+  setupStore.setSetting('sharedModelBaseUrl', baseUrl, 'legacy');
+  setupStore.setSetting('sharedModelName', model, 'legacy');
   setupStore.setSetting('modelBaseUrl', baseUrl, 'legacy');
   setupStore.setSetting('modelName', model, 'legacy');
   setupStore.close();
@@ -130,9 +133,9 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
 
   stage = `${liveEngine}-preflight`;
-  const workspace = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { baseUrl: string; model: string; hasKey: boolean } };
+  const workspace = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { baseUrl: string; model: string; hasKey: boolean; canManage?: boolean } };
   assert.equal(workspace.availableEngines.includes(liveEngine), true, `The UI did not load the configured ${liveEngine} kernel.`);
-  assert.deepEqual(workspace.modelSettings, { baseUrl, model, hasKey: true });
+  assert.deepEqual(workspace.modelSettings, { baseUrl, model, hasKey: true, canManage: true });
 
   stage = 'browser-task-submit';
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
