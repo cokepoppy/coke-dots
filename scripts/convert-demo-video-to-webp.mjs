@@ -144,10 +144,10 @@ try {
   const expectedPlaybackDuration = segments.reduce((sum, segment, index) => sum + (segment.end - segment.start) / (index === 0 ? 1 : activePlaybackRate) + segment.holdAfterSeconds, 0);
   // Preserve the capture cadence so cursor movement and UI clicks don't jump between sparse frames.
   const fps = Math.max(1, Math.min(30, Math.round(sourceFrameRate)));
-  // Keep long, slowed-down demos below Sharp's animation pixel guard without
-  // reducing the resolution of ordinary clips. Include a small frame margin
-  // for timestamp rounding at segment boundaries.
-  const animationPixelLimit = 900_000_000;
+  // Keep the source capture cadence and near-native width for long, readable
+  // demos. The final WebP is optimized and fully decoded below before it is
+  // accepted.
+  const animationPixelLimit = 1_300_000_000;
   // Readable holds are expanded into cloned frames in the intermediate GIF,
   // so include the full playback duration when sizing the animation. Otherwise
   // sharp may reject the GIF before it can collapse identical frames in WebP.
