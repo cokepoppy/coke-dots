@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, s
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Entry } from '@napi-rs/keyring';
-import { adapters, agentDecisionOptions, createPiWorkspaceModelRuntime, createTenantDshEnvironment, formatAgentPrompt, parseDecision, providerReasoningEffort, resolveTenantAgentDirectory, type AgentRequest } from '../src/server/adapters.ts';
+import { adapters, agentDecisionOptions, createPiWorkspaceModelRuntime, createTenantDshEnvironment, formatAgentPrompt, isDshSessionCollision, parseDecision, providerReasoningEffort, resolveTenantAgentDirectory, type AgentRequest } from '../src/server/adapters.ts';
 import { loadModelSettings, saveModelKey } from '../src/server/model-settings.ts';
 import { Store } from '../src/server/store.ts';
 
@@ -267,6 +267,14 @@ test('DeepSeek Harness receives a private home and no unrelated host credentials
   assert.equal(environment.GOOGLE_CLIENT_SECRET, undefined);
 });
 
+test('DSH recognizes only an SDK session collision as recoverable', () => {
+  const collision = new Error('session "session-1be90426142441b4b6edda193bb8ee5a" already exists');
+  assert.equal(isDshSessionCollision(collision), true);
+  assert.equal(isDshSessionCollision(new Error('provider request failed')), false);
+  assert.equal(isDshSessionCollision(new Error('session "session-1" is not available')), false);
+  assert.equal(isDshSessionCollision(collision.message), false);
+});
+
 test('Pi and DSH require an explicit workspace key outside the local bootstrap tenant', { skip: !import.meta.resolve('@mariozechner/pi-coding-agent').startsWith('file:') || !import.meta.resolve('@deepseek-ai/dsh-sdk-client').startsWith('file:') }, () => {
   const previous = {
     pi: process.env.DOTS_PI_ENABLED, dshBin: process.env.DOTS_DSH_BIN, dshConfig: process.env.DOTS_DSH_READ_ONLY_CONFIG,
@@ -304,8 +312,11 @@ test('DeepSeek Harness SDK launches with one workspace credential and the select
     import fs from 'node:fs';
     import path from 'node:path';
     let pending = '';
-    let audit = { cwd: process.cwd(), env: { HOME: process.env.HOME, DSH_HOME: process.env.DSH_HOME, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL: process.env.DEEPSEEK_BASE_URL, DSH_MODEL: process.env.DSH_MODEL, OPENAI_API_KEY: process.env.OPENAI_API_KEY, GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET } };
-    const saveAudit = () => fs.writeFileSync(path.join(process.env.DSH_HOME, ${JSON.stringify(auditFileName)}), JSON.stringify(audit));
+    const auditPath = path.join(process.env.DSH_HOME, ${JSON.stringify(auditFileName)});
+    let previousAudit = { promptSessionIds: [] };
+    try { previousAudit = JSON.parse(fs.readFileSync(auditPath, 'utf8')); } catch {}
+    let audit = { cwd: process.cwd(), env: { HOME: process.env.HOME, DSH_HOME: process.env.DSH_HOME, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL: process.env.DEEPSEEK_BASE_URL, DSH_MODEL: process.env.DSH_MODEL, OPENAI_API_KEY: process.env.OPENAI_API_KEY, GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET }, promptSessionIds: previousAudit.promptSessionIds || [] };
+    const saveAudit = () => fs.writeFileSync(auditPath, JSON.stringify(audit));
     const send = message => process.stdout.write(JSON.stringify(message) + '\\n');
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', chunk => {
@@ -320,6 +331,14 @@ test('DeepSeek Harness SDK launches with one workspace credential and the select
           send({ jsonrpc: '2.0', id: message.id, result: { serverInfo: { name: 'deepseek-harness-sdk-runtime', version: 'test' } } });
         } else if (message.method === 'session/prompt') {
           const sessionId = message.params.sessionId;
+          if (audit.promptSessionIds.includes(sessionId)) {
+            audit.promptSessionIds.push(sessionId);
+            saveAudit();
+            send({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: 'session "' + sessionId + '" already exists' } });
+            continue;
+          }
+          audit.promptSessionIds.push(sessionId);
+          saveAudit();
           send({ jsonrpc: '2.0', id: message.id, result: { messageId: 'mock-message-id' } });
           send({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'agent/inbox/spliced', data: { inserted: [{ id: 'mock-message-id' }] } } } });
           send({ jsonrpc: '2.0', method: 'session.event', params: { sessionId, event: { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify({ status: 'done', message: 'DSH isolated runtime completed.' }) }] } } } } });
@@ -346,11 +365,21 @@ test('DeepSeek Harness SDK launches with one workspace credential and the select
   try {
     loadModelSettings('https://api.deepseek.com/v1', 'tenant-dsh-model', tenantId);
     saveModelKey('tenant-dsh-only-test-key', tenantId);
-    const result = await adapters.dsh.run({
+    const firstResult = await adapters.dsh.run({
       tenantId,
       prompt: 'run the isolated dsh runtime test',
       priorResult: null,
       sessionId: null,
+      workspace,
+      onEvent: () => {},
+    });
+    assert.equal(firstResult.status, 'done');
+    assert.equal(firstResult.message, 'DSH isolated runtime completed.');
+    const result = await adapters.dsh.run({
+      tenantId,
+      prompt: 'continue after a control-plane restart',
+      priorResult: firstResult.message,
+      sessionId: firstResult.sessionId || null,
       workspace,
       onEvent: () => {},
     });
@@ -361,6 +390,7 @@ test('DeepSeek Harness SDK launches with one workspace credential and the select
       cwd: string;
       env: Record<string, string | undefined>;
       route: { cwd: string; provider: string; model: string };
+      promptSessionIds: string[];
     };
     assert.equal(audit.cwd, realpathSync(workspace));
     assert.equal(audit.env.HOME, runtimeHome);
@@ -371,6 +401,11 @@ test('DeepSeek Harness SDK launches with one workspace credential and the select
     assert.equal(audit.env.OPENAI_API_KEY, undefined);
     assert.equal(audit.env.GOOGLE_CLIENT_SECRET, undefined);
     assert.deepEqual(audit.route, { cwd: workspace, provider: 'deepseek-official', model: 'tenant-dsh-model' });
+    assert.equal(audit.promptSessionIds.length, 3, 'Resuming a persisted SDK session in a new runtime must retry once before queueing the prompt.');
+    assert.equal(audit.promptSessionIds[0], firstResult.sessionId);
+    assert.equal(audit.promptSessionIds[1], firstResult.sessionId);
+    assert.notEqual(audit.promptSessionIds[2], firstResult.sessionId, 'Recovery must use a newly minted session ID.');
+    assert.equal(result.sessionId, audit.promptSessionIds[2]);
   } finally {
     testKeychainEntry(tenantId).deletePassword();
     for (const [key, value] of [

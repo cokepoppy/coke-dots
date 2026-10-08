@@ -151,6 +151,11 @@ export function createTenantDshEnvironment(homePath: string, config: WorkspaceMo
   };
 }
 
+export function isDshSessionCollision(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  return /^session "[a-z0-9_.:-]{1,160}" already exists$/i.test(error.message);
+}
+
 /** Store SDK profiles outside task workspaces and reject symlinks into another tenant. */
 export function resolveTenantAgentDirectory(tenantId: string, engine: 'pi' | 'dsh', dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data')) {
   if (!/^(legacy|[a-z0-9][a-z0-9-]{0,127})$/i.test(tenantId)) throw new Error('工作区 ID 无效');
@@ -503,7 +508,21 @@ export const adapters: Record<Engine, AgentAdapter> = {
         abortHarness = () => { void closeHarness().catch(() => undefined); };
         if (input.signal?.aborted) throw new Error('任务已停止');
         input.signal?.addEventListener('abort', abortHarness, { once: true });
-        const result = await harness.run(formatAgentPrompt(input), { sessionId: input.sessionId || undefined, onNotification: row => { if (row.method === 'session.event') input.onEvent('DeepSeek Harness 正在处理任务。'); } });
+        const prompt = formatAgentPrompt(input);
+        const runOptions = { sessionId: input.sessionId || undefined, onNotification: (row: { method: string }) => { if (row.method === 'session.event') input.onEvent('DeepSeek Harness 正在处理任务。'); } };
+        let result: Awaited<ReturnType<typeof harness.run>>;
+        try {
+          result = await harness.run(prompt, runOptions);
+        } catch (error) {
+          // The SDK runtime reports duplicate IDs before accepting a prompt. This
+          // occurs when a persisted session is resumed in a newly started process:
+          // the session store restores the ID, but the SDK server cannot reattach it.
+          // Retry once with a fresh ID; the same task prompt carries its prior result
+          // and completed child results, so the continuation remains grounded.
+          if (!isDshSessionCollision(error)) throw error;
+          input.onEvent('DeepSeek Harness 无法重新接入保存的会话，正在使用任务进度恢复。');
+          result = await harness.run(prompt, { ...runOptions, sessionId: undefined });
+        }
         return parseDecision(result.finalResponse, result.sessionId, agentDecisionOptions(input));
       } finally {
         if (abortHarness) input.signal?.removeEventListener('abort', abortHarness);
