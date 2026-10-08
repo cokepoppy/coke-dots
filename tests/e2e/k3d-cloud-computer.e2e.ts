@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium, type Browser, type Page } from 'playwright-core';
+import { chromium, type Browser, type BrowserContext, type Page, type Video } from 'playwright-core';
 import { PNG } from 'pngjs';
 import { Entry } from '@napi-rs/keyring';
 import { formatAgentPrompt } from '../../src/server/adapters.ts';
@@ -17,10 +17,13 @@ import { compareRasters, cropRaster, resizeRaster } from '../../src/shared/refer
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const cluster = process.env.DOTS_K3D_CLUSTER || 'tp1121-sandbox-dev';
+const demoRecording = process.env.DOTS_K3D_DEMO_RECORDING === '1';
 let tenantId = '';
 let namespace = '';
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-k3d-e2e-'));
-const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `k3d-cloud-computer-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+const artifacts = demoRecording
+  ? resolve(projectRoot, 'artifacts', 'demos', 'cloud-computer-handoff')
+  : resolve(projectRoot, 'artifacts', 'e2e', `k3d-cloud-computer-${new Date().toISOString().replace(/[:.]/g, '-')}`);
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
 const testKeychainService = `com.cokepoppy.coke-dots.e2e-k3d-${randomUUID()}`;
@@ -36,10 +39,13 @@ let appServer: ChildProcess | null = null;
 let agentPortForward: ChildProcess | null = null;
 let workerPortForward: ChildProcess | null = null;
 let browser: Browser | null = null;
+let context: BrowserContext | null = null;
 let page: Page | null = null;
+let pageVideo: Video | null = null;
 let appPort = 0;
 let kubectlNamespaceCreated = false;
 const logs: string[] = [];
+let runPassed = false;
 
 async function configureLiveAgentKernels() {
   const sourceKeychainService = process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots';
@@ -157,14 +163,20 @@ try {
   command(['docker', 'image', 'inspect', process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev']);
   if (runLiveAgentKernels) await configureLiveAgentKernels();
   console.log(`K3D preflight passed: ${cluster}`);
+  if (demoRecording) assert.equal(existsSync(artifacts), false, `Refusing to overwrite an existing demo recording directory: ${artifacts}`);
   await mkdir(artifacts, { recursive: true });
   await writeFile(envFile, '');
   appPort = await freePort();
   appServer = await startApp();
   console.log(`Coke Dots test service ready: 127.0.0.1:${appPort}`);
   browser = await chromium.launch({ executablePath: process.env.DOTS_CHROME_BIN || findChrome(), headless: true });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 980 }, deviceScaleFactor: 1 });
+  context = await browser.newContext({
+    viewport: { width: 1440, height: 980 },
+    deviceScaleFactor: 1,
+    ...(demoRecording ? { recordVideo: { dir: artifacts, size: { width: 1440, height: 980 } } } : {}),
+  });
   page = await context.newPage();
+  pageVideo = page.video();
   page.on('pageerror', error => logs.push(`pageerror: ${error.message}`));
   page.on('console', message => { if (message.type() === 'error') logs.push(`console: ${message.text()}`); });
   tenantId = await signIn(page);
@@ -494,6 +506,7 @@ try {
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive a cloud computer Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
+  runPassed = true;
   console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
@@ -503,7 +516,30 @@ try {
 } finally {
   agentPortForward?.kill('SIGTERM');
   workerPortForward?.kill('SIGTERM');
-  await page?.context().close().catch(() => undefined);
+  await context?.close().catch(() => undefined);
+  if (demoRecording && pageVideo) {
+    const recording = await pageVideo.path().catch(() => '');
+    if (recording && existsSync(recording)) {
+      const sourceRecording = join(artifacts, 'cloud-computer-handoff-source.webm');
+      await rename(recording, sourceRecording);
+      if (runPassed) {
+        const converter = resolve(projectRoot, 'scripts', 'convert-demo-video-to-webp.mjs');
+        execFileSync(process.execPath, [converter, sourceRecording, join(artifacts, 'cloud-computer-handoff.webp')], { cwd: projectRoot, stdio: 'inherit' });
+      }
+      const checkFile = join(artifacts, 'cloud-computer-handoff.video-check.json');
+      const videoCheck = existsSync(checkFile) ? JSON.parse(await readFile(checkFile, 'utf8')) : null;
+      await writeFile(join(artifacts, 'manifest.json'), `${JSON.stringify({
+        scenario: 'Open the tenant-isolated Debian 13 cloud computer, run the Pi and DeepSeek Harness checks inside its Agent container, take over the visible desktop, click Chromium’s address bar, enter a local health URL, submit it, then return control to the Agent.',
+        kernel: runLiveAgentKernels ? 'Pi and DeepSeek Harness run inside the tenant Debian 13 cloud computer' : 'Test adapter inside the tenant Debian 13 cloud computer',
+        visibleComputerActions: ['Take over', 'click address bar', 'type health URL', 'press Enter', 'observe remote navigation', 'Return control'],
+        result: runPassed ? 'passed' : 'failed',
+        sourceRecording: 'cloud-computer-handoff-source.webm',
+        recording: runPassed ? 'cloud-computer-handoff.webp' : null,
+        videoCheck,
+        artifacts,
+      }, null, 2)}\n`);
+    }
+  }
   await browser?.close().catch(() => undefined);
   if (appServer && appServer.exitCode === null) {
     appServer.kill('SIGTERM');

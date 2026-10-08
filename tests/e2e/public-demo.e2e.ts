@@ -11,8 +11,10 @@ const runStamp = new Date().toISOString().replace(/[:.]/g, '-');
 const artifactRoot = resolve(process.env.DOTS_E2E_ARTIFACTS || join(projectRoot, 'artifacts', 'e2e', `public-demo-${runStamp}`));
 const screenshotPath = join(artifactRoot, 'public-demo-login.png');
 const videoDirectory = join(artifactRoot, 'video');
-const showcaseVideoPath = join(projectRoot, 'public', 'demos', 'proactive-release-date-conflict.webp');
-const showcaseVideoHash = createHash('sha256').update(await readFile(showcaseVideoPath)).digest('hex');
+const showcaseVideos = await Promise.all([
+  { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
+  { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
+].map(async video => ({ ...video, sha256: createHash('sha256').update(await readFile(join(projectRoot, 'public', 'demos', video.file))).digest('hex') })));
 const baseUrl = new URL(process.env.DOTS_PUBLIC_DEMO_URL || 'https://codex.cokeagent.com/dots-demo/');
 const basePath = baseUrl.pathname.endsWith('/') ? baseUrl.pathname : `${baseUrl.pathname}/`;
 const browserPath = findChromePath();
@@ -99,15 +101,17 @@ try {
     }
   });
 
-  await check('the hosted proactive demo is the complete animated WebP artifact', async () => {
-    const response = await get(`${basePath}demos/proactive-release-date-conflict.webp`);
-    assert.equal(response.status, 200);
-    assert.match(response.headers.get('content-type') || '', /^image\/webp/i);
-    const bytes = Buffer.from(await response.arrayBuffer());
-    assert(bytes.length > 10_000, 'The hosted demo video is unexpectedly small');
-    assert.equal(bytes.subarray(0, 4).toString('ascii'), 'RIFF');
-    assert.equal(bytes.subarray(8, 12).toString('ascii'), 'WEBP');
-    assert.equal(createHash('sha256').update(bytes).digest('hex'), showcaseVideoHash, 'The public VPS path must serve the verified local WebP byte-for-byte');
+  await check('both hosted demos are complete animated WebP artifacts', async () => {
+    for (const video of showcaseVideos) {
+      const response = await get(`${basePath}demos/${video.file}`);
+      assert.equal(response.status, 200, `${video.file} must be hosted`);
+      assert.match(response.headers.get('content-type') || '', /^image\/webp/i, `${video.file} must use the WebP media type`);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      assert(bytes.length > 10_000, `${video.file} is unexpectedly small`);
+      assert.equal(bytes.subarray(0, 4).toString('ascii'), 'RIFF');
+      assert.equal(bytes.subarray(8, 12).toString('ascii'), 'WEBP');
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), video.sha256, `${video.file} must match the locally verified WebP byte-for-byte`);
+    }
   });
 
   browser = await chromium.launch({ executablePath: browserPath, headless: true });
@@ -179,24 +183,26 @@ try {
     await page!.getByText('登录返回信息无效。', { exact: true }).waitFor({ state: 'visible' });
   });
 
-  await check('Chrome decodes and plays changing frames from the hosted WebP', async () => {
+  await check('Chrome decodes and plays changing frames from both hosted WebPs', async () => {
     await page!.goto(baseUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 45_000 });
-    await page!.evaluate(videoUrl => {
-      document.body.innerHTML = '';
-      document.body.style.margin = '0';
-      const image = document.createElement('img');
-      image.id = 'webp-playback';
-      image.src = videoUrl;
-      document.body.append(image);
-    }, `${basePath}demos/proactive-release-date-conflict.webp`);
-    const image = page!.locator('#webp-playback');
-    await image.evaluate(element => (element as HTMLImageElement).decode());
-    assert.equal(await image.evaluate(element => (element as HTMLImageElement).naturalWidth), 1152);
-    assert.equal(await image.evaluate(element => (element as HTMLImageElement).naturalHeight), 800);
-    const firstFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
-    await page!.waitForTimeout(1500);
-    const laterFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
-    assert.notEqual(firstFrame, laterFrame, 'The browser should advance beyond the initial WebP frame');
+    for (const video of showcaseVideos) {
+      await page!.evaluate(videoUrl => {
+        document.body.innerHTML = '';
+        document.body.style.margin = '0';
+        const image = document.createElement('img');
+        image.id = 'webp-playback';
+        image.src = videoUrl;
+        document.body.append(image);
+      }, `${basePath}demos/${video.file}`);
+      const image = page!.locator('#webp-playback');
+      await image.evaluate(element => (element as HTMLImageElement).decode());
+      assert.equal(await image.evaluate(element => (element as HTMLImageElement).naturalWidth), video.width, `${video.file} width`);
+      assert.equal(await image.evaluate(element => (element as HTMLImageElement).naturalHeight), video.height, `${video.file} height`);
+      const firstFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
+      await page!.waitForTimeout(2500);
+      const laterFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
+      assert.notEqual(firstFrame, laterFrame, `${video.file} should advance beyond its initial frame`);
+    }
   });
 } catch (error) {
   result.failures.push(error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error));
