@@ -1,7 +1,7 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import sharp from 'sharp';
 
 const [sourceArgument, outputArgument] = process.argv.slice(2);
@@ -11,34 +11,144 @@ const output = resolve(outputArgument);
 const scratch = await mkdtemp(`${tmpdir()}/coke-dots-webp-`);
 const gif = resolve(scratch, `${basename(output, '.webp')}.gif`);
 
+function runFfmpeg(args, { capture = false } = {}) {
+  const result = spawnSync('ffmpeg', args, {
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+    stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`ffmpeg exited with ${result.status ?? result.signal}: ${(result.stderr || result.stdout || '').slice(-1200)}`);
+  return result.stderr || '';
+}
+
+function detectFrozenIntervals(input, duration) {
+  const output = runFfmpeg([
+    '-hide_banner', '-nostats', '-loglevel', 'info', '-i', input,
+    '-vf', 'freezedetect=n=-45dB:d=2', '-an', '-f', 'null', '-',
+  ], { capture: true });
+  const intervals = [];
+  let active = null;
+  for (const line of output.split(/\r?\n/)) {
+    const event = line.match(/lavfi\.freezedetect\.(freeze_start|freeze_end|freeze_duration):\s*([0-9.]+)/);
+    if (!event) continue;
+    const [, kind, rawValue] = event;
+    const value = Number(rawValue);
+    if (kind === 'freeze_start') active = { start: value, end: null, detectedDuration: null };
+    else if (active && kind === 'freeze_duration') active.detectedDuration = value;
+    else if (active && kind === 'freeze_end') {
+      active.end = value;
+      intervals.push(active);
+      active = null;
+    }
+  }
+  if (active) {
+    active.end = Math.min(duration, active.start + (active.detectedDuration ?? duration - active.start));
+    intervals.push(active);
+  }
+  return intervals.filter(interval => interval.end > interval.start);
+}
+
+function buildVisibleSegments(duration, freezes, retainedStillSeconds = 1.5) {
+  const segments = [];
+  let cursor = 0;
+  let removedSeconds = 0;
+  for (const freeze of freezes) {
+    const length = freeze.end - freeze.start;
+    // Keep the closing state long enough to read; it is the demo's end card.
+    if (freeze.end >= duration - 0.05) continue;
+    if (length <= retainedStillSeconds + 0.05) continue;
+    const visibleUntil = Math.min(freeze.end, freeze.start + retainedStillSeconds);
+    const segmentEnd = Math.max(cursor, visibleUntil);
+    if (segmentEnd > cursor + 0.02) segments.push({ start: cursor, end: segmentEnd });
+    cursor = Math.max(cursor, freeze.end);
+    removedSeconds += Math.max(0, length - retainedStillSeconds);
+  }
+  if (duration > cursor + 0.02) segments.push({ start: cursor, end: duration });
+  if (!segments.length) segments.push({ start: 0, end: duration });
+  return { segments, removedSeconds, visibleDuration: segments.reduce((sum, segment) => sum + segment.end - segment.start, 0) };
+}
+
+function buildFilterGraph(segments, fps, width, height) {
+  const trims = segments.map((segment, index) =>
+    `[0:v]trim=start=${segment.start.toFixed(3)}:end=${segment.end.toFixed(3)},setpts=PTS-STARTPTS[v${index}]`,
+  );
+  const concatInputs = segments.map((_, index) => `[v${index}]`).join('');
+  const joined = segments.length === 1
+    ? '[v0]'
+    : `${concatInputs}concat=n=${segments.length}:v=1:a=0[vconcat];[vconcat]`;
+  const source = segments.length === 1 ? '[v0]' : joined;
+  return `${trims.join(';')};${source}fps=${fps},scale=${width}:${height}:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3[webpout]`;
+}
+
 try {
   const probe = JSON.parse(execFileSync('ffprobe', [
-    '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height',
+    '-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=width,height,nb_read_frames',
     '-show_entries', 'format=duration', '-of', 'json', source,
   ], { encoding: 'utf8' }));
   const stream = probe.streams?.[0];
-  const duration = Number(probe.format?.duration);
-  if (!stream?.width || !stream?.height || !Number.isFinite(duration) || duration <= 0) throw new Error('Could not read the source video dimensions and duration');
+  const sourceDuration = Number(probe.format?.duration);
+  const sourceFrames = Number(stream?.nb_read_frames);
+  if (!stream?.width || !stream?.height || !Number.isFinite(sourceDuration) || sourceDuration <= 0 || !Number.isFinite(sourceFrames) || sourceFrames < 2) throw new Error('Could not read the source video dimensions, duration, and complete frame count');
+
+  const freezes = detectFrozenIntervals(source, sourceDuration);
+  const { segments, removedSeconds, visibleDuration } = buildVisibleSegments(sourceDuration, freezes);
   const outputWidth = Math.min(1152, stream.width);
   const outputHeight = Math.round(stream.height * outputWidth / stream.width);
-  // Animated images are decoded as one vertically stacked bitmap by Sharp.
-  // Bound total decoded pixels so long real-agent recordings stay convertible.
-  const fps = Math.max(1, Math.min(8, Math.floor(220_000_000 / (outputWidth * outputHeight * duration))));
-  const playbackSpeed = duration > 20 ? 1.5 : 1;
-  console.log(`Converting ${duration.toFixed(1)}s recording at ${fps} fps and ${outputWidth} px width (${playbackSpeed}x playback)`);
-  execFileSync('ffmpeg', [
+  // Bound decoded pixels while keeping enough frames for readable UI interactions.
+  const fps = Math.max(1, Math.min(8, Math.floor(220_000_000 / (outputWidth * outputHeight * visibleDuration))));
+  const graph = buildFilterGraph(segments, fps, outputWidth, outputHeight);
+  console.log(`Trimming ${freezes.filter(freeze => freeze.end - freeze.start > 1.55 && freeze.end < sourceDuration - 0.05).length} long stills: ${sourceDuration.toFixed(1)}s -> ${visibleDuration.toFixed(1)}s (removed ${removedSeconds.toFixed(1)}s), ${fps} fps`);
+
+  runFfmpeg([
     '-hide_banner', '-loglevel', 'error', '-y', '-i', source,
-    '-vf', `fps=${fps},setpts=PTS/${playbackSpeed},scale=${outputWidth}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3`,
+    '-filter_complex', graph, '-map', '[webpout]',
     '-loop', '0', '-f', 'gif', gif,
-  ], { stdio: 'inherit' });
-  await sharp(gif, { animated: true }).webp({ quality: 82, effort: 5, loop: 0 }).toFile(output);
+  ]);
+  await sharp(gif, { animated: true }).webp({ quality: 86, effort: 5, loop: 0 }).toFile(output);
+
   const image = sharp(output, { animated: true });
   const metadata = await image.metadata();
   const info = await stat(output);
-  if (metadata.format !== 'webp' || (metadata.pages || 0) < 2 || !metadata.width || !metadata.height || info.size < 10_000) {
-    throw new Error(`WebP output is not a valid animation: ${JSON.stringify({ format: metadata.format, pages: metadata.pages, width: metadata.width, height: metadata.height, bytes: info.size })}`);
+  const decoded = JSON.parse(execFileSync('ffprobe', [
+    '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+    '-show_entries', 'stream=codec_name,width,height,nb_read_frames', '-of', 'json', output,
+  ], { encoding: 'utf8' }));
+  const decodedFrames = Number(decoded.streams?.[0]?.nb_read_frames);
+  execFileSync('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error', '-i', output, '-f', 'null', '-',
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  if (
+    metadata.format !== 'webp' ||
+    (metadata.pages || 0) < 16 ||
+    decoded.streams?.[0]?.codec_name !== 'webp_anim' ||
+    decodedFrames !== metadata.pages ||
+    !metadata.width || !metadata.pageHeight ||
+    info.size < 10_000
+  ) {
+    throw new Error(`WebP output failed completeness checks: ${JSON.stringify({ format: metadata.format, codec: decoded.streams?.[0]?.codec_name, pages: metadata.pages, decodedFrames, width: metadata.width, height: metadata.pageHeight, bytes: info.size })}`);
   }
-  console.log(`Created ${output} (${metadata.width}x${metadata.height}, ${metadata.pages} frames, ${(info.size / 1024 / 1024).toFixed(2)} MiB)`);
+  const outputDuration = (metadata.delay || []).reduce((sum, delay) => sum + delay, 0) / 1000;
+  const removedFreezes = freezes.map(freeze => {
+    const isClosingHold = freeze.end >= sourceDuration - 0.05;
+    const retained = isClosingHold ? freeze.end - freeze.start : Math.min(freeze.end - freeze.start, 1.5);
+    return {
+      startSeconds: Number(freeze.start.toFixed(2)),
+      endSeconds: Number(freeze.end.toFixed(2)),
+      originalSeconds: Number((freeze.end - freeze.start).toFixed(2)),
+      retainedSeconds: Number(retained.toFixed(2)),
+      removedSeconds: Number(Math.max(0, freeze.end - freeze.start - retained).toFixed(2)),
+      closingHoldKept: isClosingHold,
+    };
+  }).filter(freeze => freeze.removedSeconds > 0.05);
+  const reportPath = output.replace(/\.webp$/i, '.video-check.json');
+  await writeFile(reportPath, `${JSON.stringify({
+    source: { file: basename(source), durationSeconds: Number(sourceDuration.toFixed(2)), width: stream.width, height: stream.height, decodedFrames: sourceFrames },
+    freezeTrim: { detector: 'ffmpeg freezedetect, -45 dB, 2 second minimum', retainedSecondsPerLongStill: 1.5, removedSeconds: Number(removedSeconds.toFixed(2)), regions: removedFreezes },
+    output: { file: basename(output), format: metadata.format, codec: decoded.streams?.[0]?.codec_name, width: metadata.width, height: metadata.pageHeight, decodedFrames, durationSeconds: Number(outputDuration.toFixed(2)), bytes: info.size, fullDecodeSucceeded: true },
+  }, null, 2)}\n`);
+  console.log(`Created and fully decoded ${output} (${metadata.width}x${metadata.pageHeight}, ${decodedFrames} frames, ${outputDuration.toFixed(1)}s, ${(info.size / 1024 / 1024).toFixed(2)} MiB)`);
+  console.log(`Video completeness report: ${reportPath}`);
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }

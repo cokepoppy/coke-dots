@@ -82,6 +82,13 @@ try {
   assert.equal(wrongOrigin.status, 403, 'A trusted proxy request must still enforce the public origin');
   const forwardedHealth = await requestWithHeaders(`${baseUrl}/dots-demo/api/health`, { Host: 'demo.test', Origin: 'https://demo.test', 'x-dots-proxy-token': proxyToken });
   assert.equal(forwardedHealth.status, 200, 'The trusted public reverse proxy should reach the subpath API');
+  const showcaseVideo = await fetch(`${baseUrl}/dots-demo/demos/proactive-release-date-conflict.webp`);
+  assert.equal(showcaseVideo.status, 200, 'The demo recording must be included in the base-path build');
+  assert.match(showcaseVideo.headers.get('content-type') || '', /^image\/webp/i, 'The demo recording must be served with its WebP MIME type');
+  const showcaseBytes = Buffer.from(await showcaseVideo.arrayBuffer());
+  assert.equal(showcaseBytes.subarray(0, 4).toString('ascii'), 'RIFF');
+  assert.equal(showcaseBytes.subarray(8, 12).toString('ascii'), 'WEBP');
+  assert(showcaseBytes.length > 10_000, 'The demo recording bundle is incomplete');
 
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });

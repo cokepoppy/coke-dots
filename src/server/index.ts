@@ -893,7 +893,12 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: 
   const file = join(resolve('./dist'), relative);
   try {
     const bytes = await readFile(file);
-    const type = extname(file) === '.html' ? 'text/html; charset=utf-8' : extname(file) === '.js' ? 'text/javascript; charset=utf-8' : extname(file) === '.css' ? 'text/css; charset=utf-8' : 'application/octet-stream';
+    const extension = extname(file);
+    const type = extension === '.html' ? 'text/html; charset=utf-8'
+      : extension === '.js' ? 'text/javascript; charset=utf-8'
+        : extension === '.css' ? 'text/css; charset=utf-8'
+          : extension === '.webp' ? 'image/webp'
+            : 'application/octet-stream';
     res.writeHead(200, { 'Content-Type': type });
     res.end(bytes);
   } catch { reply(res, 404, { error: 'Not found' }); }
