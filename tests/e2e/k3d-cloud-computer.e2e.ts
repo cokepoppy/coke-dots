@@ -582,7 +582,11 @@ try {
   const liveComputer = new LinuxDesktopComputer(tenantId, researchConnector);
   assert.equal((await liveComputer.state()).ready, true, 'The tenant cloud browser must be initialized before an Agent request');
   const publicPage = await liveComputer.openPublicPageForAgent(researchFixtureUrl);
-  assert.deepEqual(publicPage, { url: researchFixtureUrl, title: 'Dot public research fixture', text: 'Public launch notes\n\nRelease criteria: harden session recovery.' });
+  assert.deepEqual(publicPage, {
+    url: researchFixtureUrl,
+    title: 'Dot public research fixture',
+    text: '公开发布说明\n\n发布目标：让 Dot 持续检查公开发布计划。\n\n展开发布时间',
+  });
   const pageState = await liveComputer.state();
   assert.equal(pageState.url, researchFixtureUrl, 'The live Debian computer must display the fetched source URL');
   assert.equal(pageState.owner, 'agent', 'Read-only browser research must not take over the computer');
@@ -630,7 +634,11 @@ try {
         scenario: demoScenario === 'cloud-computer-agent-actions'
           ? 'Create a Chinese user-assigned Pi task in the Coke Dots UI. Pi runs in the tenant Debian 13 Agent container, opens a signed-out public page in Dot’s cloud computer, clicks the disclosed safe expand control, reports the revealed release time in Chinese, and records the computer actions in Activity.'
           : 'Open the tenant-isolated Debian 13 cloud computer, run the Pi and DeepSeek Harness checks inside its Agent container, take over the visible desktop, click Chromium’s address bar, enter a local health URL, submit it, then return control to the Agent.',
-        kernel: runLiveAgentKernels ? 'Pi and DeepSeek Harness run inside the tenant Debian 13 cloud computer' : 'Test adapter inside the tenant Debian 13 cloud computer',
+        kernel: demoScenario === 'cloud-computer-agent-actions'
+          ? 'Pi performs the assigned cloud-computer task inside the tenant Debian 13 Agent container.'
+          : runLiveAgentKernels
+            ? 'Pi and DeepSeek Harness each complete a live model call inside the tenant Debian 13 Agent container.'
+            : 'A test adapter runs inside the tenant Debian 13 Agent container.',
         visibleComputerActions: demoScenario === 'cloud-computer-agent-actions'
           ? ['Submit Chinese task in Chat', 'watch Dot-owned browser open the public page', 'watch Dot click 展开发布时间', 'read the Chinese result and Activity log']
           : ['Take over', 'click address bar', 'type health URL', 'press Enter', 'observe remote navigation', 'Return control'],
