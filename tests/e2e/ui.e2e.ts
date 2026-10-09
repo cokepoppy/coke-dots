@@ -895,13 +895,23 @@ async function waitForComputerScreenshot(page: Page) {
 }
 
 async function clickComputerScreen(page: Page, x: number, y: number) {
-  const image = page.getByAltText('独立浏览器画面');
-  await waitForComputerScreenshot(page);
-  const measurements = await image.evaluate(element => {
-    const box = element.getBoundingClientRect();
-    const screenshot = element as HTMLImageElement;
-    return { left: box.left, top: box.top, width: box.width, height: box.height, naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight };
-  });
+  const measurementHandle = await page.waitForFunction(() => {
+    const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
+    if (!screenshot?.complete || screenshot.naturalWidth !== 1280 || screenshot.naturalHeight !== 820) return false;
+    const source = screenshot.currentSrc;
+    const box = screenshot.getBoundingClientRect();
+    const style = getComputedStyle(screenshot);
+    if (box.width <= 100 || box.height <= 80 || style.display === 'none' || style.visibility === 'hidden') return false;
+    return new Promise(resolve => requestAnimationFrame(() => {
+      if (screenshot.currentSrc !== source || !screenshot.complete || screenshot.naturalWidth !== 1280 || screenshot.naturalHeight !== 820) {
+        resolve(false);
+        return;
+      }
+      resolve({ left: box.left, top: box.top, width: box.width, height: box.height, naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight });
+    }));
+  }, null, { timeout: 20_000 });
+  const measurements = await measurementHandle.jsonValue() as { left: number; top: number; width: number; height: number; naturalWidth: number; naturalHeight: number };
+  await measurementHandle.dispose();
   assert(measurements.width > 100 && measurements.height > 80 && measurements.naturalWidth > 0 && measurements.naturalHeight > 0, `Computer screenshot has no measurable image area: ${JSON.stringify(measurements)}`);
   const scale = Math.min(measurements.width / measurements.naturalWidth, measurements.height / measurements.naturalHeight);
   const offsetX = (measurements.width - measurements.naturalWidth * scale) / 2;
@@ -985,7 +995,10 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   const dialog = page.getByRole('dialog', { name: 'Set up Slack' });
   await dialog.waitFor({ state: 'visible' });
   await page.getByTestId('slack-connect').waitFor({ state: 'visible' });
-  assert.equal(await page.getByTestId('slack-connect').innerText(), 'Add to Slack', 'The initial Slack setup CTA should match the observed video label');
+  assert.equal(await page.getByTestId('slack-connect').innerText(), 'Select a workspace', 'The unselected Slack state should expose the observed workspace action');
+  const workspacePlaceholder = dialog.locator('.slack-current-workspace.is-placeholder');
+  await workspacePlaceholder.waitFor({ state: 'visible' });
+  assert.match(await workspacePlaceholder.innerText(), /^Workspace/);
   await screenshot(page, `${screenshotPrefix}-setup`);
   const authorizationPage = page.waitForURL(url => url.origin === mockSlackOrigin && url.pathname === '/oauth/v2/authorize', { timeout: 10_000 });
   await page.getByTestId('slack-connect').click();
@@ -998,6 +1011,7 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   const authorization = mockSlackAuthorizationRequests.at(-1);
   assert(authorization, 'The browser did not visit the Slack OAuth authorization endpoint');
   assert.equal(authorization.client_id, 'coke-dots-slack-e2e-client');
+  assert.equal(authorization.team, undefined, 'Slack must present its workspace choice when the authorization request omits a team');
   assert.deepEqual(authorization.scope.split(',').sort(), ['app_mentions:read', 'channels:history', 'channels:read', 'chat:write', 'im:history', 'im:write']);
   assert.equal(authorization.redirect_uri, `${baseUrl}/auth/slack/callback`);
   assert.ok(authorization.state);
@@ -1006,11 +1020,10 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   await callbackPage;
   await dialog.waitFor({ state: 'visible' });
   assert.equal(await dialog.getByLabel('Public Slack channel').isVisible(), false, 'Advanced Slack monitoring controls should stay out of the observed workspace-selection surface');
-  await dialog.getByRole('button', { name: 'Select another' }).click();
-  assert.equal(await dialog.locator('.slack-select-another').getAttribute('aria-expanded'), 'true');
   await dialog.getByLabel('Slack workspace').selectOption('TASPIE2E');
+  await dialog.getByRole('button', { name: 'Add to Slack', exact: true }).waitFor({ state: 'visible' });
   const selected = page.waitForResponse(response => response.url().endsWith('/api/slack/contact') && response.request().method() === 'POST');
-  await dialog.getByRole('button', { name: 'Select a workspace' }).click();
+  await dialog.getByRole('button', { name: 'Add to Slack', exact: true }).click();
   const selectedResponse = await selected;
   assert.equal(selectedResponse.status(), 200, 'The workspace selection should be saved to this tenant');
   await dialog.getByRole('status').filter({ hasText: 'ASPI' }).waitFor({ state: 'visible' });
@@ -1942,7 +1955,7 @@ try {
     await memberContext.getByRole('button', { name: 'Slack' }).click();
     const memberSlackDialog = betaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await memberSlackDialog.waitFor({ state: 'visible' });
-    assert.equal(await memberSlackDialog.getByRole('button', { name: 'Select a workspace' }).isDisabled(), true, 'A regular member cannot change a shared Slack contact workspace');
+    assert.equal(await memberSlackDialog.getByRole('button', { name: 'Add to Slack', exact: true }).isDisabled(), true, 'A regular member cannot change a shared Slack contact workspace');
     await memberSlackDialog.getByRole('button', { name: 'Close Slack setup' }).click();
     const memberSlackWrite = await betaPage!.evaluate(async () => {
       const response = await fetch('/api/slack/contact', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ teamId: 'TASPIE2E' }) });
@@ -2152,14 +2165,20 @@ try {
     await form.waitFor({ state: 'detached' });
     await alphaPage!.locator('.scheduled-item').filter({ hasText: 'Email · alerts@example.test' }).waitFor({ state: 'visible' });
 
-    await alphaPage!.waitForFunction(async (targetTriggerId: string) => {
+    await waitForAsyncPredicate(alphaPage!, async (targetTriggerId: string) => {
       const state = await fetch('/api/state').then(response => response.json()) as {
         gmail: { triggers: { id: string; lastTaskId: string | null }[] };
         tasks: { id: string; status: string; result: string | null }[];
       };
       const eventTrigger = state.gmail.triggers.find(item => item.id === targetTriggerId);
       const eventTask = eventTrigger?.lastTaskId ? state.tasks.find(item => item.id === eventTrigger.lastTaskId) : null;
-      return Boolean(eventTask?.status === 'done' && eventTask.result?.includes('订单 5831 已发货'));
+      const stableWindow = window as Window & { __gmailTaskStable?: { taskId: string; since: number } };
+      if (!eventTask || eventTask.status !== 'done' || !eventTask.result?.includes('订单 5831 已发货')) {
+        delete stableWindow.__gmailTaskStable;
+        return false;
+      }
+      if (stableWindow.__gmailTaskStable?.taskId !== eventTask.id) stableWindow.__gmailTaskStable = { taskId: eventTask.id, since: performance.now() };
+      return performance.now() - stableWindow.__gmailTaskStable.since >= 1_500;
     }, trigger.id, { timeout: 45_000 }).catch(async error => {
       const state = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as {
         gmail: { triggers: { id: string; lastTaskId: string | null }[] };
@@ -2173,7 +2192,6 @@ try {
     assert(mockGmailApiRequests.some(request => request.includes('/users/me/profile')));
     assert(mockGmailApiRequests.some(request => request.includes('/users/me/history?')));
     assert(mockGmailApiRequests.every(request => request.startsWith('GET ')), 'Gmail E2E must perform read-only API calls');
-    await alphaPage!.waitForTimeout(1_200);
 
     const alphaSnapshot = await alphaPage!.evaluate(async () => {
       const auth = await (await fetch('/api/auth/me')).json() as { user: { id: string }; tenant: { id: string } };

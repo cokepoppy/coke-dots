@@ -1,20 +1,21 @@
 .slack-setup-backdrop{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:20px;background:#19171d35;backdrop-filter:blur(2px)}
-.slack-setup-dialog{position:relative;width:min(520px,100%);max-height:90vh;overflow:auto;padding:34px 32px 29px;border:1px solid #eeeaf0;border-radius:18px;background:#fff;color:#29272e;box-shadow:0 20px 70px #17131d2b;text-align:center}
+.slack-setup-dialog{position:relative;width:min(440px,100%);max-height:90vh;overflow:auto;padding:20px 24px 19px;border:1px solid #eeeaf0;border-radius:12px;background:#fff;color:#29272e;box-shadow:0 20px 70px #17131d2b;text-align:center}
 .slack-setup-close{position:absolute;top:13px;right:15px;width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:#85818b;font-size:23px;line-height:1;cursor:pointer}
 .slack-setup-close:hover{background:#f4f2f5;color:#39363e}
-.slack-setup-mark{width:42px;height:42px;display:grid;place-items:center;margin:0 auto 13px;border-radius:13px;background:#f3eef9;color:#7c5ba7;font-size:25px}
-.slack-setup-dialog h2{margin:0 0 23px;font-size:19px;font-weight:650;letter-spacing:-.02em}
-.slack-setup-picker{display:flex;align-items:center;justify-content:flex-start;gap:10px;min-height:44px;padding:0 12px;border:1px solid #e9e6eb;border-radius:10px;background:#fbfafb;text-align:left}
-.slack-setup-picker>span:first-child{color:#68646e;font-size:13px;white-space:nowrap}
-.slack-current-workspace{min-width:0;flex:1;display:flex;align-items:center;gap:8px;overflow:hidden;color:#37343c;font-size:13px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
-.slack-current-workspace i{width:20px;height:20px;flex:none;display:grid;place-items:center;border-radius:6px;background:#f1eaf8;color:#7c5ba7;font-size:14px;font-style:normal}
-.slack-select-another{flex:none;padding:5px 0;border:0;background:transparent;color:#77737d;font:inherit;font-size:11px;cursor:pointer}
-.slack-select-another:hover:not(:disabled){color:#59437b;text-decoration:underline}
-.slack-select-another:disabled{cursor:not-allowed;opacity:.5}
-.slack-workspace-options{display:block;margin-top:8px}
-.slack-workspace-options select{width:100%;height:38px;padding:0 10px;border:1px solid #e6e2e9;border-radius:8px;background:#fff;color:#37343c;font:inherit;font-size:12px;cursor:pointer}
-.slack-setup-description{margin:12px 0 20px;color:#85818b;font-size:12px;line-height:1.55}
-.slack-setup-primary{width:100%;min-height:41px;display:flex;align-items:center;justify-content:center;margin:0;border:0;border-radius:9px;background:#c6f0df;color:#2d493c;font:inherit;font-size:13px;font-weight:600;text-decoration:none;cursor:pointer;transition:background .16s ease}
+.slack-setup-dialog h2{margin:0 0 20px;font-size:18px;font-weight:650;letter-spacing:-.02em}
+.slack-setup-workspace-card{min-height:220px;display:flex;flex-direction:column;justify-content:space-between;padding:22px 20px 18px;border:1px solid #f0efef;border-radius:8px;background:#fbfbfb;text-align:left}
+.slack-setup-picker{display:flex;align-items:center;justify-content:center;gap:9px;min-height:32px}
+.slack-setup-picker>span:first-child{color:#4d4b50;font-size:14px;white-space:nowrap}
+.slack-current-workspace{min-width:0;display:flex;align-items:center;gap:6px;padding:5px 7px;border:1px solid #e3e1e4;border-radius:5px;background:#fff;color:#37343c;font-size:12px;font-weight:600;white-space:nowrap}
+.slack-current-workspace.is-placeholder{padding-right:9px;font-weight:500}
+.slack-workspace-icon{width:14px;height:14px;flex:none;display:grid;grid-template-columns:repeat(2,5px);grid-template-rows:repeat(2,5px);gap:1px;transform:rotate(0deg)}
+.slack-workspace-icon i{display:block;width:5px;height:5px;border-radius:2px}
+.slack-workspace-icon i:nth-child(1){background:#36c5f0}.slack-workspace-icon i:nth-child(2){background:#2eb67d}.slack-workspace-icon i:nth-child(3){background:#e01e5a}.slack-workspace-icon i:nth-child(4){background:#ecb22e}
+.slack-current-workspace select{max-width:180px;padding:0;border:0;outline:0;background:transparent;color:inherit;font:inherit;cursor:pointer;appearance:none}
+.slack-current-workspace select:disabled{cursor:not-allowed}
+.slack-workspace-chevron{color:#76737a;font-size:14px;line-height:1}
+.slack-setup-description{margin:0;color:#85818b;font-size:12px;line-height:1.55}
+.slack-setup-primary{width:100%;min-height:41px;display:flex;align-items:center;justify-content:center;margin:23px 0 0;border:0;border-radius:9px;background:#c6f0df;color:#2d493c;font:inherit;font-size:13px;font-weight:600;text-decoration:none;cursor:pointer;transition:background .16s ease}
 .slack-setup-primary:hover:not(:disabled){background:#b4e8d3}
 .slack-setup-primary:disabled{opacity:.55;cursor:not-allowed}
 .slack-setup-secondary{min-height:31px;margin-top:8px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:#77737d;font:inherit;font-size:11px;cursor:pointer}
@@ -45,15 +46,15 @@
 .slack-monitor-row button{flex:none;padding:6px 9px;border:1px solid #e5e1e8;border-radius:7px;background:#fff;color:#625d68;font:inherit;font-size:10px;cursor:pointer}
 .slack-monitor-row button:hover{background:#f4f2f5}
 .dots-dark .slack-setup-backdrop{background:#0008}
-.dots-dark .slack-setup-dialog{border-color:#39363d;background:#232126;color:#f0edf3;box-shadow:0 20px 70px #0008}
+.dots-dark .slack-setup-dialog{border-color:#1e3527;background:#07170e;color:#f0f6f1;box-shadow:0 20px 70px #0008}
 .dots-dark .slack-setup-close{color:#aaa5af}
-.dots-dark .slack-setup-close:hover{background:#353239;color:#f2eff5}
-.dots-dark .slack-setup-mark{background:#393042;color:#d6baf8}
-.dots-dark .slack-setup-picker{border-color:#403d44;background:#29272d}
-.dots-dark .slack-setup-picker>span:first-child,.dots-dark .slack-current-workspace{color:#e7e3eb}
-.dots-dark .slack-current-workspace i{background:#393042;color:#d6baf8}
-.dots-dark .slack-select-another,.dots-dark .slack-setup-advanced>summary{color:#aaa5af}
-.dots-dark .slack-workspace-options select{border-color:#49454e;background:#29272d;color:#eeeaf2}
+.dots-dark .slack-setup-close:hover{background:#173021;color:#f2eff5}
+.dots-dark .slack-setup-workspace-card{border-color:#102a1b;background:#0b2115}
+.dots-dark .slack-setup-picker>span:first-child{color:#e2eee5}
+.dots-dark .slack-current-workspace{border-color:#23432f;background:#07170e;color:#eff8f1}
+.dots-dark .slack-current-workspace select{color:#eff8f1}
+.dots-dark .slack-workspace-chevron{color:#b6c8ba}
+.dots-dark .slack-setup-advanced>summary{color:#aaa5af}
 .dots-dark .slack-setup-description,.dots-dark .slack-setup-readonly{color:#aaa5af}
 .dots-dark .slack-setup-primary{background:#b8e8d2;color:#273d33}
 .dots-dark .slack-setup-primary:hover:not(:disabled){background:#a3dbc2}
@@ -69,4 +70,4 @@
 .dots-dark .slack-monitor-row span{color:#b1acb6}
 .dots-dark .slack-monitor-row button{border-color:#49454e;background:#39363d;color:#e3dfe7}
 .dots-dark .slack-monitor-row button:hover{background:#48444d}
-@media(max-width:520px){.slack-setup-dialog{padding:32px 20px 22px}.slack-setup-picker{gap:7px;padding:0 9px}.slack-setup-picker>span:first-child{font-size:12px}.slack-current-workspace{gap:5px;font-size:12px}.slack-select-another{font-size:10px}}
+@media(max-width:520px){.slack-setup-dialog{padding:20px 16px 16px}.slack-setup-workspace-card{min-height:190px;padding:18px 14px 16px}.slack-setup-picker{gap:7px}.slack-setup-picker>span:first-child{font-size:12px}.slack-current-workspace{gap:5px;font-size:12px}}
