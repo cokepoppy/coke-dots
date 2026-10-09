@@ -2148,7 +2148,7 @@ try {
     await form.waitFor({ state: 'detached' });
     await alphaPage!.locator('.scheduled-item').filter({ hasText: 'Email · alerts@example.test' }).waitFor({ state: 'visible' });
 
-    await alphaPage!.waitForFunction(async (targetTriggerId: string) => {
+    await waitForAsyncPredicate(alphaPage!, async (targetTriggerId: string) => {
       const state = await fetch('/api/state').then(response => response.json()) as {
         gmail: { triggers: { id: string; lastTaskId: string | null }[] };
         tasks: { id: string; status: string; result: string | null }[];
@@ -2169,8 +2169,6 @@ try {
     assert(mockGmailApiRequests.some(request => request.includes('/users/me/profile')));
     assert(mockGmailApiRequests.some(request => request.includes('/users/me/history?')));
     assert(mockGmailApiRequests.every(request => request.startsWith('GET ')), 'Gmail E2E must perform read-only API calls');
-    await alphaPage!.waitForTimeout(1_200);
-
     const alphaSnapshot = await alphaPage!.evaluate(async () => {
       const auth = await (await fetch('/api/auth/me')).json() as { user: { id: string }; tenant: { id: string } };
       const state = await (await fetch('/api/state')).json() as { gmail: { connection: { email: string; status: string } | null; triggers: { id: string; lastTaskId: string | null }[] }; tasks: { id: string; title: string; status: string; engine: string; executionMode: string; result: string | null }[] };
