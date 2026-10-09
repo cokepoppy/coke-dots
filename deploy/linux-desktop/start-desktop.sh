@@ -20,6 +20,7 @@ chmod 1777 /tmp/.X11-unix
 # this entrypoint runs before any Chromium process exists in the new container.
 # Drop only process ownership links, keeping cookies, files, and preferences.
 rm -f "$profile_dir/SingletonLock" "$profile_dir/SingletonCookie" "$profile_dir/SingletonSocket"
+rm -f /tmp/dots-chrome-startup-ready
 
 Xvfb "$DISPLAY" -screen 0 "${resolution}x24" -ac +extension GLX +render -noreset >/tmp/dots-xvfb.log 2>&1 &
 xvfb_pid=$!
@@ -163,7 +164,15 @@ for _ in $(seq 1 45); do
   fi
   sleep 1
 done
-[[ "$banner_dismissed" == "1" ]] || echo "Chromium welcome window did not appear before the banner dismissal deadline" >&2
+if [[ "$banner_dismissed" == "1" ]]; then
+  echo "Chromium startup visual setup finished" >>/tmp/dots-chrome.log
+else
+  echo "Chromium welcome window did not appear before the banner dismissal deadline" | tee -a /tmp/dots-chrome.log >&2
+fi
+# Never leave a healthy desktop outside Service endpoints forever because a
+# Chromium title or infobar changed. Readiness waits for this bounded startup
+# window, then lets the worker report actual renderer health.
+touch /tmp/dots-chrome-startup-ready
 
 while true; do
   for pid in "$wm_pid" "$tint2_pid" "$vnc_pid" "$websockify_pid" "$worker_pid"; do

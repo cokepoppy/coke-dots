@@ -205,9 +205,17 @@ try {
     return Boolean(image?.complete && image.naturalWidth === 1440 && image.naturalHeight === 1080);
   }, null, { timeout: 60_000 });
   console.log('Debian 13 desktop Pod is ready and the screenshot is rendered');
+  command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'test', '-f', '/tmp/dots-chrome-startup-ready']);
   command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'rm', '-f', '/tmp/dots-chrome-startup-ready']);
-  const readyWithoutStartupMarker = JSON.parse(command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'node', '-e', "fetch('http://127.0.0.1:8082/readyz').then(async response => { console.log(JSON.stringify({ status: response.status, body: await response.json() })); process.exit(response.ok ? 0 : 1); })"])) as { status?: number };
-  assert.equal(readyWithoutStartupMarker.status, 200, 'A missed welcome-window marker must not strand a healthy Debian desktop outside Service endpoints');
+  let readyWithoutStartupMarker: { status?: number } | undefined;
+  try {
+    readyWithoutStartupMarker = JSON.parse(command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'node', '-e', "fetch('http://127.0.0.1:8082/readyz').then(async response => { console.log(JSON.stringify({ status: response.status, body: await response.json() })); process.exit(response.status === 503 ? 0 : 1); })"])) as { status?: number };
+    assert.equal(readyWithoutStartupMarker.status, 503, 'The no-sandbox desktop must not join Service endpoints before its Chromium visual startup pass completes');
+  } finally {
+    command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'touch', '/tmp/dots-chrome-startup-ready']);
+  }
+  const readyAfterStartupMarker = JSON.parse(command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'node', '-e', "fetch('http://127.0.0.1:8082/readyz').then(async response => { console.log(JSON.stringify({ status: response.status, body: await response.json() })); process.exit(response.ok ? 0 : 1); })"])) as { status?: number };
+  assert.equal(readyAfterStartupMarker.status, 200, 'The desktop must become Ready after the bounded Chromium startup pass');
   const state = await page.evaluate(async () => await (await fetch('/api/computer')).json()) as { backend: string; owner: string; title: string };
   assert.equal(state.backend, 'linux-desktop');
   assert.equal(state.owner, 'agent');

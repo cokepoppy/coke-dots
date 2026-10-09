@@ -257,6 +257,10 @@ http.createServer(async (req, res) => {
     requestPath = pathname;
     if (req.method === 'GET' && pathname === '/healthz') return send(res, 200, { ok: true });
     if (req.method === 'GET' && pathname === '/readyz') {
+      if (process.env.COKE_DESKTOP_CHROME_NO_SANDBOX === '1') {
+        try { await fs.access('/tmp/dots-chrome-startup-ready'); }
+        catch { return send(res, 503, { ok: false, error: 'Chromium visual startup is still settling' }); }
+      }
       if (!await rendererResponds()) return send(res, 503, { ok: false, error: rendererUnresponsiveMessage });
       try {
         await exec('xdpyinfo', ['-display', process.env.DISPLAY || ':1'], { timeout: 1500 });
