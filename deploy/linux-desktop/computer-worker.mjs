@@ -267,7 +267,10 @@ const server = http.createServer(async (req, res) => {
         const agent = await fetch(`http://127.0.0.1:${process.env.DOTS_AGENT_RUNTIME_PORT || 8083}/healthz`, { signal: AbortSignal.timeout(4000) });
         if (!agent.ok) return send(res, 503, { ok: false });
         return send(res, 200, { ok: true });
-      } catch { return send(res, 503, { ok: false }); }
+      } catch (error) {
+        const contextUnavailable = error instanceof BrowserContextNotReadyError;
+        return send(res, 503, { ok: false, ...(contextUnavailable ? { code: error.code, error: error.message } : {}) });
+      }
     }
     if (req.headers.authorization !== `Bearer ${token}`) return send(res, 401, { error: 'worker token is required' });
     if (req.method === 'GET' && pathname === '/v1/control') return send(res, 200, { owner });

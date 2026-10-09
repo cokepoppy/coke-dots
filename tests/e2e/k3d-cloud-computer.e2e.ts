@@ -191,6 +191,27 @@ try {
   assert.equal(agentUid, '1001', 'Pi and DeepSeek Harness must run inside the Debian Pod as a separate non-root cloud Agent UID');
   const agentCliVersion = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', '/usr/local/bin/dsh', '--version']);
   assert.match(agentCliVersion, /\d+\.\d+/, 'The upstream DeepSeek Harness CLI must be installed inside the cloud Agent container');
+  const expectedWorkerImage = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
+  const deployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as {
+    metadata: { annotations?: Record<string, string> };
+    spec: { template: { metadata: { annotations?: Record<string, string> }; spec: { containers: { name: string; image: string; imagePullPolicy: string }[] } } };
+  };
+  assert.equal(deployment.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage);
+  assert.equal(deployment.spec.template.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage);
+  assert.deepEqual(deployment.spec.template.spec.containers.map(container => ({ image: container.image, imagePullPolicy: container.imagePullPolicy })), [
+    { image: expectedWorkerImage, imagePullPolicy: process.env.DOTS_LINUX_DESKTOP_IMAGE_PULL_POLICY || 'IfNotPresent' },
+    { image: expectedWorkerImage, imagePullPolicy: process.env.DOTS_LINUX_DESKTOP_IMAGE_PULL_POLICY || 'IfNotPresent' },
+  ]);
+  assert.deepEqual(deployment.spec.template.spec.containers.map(container => container.name), ['desktop', 'agent-runtime']);
+  const pod = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'pod', desktopPod, '-o', 'json'])) as {
+    status: { containerStatuses: { name: string; imageID: string }[] };
+  };
+  const runningImages = Object.fromEntries(pod.status.containerStatuses.map(container => [container.name, container.imageID]));
+  for (const container of ['desktop', 'agent-runtime']) {
+    assert.match(runningImages[container] || '', /^sha256:/, `Kubernetes must report the immutable ${container} image identity`);
+  }
+  await writeFile(join(artifacts, 'cloud-computer-image.json'), `${JSON.stringify({ expectedWorkerImage, runningImages }, null, 2)}\n`);
+  console.log(`Verified both tenant containers use ${expectedWorkerImage} (${JSON.stringify(runningImages)})`);
   const osRelease = command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', '/etc/os-release']);
   assert.match(osRelease, /^ID=debian$/m, 'The running cloud computer must identify itself as Debian');
   assert.match(osRelease, /^VERSION_ID="13"$/m, 'The running cloud computer must be Debian 13');

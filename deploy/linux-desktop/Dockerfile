@@ -19,6 +19,7 @@ ENV LANG=en_US.UTF-8 \
 
 ARG http_proxy
 ARG https_proxy
+ARG npm_config_proxy
 
 RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=180 -o Acquire::https::Timeout=180 update \
     && for attempt in 1 2 3 4 5; do \
@@ -45,13 +46,13 @@ RUN install -d -o node -g node "$HOME" /workspace /opt/coke-dots /tmp/.X11-unix 
 
 # Ship the upstream DeepSeek Harness CLI in the Debian computer. Pi and the
 # TypeScript Harness client are installed from this repository's lockfile.
-RUN npm install --global --omit=dev --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2 \
+RUN npm_config_proxy="${npm_config_proxy:-${https_proxy:-${http_proxy:-}}}" npm install --global --omit=dev --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2 \
     && test -x /usr/local/bin/dsh
 COPY --from=x11-helper-build /usr/local/bin/dots-set-window-decorations /usr/local/bin/dots-set-window-decorations
 
 WORKDIR /opt/coke-dots
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+RUN npm_config_proxy="${npm_config_proxy:-${https_proxy:-${http_proxy:-}}}" npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force
 RUN node --input-type=module -e "await import('@mariozechner/pi-coding-agent'); await import('@deepseek-ai/dsh-sdk-client')"
 
