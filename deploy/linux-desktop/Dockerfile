@@ -1,7 +1,7 @@
 FROM node:22.23.1-trixie-slim AS x11-helper-build
 
-RUN apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends gcc libc6-dev libx11-dev \
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=180 -o Acquire::https::Timeout=180 update \
+    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=180 -o Acquire::https::Timeout=180 install -y --no-install-recommends gcc libc6-dev libx11-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/linux-desktop/set-window-decorations.c /tmp/set-window-decorations.c
 RUN gcc -O2 -Wall -Wextra -o /usr/local/bin/dots-set-window-decorations /tmp/set-window-decorations.c -lX11
@@ -20,9 +20,9 @@ ENV LANG=en_US.UTF-8 \
 ARG http_proxy
 ARG https_proxy
 
-RUN apt-get -o Acquire::Retries=5 update \
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=180 -o Acquire::https::Timeout=180 update \
     && for attempt in 1 2 3 4 5; do \
-      apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+      apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=180 -o Acquire::https::Timeout=180 install -y --no-install-recommends \
         ca-certificates chromium curl dbus-x11 fonts-dejavu-core fonts-noto-cjk locales \
         novnc scrot tini util-linux websockify x11-utils x11vnc xdotool xfce4 xfce4-terminal xvfb \
       && break; \
@@ -36,8 +36,8 @@ RUN apt-get -o Acquire::Retries=5 update \
 # 4:3 display after it so the expensive desktop dependency layer stays reusable.
 ENV COKE_DESKTOP_RESOLUTION=1440x1080
 
-RUN apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends feh tint2 \
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=180 -o Acquire::https::Timeout=180 update \
+    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=180 -o Acquire::https::Timeout=180 install -y --no-install-recommends feh tint2 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN install -d -o node -g node "$HOME" /workspace /opt/coke-dots /tmp/.X11-unix \
