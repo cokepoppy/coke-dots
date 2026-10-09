@@ -15,7 +15,7 @@ const videoDirectory = join(artifactRoot, 'video');
 const showcaseVideoDefinitions = [
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
-  { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 16, minimumFrames: 220 },
+  { file: 'cloud-computer-agent-actions.webp', minimumWidth: 1100, minimumHeight: 760, minimumDurationSeconds: 25, minimumFrames: 230, minimumReadableHoldCount: 3, readableHoldMinimumMs: 4900, verifyFullPlayback: true },
   { file: 'proactive-cloud-computer-followthrough.webp', minimumWidth: 900, minimumHeight: 625, minimumDurationSeconds: 35, minimumFrames: 500, minimumReadableHoldCount: 3, readableHoldMinimumMs: 3900, verifyFullPlayback: true },
 ] as { file: string; width?: number; height?: number; minimumWidth?: number; minimumHeight?: number; minimumDurationSeconds?: number; minimumFrames?: number; minimumReadableHoldCount?: number; readableHoldMinimumMs?: number; verifyFullPlayback?: boolean }[];
 const selectedVideoFile = process.env.DOTS_PUBLIC_DEMO_VIDEO;
