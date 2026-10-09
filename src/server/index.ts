@@ -14,6 +14,7 @@ import { configuredDesktopAgentEngines, LinuxDesktopComputer } from './linux-des
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
 import { TeamsService } from './teams.ts';
+import { WebsitePasswordVault } from './website-passwords.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -51,6 +52,7 @@ initializeModelSettings();
 const auth = new AuthService(store, port);
 const slack = new SlackService(store, port);
 const teams = new TeamsService(store);
+const websitePasswords = new WebsitePasswordVault(store);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
@@ -682,12 +684,21 @@ const server = createServer(async (req, res) => {
       if (result.approval.resumeStatus === 'scheduled') void worker.tick();
       return reply(res, 200, result);
     }
-    const signInMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/sign-in(?:\/(submit|cancel|continue))?$/i);
+    const savedWebsitePasswordMatch = path.match(/^\/api\/website-passwords\/([a-f0-9-]+)$/i);
+    if (savedWebsitePasswordMatch && req.method === 'DELETE') {
+      const removed = await websitePasswords.forget(session.user.id, savedWebsitePasswordMatch[1]);
+      return removed ? reply(res, 200, { removed: true }) : reply(res, 404, { error: '找不到已保存的网站登录' });
+    }
+    const signInMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/sign-in(?:\/(submit|cancel|continue|use-saved))?$/i);
     if (signInMatch) {
       const task = store.getTask(signInMatch[1], session.tenant.id);
       if (!task) return reply(res, 404, { error: 'Task not found' });
       const action = signInMatch[2] || '';
-      if (req.method === 'GET' && !action) return reply(res, 200, store.websiteSignInRequest(session.tenant.id, task.id));
+      if (req.method === 'GET' && !action) {
+        const signIn = store.websiteSignInRequest(session.tenant.id, task.id);
+        const canSavePasswords = Boolean(signIn && signIn.status === 'pending' && store.canUseSavedWebsiteLogin(session.tenant.id, task.id, session.user.id));
+        return reply(res, 200, { signIn, canSavePasswords, savedLogins: canSavePasswords && signIn ? websitePasswords.list(session.user.id, signIn.hostname) : [] });
+      }
       if (req.method === 'POST' && action === 'cancel') {
         const signIn = store.cancelWebsiteSignInRequest(session.tenant.id, task.id);
         if (!signIn) return reply(res, 404, { error: 'No pending website sign-in request' });
@@ -700,16 +711,46 @@ const server = createServer(async (req, res) => {
         if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop' && store.getSetting('localComputerEnabled', session.tenant.id) === 'false') return reply(res, 403, { error: '当前工作区尚未授权 Dot 使用本机 Chrome 工作区' });
         const identifier = typeof body.identifier === 'string' ? body.identifier : '';
         const password = typeof body.password === 'string' ? body.password : '';
+        const saveToPasswords = body.saveToPasswords === true;
+        if (saveToPasswords && !store.canUseSavedWebsiteLogin(session.tenant.id, task.id, session.user.id)) return reply(res, 403, { error: '保存网站登录仅支持本人发起的个人 Dot 任务' });
         const computer = computerFor(session.tenant.id);
         if (!computer.fillWebsiteSignIn) return reply(res, 503, { error: '当前电脑暂不支持私密登录表单，请接管电脑手动登录。' });
         try {
+          if (saveToPasswords) await websitePasswords.save(session.user.id, signIn.hostname, identifier, password);
           await computer.fillWebsiteSignIn(signIn.url, identifier, password);
         } catch (error) {
           const message = error instanceof Error ? error.message : '无法在电脑中填写登录表单';
           const redacted = [identifier, password].filter(Boolean).reduce((value, secret) => value.replaceAll(secret, '[redacted]'), message);
           return reply(res, 400, { error: redacted.slice(0, 240) });
         }
-        const updated = store.markWebsiteSignInSubmitted(session.tenant.id, task.id);
+        const updated = store.markWebsiteSignInSubmitted(session.tenant.id, task.id, saveToPasswords);
+        if (!updated) {
+          await Promise.resolve(computer.returnControl()).catch(() => undefined);
+          return reply(res, 409, { error: '这项工作已发生变化；为保护凭据，电脑已清除表单并交还 Dot。' });
+        }
+        publish();
+        return reply(res, 200, {
+          signIn: updated, computer: await computer.state(),
+          savedLogins: saveToPasswords ? websitePasswords.list(session.user.id, signIn.hostname) : undefined,
+        });
+      }
+      if (req.method === 'POST' && action === 'use-saved') {
+        const signIn = store.websiteSignInRequest(session.tenant.id, task.id);
+        if (!signIn || signIn.status !== 'pending' || task.status !== 'waiting') return reply(res, 409, { error: 'No pending website sign-in request' });
+        if (!store.canUseSavedWebsiteLogin(session.tenant.id, task.id, session.user.id)) return reply(res, 403, { error: '已保存的网站登录仅能由本人在个人 Dot 任务中使用' });
+        const credentialId = typeof body.credentialId === 'string' ? body.credentialId : '';
+        const credentials = websitePasswords.loadForUse(session.user.id, credentialId, signIn.hostname);
+        if (!credentials) return reply(res, 404, { error: '找不到此网站的已保存登录，请输入其他账号或密码' });
+        const computer = computerFor(session.tenant.id);
+        if (!computer.fillWebsiteSignIn) return reply(res, 503, { error: '当前电脑暂不支持私密登录表单，请接管电脑手动登录。' });
+        try {
+          await computer.fillWebsiteSignIn(signIn.url, credentials.username, credentials.password);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '无法在电脑中填写登录表单';
+          const redacted = [credentials.username, credentials.password].filter(Boolean).reduce((value, secret) => value.replaceAll(secret, '[redacted]'), message);
+          return reply(res, 400, { error: redacted.slice(0, 240) });
+        }
+        const updated = store.markWebsiteSignInSubmitted(session.tenant.id, task.id, true);
         if (!updated) {
           await Promise.resolve(computer.returnControl()).catch(() => undefined);
           return reply(res, 409, { error: '这项工作已发生变化；为保护凭据，电脑已清除表单并交还 Dot。' });

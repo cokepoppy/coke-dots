@@ -50,6 +50,16 @@ export interface WebsiteSignInRequest {
   hostname: string;
   reason: string;
   status: 'pending' | 'submitted' | 'continued' | 'cancelled';
+  passwordSaved: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Public metadata only. The website password itself stays in the host keychain. */
+export interface SavedWebsiteLogin {
+  id: string;
+  hostname: string;
+  username: string;
   createdAt: string;
   updatedAt: string;
 }

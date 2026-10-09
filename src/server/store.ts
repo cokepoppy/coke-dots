@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
+import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type SavedWebsiteLogin, type ScheduleSpec, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -25,6 +25,7 @@ export interface TeamsInboundMessage { eventId: string; eventKey: string; micros
 export interface TeamsInboxResult { status: 'queued' | 'linked' | 'ignored' | 'duplicate'; tenantId?: string; taskId?: string }
 export interface TeamsDeliveryCandidate { eventId: string; eventKey: string; tenantId: string; conversationId: string; serviceUrl: string; task: Task; attempts: number }
 export interface StoredTaskAttachment extends AttachmentSummary { tenantId: string; uploadedBy: string; taskId: string | null; content: Uint8Array; createdAt: string }
+export interface StoredWebsiteLogin extends SavedWebsiteLogin { userId: string; keychainAccount: string }
 export type PersonalDotResetResult = 'ok' | 'not-found' | 'not-personal' | 'not-owner' | 'shared';
 
 export class Store {
@@ -204,10 +205,18 @@ export class Store {
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id),
         url TEXT NOT NULL, hostname TEXT NOT NULL, reason TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('pending','submitted','continued','cancelled')),
+        login_saved INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS website_sign_in_task ON website_sign_in_requests(tenant_id,task_id,created_at DESC);
       CREATE UNIQUE INDEX IF NOT EXISTS website_sign_in_one_pending ON website_sign_in_requests(tenant_id,task_id) WHERE status IN ('pending','submitted');
+      CREATE TABLE IF NOT EXISTS saved_website_logins (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        hostname TEXT NOT NULL, username TEXT NOT NULL, keychain_account TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(user_id,hostname,username)
+      );
+      CREATE INDEX IF NOT EXISTS saved_website_logins_user_host ON saved_website_logins(user_id,hostname,username COLLATE NOCASE);
     `);
 
     // Migrate the pre-auth single-user database into a reserved workspace. Its records
@@ -218,6 +227,7 @@ export class Store {
     this.addColumnIfMissing('watches', 'tenant_id', "TEXT NOT NULL DEFAULT 'legacy'");
     this.addColumnIfMissing('oauth_flows', 'handoff_hash', 'TEXT');
     this.addColumnIfMissing('oauth_flows', 'return_to', 'TEXT');
+    this.addColumnIfMissing('website_sign_in_requests', 'login_saved', 'INTEGER NOT NULL DEFAULT 0');
     this.addColumnIfMissing('tasks', 'engine', "TEXT NOT NULL DEFAULT 'model'");
     this.addColumnIfMissing('tasks', 'reasoning_effort', "TEXT NOT NULL DEFAULT 'high'");
     this.addColumnIfMissing('tasks', 'agent_session_id', 'TEXT');
@@ -1155,9 +1165,48 @@ export class Store {
   }
 
   websiteSignInRequest(tenantId: string, taskId: string): WebsiteSignInRequest | null {
-    const row = this.db.prepare(`SELECT id,tenant_id AS tenantId,task_id AS taskId,url,hostname,reason,status,created_at AS createdAt,updated_at AS updatedAt
+    const row = this.db.prepare(`SELECT id,tenant_id AS tenantId,task_id AS taskId,url,hostname,reason,status,login_saved AS passwordSaved,created_at AS createdAt,updated_at AS updatedAt
       FROM website_sign_in_requests WHERE tenant_id=? AND task_id=? ORDER BY created_at DESC,id DESC LIMIT 1`).get(tenantId, taskId) as WebsiteSignInRequest | undefined;
+    return row ? { ...row, passwordSaved: Boolean(row.passwordSaved) } : null;
+  }
+
+  canUseSavedWebsiteLogin(tenantId: string, taskId: string, userId: string): boolean {
+    const row = this.db.prepare(`SELECT tenants.kind, tasks.created_by_user_id AS taskOwner
+      FROM tasks JOIN tenants ON tenants.id=tasks.tenant_id
+      JOIN memberships ON memberships.tenant_id=tasks.tenant_id AND memberships.user_id=?
+      WHERE tasks.tenant_id=? AND tasks.id=?`).get(userId, tenantId, taskId) as { kind: string; taskOwner: string | null } | undefined;
+    return row?.kind === 'personal' && row.taskOwner === userId;
+  }
+
+  savedWebsiteLogins(userId: string, hostname: string): SavedWebsiteLogin[] {
+    return this.db.prepare(`SELECT id,hostname,username,created_at AS createdAt,updated_at AS updatedAt
+      FROM saved_website_logins WHERE user_id=? AND hostname=? ORDER BY username COLLATE NOCASE,id`)
+      .all(userId, hostname) as unknown as SavedWebsiteLogin[];
+  }
+
+  savedWebsiteLogin(userId: string, id: string): StoredWebsiteLogin | null {
+    const row = this.db.prepare(`SELECT id,user_id AS userId,hostname,username,keychain_account AS keychainAccount,
+      created_at AS createdAt,updated_at AS updatedAt FROM saved_website_logins WHERE user_id=? AND id=?`)
+      .get(userId, id) as unknown as StoredWebsiteLogin | undefined;
     return row || null;
+  }
+
+  saveWebsiteLoginMetadata(userId: string, hostname: string, username: string, keychainAccount: string, id: string = randomUUID()): StoredWebsiteLogin {
+    const now = new Date().toISOString();
+    this.db.prepare(`INSERT INTO saved_website_logins(id,user_id,hostname,username,keychain_account,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?) ON CONFLICT(user_id,hostname,username) DO UPDATE SET
+      keychain_account=excluded.keychain_account,updated_at=excluded.updated_at`)
+      .run(id, userId, hostname, username, keychainAccount, now, now);
+    return this.db.prepare(`SELECT id,user_id AS userId,hostname,username,keychain_account AS keychainAccount,
+      created_at AS createdAt,updated_at AS updatedAt FROM saved_website_logins WHERE user_id=? AND hostname=? AND username=?`)
+      .get(userId, hostname, username) as unknown as StoredWebsiteLogin;
+  }
+
+  deleteWebsiteLoginMetadata(userId: string, id: string): StoredWebsiteLogin | null {
+    const row = this.savedWebsiteLogin(userId, id);
+    if (!row) return null;
+    this.db.prepare('DELETE FROM saved_website_logins WHERE user_id=? AND id=?').run(userId, id);
+    return row;
   }
 
   createWebsiteSignInRequest(tenantId: string, taskId: string, urlValue: string, reasonValue: string, sessionId: string | null = null): WebsiteSignInRequest {
@@ -1186,12 +1235,12 @@ export class Store {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
-  markWebsiteSignInSubmitted(tenantId: string, taskId: string): WebsiteSignInRequest | null {
+  markWebsiteSignInSubmitted(tenantId: string, taskId: string, passwordSaved = false): WebsiteSignInRequest | null {
     const now = new Date().toISOString();
     const task = this.getTask(taskId, tenantId);
     if (!task || task.status !== 'waiting') return null;
-    const changed = this.db.prepare("UPDATE website_sign_in_requests SET status='submitted',updated_at=? WHERE tenant_id=? AND task_id=? AND status='pending'")
-      .run(now, tenantId, taskId);
+    const changed = this.db.prepare("UPDATE website_sign_in_requests SET status='submitted',login_saved=?,updated_at=? WHERE tenant_id=? AND task_id=? AND status='pending'")
+      .run(passwordSaved ? 1 : 0, now, tenantId, taskId);
     if (!Number(changed.changes)) return null;
     this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
       .run(tenantId, taskId, 'system', '用户已将登录信息填入工作区电脑；凭据未保存到任务记录。请在电脑页面完成登录或验证。', now);

@@ -942,8 +942,10 @@ test('website sign-in requests are tenant scoped, resumable, and persist no cred
     assert.equal(store.getTask(task.id, alpha.tenant.id)?.status, 'waiting');
     assert.equal(store.websiteSignInRequest(beta.tenant.id, task.id), null, 'Another tenant retrieved the sign-in request');
     assert.equal(store.markWebsiteSignInSubmitted(beta.tenant.id, task.id), null, 'Another tenant submitted the sign-in request');
-    assert.deepEqual(Object.keys(request).sort(), ['createdAt', 'hostname', 'id', 'reason', 'status', 'taskId', 'tenantId', 'updatedAt', 'url'].sort());
-    assert.deepEqual(store.markWebsiteSignInSubmitted(alpha.tenant.id, task.id)?.status, 'submitted');
+    assert.deepEqual(Object.keys(request).sort(), ['createdAt', 'hostname', 'id', 'passwordSaved', 'reason', 'status', 'taskId', 'tenantId', 'updatedAt', 'url'].sort());
+    const submitted = store.markWebsiteSignInSubmitted(alpha.tenant.id, task.id, true);
+    assert.equal(submitted?.status, 'submitted');
+    assert.equal(submitted?.passwordSaved, true, 'The saved-login indicator must persist with the submitted request');
     assert.equal(store.continueWebsiteSignInTask(alpha.tenant.id, task.id)?.status, 'queued');
     assert.equal(store.websiteSignInRequest(alpha.tenant.id, task.id)?.status, 'continued');
     const state = store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, alpha.tenant.id);

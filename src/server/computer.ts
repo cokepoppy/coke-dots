@@ -129,7 +129,7 @@ export class ComputerManager implements ComputerRuntime {
         if (isE2EWebsiteSignInFixture(url)) await page.route(url, route => route.fulfill({
           status: 200,
           contentType: 'text/html; charset=utf-8',
-          body: '<!doctype html><html><head><title>Demo service sign in</title></head><body style="font:16px system-ui;max-width:420px;margin:72px auto;padding:24px"><h1>Demo service</h1><form onsubmit="event.preventDefault();document.title=\'Login received\';document.querySelector(\'#status\').textContent=\'Signed in in the Dot computer\'"><label>Account <input autocomplete="username" name="username" type="email"></label><br><label>Password <input autocomplete="current-password" name="password" type="password"></label><br><button type="submit">Sign in</button><p id="status"></p></form></body></html>',
+          body: '<!doctype html><html><head><title>Demo service sign in</title></head><body style="font:16px system-ui;max-width:420px;margin:72px auto;padding:24px"><h1>Demo service</h1><form onsubmit="event.preventDefault();const ok=Boolean(document.querySelector(\'[name=username]\').value&&document.querySelector(\'[name=password]\').value);document.title=ok?\'Login received\':\'Login fields missing\';document.querySelector(\'#status\').textContent=ok?\'Signed in in the Dot computer\':\'Enter both fields before signing in\'"><label>Account <input autocomplete="username" name="username" type="email"></label><br><label>Password <input autocomplete="current-password" name="password" type="password"></label><br><button type="submit">Sign in</button><p id="status"></p></form></body></html>',
         }));
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
       }

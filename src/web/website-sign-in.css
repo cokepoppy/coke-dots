@@ -40,6 +40,17 @@
 .website-sign-in-primary { border: 0 !important; background: #202124 !important; color: #fff !important; }
 .website-sign-in-primary:disabled { opacity: .5; cursor: not-allowed; }
 .website-sign-in-form button { justify-self: start; padding: 10px 14px; border-radius: 999px; font-size: 13px; }
+.website-save-password { display: flex !important; grid-template-columns: 16px 1fr; align-items: center; gap: 8px !important; }
+.website-save-password input { width: 16px; height: 16px; margin: 0; accent-color: #202124; }
+.website-saved-logins { display: grid; gap: 8px; margin: 14px 0 6px; padding: 12px; border: 1px solid var(--border, #e5e5e5); border-radius: 12px; }
+.website-saved-logins > strong { font-size: 13px; }
+.website-saved-logins > small { color: var(--muted, #717783); font-size: 12px; }
+.website-saved-login { display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border, #e5e5e5); }
+.website-saved-login > span { display: grid; flex: 1; min-width: 0; gap: 2px; overflow-wrap: anywhere; font-size: 12px; }
+.website-saved-login > span small { color: var(--muted, #717783); }
+.website-saved-login button { min-height: 34px; padding: 6px 10px; border: 1px solid #dfe2e6; border-radius: 999px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.website-saved-login button.website-sign-in-primary { border: 0; }
+.website-saved-login button:disabled { opacity: .55; cursor: wait; }
 .website-sign-in-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .website-sign-in-actions button { min-height: 36px; padding: 7px 12px; border: 1px solid #dfe2e6; border-radius: 999px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
 .website-sign-in-actions .website-sign-in-primary { padding-inline: 14px; }
@@ -55,6 +66,10 @@
 .dots-dark .website-sign-in .website-sign-in-safety,
 .dots-dark .website-sign-in-submitted { background: #2d3034; color: #c9ced6; }
 .dots-dark .website-sign-in-form label { color: #d0d3d9; }
+.dots-dark .website-save-password input { accent-color: #f4f4f5; }
+.dots-dark .website-saved-logins { border-color: #454950; }
+.dots-dark .website-saved-login { border-top-color: #454950; }
+.dots-dark .website-saved-login button { border-color: #494d53; }
 .dots-dark .website-sign-in-form input { border-color: #454950; background: #1d1f22; color: #f0f1f3; }
 .dots-dark .website-sign-in-actions button { border-color: #494d53; color: #e4e6e9; }
 .dots-dark .website-sign-in-actions .website-sign-in-primary { border-color: transparent; background: #f4f4f5 !important; color: #191a1c !important; }

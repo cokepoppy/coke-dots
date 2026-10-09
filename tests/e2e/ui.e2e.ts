@@ -248,7 +248,7 @@ async function startMockModel() {
         const isPauseDelegationAggregate = isPauseDelegationParent && prompt.includes('Delegated task results:');
         const isPauseDelegationChild = prompt.includes('E2E global pause delegated child — keep running during pause');
         const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
-        const isWebsiteSignIn = prompt.includes('E2E website sign-in — exercise private credential flow');
+        const isWebsiteSignIn = prompt.includes('E2E website sign-in — exercise private credential flow') || prompt.includes('E2E website sign-in reuse — confirm saved login');
         const isWebsiteSignInContinuation = prompt.includes('User confirmed: website sign-in was completed in the tenant computer.');
         const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
@@ -3428,8 +3428,8 @@ try {
     assert.notEqual(betaComputer.url, 'https://research-fixture.dots.test/launch', 'A different personal tenant inherited DSH browser state');
   });
 
-  await recordStep('Private website sign-in fills the tenant computer without exposing credentials to Dot or task history', async () => {
-    await selectTenant(alphaPage!, 'Alpha Shared');
+  await recordStep('Private website sign-in can save an optional account and require confirmation before a later reuse', async () => {
+    await selectTenant(alphaPage!, 'Alpha workspace');
     await clickNav(alphaPage!, '你的 dot');
     await alphaPage!.locator('.composer-bottom select').selectOption('model');
     const instruction = 'E2E website sign-in — exercise private credential flow';
@@ -3438,8 +3438,8 @@ try {
     await privateForm.waitFor({ state: 'visible', timeout: 15_000 });
     assert.match(await privateForm.innerText(), /login-fixture\.dots\.test/);
     const taskId = await alphaPage!.evaluate(async instructionText => {
-      const state = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string }[] };
-      return state.tasks.find(task => task.instruction === instructionText)?.id || '';
+      const state = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string; createdAt: string }[] };
+      return state.tasks.filter(task => task.instruction === instructionText).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]?.id || '';
     }, instruction);
     assert(taskId, 'The sign-in task was not persisted');
     const isolatedRequest = await betaPage!.evaluate(async id => {
@@ -3453,6 +3453,8 @@ try {
     const secretValue = 'e2e-private-login-secret-7391';
     await privateForm.getByLabel('登录账号或邮箱').fill(accountValue);
     await privateForm.getByLabel('网站密码').fill(secretValue);
+    assert.equal(await privateForm.getByLabel('保存到密码').isChecked(), false, 'Saving a website password must be opt-in');
+    await privateForm.getByLabel('保存到密码').check();
     await privateForm.getByRole('button', { name: '安全填入并打开电脑' }).click();
     await alphaPage!.locator('.computer-view').waitFor({ state: 'visible' });
     await alphaPage!.getByRole('button', { name: 'Return control' }).waitFor({ state: 'visible', timeout: 15_000 });
@@ -3469,7 +3471,14 @@ try {
     await (await taskNavigationItem(alphaPage!, instruction)).click();
     const submittedCard = alphaPage!.getByTestId('website-sign-in');
     await submittedCard.waitFor({ state: 'visible' });
-    assert.match(await submittedCard.innerText(), /登录信息已填入电脑/);
+    assert.match(await submittedCard.innerText(), /登录信息已填入电脑。已保存到密码。/);
+    const persistedSignInState = await alphaPage!.evaluate(async id => {
+      const response = await fetch(`/api/tasks/${id}/sign-in`);
+      const body = await response.json();
+      return { status: response.status, keys: Object.keys(body), passwordSaved: body.signIn?.passwordSaved, error: body.error };
+    }, taskId);
+    assert.equal(persistedSignInState.status, 200, `The task sign-in API should remain available after navigation (${persistedSignInState.keys.join(',')})`);
+    assert.equal(persistedSignInState.passwordSaved, true, 'The confirmation state must survive remounting the task card');
     await submittedCard.getByRole('button', { name: '我已完成登录，继续工作' }).click();
     await clickNav(alphaPage!, 'Activity');
     const taskCard = alphaPage!.locator('.task-card').filter({ hasText: instruction });
@@ -3479,6 +3488,7 @@ try {
     assert.doesNotMatch(JSON.stringify(appState), /e2e-account@example\.test|e2e-private-login-secret-7391/);
     assert.equal(mockModelPrompts.some(prompt => /e2e-account@example\.test|e2e-private-login-secret-7391/.test(prompt)), false, 'Credentials reached the model prompt');
     const database = new DatabaseSync(join(testDataDir, 'dots.db'), { readOnly: true });
+    let savedLoginIndex = '';
     try {
       const persistedRows = JSON.stringify({
         task: database.prepare('SELECT instruction,result,error FROM tasks WHERE id=?').get(taskId),
@@ -3486,8 +3496,52 @@ try {
         signIn: database.prepare('SELECT url,hostname,reason,status FROM website_sign_in_requests WHERE task_id=?').all(taskId),
       });
       assert.doesNotMatch(persistedRows, /e2e-account@example\.test|e2e-private-login-secret-7391/);
+      savedLoginIndex = JSON.stringify(database.prepare('SELECT hostname,username,keychain_account FROM saved_website_logins').all());
     } finally { database.close(); }
+    assert.match(savedLoginIndex, /e2e-account@example\.test/, 'The saved-login list needs the account label as non-secret metadata');
+    assert.doesNotMatch(savedLoginIndex, /e2e-private-login-secret-7391/, 'The password must never enter SQLite metadata');
     await screenshot(alphaPage!, 'website-private-sign-in-completed');
+
+    const reuseInstruction = 'E2E website sign-in reuse — confirm saved login';
+    await clickNav(alphaPage!, '你的 dot');
+    await createTask(alphaPage!, reuseInstruction);
+    const reuseForm = alphaPage!.getByTestId('website-sign-in');
+    await reuseForm.waitFor({ state: 'visible', timeout: 15_000 });
+    const savedLoginPanel = reuseForm.getByTestId('website-saved-logins');
+    await savedLoginPanel.getByText(accountValue, { exact: true }).waitFor({ state: 'visible' });
+    assert.match(await savedLoginPanel.innerText(), /选择一个账号并确认使用/);
+    const listedLogins = await alphaPage!.evaluate(async instructionText => {
+      const state = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string; createdAt: string }[] };
+      const task = state.tasks.filter(item => item.instruction === instructionText).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      if (!task) return { status: 404, keys: [], canSavePasswords: false, loginCount: 0, error: 'E2E task not found' };
+      const response = await fetch(`/api/tasks/${task.id}/sign-in`, { cache: 'no-store' });
+      const body = await response.json();
+      return {
+        status: response.status, keys: Object.keys(body), canSavePasswords: body.canSavePasswords === true,
+        loginCount: Array.isArray(body.savedLogins) ? body.savedLogins.length : -1,
+        usernames: Array.isArray(body.savedLogins) ? body.savedLogins.map((item: { username?: string }) => item.username || '') : [],
+        signInTaskId: body.signIn?.taskId || null, taskId: task.id, error: body.error || null,
+        leakedPassword: JSON.stringify(body).includes('e2e-private-login-secret-7391'),
+      };
+    }, reuseInstruction);
+    assert.equal(listedLogins.status, 200, `Saved-login API request failed: ${JSON.stringify(listedLogins)}`);
+    assert.equal(listedLogins.canSavePasswords, true, `Saved-login permissions mismatch: ${JSON.stringify(listedLogins)}`);
+    assert.equal(listedLogins.signInTaskId, listedLogins.taskId, 'The request must belong to the selected task');
+    assert.equal(listedLogins.loginCount, 1);
+    assert.deepEqual(listedLogins.usernames, [accountValue]);
+    assert.equal(listedLogins.leakedPassword, false, 'The browser API must return only saved login metadata');
+    await savedLoginPanel.getByRole('button', { name: '确认并填入' }).click();
+    await alphaPage!.locator('.computer-view').waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('button', { name: 'Return control' }).waitFor({ state: 'visible', timeout: 15_000 });
+    await clickComputerScreen(alphaPage!, 460, 230);
+    await alphaPage!.locator('.browser-tab-title').filter({ hasText: 'Login received' }).waitFor({ state: 'visible', timeout: 10_000 });
+    await alphaPage!.getByRole('button', { name: 'Return control' }).click();
+    await (await taskNavigationItem(alphaPage!, reuseInstruction)).click();
+    const reusedCard = alphaPage!.getByTestId('website-sign-in');
+    await reusedCard.getByRole('button', { name: '我已完成登录，继续工作' }).click();
+    await clickNav(alphaPage!, 'Activity');
+    await alphaPage!.locator('.task-card').filter({ hasText: reuseInstruction }).locator('.pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await screenshot(alphaPage!, 'website-password-reuse-confirmed');
   });
 
   await recordStep('Personal Dot reset is confirmed in Chrome, removes only that tenant, and returns to first-run setup', async () => {
@@ -3595,9 +3649,10 @@ try {
     await onboarding.getByRole('button', { name: 'Continue' }).click();
     await betaPage!.getByTestId('dot-onboarding').waitFor({ state: 'visible' });
     await betaPage!.getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
+    await selectTenant(alphaPage!, 'Alpha Shared');
     const sharedState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { entries: { body: string }[]; tasks: { instruction: string }[] };
-    assert(sharedState.tasks.length > 0, 'A personal reset must not clear the other user’s shared workspace tasks');
-    assert.equal(await alphaPage!.evaluate(async () => (await fetch('/api/dot/reset', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }) })).status), 403, 'The API must reject a reset request in a shared workspace');
+    assert(sharedState.tasks.length > 0, 'The shared workspace must retain its team tasks after Beta’s personal reset');
+    assert.equal(await alphaPage!.evaluate(async () => (await fetch('/api/dot/reset', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }) })).status), 403, 'The API must reject resetting a shared workspace Dot');
     const sharedAfterDeniedReset = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { tasks: { instruction: string }[] };
     assert.equal(sharedAfterDeniedReset.tasks.length, sharedState.tasks.length, 'A rejected shared-workspace reset must leave its tasks intact');
   });

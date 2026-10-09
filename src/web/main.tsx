@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, ScheduleSpec, Snapshot, Task, TaskStatus, VoiceCallSession, WebsiteSignInRequest } from '../shared/types.ts';
+import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, SavedWebsiteLogin, ScheduleSpec, Snapshot, Task, TaskStatus, VoiceCallSession, WebsiteSignInRequest } from '../shared/types.ts';
 import { appFetch, appPath } from './api.ts';
 import './style.css';
 import './chat-theme.css';
@@ -53,7 +53,7 @@ const statusText: Record<TaskStatus, string> = {
 };
 const engineText: Record<Engine, string> = { model: '模型 API', claude: 'Claude Code', pi: 'Pi', dsh: 'DeepSeek Harness' };
 
-async function request(path: string, method: 'POST' | 'PATCH', body: object) {
+async function request(path: string, method: 'POST' | 'PATCH' | 'DELETE', body: object) {
   const response = await appFetch(`/api${path}`, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
@@ -690,6 +690,9 @@ function TaskControls({ task, act, compact = false, onOpenComputer }: { task: Ta
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [approvalError, setApprovalError] = useState('');
   const [signIn, setSignIn] = useState<WebsiteSignInRequest | null>(null);
+  const [savedWebsiteLogins, setSavedWebsiteLogins] = useState<SavedWebsiteLogin[]>([]);
+  const [canSaveWebsitePasswords, setCanSaveWebsitePasswords] = useState(false);
+  const [saveWebsitePassword, setSaveWebsitePassword] = useState(false);
   const [signInLoaded, setSignInLoaded] = useState(false);
   const [signInBusy, setSignInBusy] = useState(false);
   const [signInError, setSignInError] = useState('');
@@ -709,12 +712,16 @@ function TaskControls({ task, act, compact = false, onOpenComputer }: { task: Ta
   }, [task.id, task.status, compact]);
   useEffect(() => {
     let active = true;
-    setSignIn(null); setSignInLoaded(false); setSignInError(''); setIdentifier(''); setPassword('');
+    setSignIn(null); setSavedWebsiteLogins([]); setCanSaveWebsitePasswords(false); setSaveWebsitePassword(false); setSignInLoaded(false); setSignInError(''); setIdentifier(''); setPassword('');
     if (compact || task.status !== 'waiting') { setSignInLoaded(true); return () => { active = false; }; }
     void appFetch(`/api/tasks/${task.id}/sign-in`).then(async response => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      if (active) setSignIn(data as WebsiteSignInRequest | null);
+      if (active) {
+        setSignIn((data?.signIn || null) as WebsiteSignInRequest | null);
+        setSavedWebsiteLogins(Array.isArray(data?.savedLogins) ? data.savedLogins as SavedWebsiteLogin[] : []);
+        setCanSaveWebsitePasswords(data?.canSavePasswords === true);
+      }
     }).catch(reason => { if (active) setSignInError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (active) setSignInLoaded(true); });
     return () => { active = false; };
@@ -733,12 +740,34 @@ function TaskControls({ task, act, compact = false, onOpenComputer }: { task: Ta
     if (!signIn || signIn.status !== 'pending') return;
     setSignInBusy(true); setSignInError('');
     try {
-      const result = await request(`/tasks/${task.id}/sign-in/submit`, 'POST', { identifier, password }) as { signIn: WebsiteSignInRequest };
+      const result = await request(`/tasks/${task.id}/sign-in/submit`, 'POST', { identifier, password, saveToPasswords: saveWebsitePassword }) as { signIn: WebsiteSignInRequest; savedLogins?: SavedWebsiteLogin[] };
       setSignIn(result.signIn);
+      if (result.savedLogins) setSavedWebsiteLogins(result.savedLogins);
+      if (saveWebsitePassword && result.signIn.passwordSaved !== true) setSignInError('登录信息已填入电脑，但未能保存到系统钥匙串。');
       setIdentifier(''); setPassword('');
+      setSaveWebsitePassword(false);
       onOpenComputer?.();
     } catch (reason) { setSignInError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setSignInBusy(false); setPassword(''); }
+  }
+  async function useSavedWebsiteLogin(credentialId: string) {
+    if (!signIn || signIn.status !== 'pending') return;
+    setSignInBusy(true); setSignInError('');
+    try {
+      const result = await request(`/tasks/${task.id}/sign-in/use-saved`, 'POST', { credentialId }) as { signIn: WebsiteSignInRequest; computer: unknown };
+      setSignIn(result.signIn);
+      onOpenComputer?.();
+    } catch (reason) { setSignInError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setSignInBusy(false); }
+  }
+  async function forgetSavedWebsiteLogin(login: SavedWebsiteLogin) {
+    if (!window.confirm(`删除 ${login.hostname} 的已保存登录信息？`)) return;
+    setSignInBusy(true); setSignInError('');
+    try {
+      await request(`/website-passwords/${login.id}`, 'DELETE', {});
+      setSavedWebsiteLogins(current => current.filter(item => item.id !== login.id));
+    } catch (reason) { setSignInError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setSignInBusy(false); }
   }
   async function continueAfterSignIn() {
     setSignInBusy(true); setSignInError('');
@@ -776,17 +805,27 @@ function TaskControls({ task, act, compact = false, onOpenComputer }: { task: Ta
       {signIn && ['pending', 'submitted'].includes(signIn.status) && <section className="website-sign-in" data-testid="website-sign-in">
         <div className="website-sign-in-heading"><span aria-hidden="true">↗</span><div><strong>网站需要登录</strong><small>{signIn.hostname}</small><code className="website-sign-in-url">{signIn.url}</code></div></div>
         <p>{signIn.reason}</p>
-        <p className="website-sign-in-safety">凭据通过当前工作区的受保护连接直接填入电脑，不会发给 Dot，也不会保存到任务记录。填入后请在电脑中检查页面并亲自提交。</p>
+        <p className="website-sign-in-safety">凭据通过受保护连接直接填入电脑，不会发给 Dot，也不会保存到任务记录。勾选保存时，账号密码会存入 Coke Dots 服务 Mac 的系统钥匙串；以后只在你的个人 Dot 中显示，并需由你确认后才会填入。</p>
         {signInError && <small role="alert" className="website-sign-in-error">{signInError}</small>}
         {signIn.status === 'pending' ? <>
+          {savedWebsiteLogins.length > 0 && <section className="website-saved-logins" aria-label="已保存的网站登录" data-testid="website-saved-logins">
+            <strong>此网站有已保存的登录</strong>
+            <small>选择一个账号并确认使用，或在下方输入其他账号。</small>
+            {savedWebsiteLogins.map(login => <div className="website-saved-login" key={login.id}>
+              <span><b>{login.username}</b><small>{login.hostname}</small></span>
+              <button type="button" className="website-sign-in-primary" disabled={signInBusy} onClick={() => void useSavedWebsiteLogin(login.id)}>确认并填入</button>
+              <button type="button" aria-label={`删除 ${login.username} 的已保存登录`} disabled={signInBusy} onClick={() => void forgetSavedWebsiteLogin(login)}>删除</button>
+            </div>)}
+          </section>}
           <form onSubmit={event => void submitWebsiteSignIn(event)} className="website-sign-in-form" autoComplete="off">
             <label>账号或邮箱<input aria-label="登录账号或邮箱" autoComplete="off" value={identifier} onChange={event => setIdentifier(event.target.value)} maxLength={320} /></label>
             <label>密码<input aria-label="网站密码" type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} maxLength={4096} /></label>
+            {canSaveWebsitePasswords && <label className="website-save-password"><input aria-label="保存到密码" type="checkbox" checked={saveWebsitePassword} onChange={event => setSaveWebsitePassword(event.target.checked)} />保存到密码，仅供我以后确认使用</label>}
             <button className="website-sign-in-primary" type="submit" disabled={signInBusy || !identifier.trim() || !password}>{signInBusy ? '正在发送到电脑…' : '安全填入并打开电脑'}</button>
           </form>
           <div className="website-sign-in-actions"><button type="button" disabled={signInBusy} onClick={onOpenComputer}>改为手动接管电脑</button><button type="button" disabled={signInBusy} onClick={() => void continueAfterSignIn()}>我已手动完成登录</button><button type="button" disabled={signInBusy} onClick={() => void cancelWebsiteSignIn()}>取消登录请求</button></div>
         </> : <>
-          <div className="website-sign-in-submitted" role="status">登录信息已填入电脑。完成登录或 MFA 验证后，请交还电脑。</div>
+          <div className="website-sign-in-submitted" role="status">登录信息已填入电脑。{signIn.passwordSaved && '已保存到密码。'}完成登录或 MFA 验证后，请交还电脑。</div>
           <div className="website-sign-in-actions"><button type="button" onClick={onOpenComputer}>打开电脑</button><button type="button" className="website-sign-in-primary" disabled={signInBusy} onClick={() => void continueAfterSignIn()}>{signInBusy ? '正在继续…' : '我已完成登录，继续工作'}</button></div>
         </>}
       </section>}
