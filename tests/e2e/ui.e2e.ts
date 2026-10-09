@@ -867,8 +867,8 @@ try {
     await contextPanel.getByRole('button', { name: 'Slack' }).click();
     const darkModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await darkModal.waitFor({ state: 'visible' });
-    assert.equal(await darkModal.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(7, 23, 14)');
-    assert.equal(await darkModal.locator('.slack-setup-workspace-card').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(11, 33, 21)');
+    assert.equal(await darkModal.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(35, 33, 38)');
+    assert.equal(await darkModal.locator('.slack-setup-picker').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(41, 39, 45)');
     await screenshot(alphaPage!, 'slack-setup-empty-workspace-dark');
     await darkModal.getByRole('button', { name: 'Close Slack setup' }).click();
     await darkModal.waitFor({ state: 'hidden' });
@@ -892,10 +892,15 @@ try {
     const connectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
     const workspace = connectedModal.getByLabel('Slack workspace');
+    assert.equal(await workspace.isVisible(), false, 'The installed workspace picker should stay collapsed in the compact state');
+    const selectAnother = connectedModal.locator('.slack-select-another');
+    assert.equal(await selectAnother.getAttribute('aria-expanded'), 'false');
+    await selectAnother.click();
+    assert.equal(await selectAnother.getAttribute('aria-expanded'), 'true');
     await workspace.waitFor({ state: 'visible' });
     assert.equal(await workspace.inputValue(), 'TASPIE2E');
     assert.deepEqual(await workspace.locator('option').allTextContents(), ['ASPI']);
-    assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Add to Slack');
+    assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
     await screenshot(alphaPage!, 'slack-workspace-installed');
 
     await connectedModal.getByTestId('slack-connect').click();
