@@ -82,6 +82,11 @@ let worker: ChildProcess | null = null;
 let browser: Browser | null = null;
 let chromeOutput = '';
 let workerOutput = '';
+function launchChrome() {
+  const child: ChildProcess = spawn(chromePath!, chromeArgs, { detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+  for (const stream of [child.stdout, child.stderr]) stream?.on('data', (chunk: Buffer) => { chromeOutput = `${chromeOutput}${chunk.toString()}`.slice(-6000); });
+  return child;
+}
 
 try {
   worker = spawn(process.execPath, [workerPath], {
@@ -100,8 +105,7 @@ try {
   await waitFor(async () => (await fetch(`${workerUrl}/healthz`).catch(() => null))?.status === 200, 15_000);
   assert.equal((await fetch(`${workerUrl}/browserz`)).status, 503, 'The worker should report not ready before Chrome starts');
 
-  chrome = spawn(chromePath, chromeArgs, { detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
-  for (const stream of [chrome.stdout, chrome.stderr]) stream?.on('data', chunk => { chromeOutput = `${chromeOutput}${chunk.toString()}`.slice(-6000); });
+  chrome = launchChrome();
   await waitFor(async () => {
     const response = await fetch(`${cdpUrl}/json/version`).catch(() => null);
     return response?.ok === true;
@@ -115,14 +119,14 @@ try {
       return response?.status === 200;
     }, 15_000);
   } catch (error) {
-    const childState = `worker exit=${worker.exitCode} signal=${worker.signalCode}; chrome exit=${chrome.exitCode} signal=${chrome.signalCode}`;
+    const childState = `worker exit=${worker.exitCode} signal=${worker.signalCode}; chrome exit=${chrome?.exitCode} signal=${chrome?.signalCode}`;
     let cdpStatus = 'unavailable';
     try { cdpStatus = `HTTP ${(await fetch(`${cdpUrl}/json/version`)).status}`; } catch {}
     throw new Error(`${error instanceof Error ? error.message : String(error)}; ${childState}; worker ${lastHealthResponse}; CDP ${cdpStatus}; worker output: ${workerOutput.slice(-2500)}; chrome output: ${chromeOutput.slice(-1500)}`);
   }
 
   browser = await chromium.connectOverCDP(cdpUrl);
-  const page = browser.contexts()[0]?.pages()[0];
+  let page = browser.contexts()[0]?.pages()[0];
   assert(page, 'Chrome did not expose a page to the worker');
   const initialState = await fetch(`${workerUrl}/v1/state`, { headers: { authorization: `Bearer ${token}` } });
   assert.equal(initialState.status, 200, 'A responsive Chromium renderer should be healthy');
@@ -131,6 +135,28 @@ try {
   assert.equal(initial.owner, 'agent');
   assert.equal(initial.url, 'about:blank');
   assert.equal(initial.title, 'Welcome back, Dot');
+
+  // Chromium can restart independently while the worker process remains up.
+  // The worker must drop the disconnected CDP client and bind to the new one.
+  await stop(chrome);
+  chrome = null;
+  await browser.close().catch(() => undefined);
+  browser = null;
+  await waitFor(async () => {
+    try { await fetch(`${cdpUrl}/json/version`, { signal: AbortSignal.timeout(300) }); return false; }
+    catch { return true; }
+  }, 8_000);
+  chrome = launchChrome();
+  await waitFor(async () => (await fetch(`${cdpUrl}/json/version`).catch(() => null))?.ok === true, 15_000);
+  await waitFor(async () => (await fetch(`${workerUrl}/browserz`).catch(() => null))?.status === 200, 15_000);
+  browser = await chromium.connectOverCDP(cdpUrl);
+  page = browser.contexts()[0]?.pages()[0];
+  assert(page, 'The worker did not reconnect to the restarted Chromium page');
+  const recoveredState = await fetch(`${workerUrl}/v1/state`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(recoveredState.status, 200, 'State reads should recover after Chromium restarts');
+  const recovered = await recoveredState.json() as { ready: boolean; title: string };
+  assert.equal(recovered.ready, true);
+  assert.equal(recovered.title, 'Welcome back, Dot');
 
   await page.evaluate(() => { window.setTimeout(() => { while (true) { /* simulate an unresponsive renderer */ } }, 250); return 'armed'; });
   await new Promise(resolvePromise => setTimeout(resolvePromise, 350));
@@ -142,7 +168,7 @@ try {
   const nextState = await fetch(`${workerUrl}/v1/state`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1_000) });
   assert.equal(nextState.status, 503, 'State reads should fail quickly after the worker detects an unresponsive renderer');
   assert.equal((await fetch(`${workerUrl}/healthz`)).status, 200, 'The HTTP worker process remains alive for Kubernetes to observe and recycle');
-  console.log('Computer worker health E2E passed: Chrome renderer hang is detected, bounded, and reported to Kubernetes.');
+  console.log('Computer worker health E2E passed: Chromium process restarts reconnect, while a hung renderer is reported to Kubernetes.');
 } finally {
   if (browser) void browser.close().catch(() => undefined);
   await stop(worker);

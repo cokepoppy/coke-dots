@@ -13,6 +13,7 @@ const port = Number(process.env.COKE_DESKTOP_WORKER_PORT || 8082);
 const resolution = String(process.env.COKE_DESKTOP_RESOLUTION || '1440x1080').split('x').map(Number);
 let owner = 'agent';
 let browser;
+let browserConnecting;
 let initialized = false;
 let researchGuardInstalled = false;
 let browserEverHealthy = false;
@@ -26,10 +27,58 @@ let releaseAgentComputerActions = null;
 
 if (!token) throw new Error('LINUX_DESKTOP_WORKER_TOKEN is required');
 
+class BrowserUnavailableError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = 'BrowserUnavailableError';
+  }
+}
+
+function resetBrowserConnection(disconnectedBrowser) {
+  if (browser !== disconnectedBrowser) return;
+  browser = undefined;
+  initialized = false;
+  researchGuardInstalled = false;
+  privateSignInFields = null;
+  inspectedComputerTargets.clear();
+}
+
+async function connectBrowser() {
+  if (browser?.isConnected()) return browser;
+  if (browser) resetBrowserConnection(browser);
+  if (!browserConnecting) {
+    const connecting = chromium.connectOverCDP(chromeDebugUrl).then(connected => {
+      browser = connected;
+      connected.on('disconnected', () => resetBrowserConnection(connected));
+      return connected;
+    }).catch(error => {
+      throw new BrowserUnavailableError('Chromium browser connection is unavailable', { cause: error });
+    }).finally(() => {
+      if (browserConnecting === connecting) browserConnecting = undefined;
+    });
+    browserConnecting = connecting;
+  }
+  return browserConnecting;
+}
+
 async function page() {
   if (browserUnhealthy) throw new Error('Chromium page is not responding');
-  if (!browser) browser = await chromium.connectOverCDP(chromeDebugUrl);
-  const context = browser.contexts()[0];
+  let connectedBrowser = await connectBrowser();
+  let context = connectedBrowser.contexts()[0];
+  if (!context) {
+    // A Chromium restart can leave Playwright's old CDP connection object
+    // alive but with no default context. Drop it and reconnect once before
+    // reporting the desktop as unavailable to Kubernetes.
+    resetBrowserConnection(connectedBrowser);
+    await connectedBrowser.close().catch(() => undefined);
+    connectedBrowser = await connectBrowser();
+    context = connectedBrowser.contexts()[0];
+  }
+  if (!context) {
+    resetBrowserConnection(connectedBrowser);
+    await connectedBrowser.close().catch(() => undefined);
+    throw new BrowserUnavailableError('Chromium browser context is unavailable');
+  }
   if (!researchGuardInstalled) {
     researchGuardInstalled = true;
     await context.route('**/*', async route => {
@@ -69,7 +118,7 @@ async function browserState() {
     browserEverHealthy = true;
     return { browserPage, url: browserPage.url(), title };
   } catch (error) {
-    if (browserEverHealthy) browserUnhealthy = true;
+    if (browserEverHealthy && !(error instanceof BrowserUnavailableError)) browserUnhealthy = true;
     if (process.env.COKE_DESKTOP_HEALTH_DIAGNOSTICS === '1') {
       process.stderr.write(`[browser-health] ${error instanceof Error ? error.stack || error.message : String(error)}\n`);
     }
@@ -407,6 +456,6 @@ http.createServer(async (req, res) => {
     return send(res, 404, { error: 'not found' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'computer command failed';
-    return send(res, 400, { error: message.slice(0, 240) });
+    return send(res, error instanceof BrowserUnavailableError ? 503 : 400, { error: message.slice(0, 240) });
   }
 }).listen(port, '0.0.0.0', () => process.stdout.write(`Dots desktop worker listening on ${port}\n`));

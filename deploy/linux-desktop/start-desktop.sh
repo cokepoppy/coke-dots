@@ -144,6 +144,8 @@ while true; do
     kill -0 "$pid" 2>/dev/null || { echo "desktop component exited" >&2; exit 1; }
   done
   if ! kill -0 "$chrome_pid" 2>/dev/null; then
+    if wait "$chrome_pid"; then chrome_status=0; else chrome_status=$?; fi
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Chromium exited (status=$chrome_status); restarting" >&2
     "$chrome_bin" "${chrome_flags[@]}" "$start_url" >>/tmp/dots-chrome.log 2>&1 &
     chrome_pid=$!
   fi
