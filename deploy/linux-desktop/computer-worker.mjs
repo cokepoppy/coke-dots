@@ -250,7 +250,7 @@ async function clearPrivateSignInFields() {
   await fields.identifier.fill('').catch(() => undefined);
 }
 
-http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
   let requestPath = 'unknown';
   try {
     const pathname = new URL(req.url || '/', 'http://127.0.0.1').pathname;
@@ -334,4 +334,15 @@ http.createServer(async (req, res) => {
     process.stderr.write(`${JSON.stringify({ event: 'computer_worker_request_failed', path: requestPath, status, errorName: error instanceof Error ? error.name : 'Error', errorCode: error && typeof error === 'object' && 'code' in error ? error.code : undefined, message: diagnostic })}\n`);
     return send(res, status, { error: message.slice(0, 240) });
   }
-}).listen(port, '0.0.0.0', () => process.stdout.write(`Dots desktop worker listening on ${port}\n`));
+});
+
+server.listen(port, '0.0.0.0', () => {
+  process.stdout.write(`Dots desktop worker listening on ${port}\n`);
+  // Populate the first Chromium page before the entrypoint waits for its
+  // welcome window. /readyz is intentionally held behind the visual-startup
+  // marker, so readiness itself cannot be the first client that creates it.
+  void page().catch(error => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Initial Chromium page setup failed: ${message.slice(0, 240)}\n`);
+  });
+});
