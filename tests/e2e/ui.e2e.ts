@@ -1413,6 +1413,9 @@ try {
     for (const tab of ['Shape', 'Eyes', 'Glasses', 'Accessories']) await advancedEditor.getByRole('tab', { name: tab }).waitFor({ state: 'visible' });
     assert.equal(await advancedEditor.getByRole('group', { name: 'Shape options' }).getByRole('button').count(), 11, 'The observed Shape page contains eleven silhouettes');
     assert.equal(await advancedEditor.getByRole('group', { name: 'Color' }).getByRole('button').count(), 9, 'The observed Shape page contains nine color swatches');
+    const referencePreviewEyes = advancedEditor.locator('.avatar-editor-preview .art-triangle ellipse');
+    assert.equal(await referencePreviewEyes.count(), 2, 'The reference triangle preview has two short horizontal eyes');
+    assert.deepEqual(await referencePreviewEyes.evaluateAll(elements => elements.map(element => [element.getAttribute('rx'), element.getAttribute('ry')])), [['5.2', '2.2'], ['5.2', '2.2']]);
     await screenshot(alphaPage!, 'avatar-editor-reference-state-dark');
     await advancedEditor.getByRole('button', { name: 'Close customizer' }).click();
     await toggleAccountTheme(alphaPage!);

@@ -29,7 +29,7 @@ function CharacterArt({ character }: { character: string }) {
   return <svg className={`avatar-face-art art-${character}`} viewBox="0 0 100 100" aria-hidden="true">
     {character === 'triangle' && <>
       <path fill="var(--avatar-color)" d="M50 8c-4 0-7 3-10 8L11 66c-6 10 1 22 13 22h52c12 0 19-12 13-22L60 16c-3-5-6-8-10-8Z" />
-      <circle cx="39" cy="55" r="3.5" fill="#352d40" /><circle cx="61" cy="55" r="3.5" fill="#352d40" />
+      <ellipse cx="39" cy="55" rx="5.2" ry="2.2" fill="#352d40" /><ellipse cx="61" cy="55" rx="5.2" ry="2.2" fill="#352d40" />
     </>}
     {character === 'blue' && <>
       <path fill="#f2c63d" d="M27 20 31 9l11 8 8-13 9 13 11-8 3 12Z" />
