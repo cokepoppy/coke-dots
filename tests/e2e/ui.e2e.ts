@@ -1004,6 +1004,9 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   await page.getByTestId('mock-slack-approve').click();
   await callbackPage;
   await dialog.waitFor({ state: 'visible' });
+  assert.equal(await dialog.getByLabel('Public Slack channel').isVisible(), false, 'Advanced Slack monitoring controls should stay out of the observed workspace-selection surface');
+  await dialog.getByRole('button', { name: 'Select another' }).click();
+  assert.equal(await dialog.locator('.slack-select-another').getAttribute('aria-expanded'), 'true');
   await dialog.getByLabel('Slack workspace').selectOption('TASPIE2E');
   const selected = page.waitForResponse(response => response.url().endsWith('/api/slack/contact') && response.request().method() === 'POST');
   await dialog.getByRole('button', { name: 'Select a workspace' }).click();
@@ -2320,6 +2323,7 @@ try {
     await panel.getByRole('button', { name: 'Slack', exact: true }).click();
     const dialog = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await dialog.waitFor({ state: 'visible' });
+    await dialog.locator('.slack-setup-advanced > summary').click();
     const channelPicker = dialog.getByLabel('Public Slack channel');
     await channelPicker.waitFor({ state: 'visible' });
     await channelPicker.selectOption('CBUGS1');
@@ -2397,6 +2401,7 @@ try {
       await contextPanel.getByRole('button', { name: 'Slack', exact: true }).click();
       const pausedDialog = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
       await pausedDialog.waitFor({ state: 'visible' });
+      await pausedDialog.locator('.slack-setup-advanced > summary').click();
       const monitorRow = pausedDialog.locator('.slack-monitor-row').filter({ hasText: '#incidents' });
       await monitorRow.getByRole('button', { name: 'Pause', exact: true }).click();
       await monitorRow.getByText('Paused', { exact: true }).waitFor({ state: 'visible' });
