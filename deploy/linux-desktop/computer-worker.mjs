@@ -341,11 +341,26 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, '0.0.0.0', () => {
   process.stdout.write(`Dots desktop worker listening on ${port}\n`);
-  // Populate the first Chromium page before the entrypoint waits for its
-  // welcome window. /readyz is intentionally held behind the visual-startup
-  // marker, so readiness itself cannot be the first client that creates it.
-  void page().catch(error => {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`Initial Chromium page setup failed: ${message.slice(0, 240)}\n`);
-  });
+  // Chromium and this worker start together. CDP can refuse its first
+  // connection before port 9222 is listening; keep retrying so the visual
+  // entrypoint does not wait for /readyz to initialize the welcome page.
+  void (async () => {
+    const deadline = Date.now() + 60_000;
+    let lastError = '';
+    while (Date.now() < deadline) {
+      try {
+        await page();
+        process.stdout.write('Initial Chromium welcome page is ready\n');
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== lastError) {
+          process.stderr.write(`Waiting for initial Chromium page: ${message.slice(0, 240)}\n`);
+          lastError = message;
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+    process.stderr.write(`Initial Chromium page did not become ready within 60 seconds${lastError ? `: ${lastError.slice(0, 200)}` : ''}\n`);
+  })();
 });
