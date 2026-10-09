@@ -28,6 +28,18 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(desktop.securityContext.runAsNonRoot, true);
   assert.equal(desktop.securityContext.runAsUser, 1000);
   assert.equal(desktop.securityContext.allowPrivilegeEscalation, false);
+  const probes = desktop as unknown as {
+    readinessProbe: { httpGet: { path: string }; timeoutSeconds: number; failureThreshold: number };
+    livenessProbe: { httpGet: { path: string }; initialDelaySeconds: number; periodSeconds: number; timeoutSeconds: number; failureThreshold: number };
+  };
+  assert.equal(probes.readinessProbe.httpGet.path, '/readyz');
+  assert.equal(probes.readinessProbe.timeoutSeconds, 6);
+  assert.equal(probes.readinessProbe.failureThreshold, 3);
+  assert.equal(probes.livenessProbe.httpGet.path, '/browserz', 'Chromium page hangs must recycle the desktop container');
+  assert.equal(probes.livenessProbe.initialDelaySeconds, 45, 'Give the Debian desktop time to start before checking browser liveness');
+  assert.equal(probes.livenessProbe.periodSeconds, 15);
+  assert.equal(probes.livenessProbe.timeoutSeconds, 6);
+  assert.equal(probes.livenessProbe.failureThreshold, 3);
   assert.equal(runtime.securityContext.runAsNonRoot, true);
   assert.equal(runtime.securityContext.runAsUser, 1001);
   assert.equal(runtime.securityContext.allowPrivilegeEscalation, false);

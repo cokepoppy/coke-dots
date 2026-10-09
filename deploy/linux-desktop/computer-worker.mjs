@@ -15,6 +15,9 @@ let owner = 'agent';
 let browser;
 let initialized = false;
 let researchGuardInstalled = false;
+let browserEverHealthy = false;
+let browserUnhealthy = false;
+const chromeDebugUrl = process.env.COKE_DESKTOP_CHROME_DEBUG_URL?.trim() || 'http://127.0.0.1:9222';
 let privateSignInFields = null;
 let inspectedComputerTargets = new Map();
 let activeAgentComputerActions = 0;
@@ -24,7 +27,8 @@ let releaseAgentComputerActions = null;
 if (!token) throw new Error('LINUX_DESKTOP_WORKER_TOKEN is required');
 
 async function page() {
-  if (!browser) browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
+  if (browserUnhealthy) throw new Error('Chromium page is not responding');
+  if (!browser) browser = await chromium.connectOverCDP(chromeDebugUrl);
   const context = browser.contexts()[0];
   if (!researchGuardInstalled) {
     researchGuardInstalled = true;
@@ -55,6 +59,34 @@ async function page() {
     }
   }
   return browserPage;
+}
+
+async function browserState() {
+  if (browserUnhealthy) throw new Error('Chromium page is not responding');
+  try {
+    const browserPage = await withTimeout(page(), 5000);
+    const title = await withTimeout(browserPage.evaluate(() => document.title), 5000);
+    browserEverHealthy = true;
+    return { browserPage, url: browserPage.url(), title };
+  } catch (error) {
+    if (browserEverHealthy) browserUnhealthy = true;
+    if (process.env.COKE_DESKTOP_HEALTH_DIAGNOSTICS === '1') {
+      process.stderr.write(`[browser-health] ${error instanceof Error ? error.stack || error.message : String(error)}\n`);
+    }
+    throw error;
+  }
+}
+
+async function withTimeout(promise, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Chromium page response timed out')), timeoutMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function send(res, status, value, type = 'application/json; charset=utf-8') {
@@ -283,9 +315,15 @@ http.createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url || '/', 'http://127.0.0.1').pathname;
     if (req.method === 'GET' && pathname === '/healthz') return send(res, 200, { ok: true });
+    if (req.method === 'GET' && pathname === '/browserz') {
+      try {
+        await browserState();
+        return send(res, 200, { ok: true });
+      } catch { return send(res, 503, { ok: false }); }
+    }
     if (req.method === 'GET' && pathname === '/readyz') {
       try {
-        await page();
+        await browserState();
         if (process.env.COKE_DESKTOP_CHROME_NO_SANDBOX === '1') await fs.access('/tmp/dots-chrome-startup-ready');
         await exec('xdpyinfo', ['-display', process.env.DISPLAY || ':1'], { timeout: 1500 });
         const agent = await fetch(`http://127.0.0.1:${process.env.DOTS_AGENT_RUNTIME_PORT || 8083}/healthz`, { signal: AbortSignal.timeout(1500) });
@@ -305,8 +343,10 @@ http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && pathname === '/v1/commands/private-sign-in') return send(res, 200, await fillPrivateSignIn(await body(req)));
     if (req.method === 'GET' && pathname === '/v1/state') {
-      const browserPage = await page();
-      return send(res, 200, { ready: true, owner, url: browserPage.url(), title: await browserPage.title().catch(() => '') });
+      try {
+        const state = await browserState();
+        return send(res, 200, { ready: true, owner, url: state.url, title: state.title });
+      } catch { return send(res, 503, { error: 'Chromium 页面暂时无响应' }); }
     }
     if (req.method === 'GET' && pathname === '/v1/agent/computer/inspect') {
       if (owner !== 'agent') return send(res, 409, { error: 'The user currently controls this computer' });

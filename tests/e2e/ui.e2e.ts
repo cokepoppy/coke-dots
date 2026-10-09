@@ -3931,13 +3931,34 @@ try {
   });
 
   await recordStep('Beta personal computer remains isolated from Alpha shared computer', async () => {
+    let beginStatePoll!: () => void;
+    let finishStatePoll!: () => void;
     let beginOpenRequest!: () => void;
     let finishOpenRequest!: () => void;
+    let finishFirstStatePoll!: () => void;
+    const firstStatePollStarted = new Promise<void>(resolve => { beginStatePoll = resolve; });
+    const firstStatePollFinished = new Promise<void>(resolve => { finishFirstStatePoll = resolve; });
+    const statePollGate = new Promise<void>(resolve => { finishStatePoll = resolve; });
     const openRequestStarted = new Promise<void>(resolve => { beginOpenRequest = resolve; });
     const openRequestGate = new Promise<void>(resolve => { finishOpenRequest = resolve; });
+    let statePollCount = 0;
+    let activeStatePolls = 0;
+    let maxConcurrentStatePolls = 0;
     await betaPage!.route('**/api/computer', async route => {
       if (route.request().method() === 'GET') {
-        await route.fulfill({ json: { ready: false, owner: 'agent', url: '', title: '', backend: 'linux-desktop', width: 1440, height: 1080 } });
+        statePollCount += 1;
+        activeStatePolls += 1;
+        maxConcurrentStatePolls = Math.max(maxConcurrentStatePolls, activeStatePolls);
+        if (statePollCount === 1) {
+          beginStatePoll();
+          await statePollGate;
+        }
+        try {
+          await route.fulfill({ json: { ready: false, owner: 'agent', url: '', title: '', backend: 'linux-desktop', width: 1440, height: 1080 } });
+        } finally {
+          activeStatePolls -= 1;
+          if (statePollCount === 1) finishFirstStatePoll();
+        }
         return;
       }
       await route.continue();
@@ -3952,6 +3973,12 @@ try {
     await betaPage!.getByRole('button', { name: '打开电脑' }).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.locator('.computer-browser-window').count(), 0, 'Beta inherited another tenant’s already-open computer');
     try {
+      await firstStatePollStarted;
+      await new Promise(resolve => setTimeout(resolve, 4500));
+      assert.equal(statePollCount, 1, 'A slow cloud state request must not overlap the next two-second poll');
+      assert.equal(maxConcurrentStatePolls, 1, 'Only one cloud computer state request may be in flight per view');
+      finishStatePoll();
+      await firstStatePollFinished;
       await betaPage!.getByRole('button', { name: '打开电脑' }).click();
       await openRequestStarted;
       const bootScreen = betaPage!.getByTestId('computer-boot-screen');
@@ -3965,6 +3992,7 @@ try {
       finishOpenRequest();
       await betaPage!.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible', timeout: 20_000 });
     } finally {
+      finishStatePoll();
       finishOpenRequest();
       await betaPage!.unroute('**/api/computer');
       await betaPage!.unroute('**/api/computer/open');

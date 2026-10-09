@@ -5,6 +5,9 @@ import './computer.css';
 
 interface ComputerState { ready: boolean; owner: 'agent' | 'user'; url: string; title: string; backend?: 'local' | 'linux-desktop'; width?: number; height?: number }
 
+const computerPollIntervalMs = 2_000;
+const computerPollMaxDelayMs = 30_000;
+
 export function ComputerView({ dotName, localComputerEnabled, onManageAccess, onError }: { dotName: string; localComputerEnabled: boolean; onManageAccess: () => void; onError: (message: string) => void }) {
   const [state, setState] = useState<ComputerState>({ ready: false, owner: 'agent', url: '', title: '' });
   const [url, setUrl] = useState('');
@@ -12,16 +15,34 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
   const [busy, setBusy] = useState(false);
   const keyboardQueue = useRef<Promise<void>>(Promise.resolve());
 
-  async function refresh() {
-    try {
-      const response = await appFetch('/api/computer');
-      if (!response.ok) return;
-      const next = await response.json() as ComputerState;
-      setState(next);
-      if (next.ready) setFrame(Date.now());
-    } catch { /* The main UI reports service connectivity. */ }
-  }
-  useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 2000); return () => clearInterval(timer); }, [dotName]);
+  useEffect(() => {
+    let disposed = false;
+    let timer: number | undefined;
+    let nextDelayMs = computerPollIntervalMs;
+
+    const refresh = async () => {
+      let succeeded = false;
+      try {
+        const response = await appFetch('/api/computer');
+        if (!response.ok) throw new Error(`Computer state returned HTTP ${response.status}`);
+        const next = await response.json() as ComputerState;
+        if (disposed) return;
+        setState(next);
+        if (next.ready) setFrame(Date.now());
+        succeeded = true;
+      } catch { /* The main UI reports service connectivity. */ }
+
+      if (disposed) return;
+      nextDelayMs = succeeded ? computerPollIntervalMs : Math.min(computerPollMaxDelayMs, nextDelayMs * 2);
+      timer = window.setTimeout(() => void refresh(), nextDelayMs);
+    };
+
+    void refresh();
+    return () => {
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [dotName]);
 
   async function action(path: string, body: object = {}) {
     setBusy(true);
