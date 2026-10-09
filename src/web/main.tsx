@@ -34,7 +34,7 @@ import './computer-choice.css';
 import './call-timeline.css';
 import './website-sign-in.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, dotPaused: false, preferences: { desktopNotifications: false, reasoningEffort: 'high' }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], githubTriggers: [], entries: [], configured: false, availableEngines: [], remoteEngines: [], eventTriggerEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, dotPaused: false, preferences: { desktopNotifications: false, reasoningEffort: 'high' }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], githubTriggers: [], gmail: { configured: false, pollIntervalSeconds: 60, connection: null, triggers: [] }, entries: [], configured: false, availableEngines: [], remoteEngines: [], eventTriggerEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
@@ -167,6 +167,33 @@ function App() {
     else if (slackError === 'cancelled') setError('Slack 工作区连接已取消。');
     else if (slackError === 'expired') setError('Slack 连接已过期，请重新连接。');
     else setError('Slack 工作区连接失败，请重试。');
+  }, [authContext?.user.id]);
+
+  useEffect(() => {
+    if (!authContext) return;
+    const url = new URL(window.location.href);
+    const connected = url.searchParams.get('gmail') === 'connected';
+    const gmailError = url.searchParams.get('gmailError');
+    if (!connected && !gmailError) return;
+    try {
+      const saved = sessionStorage.getItem('coke-dots:gmail-return-state');
+      if (saved) {
+        sessionStorage.removeItem('coke-dots:gmail-return-state');
+        const route = JSON.parse(saved) as { view?: string; selected?: unknown };
+        if (route.view === 'scheduled') setView('scheduled');
+        else if (route.view === 'chat' && (route.selected === null || (typeof route.selected === 'string' && route.selected.length <= 100))) {
+          setView('chat');
+          setSelected(route.selected as string | null);
+        }
+      }
+    } catch { /* Continue with the home view when session storage is unavailable. */ }
+    url.searchParams.delete('gmail'); url.searchParams.delete('gmailError');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    if (connected) setError('Gmail 已连接。新邮件触发任务会按设置的发件人或主题筛选运行。');
+    else if (gmailError === 'cancelled') setError('Gmail 连接已取消。');
+    else if (gmailError === 'expired') setError('Gmail 连接状态已过期，请重新连接。');
+    else if (gmailError === 'offline_access') setError('Google 未返回离线访问授权，请重新连接并接受 Gmail 只读权限。');
+    else setError('Gmail 连接失败，请检查权限后重试。');
   }, [authContext?.user.id]);
 
   useEffect(() => {
@@ -509,7 +536,10 @@ function App() {
       </section>{view === 'chat' && selectedPageId ? <div className="scratchpad-page-split" data-testid="scratchpad-page-split"><ScratchpadNavigationPane tenantId={authContext.tenant.id} selectedPageId={selectedPageId} refreshKey={pageIndexVersion} onOpen={setSelectedPageId} onBack={() => { setSelectedPageId(null); setView('pages'); }} /><PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => { setSelectedPageId(null); setView('pages'); }} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /></div> : view === 'chat' && (selectedTask || hasConversationHistory) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onStartCall={() => setVoiceCallOpen(true)} onOpenSlack={() => setSlackModalOpen(true)} onOpenTeams={() => setTeamsModalOpen(true)} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
       {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
       {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
-      {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches} githubTriggers={state.githubTriggers} eventTriggerEngines={state.eventTriggerEngines} canManageGitHubTriggers={Boolean(authContext && ['owner', 'admin'].includes(authContext.tenant.role))}
+      {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches} githubTriggers={state.githubTriggers} gmail={state.gmail} eventTriggerEngines={state.eventTriggerEngines} canManageGitHubTriggers={Boolean(authContext && ['owner', 'admin'].includes(authContext.tenant.role))} canManageGmail={Boolean(authContext)} onConnectGmail={() => {
+        try { sessionStorage.setItem('coke-dots:gmail-return-state', JSON.stringify({ view, selected })); } catch { /* Restore the home view if session storage is unavailable. */ }
+        window.location.assign(appPath('/api/gmail/connect/start'));
+      }}
         onCancelTask={task => void act(task, 'cancelSchedule')}
         onWatchAction={(watch, action) => void actWatch(watch.id, action)}
         onLoadTaskRuns={async taskId => {

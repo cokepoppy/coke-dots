@@ -112,6 +112,7 @@ export interface Snapshot {
   tasks: Task[];
   watches: Watch[];
   githubTriggers: GitHubPullRequestTrigger[];
+  gmail: GmailSnapshot;
   entries: Entry[];
   configured: boolean;
   availableEngines: Engine[];
@@ -162,6 +163,36 @@ export interface GitHubPullRequestTrigger {
   updatedAt: string;
   lastEventAt: string | null;
   lastTaskId: string | null;
+}
+
+export interface GmailConnection {
+  email: string;
+  status: 'connected' | 'needs_reconnect';
+  scopes: string[];
+  connectedAt: string;
+  lastSyncedAt: string | null;
+  error: string | null;
+}
+
+export interface GmailEventTrigger {
+  id: string;
+  fromFilter: string;
+  subjectFilter: string;
+  condition: string;
+  prompt: string;
+  engine: Extract<Engine, 'pi' | 'dsh'>;
+  status: 'active' | 'paused';
+  createdAt: string;
+  updatedAt: string;
+  lastEventAt: string | null;
+  lastTaskId: string | null;
+}
+
+export interface GmailSnapshot {
+  configured: boolean;
+  pollIntervalSeconds: number;
+  connection: GmailConnection | null;
+  triggers: GmailEventTrigger[];
 }
 
 export interface WorkspacePage {

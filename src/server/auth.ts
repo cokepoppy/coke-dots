@@ -2,16 +2,18 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
 import { Store, type AuthSession } from './store.ts';
+import { GmailService } from './gmail.ts';
 
 const cookieName = 'coke_dots_session';
 const oauthCookieName = 'coke_dots_oauth_state';
+const gmailOAuthCookieName = 'coke_dots_gmail_oauth_state';
 const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1000;
 
 export class AuthService {
   private clientId = process.env.GOOGLE_CLIENT_ID?.trim() || '';
   private clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() || '';
 
-  constructor(private store: Store, private port: number) {}
+  constructor(private store: Store, private port: number, private gmail?: GmailService) {}
 
   configured() { return Boolean(this.clientId && this.clientSecret); }
   e2eAuthAvailable() { return process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1'; }
@@ -35,6 +37,29 @@ export class AuthService {
     if (!this.configured()) return json(res, 503, { error: '请先配置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET。' });
     const authorizationUrl = await this.createAuthorizationUrl(req, res);
     res.writeHead(302, { Location: authorizationUrl, 'Cache-Control': 'no-store' });
+    res.end();
+  }
+
+  async beginGmail(req: IncomingMessage, res: ServerResponse, session: AuthSession) {
+    if (!this.configured()) return json(res, 503, { error: '请先配置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET。' });
+    const state = randomToken();
+    const nonce = randomToken();
+    const client = this.oauthClient();
+    const { codeVerifier, codeChallenge } = await client.generateCodeVerifierAsync();
+    const redirectUri = this.redirectUri(req);
+    this.store.createGmailOAuthFlow({
+      stateHash: hash(state), tenantId: session.tenant.id, userId: session.user.id, nonce, codeVerifier,
+      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), returnTo: appOrigin(req),
+    });
+    setOAuthCookie(res, hash(state), gmailOAuthCookieName);
+    const authorizationUrl = new URL(client.generateAuthUrl({
+      response_type: 'code', access_type: 'offline', scope: ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/gmail.readonly'],
+      include_granted_scopes: true, state, prompt: 'consent select_account', code_challenge: codeChallenge,
+      code_challenge_method: CodeChallengeMethod.S256,
+    }));
+    authorizationUrl.searchParams.set('nonce', nonce);
+    authorizationUrl.searchParams.set('redirect_uri', redirectUri);
+    res.writeHead(302, { Location: authorizationUrl.toString(), 'Cache-Control': 'no-store' });
     res.end();
   }
 
@@ -71,30 +96,49 @@ export class AuthService {
   async finish(req: IncomingMessage, res: ServerResponse, url: URL) {
     const state = url.searchParams.get('state') || '';
     const code = url.searchParams.get('code') || '';
-    const flow = state && state.length <= 1024 ? this.store.consumeOAuthFlow(hash(state)) : null;
-    const returnTo = flow?.returnTo || appOrigin(req);
-    const cookieState = cookieValue(req.headers.cookie || '', oauthCookieName);
-    clearOAuthCookie(res);
+    const stateHash = state && state.length <= 1024 ? hash(state) : '';
+    const gmailFlow = stateHash ? this.store.consumeGmailOAuthFlow(stateHash) : null;
+    const flow = gmailFlow ? null : stateHash ? this.store.consumeOAuthFlow(stateHash) : null;
+    const isGmailCallback = Boolean(gmailFlow) || (!flow && cookieValue(req.headers.cookie || '', gmailOAuthCookieName) === stateHash);
+    const stateCookieName = isGmailCallback ? gmailOAuthCookieName : oauthCookieName;
+    const returnTo = gmailFlow?.returnTo || flow?.returnTo || appOrigin(req);
+    const cookieState = cookieValue(req.headers.cookie || '', stateCookieName);
+    clearOAuthCookie(res, stateCookieName);
     if (url.searchParams.has('error')) {
       if (flow?.handoffHash) this.store.cancelDesktopHandoff(flow.handoffHash);
-      return redirect(res, `${returnTo}/?authError=cancelled`);
+      return redirect(res, `${returnTo}/?${isGmailCallback ? 'gmailError' : 'authError'}=cancelled`);
     }
-    if (!state || !code || code.length > 4096) return redirect(res, `${returnTo}/?authError=invalid`);
-    if (!flow || cookieState !== hash(state)) {
+    if (!state || !code || code.length > 4096) return redirect(res, `${returnTo}/?${isGmailCallback ? 'gmailError' : 'authError'}=invalid`);
+    if ((!flow && !gmailFlow) || cookieState !== stateHash) {
       if (flow?.handoffHash) this.store.cancelDesktopHandoff(flow.handoffHash);
-      return redirect(res, `${returnTo}/?authError=expired`);
+      return redirect(res, `${returnTo}/?${isGmailCallback ? 'gmailError' : 'authError'}=expired`);
     }
     try {
       const redirectUri = this.redirectUri(req);
       const client = this.oauthClient();
       disableOAuthCodeExchangeRetries(client);
-      const { tokens } = await client.getToken({ code, codeVerifier: flow.codeVerifier, redirect_uri: redirectUri });
-      if (!tokens.id_token) return redirect(res, `${returnTo}/?authError=missing_identity`);
+      const codeVerifier = gmailFlow?.codeVerifier || flow?.codeVerifier;
+      if (!codeVerifier) return redirect(res, `${returnTo}/?${isGmailCallback ? 'gmailError' : 'authError'}=expired`);
+      const { tokens } = await client.getToken({ code, codeVerifier, redirect_uri: redirectUri });
+      if (!tokens.id_token) return redirect(res, `${returnTo}/?${isGmailCallback ? 'gmailError' : 'authError'}=missing_identity`);
       const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: this.clientId });
       const identity = ticket.getPayload();
-      if (!identity || identity.nonce !== flow.nonce || !identity.sub || !identity.email || identity.email_verified !== true) {
-        return redirect(res, `${returnTo}/?authError=invalid_identity`);
+      const expectedNonce = gmailFlow?.nonce || flow?.nonce;
+      if (!identity || identity.nonce !== expectedNonce || !identity.sub || !identity.email || identity.email_verified !== true) {
+        return redirect(res, `${returnTo}/?${isGmailCallback ? 'gmailError' : 'authError'}=invalid_identity`);
       }
+      if (gmailFlow) {
+        const session = this.session(req);
+        if (!session || session.user.id !== gmailFlow.userId || session.tenant.id !== gmailFlow.tenantId || !this.gmail) {
+          return redirect(res, `${returnTo}/?gmailError=expired`);
+        }
+        const scopes = (tokens.scope || '').split(/\s+/).filter(Boolean);
+        const refreshToken = tokens.refresh_token || this.gmail.existingRefreshToken(gmailFlow.tenantId, gmailFlow.userId);
+        if (!refreshToken) return redirect(res, `${returnTo}/?gmailError=offline_access`);
+        await this.gmail.saveConnection({ tenantId: gmailFlow.tenantId, userId: gmailFlow.userId, email: identity.email, scopes, refreshToken });
+        return redirect(res, `${returnTo}/?gmail=connected`);
+      }
+      if (!flow) return redirect(res, `${returnTo}/?authError=expired`);
       const account = this.store.signInGoogle({ subject: identity.sub, email: identity.email, name: identity.name || identity.email });
       const token = randomToken();
       const expiresAt = new Date(Date.now() + sessionLifetimeMs).toISOString();
@@ -104,8 +148,8 @@ export class AuthService {
       redirect(res, `${returnTo}/`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error('Google sign-in failed:', message.slice(0, 300));
-      redirect(res, `${returnTo}/?authError=sign_in_failed`);
+      console.error(isGmailCallback ? 'Google Gmail connection failed:' : 'Google sign-in failed:', isGmailCallback ? safeOAuthErrorDetails(error) : message.slice(0, 300));
+      redirect(res, `${returnTo}/?${isGmailCallback ? 'gmailError=connection_failed' : 'authError=sign_in_failed'}`);
     }
   }
 
@@ -189,6 +233,24 @@ function disableOAuthCodeExchangeRetries(client: OAuth2Client) {
   };
 }
 
+function safeOAuthErrorDetails(error: unknown) {
+  const value = error && typeof error === 'object' ? error as {
+    name?: unknown;
+    code?: unknown;
+    response?: { status?: unknown };
+    cause?: unknown;
+  } : {};
+  const cause = value.cause && typeof value.cause === 'object' ? value.cause as { name?: unknown; code?: unknown } : {};
+  const safeCode = (item: unknown) => typeof item === 'string' && /^[A-Za-z0-9_.-]{1,80}$/.test(item) ? item : undefined;
+  return JSON.stringify({
+    name: safeCode(value.name) || 'Error',
+    code: safeCode(value.code),
+    status: typeof value.response?.status === 'number' ? value.response.status : undefined,
+    causeName: safeCode(cause.name),
+    causeCode: safeCode(cause.code),
+  });
+}
+
 function e2eGoogleProviderOrigin() {
   if (process.env.NODE_ENV !== 'test' || process.env.DOTS_E2E_AUTH !== '1') return '';
   try {
@@ -209,11 +271,11 @@ function setSessionCookie(res: ServerResponse, token: string, maxAgeMs: number, 
   const securePart = secure ? '; Secure' : '';
   appendCookie(res, `${cookieName}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=${appBasePath() || '/'}; Max-Age=${Math.floor(maxAgeMs / 1000)}${securePart}`);
 }
-function setOAuthCookie(res: ServerResponse, stateHash: string) {
-  appendCookie(res, `${oauthCookieName}=${stateHash}; HttpOnly; SameSite=Lax; Path=${appBasePath()}/auth/google/callback; Max-Age=600${secureCookies() ? '; Secure' : ''}`);
+function setOAuthCookie(res: ServerResponse, stateHash: string, name = oauthCookieName) {
+  appendCookie(res, `${name}=${stateHash}; HttpOnly; SameSite=Lax; Path=${appBasePath()}/auth/google/callback; Max-Age=600${secureCookies() ? '; Secure' : ''}`);
 }
-function clearOAuthCookie(res: ServerResponse) {
-  appendCookie(res, `${oauthCookieName}=; HttpOnly; SameSite=Lax; Path=${appBasePath()}/auth/google/callback; Max-Age=0${secureCookies() ? '; Secure' : ''}`);
+function clearOAuthCookie(res: ServerResponse, name = oauthCookieName) {
+  appendCookie(res, `${name}=; HttpOnly; SameSite=Lax; Path=${appBasePath()}/auth/google/callback; Max-Age=0${secureCookies() ? '; Secure' : ''}`);
 }
 function secureCookies() { return (process.env.GOOGLE_REDIRECT_URI || '').startsWith('https://'); }
 function appendCookie(res: ServerResponse, value: string) {

@@ -15,6 +15,7 @@ import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
 import { TeamsService } from './teams.ts';
 import { GitHubWebhookService } from './github.ts';
+import { GmailService } from './gmail.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -29,6 +30,7 @@ const publicHost = process.env.DOTS_PUBLIC_HOST?.trim().toLowerCase() || '';
 const trustedProxyToken = process.env.DOTS_TRUSTED_PROXY_TOKEN || '';
 const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
+const gmail = new GmailService(store);
 function initializeModelSettings() {
   loadModelSettings(store.getSetting('modelBaseUrl', 'legacy'), store.getSetting('modelName', 'legacy'), 'legacy');
   for (const tenant of store.modelSettingsTenants()) loadModelSettings(tenant.baseUrl, tenant.model, tenant.tenantId);
@@ -49,7 +51,7 @@ function initializeModelSettings() {
   );
 }
 initializeModelSettings();
-const auth = new AuthService(store, port);
+const auth = new AuthService(store, port, gmail);
 const slack = new SlackService(store, port);
 const teams = new TeamsService(store);
 const github = new GitHubWebhookService(store);
@@ -80,10 +82,12 @@ function snapshot(tenantId: string, userId?: string) {
   loadModelSettings(store.getSetting('modelBaseUrl', tenantId), store.getSetting('modelName', tenantId), tenantId);
   const available = availableFor(tenantId);
   const remote = remoteFor(tenantId);
-  return store.snapshot(available.includes('model'), available, {
+  const result = store.snapshot(available.includes('model'), available, {
     ...publicModelSettings(tenantId),
     ...(userId ? { canManage: store.canManageInstanceModel(userId, tenantId) } : {}),
-  }, tenantId, remote, eventTriggerEnginesFor(tenantId));
+  }, tenantId, remote, eventTriggerEnginesFor(tenantId), userId);
+  result.gmail = userId ? gmail.snapshot(tenantId, userId) : { configured: gmail.configured(), pollIntervalSeconds: gmail.pollIntervalSeconds(), connection: null, triggers: [] };
+  return result;
 }
 
 function computerFor(tenantId: string): ComputerRuntime {
@@ -115,6 +119,7 @@ const sessionHeartbeat = setInterval(() => {
 
 const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor);
 const watchRunner = new WatchRunner(store, publish, e2eWatchFetcher());
+gmail.setOnTasksCreated(() => { publish(); void worker.tick(); });
 
 async function tenantRuntimeDirectoriesForReset(tenantId: string) {
   if (!/^(legacy|[a-f0-9-]{36})$/i.test(tenantId)) throw new Error('工作区 ID 无效，无法清理运行目录');
@@ -241,6 +246,47 @@ const server = createServer(async (req, res) => {
     return reply(res, result.status, result.body);
   }
   if (path === '/api/slack' && req.method === 'GET') return reply(res, 200, slack.snapshot(session.tenant.id, session.user.id));
+  if (path === '/api/gmail/connect/start' && req.method === 'GET') return auth.beginGmail(req, res, session);
+  if (path === '/api/gmail' && req.method === 'GET') return reply(res, 200, gmail.snapshot(session.tenant.id, session.user.id));
+  if (path === '/api/gmail/disconnect' && req.method === 'POST') {
+    gmail.disconnect(session.tenant.id, session.user.id);
+    publish();
+    return reply(res, 200, { ok: true });
+  }
+  if (path === '/api/gmail/triggers' && req.method === 'POST') {
+    const body = await readJson(req);
+    const fromFilter = String(body.fromFilter || '').trim();
+    const subjectFilter = String(body.subjectFilter || '').trim();
+    const condition = String(body.condition || '').trim();
+    const prompt = String(body.prompt || '').trim();
+    const engine = body.engine;
+    if (fromFilter.length > 254 || subjectFilter.length > 160) return reply(res, 400, { error: '发件人筛选最多 254 个字符，主题筛选最多 160 个字符' });
+    if (!fromFilter && !subjectFilter) return reply(res, 400, { error: '请至少填写发件人或主题筛选条件' });
+    if (condition.length < 3 || condition.length > 500) return reply(res, 400, { error: '触发条件需要 3–500 个字符' });
+    if (prompt.length < 3 || prompt.length > 2000) return reply(res, 400, { error: '任务指令需要 3–2000 个字符' });
+    if (engine !== 'pi' && engine !== 'dsh') return reply(res, 400, { error: 'Gmail 事件任务必须使用 Pi 或 DeepSeek Harness' });
+    if (!eventTriggerEnginesFor(session.tenant.id).includes(engine)) return reply(res, 409, { error: '请先为此工作区配置 Debian 云电脑 Agent 内核 Pi 或 DeepSeek Harness' });
+    try {
+      const trigger = gmail.createTrigger(session, { fromFilter, subjectFilter, condition, prompt, engine });
+      publish();
+      return reply(res, 201, { trigger });
+    } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法创建 Gmail 事件任务' }); }
+  }
+  const gmailTriggerMatch = path.match(/^\/api\/gmail\/triggers\/([a-f0-9-]{36})$/i);
+  if (gmailTriggerMatch && req.method === 'PATCH') {
+    const body = await readJson(req);
+    const action = body.action;
+    if (action !== 'pause' && action !== 'resume') return reply(res, 400, { error: 'Invalid Gmail trigger action' });
+    const trigger = gmail.updateTrigger(session, gmailTriggerMatch[1]!, action);
+    if (!trigger) return reply(res, 404, { error: 'Gmail trigger not found' });
+    publish();
+    return reply(res, 200, trigger);
+  }
+  if (gmailTriggerMatch && req.method === 'DELETE') {
+    if (!gmail.deleteTrigger(session, gmailTriggerMatch[1]!)) return reply(res, 404, { error: 'Gmail trigger not found' });
+    publish();
+    return reply(res, 200, { ok: true });
+  }
   if (path === '/api/slack/channels' && req.method === 'GET') {
     const result = await slack.publicChannels(session.tenant.id, url.searchParams.get('teamId') || '', session);
     return result.status === 200 ? reply(res, 200, { channels: result.value }) : reply(res, result.status, { error: result.error });
@@ -359,6 +405,7 @@ const server = createServer(async (req, res) => {
         await clearTenantRuntimeDirectories(runtimeDirectories);
         const reset = store.resetPersonalDot(tenantId, session.user.id);
         if (reset !== 'ok') return reply(res, 409, { error: 'Dot 工作区状态已改变，请刷新页面后重试。' });
+        gmail.clearUser(tenantId, session.user.id);
         publish();
         return reply(res, 200, { ok: true });
       } finally {
@@ -382,7 +429,7 @@ const server = createServer(async (req, res) => {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || (before !== null && (!Number.isSafeInteger(before) || before < 1))) {
         return reply(res, 400, { error: 'Invalid activity page' });
       }
-      return reply(res, 200, store.activityPage(session.tenant.id, before, limit));
+      return reply(res, 200, store.activityPage(session.tenant.id, before, limit, session.user.id));
     }
     if (path === '/api/action-rule' && req.method === 'GET') return reply(res, 200, store.personalActionRule(session.user.id));
     if (path === '/api/memories' && req.method === 'GET') return reply(res, 200, store.tenantMemories(session.tenant.id));
@@ -755,12 +802,12 @@ const server = createServer(async (req, res) => {
     }
     const approvalMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/approval$/);
     if (approvalMatch && req.method === 'GET') {
-      if (!store.getTask(approvalMatch[1], session.tenant.id)) return reply(res, 404, { error: 'Task not found' });
+      if (!store.getTask(approvalMatch[1], session.tenant.id, session.user.id)) return reply(res, 404, { error: 'Task not found' });
       const approval = store.pageActionApproval(session.tenant.id, approvalMatch[1]);
       return reply(res, 200, approval ? { ...approval, canDecide: store.canResolvePageActionApproval(session.tenant.id, approvalMatch[1], session.user.id) } : null);
     }
     if (approvalMatch && req.method === 'POST') {
-      const task = store.getTask(approvalMatch[1], session.tenant.id);
+      const task = store.getTask(approvalMatch[1], session.tenant.id, session.user.id);
       if (!task) return reply(res, 404, { error: 'Task not found' });
       const decision = String(body.decision || '');
       if (decision !== 'approve' && decision !== 'decline') return reply(res, 400, { error: 'Invalid approval decision' });
@@ -773,7 +820,7 @@ const server = createServer(async (req, res) => {
     }
     const signInMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/sign-in(?:\/(submit|cancel|continue))?$/i);
     if (signInMatch) {
-      const task = store.getTask(signInMatch[1], session.tenant.id);
+      const task = store.getTask(signInMatch[1], session.tenant.id, session.user.id);
       if (!task) return reply(res, 404, { error: 'Task not found' });
       const action = signInMatch[2] || '';
       if (req.method === 'GET' && !action) return reply(res, 200, store.websiteSignInRequest(session.tenant.id, task.id));
@@ -822,7 +869,7 @@ const server = createServer(async (req, res) => {
     }
     const scheduledRunsMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/scheduled-runs(?:\/(read))?$/);
     if (scheduledRunsMatch) {
-      const task = store.getTask(scheduledRunsMatch[1], session.tenant.id);
+      const task = store.getTask(scheduledRunsMatch[1], session.tenant.id, session.user.id);
       if (!task) return reply(res, 404, { error: 'Task not found' });
       if (req.method === 'GET' && !scheduledRunsMatch[2]) return reply(res, 200, store.scheduledTaskRuns(session.tenant.id, task.id));
       if (req.method === 'POST' && scheduledRunsMatch[2] === 'read') {
@@ -834,7 +881,7 @@ const server = createServer(async (req, res) => {
     }
     const taskMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)$/);
     if (taskMatch && req.method === 'PATCH') {
-      const old = store.getTask(taskMatch[1], session.tenant.id);
+      const old = store.getTask(taskMatch[1], session.tenant.id, session.user.id);
       if (!old) return reply(res, 404, { error: 'Task not found' });
       const action = String(body.action || '');
       if (old.status === 'stopped') return reply(res, 409, { error: '这项工作已停止，不能继续或修改' });
@@ -884,7 +931,7 @@ const server = createServer(async (req, res) => {
       } else return reply(res, 400, { error: 'Invalid action' });
       store.addEntry('system', `任务操作：${action}`, old.id, session.tenant.id);
       publish(); void worker.tick();
-      return reply(res, 200, store.getTask(old.id, session.tenant.id));
+      return reply(res, 200, store.getTask(old.id, session.tenant.id, session.user.id));
     }
     return reply(res, 404, { error: 'Not found' });
   } catch (error) {
@@ -1006,6 +1053,7 @@ server.listen(port, host, () => {
   console.log(`Coke Dots service listening on http://${host}:${port}`);
   worker.start();
   watchRunner.start();
+  gmail.start();
   slack.start();
   teams.start();
 });
@@ -1014,6 +1062,7 @@ const shutdown = () => {
   clearInterval(sessionHeartbeat);
   worker.stop();
   watchRunner.stop();
+  gmail.stop();
   slack.stop();
   teams.stop();
   for (const client of clients.keys()) client.end();

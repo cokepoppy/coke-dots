@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { githubPullRequestActions, type GitHubPullRequestAction, type GitHubPullRequestTrigger, type ScheduledTaskRun, type Task, type Watch } from '../shared/types.ts';
+import { githubPullRequestActions, type GmailEventTrigger, type GmailSnapshot, type GitHubPullRequestAction, type GitHubPullRequestTrigger, type ScheduledTaskRun, type Task, type Watch } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask } from '../shared/scheduling.ts';
 import { appFetch, appPath } from './api.ts';
 
 type ScheduledItem =
   | { key: string; kind: 'task'; title: string; searchable: string; updatedAt: string; task: Task }
   | { key: string; kind: 'watch'; title: string; searchable: string; updatedAt: string; watch: Watch }
-  | { key: string; kind: 'github-trigger'; title: string; searchable: string; updatedAt: string; trigger: GitHubPullRequestTrigger };
+  | { key: string; kind: 'github-trigger'; title: string; searchable: string; updatedAt: string; trigger: GitHubPullRequestTrigger }
+  | { key: string; kind: 'gmail-trigger'; title: string; searchable: string; updatedAt: string; trigger: GmailEventTrigger };
 
 const statusText: Record<Task['status'], string> = {
   queued: 'Queued', working: 'Working', delegating: 'Parallel work', waiting: 'Needs you', scheduled: 'Monitoring', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
@@ -18,12 +19,15 @@ function taskStatusText(task: Task) {
     : statusText[task.status];
 }
 
-export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngines, canManageGitHubTriggers, onCancelTask, onWatchAction, onOpenTask, onLoadTaskRuns, onMarkTaskRunsRead, onNewTask, onAddWatch }: {
+export function ScheduledView({ tasks, watches, githubTriggers, gmail, eventTriggerEngines, canManageGitHubTriggers, canManageGmail, onConnectGmail, onCancelTask, onWatchAction, onOpenTask, onLoadTaskRuns, onMarkTaskRunsRead, onNewTask, onAddWatch }: {
   tasks: Task[];
   watches: Watch[];
   githubTriggers: GitHubPullRequestTrigger[];
+  gmail: GmailSnapshot;
   eventTriggerEngines: Extract<GitHubPullRequestTrigger['engine'], 'pi' | 'dsh'>[];
   canManageGitHubTriggers: boolean;
+  canManageGmail: boolean;
+  onConnectGmail: () => void;
   onCancelTask: (task: Task) => void;
   onWatchAction: (watch: Watch, action: 'pause' | 'resume') => void;
   onOpenTask: (task: Task) => void | Promise<void>;
@@ -36,6 +40,7 @@ export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngi
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [showWatchForm, setShowWatchForm] = useState(false);
   const [showGitHubForm, setShowGitHubForm] = useState(false);
+  const [showGmailForm, setShowGmailForm] = useState(false);
   const [repository, setRepository] = useState('');
   const [githubActions, setGitHubActions] = useState<GitHubPullRequestAction[]>(['opened', 'synchronize', 'reopened']);
   const [triggerCondition, setTriggerCondition] = useState('');
@@ -45,6 +50,13 @@ export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngi
   const [githubError, setGitHubError] = useState('');
   const [createdWebhook, setCreatedWebhook] = useState<{ trigger: GitHubPullRequestTrigger; secret: string } | null>(null);
   const [copyStatus, setCopyStatus] = useState('');
+  const [gmailFromFilter, setGmailFromFilter] = useState('');
+  const [gmailSubjectFilter, setGmailSubjectFilter] = useState('');
+  const [gmailCondition, setGmailCondition] = useState('');
+  const [gmailPrompt, setGmailPrompt] = useState('');
+  const [gmailEngine, setGmailEngine] = useState<GmailEventTrigger['engine'] | ''>(eventTriggerEngines[0] || '');
+  const [gmailBusy, setGmailBusy] = useState(false);
+  const [gmailError, setGmailError] = useState('');
   const [watchUrl, setWatchUrl] = useState('');
   const [watchMinutes, setWatchMinutes] = useState(60);
   const [watchBusy, setWatchBusy] = useState(false);
@@ -73,7 +85,12 @@ export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngi
       searchable: `${trigger.repository} ${trigger.condition} ${trigger.prompt} ${trigger.status} GitHub pull request`,
       updatedAt: trigger.updatedAt, trigger,
     })),
-  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [tasks, watches, githubTriggers]);
+    ...gmail.triggers.map(trigger => ({
+      key: `gmail-trigger:${trigger.id}`, kind: 'gmail-trigger' as const, title: `Email · ${trigger.fromFilter || trigger.subjectFilter}`,
+      searchable: `${trigger.fromFilter} ${trigger.subjectFilter} ${trigger.condition} ${trigger.prompt} ${trigger.status} Gmail email`,
+      updatedAt: trigger.updatedAt, trigger,
+    })),
+  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [tasks, watches, githubTriggers, gmail.triggers]);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return normalized ? items.filter(item => item.searchable.toLocaleLowerCase().includes(normalized)) : items;
@@ -92,6 +109,10 @@ export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngi
   useEffect(() => {
     if (!triggerEngine || !eventTriggerEngines.includes(triggerEngine)) setTriggerEngine(eventTriggerEngines[0] || '');
   }, [eventTriggerEngines, triggerEngine]);
+
+  useEffect(() => {
+    if (!gmailEngine || !eventTriggerEngines.includes(gmailEngine)) setGmailEngine(eventTriggerEngines[0] || '');
+  }, [eventTriggerEngines, gmailEngine]);
 
   useEffect(() => {
     if (explicitTaskSelection.current) {
@@ -183,6 +204,51 @@ export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngi
     } finally { setGitHubBusy(false); }
   }
 
+  async function submitGmailTrigger() {
+    if (!canManageGmail || gmailBusy || !gmailEngine || (!gmailFromFilter.trim() && !gmailSubjectFilter.trim())) return;
+    setGmailBusy(true); setGmailError('');
+    try {
+      const response = await appFetch('/api/gmail/triggers', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fromFilter: gmailFromFilter.trim(), subjectFilter: gmailSubjectFilter.trim(), condition: gmailCondition.trim(), prompt: gmailPrompt.trim(), engine: gmailEngine }),
+      });
+      const data = await response.json() as { trigger?: GmailEventTrigger; error?: string };
+      if (!response.ok || !data.trigger) throw new Error(data.error || 'Unable to create Gmail event task');
+      setGmailFromFilter(''); setGmailSubjectFilter(''); setGmailCondition(''); setGmailPrompt('');
+      setShowGmailForm(false); setShowGitHubForm(false); setSelectedKey(`gmail-trigger:${data.trigger.id}`);
+    } catch (error) {
+      setGmailError(error instanceof Error ? error.message : String(error));
+    } finally { setGmailBusy(false); }
+  }
+
+  async function changeGmailTrigger(trigger: GmailEventTrigger, action: 'pause' | 'resume' | 'delete') {
+    if (!canManageGmail || gmailBusy) return;
+    setGmailBusy(true); setGmailError('');
+    try {
+      const response = await appFetch(`/api/gmail/triggers/${trigger.id}`, action === 'delete'
+        ? { method: 'DELETE' }
+        : { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error || 'Unable to update Gmail event task');
+      if (action === 'delete') setSelectedKey(null);
+    } catch (error) {
+      setGmailError(error instanceof Error ? error.message : String(error));
+    } finally { setGmailBusy(false); }
+  }
+
+  async function disconnectGmail() {
+    if (!canManageGmail || gmailBusy || !window.confirm('Disconnect this Gmail account and remove its event triggers?')) return;
+    setGmailBusy(true); setGmailError('');
+    try {
+      const response = await appFetch('/api/gmail/disconnect', { method: 'POST' });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error || 'Unable to disconnect Gmail');
+      setShowGmailForm(false); setSelectedKey(null);
+    } catch (error) {
+      setGmailError(error instanceof Error ? error.message : String(error));
+    } finally { setGmailBusy(false); }
+  }
+
   async function copyValue(value: string, label: string) {
     try {
       await navigator.clipboard.writeText(value);
@@ -249,7 +315,7 @@ export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngi
             : item.kind === 'watch' ? item.watch.status === 'active' ? 'Monitoring' : item.watch.status === 'paused' ? 'Paused' : 'Failed'
               : item.trigger.status === 'active' ? 'Monitoring' : 'Paused';
           const unreadRuns = item.kind === 'task' ? item.task.unreadScheduledRunCount || 0 : 0;
-          return <button key={item.key} className={`scheduled-item ${selectedKey === item.key ? 'selected' : ''}`} aria-pressed={selectedKey === item.key} onMouseEnter={event => showItemPreview(event.currentTarget, item)} onMouseLeave={() => clearItemPreview(item.key)} onFocus={event => showItemPreview(event.currentTarget, item)} onBlur={() => clearItemPreview(item.key)} onClick={() => { setTaskOpenError(false); if (item.kind === 'task') { if (selectedKey !== item.key) explicitTaskSelection.current = true; setSelectedKey(item.key); void reviewRunsAgain(item.task.id); } else { setShowGitHubForm(false); setSelectedKey(item.key); } }}>
+          return <button key={item.key} className={`scheduled-item ${selectedKey === item.key ? 'selected' : ''}`} aria-pressed={selectedKey === item.key} onMouseEnter={event => showItemPreview(event.currentTarget, item)} onMouseLeave={() => clearItemPreview(item.key)} onFocus={event => showItemPreview(event.currentTarget, item)} onBlur={() => clearItemPreview(item.key)} onClick={() => { setTaskOpenError(false); if (item.kind === 'task') { if (selectedKey !== item.key) explicitTaskSelection.current = true; setSelectedKey(item.key); void reviewRunsAgain(item.task.id); } else { setShowGitHubForm(false); setShowGmailForm(false); setSelectedKey(item.key); } }}>
             <span className="scheduled-item-copy"><strong>{item.title}</strong><small>{status}</small></span>
             {unreadRuns > 0 && item.kind === 'task' && <span className="scheduled-item-unread" data-testid={`scheduled-unread-task-${item.task.id}`} aria-label={`${unreadRuns} unread scheduled run${unreadRuns === 1 ? '' : 's'}`} title={`${unreadRuns} unread run${unreadRuns === 1 ? '' : 's'}`} />}
             <span className="scheduled-item-menu" aria-hidden="true">···</span>
@@ -269,6 +335,21 @@ export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngi
       <button className="scheduled-add-watch" onClick={() => { setShowWatchForm(value => !value); setShowGitHubForm(false); }} aria-expanded={showWatchForm}>＋ Monitor a page</button>
       {canManageGitHubTriggers && <button className="scheduled-add-watch" data-testid="add-github-trigger" onClick={() => { setShowGitHubForm(value => !value); setShowWatchForm(false); setGitHubError(''); setCreatedWebhook(null); }} aria-expanded={showGitHubForm}>＋ GitHub pull request trigger</button>}
       {canManageGitHubTriggers && eventTriggerEngines.length === 0 && <p className="scheduled-trigger-note">Configure Pi or DeepSeek Harness in the Debian cloud computer to add GitHub event tasks.</p>}
+      {canManageGmail && <section className="gmail-mailbox" data-testid="gmail-mailbox">
+        <div className="gmail-mailbox-heading"><strong>Gmail events</strong><span aria-hidden="true">✉</span></div>
+        {gmail.connection ? <>
+          <p className="gmail-mailbox-account">{gmail.connection.email} · {gmail.connection.status === 'connected' ? '已连接' : '需要重新连接'}</p>
+          {gmail.connection.error && <p className="scheduled-watch-error" role="alert">{gmail.connection.error}</p>}
+          {gmail.connection.lastSyncedAt && <small>上次检查 {new Date(gmail.connection.lastSyncedAt).toLocaleString()}</small>}
+          <div className="gmail-mailbox-actions"><button type="button" onClick={onConnectGmail} disabled={!gmail.configured}>{gmail.connection.status === 'connected' ? '重新授权' : '重新连接'}</button><button type="button" onClick={() => void disconnectGmail()} disabled={gmailBusy}>断开</button></div>
+          <p className="gmail-poll-note">每 {gmail.pollIntervalSeconds} 秒检查一次新邮件。邮箱和触发条件仅对你的账号可见。</p>
+          {gmail.connection.status === 'connected' && <button className="scheduled-add-watch" data-testid="add-gmail-trigger" onClick={() => { setShowGmailForm(value => !value); setShowWatchForm(false); setShowGitHubForm(false); setGmailError(''); }} aria-expanded={showGmailForm}>＋ 新建邮件触发任务</button>}
+        </> : <>
+          <p className="gmail-poll-note">连接 Gmail 后，可按发件人或主题触发只读任务。需要单独授权 Gmail 只读访问。</p>
+          <button type="button" className="scheduled-add-watch" data-testid="connect-gmail" onClick={onConnectGmail} disabled={!gmail.configured}>{gmail.configured ? '＋ 连接 Gmail' : 'Google 登录未配置'}</button>
+        </>}
+        {gmail.connection?.status === 'connected' && eventTriggerEngines.length === 0 && <p className="scheduled-trigger-note">请先在 Debian 云电脑配置 Pi 或 DeepSeek Harness。</p>}
+      </section>}
     </aside>
 
     <div className="scheduled-detail-pane">
@@ -277,6 +358,17 @@ export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngi
         {selected?.kind === 'task' && <button type="button" onClick={() => void openTask(selected.task)} disabled={taskOpenBusy}>Try again</button>}
         {selectedWatchReview && <button type="button" onClick={() => void openTask(selectedWatchReview)} disabled={taskOpenBusy}>Try again</button>}
       </div>}
+      {showGmailForm && <form className="scheduled-watch-form gmail-trigger-form" data-testid="gmail-trigger-form" onSubmit={event => { event.preventDefault(); void submitGmailTrigger(); }}>
+        <div className="scheduled-watch-form-heading"><strong>新邮件触发任务</strong><button type="button" aria-label="关闭 Gmail 触发器表单" onClick={() => { setShowGmailForm(false); setGmailError(''); }}>×</button></div>
+        <p className="scheduled-trigger-note">仅当新邮件匹配下面的筛选条件时启动。邮件正文视为不可信输入；任务只能阅读邮件摘要，不会发送、归档或修改邮件。</p>
+        <label>发件人包含<input aria-label="Gmail sender filter" maxLength={254} value={gmailFromFilter} onChange={event => setGmailFromFilter(event.target.value)} placeholder="alerts@example.com" autoComplete="off" /></label>
+        <label>主题包含<input aria-label="Gmail subject filter" maxLength={160} value={gmailSubjectFilter} onChange={event => setGmailSubjectFilter(event.target.value)} placeholder="订单更新" autoComplete="off" /></label>
+        <label>触发条件<textarea aria-label="Gmail trigger condition" value={gmailCondition} onChange={event => setGmailCondition(event.target.value)} maxLength={500} placeholder="例如：主题包含订单更新且发件人是商家" required /></label>
+        <label>任务指令<textarea aria-label="Gmail trigger instructions" value={gmailPrompt} onChange={event => setGmailPrompt(event.target.value)} maxLength={2000} placeholder="例如：用中文提取订单号、发货状态和预计送达时间" required /></label>
+        <label>云电脑 Agent 内核<select aria-label="Gmail cloud agent kernel" value={gmailEngine} onChange={event => setGmailEngine(event.target.value as GmailEventTrigger['engine'])} required>{eventTriggerEngines.map(engine => <option value={engine} key={engine}>{engine === 'pi' ? 'Pi' : 'DeepSeek Harness'}</option>)}</select></label>
+        {gmailError && <p className="scheduled-watch-error" role="alert">{gmailError}</p>}
+        <button className="scheduled-primary" type="submit" data-testid="create-gmail-trigger" disabled={gmailBusy || !gmailEngine || eventTriggerEngines.length === 0 || (!gmailFromFilter.trim() && !gmailSubjectFilter.trim()) || gmailCondition.trim().length < 3 || gmailPrompt.trim().length < 3}>{gmailBusy ? '正在创建…' : '创建邮件触发任务'}</button>
+      </form>}
       {showGitHubForm && <form className="scheduled-watch-form github-trigger-form" data-testid="github-trigger-form" onSubmit={event => { event.preventDefault(); void submitGitHubTrigger(); }}>
         <div className="scheduled-watch-form-heading"><strong>GitHub Pull Request trigger</strong><button type="button" aria-label="Close GitHub trigger form" onClick={() => { setShowGitHubForm(false); setGitHubError(''); }}>×</button></div>
         <p className="scheduled-trigger-note">Create a repository webhook using the URL and one-time secret shown after saving. Event runs use read-only Pi or DeepSeek Harness in the tenant’s Debian cloud computer.</p>
@@ -364,6 +456,20 @@ export function ScheduledView({ tasks, watches, githubTriggers, eventTriggerEngi
           {canManageGitHubTriggers && <button className="scheduled-primary" disabled={githubBusy} onClick={() => void changeGitHubTrigger(selected.trigger, selected.trigger.status === 'active' ? 'pause' : 'resume')}>{selected.trigger.status === 'active' ? 'Pause trigger' : 'Resume trigger'}</button>}
           {canManageGitHubTriggers && <button className="scheduled-danger" disabled={githubBusy} onClick={() => void changeGitHubTrigger(selected.trigger, 'delete')}>Delete trigger</button>}
         </div>
+      </article>}
+      {!taskOpenError && selected?.kind === 'gmail-trigger' && <article className="scheduled-detail" data-testid="gmail-trigger-detail" data-item-id={selected.trigger.id}>
+        <div className="scheduled-detail-top"><span className="scheduled-detail-label">你的 dot · 仅此账号</span><span className={`scheduled-status ${selected.trigger.status}`}>{selected.trigger.status === 'active' ? '监控中' : '已暂停'}</span></div>
+        <h2>新邮件触发任务</h2>
+        <p className="scheduled-instruction">当新邮件符合发件人或主题筛选时，Dot 会先评估触发条件，再在云电脑中运行只读任务。</p>
+        <div className="scheduled-detail-meta"><span>发件人：{selected.trigger.fromFilter || '不限'}</span><span>主题：{selected.trigger.subjectFilter || '不限'}</span><span>内核：{selected.trigger.engine === 'pi' ? 'Pi' : 'DeepSeek Harness'}</span><span>检查间隔：{gmail.pollIntervalSeconds} 秒</span><span>上次触发：{selected.trigger.lastEventAt ? new Date(selected.trigger.lastEventAt).toLocaleString() : '暂无'}</span></div>
+        <section className="github-trigger-summary"><h3>触发条件</h3><p>{selected.trigger.condition}</p><h3>任务指令</h3><p>{selected.trigger.prompt}</p></section>
+        <p className="scheduled-trigger-warning">Gmail 连接、任务和邮件摘要对当前用户隔离。邮件内容是不可信数据；此触发器只能分析匹配邮件，不会发送或修改邮件。</p>
+        <div className="scheduled-detail-actions">
+          {selected.trigger.lastTaskId && tasks.some(task => task.id === selected.trigger.lastTaskId) && <button onClick={() => { const task = tasks.find(item => item.id === selected.trigger.lastTaskId); if (task) void openTask(task); }}>打开最近任务</button>}
+          {canManageGmail && <button className="scheduled-primary" disabled={gmailBusy} onClick={() => void changeGmailTrigger(selected.trigger, selected.trigger.status === 'active' ? 'pause' : 'resume')}>{selected.trigger.status === 'active' ? '暂停触发器' : '恢复触发器'}</button>}
+          {canManageGmail && <button className="scheduled-danger" disabled={gmailBusy} onClick={() => void changeGmailTrigger(selected.trigger, 'delete')}>删除触发器</button>}
+        </div>
+        {gmailError && <p className="scheduled-watch-error" role="alert">{gmailError}</p>}
       </article>}
       {!taskOpenError && !selected && <div className="scheduled-empty-detail"><div className="scheduled-empty-icon" aria-hidden="true">◷</div><h2>{items.length ? 'No matching tasks' : 'No scheduled tasks yet'}</h2><p>{items.length ? 'Try a different search.' : 'Create a recurring task or monitor a page to see it here.'}</p><button className="scheduled-primary" onClick={onNewTask}>＋ New task</button></div>}
     </div>
