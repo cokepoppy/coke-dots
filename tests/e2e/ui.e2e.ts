@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomBytes, sign as signJwt } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { accessSync, constants, existsSync } from 'node:fs';
-import { appendFile, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createConnection, createServer, type Socket } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
@@ -2949,7 +2949,38 @@ try {
     assert.equal(await profileCall.getByRole('button', { name: '结束通话' }).innerText(), 'End');
     assert.equal(await profileCall.getByRole('button', { name: '关闭扬声器' }).innerText(), 'Speaker');
     assert.equal(await profileCall.getByRole('button', { name: '静音' }).innerText(), 'Mute');
+    const handsetReference = JSON.parse(await readFile(join(projectRoot, 'research/comparisons/voice-call-mobile-v1-0650.json'), 'utf8')) as {
+      source: { crop: { width: number; height: number } };
+      controls: { name: string; center: { x: number; y: number }; diameter: number }[];
+      tolerance: { normalizedPosition: number; normalizedDiameter: number };
+    };
+    const handsetGeometry = await profileCall.evaluate(element => {
+      const dock = element.getBoundingClientRect();
+      return Array.from(element.querySelectorAll<HTMLElement>('.voice-call-control-icon')).map(icon => {
+        const box = icon.getBoundingClientRect();
+        return {
+          x: (box.left + box.width / 2 - dock.left) / dock.width,
+          y: (box.top + box.height / 2 - dock.top) / dock.height,
+          diameter: box.width / dock.width,
+        };
+      });
+    });
+    assert.equal(handsetGeometry.length, handsetReference.controls.length);
+    handsetReference.controls.forEach((reference, index) => {
+      const actual = handsetGeometry[index]!;
+      const x = reference.center.x / handsetReference.source.crop.width;
+      const y = reference.center.y / handsetReference.source.crop.height;
+      const diameter = reference.diameter / handsetReference.source.crop.width;
+      assert(Math.abs(actual.x - x) <= handsetReference.tolerance.normalizedPosition,
+        `${reference.name} center should match the 06:50.9 frame horizontally: expected ${x.toFixed(3)}, saw ${actual.x.toFixed(3)}`);
+      assert(Math.abs(actual.y - y) <= handsetReference.tolerance.normalizedPosition,
+        `${reference.name} center should match the 06:50.9 frame vertically: expected ${y.toFixed(3)}, saw ${actual.y.toFixed(3)}`);
+      assert(Math.abs(actual.diameter - diameter) <= handsetReference.tolerance.normalizedDiameter,
+        `${reference.name} diameter should match the 06:50.9 frame: expected ${diameter.toFixed(3)}, saw ${actual.diameter.toFixed(3)}`);
+    });
     await screenshot(alphaPage!, 'voice-call-handset-reference');
+    await profileCall.screenshot({ path: join(screenshotsDir, 'voice-call-handset-phone.png') });
+    screenshotNames.push('voice-call-handset-phone.png');
     await profileCall.getByRole('button', { name: '展开通话界面' }).click();
     assert.equal(await profileCall.getByRole('button', { name: '收起通话界面' }).getAttribute('aria-pressed'), 'true');
     await profileCall.getByRole('button', { name: '收起通话界面' }).click();
