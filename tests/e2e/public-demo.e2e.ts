@@ -15,7 +15,7 @@ const videoDirectory = join(artifactRoot, 'video');
 const showcaseVideoDefinitions = [
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
-  { file: 'cloud-computer-agent-actions.webp', minimumWidth: 1100, minimumHeight: 760, minimumDurationSeconds: 35, minimumFrames: 250, minimumReadableHoldCount: 3, readableHoldMinimumMs: 4900, verifyFullPlayback: true },
+  { file: 'cloud-computer-agent-actions.webp', minimumWidth: 1100, minimumHeight: 760, minimumDurationSeconds: 37, minimumFrames: 260, minimumReadableHoldCount: 3, readableHoldMinimumMs: 7900, verifyFullPlayback: true },
   { file: 'proactive-cloud-computer-followthrough.webp', minimumWidth: 900, minimumHeight: 625, minimumDurationSeconds: 35, minimumFrames: 500, minimumReadableHoldCount: 3, readableHoldMinimumMs: 3900, verifyFullPlayback: true },
 ] as { file: string; width?: number; height?: number; minimumWidth?: number; minimumHeight?: number; minimumDurationSeconds?: number; minimumFrames?: number; minimumReadableHoldCount?: number; readableHoldMinimumMs?: number; verifyFullPlayback?: boolean }[];
 const selectedVideoFile = process.env.DOTS_PUBLIC_DEMO_VIDEO;
@@ -121,7 +121,7 @@ try {
     }
   });
 
-  await check('hosted demos are complete animated WebP artifacts with readable timing', async () => {
+  await check(showcaseVideos.length === 1 ? 'the selected hosted demo is complete and readable' : 'hosted demos are complete animated WebP artifacts with readable timing', async () => {
     for (const video of showcaseVideos) {
       const minimumFrames = 'minimumFrames' in video && typeof video.minimumFrames === 'number' ? video.minimumFrames : 16;
       assert(video.frames >= minimumFrames, `${video.file} must contain a full animated sequence, not a short slide show`);
@@ -213,7 +213,7 @@ try {
     await page!.getByText('登录返回信息无效。', { exact: true }).waitFor({ state: 'visible' });
   });
 
-  await check('Chrome decodes and plays changing frames from all hosted WebPs', async () => {
+  await check(showcaseVideos.length === 1 ? 'Chrome decodes and plays the selected hosted WebP' : 'Chrome decodes and plays changing frames from all hosted WebPs', async () => {
     await page!.goto(baseUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 45_000 });
     for (const video of showcaseVideos) {
       const playbackStartedAt = Date.now();
@@ -234,7 +234,9 @@ try {
       const laterFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
       assert.notEqual(firstFrame, laterFrame, `${video.file} should advance beyond its initial frame`);
       if ('minimumDurationSeconds' in video) {
-        await page!.waitForTimeout(5000);
+        // Readable holds are intentional. Sample again after the hold, otherwise
+        // this assertion can mistake a deliberate reading pause for a stalled clip.
+        await page!.waitForTimeout('minimumReadableHoldCount' in video ? 10_000 : 5000);
         const laterActionFrame = createHash('sha256').update(await page!.screenshot()).digest('hex');
         assert.notEqual(laterFrame, laterActionFrame, `${video.file} should continue through the recorded computer actions at the documented presentation speed`);
       }
