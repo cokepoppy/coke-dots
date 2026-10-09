@@ -1,6 +1,6 @@
 # Voice-call replica: evidence and limits
 
-Updated 2026-10-09 on `feature/voice-call-reference-fidelity`.
+Updated 2026-10-10 on `feature/voice-call-reference-fidelity`.
 
 ## Reference evidence
 
@@ -26,6 +26,7 @@ Updated 2026-10-09 on `feature/voice-call-reference-fidelity`.
 
 - `npm test` passed 135 tests, including call-history durability, workspace/owner isolation, and resuming a waiting task without losing its original goal.
 - `npm run build` passed. The Chrome UI E2E run passed all 57 browser steps at `artifacts/e2e/2026-10-09T05-38-25-615Z`; retained call screenshots include `voice-call-handset-reference.png` and `voice-call-active-reference.png`. The voice flow uses deterministic in-page speech input to create a waiting task, speak the Dot's question, answer “Use Friday.”, and assert that the same task ID reaches `done` with the model result and user reply in its prompt. It covers both call entry points and both observed layouts, handset proportions and control order, expand/collapse, desktop mute/hang-up, result speech, handset mute/speaker controls, timer progression, typing during a call, continuation after hang-up, separate tenant histories, and the call-ended chip after reload.
+- The handset reference screenshot now waits until the visible call timer reaches `0:06`, aligning it with the V1 06:26 frame instead of capturing immediately at `0:00`. The new Chrome run passed all 57 browser steps at `artifacts/e2e/2026-10-09T20-16-54-975Z`; its phone crop shows `0:06`. The K3D cloud-computer run also passed its eight checks at `artifacts/e2e/linux-cloud-computer-2026-10-09T20-19-24-503Z`. `npm test` passed 135/135.
 - The voice test uses a deterministic in-page SpeechRecognition stub. A live microphone, acoustic recognition quality, and the browser's real speech service were not exercised. Speech is spoken after a task result or question arrives; this is not a streamed real-time voice model. Dot-initiated calls and audio streaming remain unverified.
 - The phone-style frame is compressed and has no known source viewport. The control geometry now follows the clearest measured frame, but exact original CSS-pixel parity cannot be established from this footage. The V2 compact controls are also shown in compressed footage without a source viewport. The handset expand action is visible but its resulting state is not shown in source footage.
 - The final normalized screenshot comparison checks 396,000 pixels and reports mean absolute channel error 27.77/255 with 25.05% of pixels beyond the configured difference threshold. This includes source-video subtitles, playback controls, compression, unknown UI dimensions, and matching uncertainty; treat it as a diagnostic image diff rather than a parity score. The reference crop, final implementation crop, overlay, difference, and metrics are generated under `artifacts/reference-comparison/voice-call-v1-0626/`.

@@ -2978,6 +2978,10 @@ try {
       assert(Math.abs(actual.diameter - diameter) <= handsetReference.tolerance.normalizedDiameter,
         `${reference.name} diameter should match the 06:50.9 frame: expected ${diameter.toFixed(3)}, saw ${actual.diameter.toFixed(3)}`);
     });
+    await waitFor(async () => {
+      const [minutes, seconds] = (await profileCall.getByTestId('voice-call-timer').innerText()).split(':').map(Number);
+      return Number.isFinite(minutes) && Number.isFinite(seconds) && minutes * 60 + seconds >= 6;
+    }, 10_000);
     await screenshot(alphaPage!, 'voice-call-handset-reference');
     await profileCall.screenshot({ path: join(screenshotsDir, 'voice-call-handset-phone.png') });
     screenshotNames.push('voice-call-handset-phone.png');
