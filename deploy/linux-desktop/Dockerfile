@@ -69,6 +69,9 @@ COPY --chmod=0644 src/web/assets/dots-files.png /opt/coke-dots/icons/dots-files.
 RUN install -d -o node -g node -m 0755 /opt/coke-dots/chrome-theme
 COPY --chmod=0644 deploy/linux-desktop/chrome-theme/manifest.json /opt/coke-dots/chrome-theme/manifest.json
 
+ARG COKE_DOTS_GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision=$COKE_DOTS_GIT_REVISION
+
 USER 1000:1000
 WORKDIR /workspace
 

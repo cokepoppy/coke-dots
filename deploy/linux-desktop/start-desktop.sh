@@ -14,7 +14,6 @@ chrome_bin="${COKE_DESKTOP_CHROME_BIN:-/usr/bin/chromium}"
 profile_dir="$HOME/.config/chromium"
 mkdir -p "$HOME" "$profile_dir" "$HOME/.vnc" /workspace/.coke-desktop /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
-rm -f /tmp/dots-chrome-startup-ready
 
 # A recreated Pod mounts the prior Pod's persistent Chromium profile. Chrome's
 # singleton links include the old Pod name and can block CDP startup forever;
@@ -159,7 +158,6 @@ for _ in $(seq 1 45); do
   sleep 1
 done
 [[ "$banner_dismissed" == "1" ]] || echo "Chromium welcome window did not appear before the banner dismissal deadline" >&2
-if [[ "$banner_dismissed" == "1" ]]; then touch /tmp/dots-chrome-startup-ready; fi
 
 while true; do
   for pid in "$wm_pid" "$tint2_pid" "$vnc_pid" "$websockify_pid" "$worker_pid"; do

@@ -3244,6 +3244,50 @@ try {
     await screenshot(alphaPage!, '14b-computer-browser-native-blocked');
   });
 
+  await recordStep('The previous computer screenshot stays visible while the next frame loads', async () => {
+    const image = alphaPage!.getByAltText('独立浏览器画面');
+    await waitForComputerScreenshot(alphaPage!);
+    const previous = await image.evaluate(element => {
+      const screenshot = element as HTMLImageElement;
+      return { src: screenshot.src, complete: screenshot.complete, width: screenshot.naturalWidth, height: screenshot.naturalHeight };
+    });
+    assert.equal(previous.width, 1280);
+    assert.equal(previous.height, 820);
+
+    let held = false;
+    let releaseFrame: (() => void) | undefined;
+    let notifyFrameStarted: (() => void) | undefined;
+    const frameStarted = new Promise<void>(resolve => { notifyFrameStarted = resolve; });
+    const frameGate = new Promise<void>(resolve => { releaseFrame = resolve; });
+    await alphaPage!.route('**/api/computer/screenshot*', async route => {
+      if (!held) {
+        held = true;
+        notifyFrameStarted?.();
+        await frameGate;
+      }
+      await route.continue();
+    });
+    try {
+      await Promise.race([
+        frameStarted,
+        alphaPage!.waitForTimeout(5_000).then(() => { throw new Error('The periodic computer screenshot request did not arrive'); }),
+      ]);
+      const whileLoading = await image.evaluate(element => {
+        const screenshot = element as HTMLImageElement;
+        return { src: screenshot.src, complete: screenshot.complete, width: screenshot.naturalWidth, height: screenshot.naturalHeight };
+      });
+      assert.deepEqual(whileLoading, { ...previous, complete: true }, 'A pending frame must not clear the last decoded image');
+      releaseFrame?.();
+      await alphaPage!.waitForFunction(previousSrc => {
+        const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
+        return Boolean(screenshot && screenshot.src !== previousSrc && screenshot.complete && screenshot.naturalWidth === 1280 && screenshot.naturalHeight === 820);
+      }, previous.src, { timeout: 10_000 });
+    } finally {
+      releaseFrame?.();
+      await alphaPage!.unroute('**/api/computer/screenshot*');
+    }
+  });
+
   await recordStep('Computer takeover performs real browser navigation, click, text input, and return', async () => {
     const addressBar = alphaPage!.locator('.browser-toolbar input');
     await addressBar.fill(`${baseUrl}/e2e-computer-fixture.html`);

@@ -259,7 +259,6 @@ http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/readyz') {
       if (!await rendererResponds()) return send(res, 503, { ok: false, error: rendererUnresponsiveMessage });
       try {
-        if (process.env.COKE_DESKTOP_CHROME_NO_SANDBOX === '1') await fs.access('/tmp/dots-chrome-startup-ready');
         await exec('xdpyinfo', ['-display', process.env.DISPLAY || ':1'], { timeout: 1500 });
         const agent = await fetch(`http://127.0.0.1:${process.env.DOTS_AGENT_RUNTIME_PORT || 8083}/healthz`, { signal: AbortSignal.timeout(1500) });
         if (!agent.ok) return send(res, 503, { ok: false });

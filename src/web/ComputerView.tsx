@@ -8,20 +8,61 @@ interface ComputerState { ready: boolean; owner: 'agent' | 'user'; url: string; 
 export function ComputerView({ dotName, localComputerEnabled, onManageAccess, onError }: { dotName: string; localComputerEnabled: boolean; onManageAccess: () => void; onError: (message: string) => void }) {
   const [state, setState] = useState<ComputerState>({ ready: false, owner: 'agent', url: '', title: '' });
   const [url, setUrl] = useState('');
-  const [frame, setFrame] = useState(0);
+  const [screenshotSrc, setScreenshotSrc] = useState('');
   const [busy, setBusy] = useState(false);
   const keyboardQueue = useRef<Promise<void>>(Promise.resolve());
+  const screenshotUrl = useRef('');
+  const screenshotRequest = useRef(0);
+  const screenshotLoading = useRef(false);
 
-  async function refresh() {
+  async function refreshScreenshot() {
+    if (screenshotLoading.current) return;
+    screenshotLoading.current = true;
+    const requestId = ++screenshotRequest.current;
+    let nextUrl = '';
     try {
-      const response = await appFetch('/api/computer');
+      const response = await appFetch(`/api/computer/screenshot?t=${Date.now()}`);
       if (!response.ok) return;
-      const next = await response.json() as ComputerState;
-      setState(next);
-      if (next.ready) setFrame(Date.now());
-    } catch { /* The main UI reports service connectivity. */ }
+      nextUrl = URL.createObjectURL(await response.blob());
+      const image = new Image();
+      image.src = nextUrl;
+      await image.decode();
+      if (requestId !== screenshotRequest.current) return;
+      const previousUrl = screenshotUrl.current;
+      screenshotUrl.current = nextUrl;
+      setScreenshotSrc(nextUrl);
+      nextUrl = '';
+      if (previousUrl) window.setTimeout(() => URL.revokeObjectURL(previousUrl), 5_000);
+    } catch { /* Keep showing the last decoded frame while a newer one is unavailable. */ }
+    finally {
+      if (nextUrl) URL.revokeObjectURL(nextUrl);
+      if (requestId === screenshotRequest.current) screenshotLoading.current = false;
+    }
   }
-  useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 2000); return () => clearInterval(timer); }, [dotName]);
+
+  useEffect(() => {
+    let active = true;
+    async function refresh() {
+      try {
+        const response = await appFetch('/api/computer');
+        if (!response.ok || !active) return;
+        const next = await response.json() as ComputerState;
+        if (!active) return;
+        setState(next);
+        if (next.ready && !(next.backend === 'linux-desktop' && next.owner === 'user')) void refreshScreenshot();
+      } catch { /* The main UI reports service connectivity. */ }
+    }
+    void refresh();
+    const timer = setInterval(() => void refresh(), 2000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+      screenshotRequest.current += 1;
+      screenshotLoading.current = false;
+      if (screenshotUrl.current) URL.revokeObjectURL(screenshotUrl.current);
+      screenshotUrl.current = '';
+    };
+  }, [dotName]);
 
   async function action(path: string, body: object = {}) {
     setBusy(true);
@@ -29,7 +70,8 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
       const response = await appFetch(`/api/computer/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const result = await response.json() as ComputerState & { error?: string };
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-      setState(result); setFrame(Date.now());
+      setState(result);
+      if (result.ready && !(result.backend === 'linux-desktop' && result.owner === 'user')) void refreshScreenshot();
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(false); }
   }
@@ -41,6 +83,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
   function click(event: MouseEvent<HTMLImageElement>) {
     if (state.owner !== 'user') return;
     const image = event.currentTarget;
+    if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
     const rect = image.getBoundingClientRect();
     const scale = Math.min(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
     const offsetX = (rect.width - image.naturalWidth * scale) / 2;
@@ -72,7 +115,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
       {state.backend === 'linux-desktop' ? <div className="computer-stage is-linux-desktop" data-testid="linux-desktop-stage">
         {state.owner === 'user'
           ? <iframe title="Linux 云桌面" data-testid="linux-desktop-view" src={`${appPath('/api/computer/novnc/vnc_lite.html')}?scale=1&autoconnect=1&path=${appPath('/api/computer/novnc/websockify').slice(1)}`} />
-          : <img src={appPath(`/api/computer/screenshot?t=${frame}`)} alt="Linux 云桌面画面" />}
+          : <img src={screenshotSrc || undefined} alt="Linux 云桌面画面" />}
       </div> : <div className="computer-stage">
         <div className="computer-browser-window">
           <div className="browser-window-chrome">
@@ -87,7 +130,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
               <span className="browser-toolbar-menu" aria-hidden="true">⋮</span>
             </div>
           </div>
-          <div className="browser-page-frame"><img src={appPath(`/api/computer/screenshot?t=${frame}`)} alt="独立浏览器画面" tabIndex={state.owner === 'user' ? 0 : -1} onClick={click} onKeyDown={keyDown} /></div>
+          <div className="browser-page-frame"><img src={screenshotSrc || undefined} alt="独立浏览器画面" tabIndex={state.owner === 'user' ? 0 : -1} onClick={click} onKeyDown={keyDown} /></div>
         </div>
         <div className="computer-dock" aria-hidden="true"><span className="dock-chrome">◉</span><span className="dock-terminal">›_</span><span className="dock-files"><img src={dotsFilesIcon} alt="" /></span></div>
       </div>}
