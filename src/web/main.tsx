@@ -356,7 +356,7 @@ function App() {
     {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, false, true)} />}
     {computerAccessOpen && <DotComputerChoice localComputer={state.computerAccess.localComputer} mode="settings" onSave={saveComputerAccess} onCancel={() => setComputerAccessOpen(false)} />}
     {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, !state.profile.onboardingCompletedAt)} />}
-    {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} onTranscript={submitVoiceTranscript} onClose={() => setVoiceCallOpen(false)} />}
+    {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} displayMode={contextMode ? 'desktop' : 'handset'} onTranscript={submitVoiceTranscript} onClose={() => setVoiceCallOpen(false)} />}
   </div>;
 }
 
