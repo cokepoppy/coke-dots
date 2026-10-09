@@ -174,6 +174,10 @@ done
 if [[ "$banner_dismissed" == "1" ]]; then
   echo "Chromium startup visual setup finished" >>/tmp/dots-chrome.log
 else
+  for candidate_window in $(xdotool search --onlyvisible --name '.*' 2>/dev/null || true); do
+    candidate_title="$(xdotool getwindowname "$candidate_window" 2>/dev/null || true)"
+    echo "Chromium startup candidate $candidate_window: $candidate_title" >>/tmp/dots-chrome.log
+  done
   echo "Chromium welcome window did not appear before the banner dismissal deadline" | tee -a /tmp/dots-chrome.log >&2
 fi
 # Never leave a healthy desktop outside Service endpoints forever because a
