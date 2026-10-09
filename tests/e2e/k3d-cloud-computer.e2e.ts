@@ -214,6 +214,8 @@ try {
   assert.equal(state.title, 'Welcome back, Roger', 'The tenant Dot name must appear on the video-observed welcome screen');
   const screenshot = Buffer.from(await page.evaluate(async () => Array.from(new Uint8Array(await (await fetch('/api/computer/screenshot')).arrayBuffer()))));
   await writeFile(join(artifacts, '01-api-screenshot.png'), screenshot);
+  const chromeStartupDiagnostics = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'sh', '-c', `for id in $(xdotool search --onlyvisible --name '.*' 2>/dev/null); do echo "WINDOW=$id"; xdotool getwindowname "$id" 2>/dev/null || true; done; tail -n 12 /tmp/dots-chrome.log`]);
+  console.log(`Chromium startup diagnostics:\n${chromeStartupDiagnostics}`);
   const frame = PNG.sync.read(screenshot);
   assert.deepEqual([frame.width, frame.height], [1440, 1080]);
   const videoFramePath = resolve(projectRoot, 'research/frames/john-aspinall-v2-0444-dot-control-replay.png');

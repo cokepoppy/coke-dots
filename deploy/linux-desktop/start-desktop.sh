@@ -127,6 +127,8 @@ banner_dismissed=0
 for _ in $(seq 1 45); do
   chrome_window="$(xdotool search --onlyvisible --name 'Welcome back,' 2>/dev/null | head -n 1 || true)"
   if [[ -n "$chrome_window" ]] && xdotool getwindowname "$chrome_window" 2>/dev/null | grep -q '^Welcome back, '; then
+    window_title="$(xdotool getwindowname "$chrome_window" 2>/dev/null || true)"
+    echo "Chromium welcome window detected: $window_title (id $chrome_window)" >>/tmp/dots-chrome.log
     timeout --foreground 2s xdotool windowactivate --sync "$chrome_window" || true
     # The source recording shows the Chromium tab strip directly, without an
     # operating-system titlebar. Keep Chromium's own tabs/address bar while
@@ -142,15 +144,19 @@ for _ in $(seq 1 45); do
     window_left="$(sed -n 's/^X=//p' <<<"$window_geometry")"
     window_top="$(sed -n 's/^Y=//p' <<<"$window_geometry")"
     window_width_actual="$(sed -n 's/^WIDTH=//p' <<<"$window_geometry")"
+    close_x="$((window_left + window_width_actual - 35))"
+    close_y="$((window_top + 114))"
+    echo "Chromium banner close target: x=$close_x y=$close_y geometry=$window_left,$window_top ${window_width_actual}px" >>/tmp/dots-chrome.log
     for _ in 1 2 3; do
       # The source frame has no Xfwm titlebar, so Chromium's tab strip begins
       # at the window origin. The warning close control is 114 px below that
       # origin on the 1440x1080 view.
-      xdotool mousemove --sync "$((window_left + window_width_actual - 35))" "$((window_top + 114))"
+      xdotool mousemove --sync "$close_x" "$close_y"
       xdotool click 1 || true
       sleep 0.5
     done
     xdotool key Escape 2>/dev/null || true
+    echo "Chromium title after banner close: $(xdotool getwindowname "$chrome_window" 2>/dev/null || echo missing)" >>/tmp/dots-chrome.log
     xdotool mousemove --sync 24 24
     banner_dismissed=1
     break
