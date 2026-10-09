@@ -15,6 +15,7 @@ image_inputs=(
   deploy/linux-desktop
   package.json
   package-lock.json
+  scripts/build-linux-desktop-image.sh
 )
 
 dirty_inputs=$(git status --porcelain --untracked-files=all -- "${image_inputs[@]}")
@@ -31,11 +32,11 @@ if docker image inspect "$image" >/dev/null 2>&1; then
     exit 1
   fi
 else
-  docker build \
-    --build-arg "COKE_DOTS_GIT_REVISION=$revision" \
-    --file deploy/linux-desktop/Dockerfile \
-    --tag "$image" \
-    .
+  proxy_args=()
+  if [[ -n "${COKE_DOTS_DOCKER_BUILD_PROXY:-}" ]]; then
+    proxy_args+=(--build-arg "http_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}" --build-arg "https_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}")
+  fi
+  docker build "${proxy_args[@]}" --build-arg "COKE_DOTS_GIT_REVISION=$revision" --file deploy/linux-desktop/Dockerfile --tag "$image" .
 fi
 
 k3d image import "$image" --cluster "$cluster_name"

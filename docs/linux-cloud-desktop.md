@@ -16,6 +16,8 @@ scripts/build-linux-desktop-image.sh <cluster-name>
 
 The script refuses dirty worker-image inputs, records the full Git revision in the image label, refuses to overwrite an existing revision tag built from another revision, and prints the exact image reference to configure. Production requires a sha-<40-character-revision> tag or a registry reference pinned by @sha256:<digest>. Mutable tags are rejected before tenant Kubernetes resources are applied.
 
+When the Mac reaches Debian mirrors through its HTTP proxy, pass it only to this build command as `COKE_DOTS_DOCKER_BUILD_PROXY=http://host.docker.internal:7890`; the script forwards it to the build without storing it in the resulting image.
+
 Configure the host service before starting it:
 
 ```sh
