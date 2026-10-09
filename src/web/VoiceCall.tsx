@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DotAppearance, Snapshot, Task, VoiceCallSession } from '../shared/types.ts';
-import { DotAvatar } from './DotAvatar.tsx';
+import { appFetch } from './api.ts';
 import './voice-call.css';
 
 interface RecognitionAlternative { transcript: string }
@@ -33,6 +33,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   const [transcript, setTranscript] = useState('');
   const [taskStatus, setTaskStatus] = useState('');
   const [callError, setCallError] = useState('');
+  const [expanded, setExpanded] = useState(false);
   const sessionRef = useRef<VoiceCallSession | null>(null);
   const recognitionRef = useRef<RecognitionLike | null>(null);
   const recognitionConstructorRef = useRef<RecognitionConstructor | null>(null);
@@ -145,7 +146,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
 
     const followTask = async (submittedTask: Task) => {
       for (let attempt = 0; attempt < 1200 && activeRef.current; attempt += 1) {
-        const response = await fetch('/api/state');
+        const response = await appFetch('/api/state');
         if (!activeRef.current) return;
         if (!response.ok) throw new Error('读取任务进度失败：HTTP ' + response.status);
         const snapshot = await response.json() as Snapshot;
@@ -178,14 +179,14 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       if (activeRef.current) setTaskStatus('仍在后台运行；你可以结束通话。');
     };
 
-    void fetch('/api/voice-calls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    void appFetch('/api/voice-calls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
       .then(async response => {
         const data = await response.json() as VoiceCallSession & { error?: string };
         if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
         sessionRef.current = data;
         if (!activeRef.current) {
           const durationSeconds = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
-          await fetch('/api/voice-calls/' + data.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
+          await appFetch('/api/voice-calls/' + data.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
           return;
         }
         startRecognitionRef.current();
@@ -203,7 +204,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       if (!endedRef.current && sessionRef.current) {
         endedRef.current = true;
         const durationSeconds = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
-        void fetch('/api/voice-calls/' + sessionRef.current.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
+        void appFetch('/api/voice-calls/' + sessionRef.current.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
       }
     };
   }, []);
@@ -245,7 +246,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
     if (session) {
       const durationSeconds = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
       try {
-        const response = await fetch('/api/voice-calls/' + session.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
+        const response = await appFetch('/api/voice-calls/' + session.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
         if (!response.ok) throw new Error('通话记录未能保存');
       } catch (error) { setCallError(error instanceof Error ? error.message : '通话记录未能保存'); }
     }
@@ -254,15 +255,38 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
 
   const minutes = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0');
   const seconds = (elapsedSeconds % 60).toString().padStart(2, '0');
-  return <section className="voice-call-dock" role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call">
-    <div className="voice-call-top"><span className="voice-call-live"><i />正在通话</span><span data-testid="voice-call-timer">{minutes}:{seconds}</span><button type="button" className="voice-call-close" aria-label="关闭通话窗口" onClick={() => void endCall()}>×</button></div>
-    <div className="voice-call-person"><DotAvatar appearance={appearance} /><strong>{dotName}</strong><small>{status}</small></div>
-    {transcript && <div className="voice-call-transcript" aria-live="polite"><span>你说</span><p>{transcript}</p>{taskStatus && <small>{taskStatus}</small>}</div>}
-    {callError && <p className="voice-call-error" role="alert">{callError}</p>}
-    <div className="voice-call-controls">
-      <button type="button" aria-label={speakerOn ? '关闭扬声器' : '打开扬声器'} aria-pressed={speakerOn} onClick={toggleSpeaker}><span aria-hidden="true">{speakerOn ? '◖))' : '◖×'}</span><small>扬声器</small></button>
-      <button type="button" className="voice-call-end" aria-label="结束通话" onClick={() => void endCall()}><span aria-hidden="true">☎</span><small>结束</small></button>
-      <button type="button" aria-label={muted ? '取消静音' : '静音'} aria-pressed={muted} onClick={toggleMute}><span aria-hidden="true">{muted ? '🎙' : '🎙̸'}</span><small>{muted ? '取消静音' : '静音'}</small></button>
+  return <section className={`voice-call-dock${expanded ? ' voice-call-expanded' : ''}`} role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call">
+    <div className="voice-call-screen">
+      <div className="voice-call-statusbar" aria-hidden="true">
+        <span>12:55</span><span className="voice-call-notch" />
+        <span className="voice-call-status-icons"><i className="voice-call-silent">⌁</i><i className="voice-call-signal">▮▮▮</i><i className="voice-call-wifi">◔</i><i className="voice-call-battery" /></span>
+      </div>
+      <button type="button" className="voice-call-expand" aria-label={expanded ? '收起通话界面' : '展开通话界面'} aria-pressed={expanded} onClick={() => setExpanded(value => !value)}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m0-4 6 6m6-6h4v4m0-4-6 6M4 16v4h4m-4 0 6-6m10 2v4h-4m4 0-6-6" /></svg>
+      </button>
+      <div className="voice-call-person">
+        <div className="voice-call-avatar" aria-hidden="true"><span /></div>
+        <strong>{dotName}</strong>
+        <span className="voice-call-screen-timer" data-testid="voice-call-timer">{Number(minutes)}:{seconds}</span>
+      </div>
+      <p className="voice-call-error" role="alert" hidden={!callError}>{callError}</p>
+      <div className="voice-call-controls">
+        <button type="button" className="voice-call-control voice-call-speaker" aria-label={speakerOn ? '关闭扬声器' : '打开扬声器'} aria-pressed={speakerOn} onClick={toggleSpeaker}>
+          <span className="voice-call-control-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M4 12h6l8-6v20l-8-6H4z" fill="currentColor"/><path d="M22 11a7 7 0 0 1 0 10m3-14a12 12 0 0 1 0 18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg></span>
+          <small>Speaker</small>
+        </button>
+        <button type="button" className="voice-call-control voice-call-end" aria-label="结束通话" onClick={() => void endCall()}>
+          <span className="voice-call-control-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6.7 18.6c5.7-5.1 13-5.1 18.6 0 .6.5.8 1.3.5 2l-1.6 4a1.7 1.7 0 0 1-2 .9l-4.4-1.1a1.7 1.7 0 0 1-1.3-1.7v-1.1a15 15 0 0 0-5.1 0v1.1a1.7 1.7 0 0 1-1.3 1.7l-4.4 1.1a1.7 1.7 0 0 1-2-.9l-1.6-4c-.3-.7-.1-1.5.5-2z" fill="currentColor"/></svg></span>
+          <small>End</small>
+        </button>
+        <button type="button" className="voice-call-control voice-call-mute" aria-label={muted ? '取消静音' : '静音'} aria-pressed={muted} onClick={toggleMute}>
+          <span className="voice-call-control-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><rect x="12" y="4" width="8" height="15" rx="4" fill="currentColor"/><path d="M8 15a8 8 0 0 0 16 0m-8 8v5m-5 0h10M7 6l18 20" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg></span>
+          <small>{muted ? 'Unmute' : 'Mute'}</small>
+        </button>
+      </div>
+      <div className="voice-call-a11y" aria-live="polite" aria-atomic="true" data-testid="voice-call-transcript" data-task-status={taskStatus}>
+        <span>{status}</span>{transcript && <span>你说：{transcript}</span>}{taskStatus && <span>{taskStatus}</span>}
+      </div>
     </div>
   </section>;
 }
