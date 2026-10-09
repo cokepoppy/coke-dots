@@ -8,19 +8,22 @@ OpenAI's [computer and apps documentation](https://learn.chatgpt.com/docs/dots/c
 
 ## Build and local K3D run
 
-Build the image from the repository root and make it available to the local K3D cluster:
+Build the image from a committed worker revision and import its commit-addressed tag to the intended local K3D cluster:
 
 ```sh
-docker build -f deploy/linux-desktop/Dockerfile -t coke-dots-linux-desktop:dev .
-k3d image import coke-dots-linux-desktop:dev -c <cluster-name>
+scripts/build-linux-desktop-image.sh <cluster-name>
 ```
+
+The script refuses dirty worker-image inputs, records the full Git revision in the image label, refuses to overwrite an existing revision tag built from another revision, and prints the exact image reference to configure. Production requires a sha-<40-character-revision> tag or a registry reference pinned by @sha256:<digest>. Mutable tags are rejected before tenant Kubernetes resources are applied.
+
+When the Mac reaches Debian mirrors through its HTTP proxy, pass it only to this build command as `COKE_DOTS_DOCKER_BUILD_PROXY=http://host.docker.internal:7890`; the script forwards it to the build without storing it in the resulting image.
 
 Configure the host service before starting it:
 
 ```sh
 DOTS_COMPUTER_BACKEND=linux-desktop
 DOTS_LINUX_DESKTOP_TOKEN_SECRET=<random secret of at least 32 characters>
-DOTS_LINUX_DESKTOP_IMAGE=coke-dots-linux-desktop:dev
+DOTS_LINUX_DESKTOP_IMAGE=coke-dots-linux-desktop:sha-<40-character-revision>
 DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE=<namespace containing the Coke Dots service>
 ```
 

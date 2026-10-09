@@ -264,7 +264,9 @@ async function screenshot(page: Page, name: string) {
 async function waitForComputerScreenshot(page: Page) {
   await page.waitForFunction(() => {
     const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
-    return Boolean(screenshot?.complete && screenshot.naturalWidth === 1280 && screenshot.naturalHeight === 820);
+    if (!screenshot?.complete || screenshot.naturalWidth !== 1280 || screenshot.naturalHeight !== 820) return false;
+    const bounds = screenshot.getBoundingClientRect();
+    return bounds.width > 0 && bounds.height > 0;
   }, null, { timeout: 20_000 });
 }
 

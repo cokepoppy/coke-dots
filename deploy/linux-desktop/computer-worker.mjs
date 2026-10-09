@@ -4,6 +4,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
+import { BrowserContextNotReadyError, waitForDefaultBrowserContext } from './browser-context.mjs';
 
 const exec = promisify(execFile);
 const token = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
@@ -11,12 +12,23 @@ const port = Number(process.env.COKE_DESKTOP_WORKER_PORT || 8082);
 const resolution = String(process.env.COKE_DESKTOP_RESOLUTION || '1440x900').split('x').map(Number);
 let owner = 'agent';
 let browser;
+let browserConnectPromise;
 
 if (!token) throw new Error('LINUX_DESKTOP_WORKER_TOKEN is required');
 
 async function page() {
-  if (!browser) browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
-  const context = browser.contexts()[0];
+  if (browser && !browser.isConnected()) { browser = undefined; browserConnectPromise = undefined; }
+  if (!browserConnectPromise) {
+    browserConnectPromise = chromium.connectOverCDP('http://127.0.0.1:9222').then(connected => {
+      browser = connected;
+      connected.on('disconnected', () => {
+        if (browser === connected) { browser = undefined; browserConnectPromise = undefined; }
+      });
+      return connected;
+    }).catch(error => { browserConnectPromise = undefined; throw error; });
+  }
+  browser = await browserConnectPromise;
+  const context = await waitForDefaultBrowserContext(browser);
   return context.pages()[0] || context.newPage();
 }
 
@@ -88,7 +100,10 @@ http.createServer(async (req, res) => {
         const agent = await fetch(`http://127.0.0.1:${process.env.DOTS_AGENT_RUNTIME_PORT || 8083}/healthz`, { signal: AbortSignal.timeout(1500) });
         if (!agent.ok) return send(res, 503, { ok: false });
         return send(res, 200, { ok: true });
-      } catch { return send(res, 503, { ok: false }); }
+      } catch (error) {
+        const contextUnavailable = error instanceof BrowserContextNotReadyError;
+        return send(res, 503, { ok: false, ...(contextUnavailable ? { code: error.code, error: error.message } : {}) });
+      }
     }
     if (req.headers.authorization !== `Bearer ${token}`) return send(res, 401, { error: 'worker token is required' });
     if (req.method === 'GET' && pathname === '/v1/control') return send(res, 200, { owner });
@@ -112,6 +127,7 @@ http.createServer(async (req, res) => {
     return send(res, 404, { error: 'not found' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'computer command failed';
-    return send(res, 400, { error: message.slice(0, 240) });
+    const contextUnavailable = error instanceof BrowserContextNotReadyError;
+    return send(res, contextUnavailable ? 503 : 400, { error: message.slice(0, 240), ...(contextUnavailable ? { code: error.code } : {}) });
   }
 }).listen(port, '0.0.0.0', () => process.stdout.write(`Dots desktop worker listening on ${port}\n`));
