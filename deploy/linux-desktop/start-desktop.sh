@@ -126,8 +126,15 @@ node /opt/coke-dots/computer-worker.mjs >/tmp/dots-worker.log 2>&1 &
 worker_pid=$!
 banner_dismissed=0
 for _ in $(seq 1 45); do
-  chrome_window="$(xdotool search --onlyvisible --name 'Welcome back,' 2>/dev/null | head -n 1 || true)"
-  if [[ -n "$chrome_window" ]] && xdotool getwindowname "$chrome_window" 2>/dev/null | grep -q '^Welcome back, '; then
+  chrome_window=""
+  while IFS= read -r candidate_window; do
+    candidate_title="$(xdotool getwindowname "$candidate_window" 2>/dev/null || true)"
+    if [[ "$candidate_title" == 'Welcome back, '* ]]; then
+      chrome_window="$candidate_window"
+      break
+    fi
+  done < <(xdotool search --onlyvisible --name '.*' 2>/dev/null || true)
+  if [[ -n "$chrome_window" ]]; then
     window_title="$(xdotool getwindowname "$chrome_window" 2>/dev/null || true)"
     echo "Chromium welcome window detected: $window_title (id $chrome_window)" >>/tmp/dots-chrome.log
     timeout --foreground 2s xdotool windowactivate --sync "$chrome_window" || true
@@ -135,7 +142,7 @@ for _ in $(seq 1 45); do
     # operating-system titlebar. Keep Chromium's own tabs/address bar while
     # removing only the Xfwm outer decorations using the correctly typed
     # Motif hint property.
-    /usr/local/bin/dots-set-window-decorations "$chrome_window"
+    /usr/local/bin/dots-set-window-decorations "$chrome_window" 2>>/tmp/dots-chrome.log
     # Chromium shows a native "Installed theme" notice when the tenant's
     # unpacked color theme is first loaded. The local no-sandbox harness also
     # shows a Chromium warning in this same toolbar notice area. Let both
