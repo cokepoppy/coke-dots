@@ -1,7 +1,7 @@
 import { Entry } from '@napi-rs/keyring';
 
 export interface ModelSettings { baseUrl: string; model: string; hasKey: boolean }
-const service = 'com.cokepoppy.coke-dots';
+const service = process.env.DOTS_KEYCHAIN_SERVICE || 'com.cokepoppy.coke-dots';
 const stored = new Map<string, ModelSettings>();
 const keychainFor = (tenantId: string) => new Entry(service, `tenant-${tenantId}-model-api-key`);
 const testModelFixtureEnabled = () => process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1';

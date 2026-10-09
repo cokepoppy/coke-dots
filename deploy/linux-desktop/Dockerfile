@@ -1,6 +1,9 @@
 FROM node:22.23.1-trixie-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG COKE_DOTS_GIT_REVISION=unknown
+
+LABEL org.opencontainers.image.revision=$COKE_DOTS_GIT_REVISION
 
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
@@ -25,6 +28,7 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
 
 COPY --chmod=0755 deploy/linux-desktop/start-desktop.sh /usr/local/bin/start-dots-desktop
 COPY --chmod=0644 deploy/linux-desktop/computer-worker.mjs /opt/coke-dots/computer-worker.mjs
+COPY --chmod=0644 deploy/linux-desktop/browser-context.mjs /opt/coke-dots/browser-context.mjs
 COPY --chmod=0644 deploy/linux-desktop/agent-runtime.mjs /opt/coke-dots/agent-runtime.mjs
 
 USER 1000:1000

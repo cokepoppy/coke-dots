@@ -141,6 +141,20 @@ try {
   assert.equal(computerStatus.status, 200, 'The cloud computer API must connect to the tenant desktop');
   const desktopPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert(desktopPod, `The tenant namespace ${namespace} must contain its desktop Pod`);
+  const expectedWorkerImage = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
+  const deployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as {
+    metadata: { annotations?: Record<string, string> };
+    spec: { template: { metadata: { annotations?: Record<string, string> }; spec: { containers: { image: string; imagePullPolicy: string }[] } } };
+  };
+  assert.equal(deployment.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage);
+  assert.equal(deployment.spec.template.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage);
+  assert.deepEqual(deployment.spec.template.spec.containers.map(container => ({ image: container.image, imagePullPolicy: container.imagePullPolicy })), [
+    { image: expectedWorkerImage, imagePullPolicy: 'IfNotPresent' },
+  ]);
+  const runningImage = command(['kubectl', '-n', namespace, 'get', 'pod', desktopPod, '-o', 'jsonpath={.status.containerStatuses[0].imageID}']);
+  assert.match(runningImage, /^sha256:/, 'Kubernetes must report the running immutable image identity');
+  await writeFile(join(artifacts, 'cloud-computer-image.json'), `${JSON.stringify({ expectedWorkerImage, runningImage }, null, 2)}\n`);
+  console.log(`Verified tenant desktop image ${expectedWorkerImage} (${runningImage})`);
   const osRelease = command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', '/etc/os-release']);
   assert.match(osRelease, /^ID=debian$/m, 'The running cloud computer must identify itself as Debian');
   assert.match(osRelease, /^VERSION_ID="13"$/m, 'The running cloud computer must be Debian 13');
