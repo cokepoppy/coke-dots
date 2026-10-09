@@ -147,7 +147,10 @@ try {
   // Keep long, slowed-down demos below Sharp's animation pixel guard without
   // reducing the resolution of ordinary clips. Include a small frame margin
   // for timestamp rounding at segment boundaries.
-  const animationPixelLimit = 600_000_000;
+  // The GIF stage collapses identical frames into longer delays before Sharp
+  // writes WebP. Allow enough headroom to keep 25 fps slowed demos at the
+  // presentation width without increasing the actual decoded frame count.
+  const animationPixelLimit = 900_000_000;
   const expectedFrames = Math.ceil(expectedPlaybackDuration * fps) + 10;
   const pixelsPerWidthSquared = stream.height / stream.width * expectedFrames;
   const maxWidthForAnimation = Math.floor(Math.sqrt(animationPixelLimit / pixelsPerWidthSquared));
