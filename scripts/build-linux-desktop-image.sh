@@ -35,11 +35,19 @@ if docker image inspect "$image" >/dev/null 2>&1; then
     exit 1
   fi
 else
-  proxy_args=()
   if [[ -n "${COKE_DOTS_DOCKER_BUILD_PROXY:-}" ]]; then
-    proxy_args+=(--build-arg "http_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}" --build-arg "https_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}")
+    docker build \
+      --build-arg "http_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}" \
+      --build-arg "https_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}" \
+      --build-arg "COKE_DOTS_GIT_REVISION=$revision" \
+      --file deploy/linux-desktop/Dockerfile \
+      --tag "$image" .
+  else
+    docker build \
+      --build-arg "COKE_DOTS_GIT_REVISION=$revision" \
+      --file deploy/linux-desktop/Dockerfile \
+      --tag "$image" .
   fi
-  docker build "${proxy_args[@]}" --build-arg "COKE_DOTS_GIT_REVISION=$revision" --file deploy/linux-desktop/Dockerfile --tag "$image" .
 fi
 
 k3d image import "$image" --cluster "$cluster_name"
