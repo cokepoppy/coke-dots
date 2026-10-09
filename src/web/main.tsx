@@ -32,7 +32,7 @@ import './onboarding-replica.css';
 import './computer-choice.css';
 import './call-timeline.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], gmail: { configured: false, pollIntervalSeconds: 60, connection: null, triggers: [] }, entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
@@ -133,7 +133,9 @@ function App() {
     const url = new URL(window.location.href);
     const connected = url.searchParams.get('slack') === 'connected';
     const slackError = url.searchParams.get('slackError');
-    if (!connected && !slackError) return;
+    const gmailConnected = url.searchParams.get('gmail') === 'connected';
+    const gmailError = url.searchParams.get('gmailError');
+    if (!connected && !slackError && !gmailConnected && !gmailError) return;
     try {
       const saved = sessionStorage.getItem('coke-dots:slack-return-state');
       if (saved) {
@@ -147,11 +149,17 @@ function App() {
     } catch { /* Continue with the home view when session storage is unavailable. */ }
     url.searchParams.delete('slack');
     url.searchParams.delete('slackError');
+    url.searchParams.delete('gmail');
+    url.searchParams.delete('gmailError');
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
     if (connected) setSlackModalOpen(true);
     else if (slackError === 'cancelled') setError('Slack 工作区连接已取消。');
     else if (slackError === 'expired') setError('Slack 连接已过期，请重新连接。');
     else setError('Slack 工作区连接失败，请重试。');
+    if (gmailConnected) setError('Gmail 已连接，可以在 Scheduled 中创建邮件触发任务。');
+    else if (gmailError === 'cancelled') setError('Gmail 授权已取消。');
+    else if (gmailError === 'expired') setError('Gmail 授权请求已过期，请重新连接。');
+    else if (gmailError) setError('Gmail 连接失败，请检查权限后重试。');
   }, [authContext?.user.id]);
 
   useEffect(() => {
@@ -421,7 +429,7 @@ function App() {
       </section>{view === 'chat' && selectedPageId ? <div className="scratchpad-page-split" data-testid="scratchpad-page-split"><ScratchpadNavigationPane tenantId={authContext.tenant.id} selectedPageId={selectedPageId} refreshKey={pageIndexVersion} onOpen={setSelectedPageId} onBack={() => { setSelectedPageId(null); setView('pages'); }} /><PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => { setSelectedPageId(null); setView('pages'); }} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /></div> : view === 'chat' && (selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onStartCall={() => setVoiceCallOpen(true)} onOpenSlack={() => setSlackModalOpen(true)} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
       {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
       {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
-      {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
+      {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches} gmail={state.gmail} eventTriggerEngines={state.availableEngines.filter((id): id is 'pi' | 'dsh' => id === 'pi' || id === 'dsh')}
         onCancelTask={task => void act(task, 'cancelSchedule')}
         onWatchAction={(watch, action) => void actWatch(watch.id, action)}
         onOpenTask={task => { setSelected(task.id); setView('chat'); }}

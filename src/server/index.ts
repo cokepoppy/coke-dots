@@ -14,6 +14,7 @@ import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { apiErrorResponse } from './computer-errors.ts';
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
+import { GmailService } from './gmail.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -25,7 +26,8 @@ const port = Number(process.env.DOTS_PORT || 4317);
 const host = '127.0.0.1';
 const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
-const auth = new AuthService(store, port);
+const gmail = new GmailService(store);
+const auth = new AuthService(store, port, gmail);
 const slack = new SlackService(store, port);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
@@ -39,10 +41,10 @@ const configuredDesktopEngines = () => {
 };
 const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...configuredDesktopEngines()])];
 
-function snapshot(tenantId: string) {
+function snapshot(tenantId: string, userId: string) {
   loadModelSettings(store.getSetting('modelBaseUrl', tenantId), store.getSetting('modelName', tenantId), tenantId);
   const available = availableFor(tenantId);
-  return store.snapshot(available.includes('model'), available, publicModelSettings(tenantId), tenantId);
+  return store.snapshot(available.includes('model'), available, publicModelSettings(tenantId), tenantId, userId, gmail.snapshot(tenantId, userId));
 }
 
 function computerFor(tenantId: string): ComputerRuntime {
@@ -60,7 +62,7 @@ function publish() {
   for (const [client, tokenHash] of clients) {
     const session = store.getSession(tokenHash);
     if (!session) { client.end(); clients.delete(client); continue; }
-    try { client.write(`data: ${JSON.stringify(snapshot(session.tenant.id))}\n\n`); }
+    try { client.write(`data: ${JSON.stringify(snapshot(session.tenant.id, session.user.id))}\n\n`); }
     catch { client.end(); clients.delete(client); }
   }
 }
@@ -117,6 +119,8 @@ const server = createServer(async (req, res) => {
   if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
 
   if (path === '/api/slack' && req.method === 'GET') return reply(res, 200, slack.snapshot(session.tenant.id));
+  if (path === '/api/gmail' && req.method === 'GET') return reply(res, 200, gmail.snapshot(session.tenant.id, session.user.id));
+  if (path === '/api/gmail/oauth/start' && req.method === 'GET') return gmail.configured() ? auth.beginGmail(req, res, session) : reply(res, 503, { error: 'Google OAuth 尚未配置' });
   if (path === '/api/slack/oauth/start' && req.method === 'GET') return slack.begin(req, res, session);
   if (path === '/api/slack/contact' && req.method === 'POST') {
     const body = await readJson(req);
@@ -128,11 +132,11 @@ const server = createServer(async (req, res) => {
     if (path === '/api/events' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'Cache-Control': 'no-store' });
       clients.set(res, session.tokenHash);
-      res.write(`data: ${JSON.stringify(snapshot(session.tenant.id))}\n\n`);
+      res.write(`data: ${JSON.stringify(snapshot(session.tenant.id, session.user.id))}\n\n`);
       req.on('close', () => clients.delete(res));
       return;
     }
-    if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot(session.tenant.id));
+    if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot(session.tenant.id, session.user.id));
     if (path === '/api/voice-calls' && req.method === 'GET') return reply(res, 200, store.voiceCalls(session.tenant.id, session.user.id));
     if (path === '/api/activity' && req.method === 'GET') {
       const limit = Number(url.searchParams.get('limit') || 50);
@@ -141,7 +145,7 @@ const server = createServer(async (req, res) => {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || (before !== null && (!Number.isSafeInteger(before) || before < 1))) {
         return reply(res, 400, { error: 'Invalid activity page' });
       }
-      return reply(res, 200, store.activityPage(session.tenant.id, before, limit));
+      return reply(res, 200, store.activityPage(session.tenant.id, before, limit, session.user.id));
     }
     if (path === '/api/action-rule' && req.method === 'GET') return reply(res, 200, store.tenantActionRule(session.tenant.id));
     if (path === '/api/memories' && req.method === 'GET') return reply(res, 200, store.tenantMemories(session.tenant.id));
@@ -192,6 +196,34 @@ const server = createServer(async (req, res) => {
     }
 
     const body = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT' ? await readJson(req) : {};
+    if (path === '/api/gmail/triggers' && req.method === 'POST') {
+      try {
+        const engine = String(body.engine || '') as 'pi' | 'dsh';
+        if (!['pi', 'dsh'].includes(engine) || !availableFor(session.tenant.id).includes(engine)) return reply(res, 400, { error: '所选任务内核当前不可用' });
+        const trigger = gmail.createTrigger(session, { fromFilter: String(body.fromFilter || ''), subjectFilter: String(body.subjectFilter || ''), condition: String(body.condition || ''), prompt: String(body.prompt || ''), engine });
+        publish();
+        return reply(res, 201, { trigger });
+      } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法创建邮件触发器' }); }
+    }
+    const gmailTriggerMatch = path.match(/^\/api\/gmail\/triggers\/([a-f0-9-]+)$/i);
+    if (gmailTriggerMatch && req.method === 'PATCH') {
+      if (body.action !== 'pause' && body.action !== 'resume') return reply(res, 400, { error: 'Invalid Gmail trigger action' });
+      const trigger = gmail.updateTrigger(session, gmailTriggerMatch[1], body.action);
+      if (!trigger) return reply(res, 404, { error: '邮件触发器不存在' });
+      publish();
+      return reply(res, 200, trigger);
+    }
+    if (gmailTriggerMatch && req.method === 'DELETE') {
+      const removed = gmail.deleteTrigger(session, gmailTriggerMatch[1]);
+      if (!removed) return reply(res, 404, { error: '邮件触发器不存在' });
+      publish();
+      return reply(res, 200, { ok: true });
+    }
+    if (path === '/api/gmail/connection' && req.method === 'DELETE') {
+      gmail.disconnect(session.tenant.id, session.user.id);
+      publish();
+      return reply(res, 200, { ok: true });
+    }
     if (path === '/api/voice-calls' && req.method === 'POST') {
       return reply(res, 201, store.createVoiceCall(session.tenant.id, session.user.id));
     }
@@ -406,13 +438,13 @@ const server = createServer(async (req, res) => {
       if (!name || !isDotAppearance(appearance)) return reply(res, 400, { error: 'Invalid profile' });
       store.setProfile(name, appearance.shape, appearance.color, session.tenant.id, appearance.eyes, appearance.glasses, appearance.accessory, appearance.character, appearance.pet, body.setupComplete === true, body.onboardingComplete === true);
       publish();
-      return reply(res, 200, snapshot(session.tenant.id).profile);
+      return reply(res, 200, snapshot(session.tenant.id, session.user.id).profile);
     }
     if (path === '/api/preferences' && req.method === 'PATCH') {
       if (typeof body.desktopNotifications !== 'boolean') return reply(res, 400, { error: 'Invalid notification preference' });
       store.setSetting('desktopNotifications', String(body.desktopNotifications), session.tenant.id);
       publish();
-      return reply(res, 200, snapshot(session.tenant.id).preferences);
+      return reply(res, 200, snapshot(session.tenant.id, session.user.id).preferences);
     }
     if (path === '/api/computer-access' && req.method === 'PATCH') {
       if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以修改电脑访问设置' });
@@ -420,7 +452,7 @@ const server = createServer(async (req, res) => {
       store.setSetting('localComputerEnabled', String(body.localComputer), session.tenant.id);
       store.setSetting('computerChoiceConfigured', 'true', session.tenant.id);
       publish();
-      return reply(res, 200, snapshot(session.tenant.id).computerAccess);
+      return reply(res, 200, snapshot(session.tenant.id, session.user.id).computerAccess);
     }
     if (path === '/api/model-settings' && req.method === 'PATCH') {
       const baseUrl = String(body.baseUrl || '').trim().replace(/\/$/, '');
@@ -439,11 +471,11 @@ const server = createServer(async (req, res) => {
     }
     const approvalMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/approval$/);
     if (approvalMatch && req.method === 'GET') {
-      if (!store.getTask(approvalMatch[1], session.tenant.id)) return reply(res, 404, { error: 'Task not found' });
+      if (!store.getTask(approvalMatch[1], session.tenant.id, session.user.id)) return reply(res, 404, { error: 'Task not found' });
       return reply(res, 200, store.pageActionApproval(session.tenant.id, approvalMatch[1]));
     }
     if (approvalMatch && req.method === 'POST') {
-      const task = store.getTask(approvalMatch[1], session.tenant.id);
+      const task = store.getTask(approvalMatch[1], session.tenant.id, session.user.id);
       if (!task) return reply(res, 404, { error: 'Task not found' });
       const decision = String(body.decision || '');
       if (decision !== 'approve' && decision !== 'decline') return reply(res, 400, { error: 'Invalid approval decision' });
@@ -455,7 +487,7 @@ const server = createServer(async (req, res) => {
     }
     const taskMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)$/);
     if (taskMatch && req.method === 'PATCH') {
-      const old = store.getTask(taskMatch[1], session.tenant.id);
+      const old = store.getTask(taskMatch[1], session.tenant.id, session.user.id);
       if (!old) return reply(res, 404, { error: 'Task not found' });
       const action = String(body.action || '');
       if (old.status === 'stopped') return reply(res, 409, { error: '这项工作已停止，不能继续或修改' });
@@ -501,7 +533,7 @@ const server = createServer(async (req, res) => {
       } else return reply(res, 400, { error: 'Invalid action' });
       store.addEntry('system', `任务操作：${action}`, old.id, session.tenant.id);
       publish(); void worker.tick();
-      return reply(res, 200, store.getTask(old.id, session.tenant.id));
+      return reply(res, 200, store.getTask(old.id, session.tenant.id, session.user.id));
     }
     return reply(res, 404, { error: 'Not found' });
   } catch (error) {
@@ -593,12 +625,15 @@ server.listen(port, host, () => {
   console.log(`Coke Dots service listening on http://${host}:${port}`);
   worker.start();
   watchRunner.start();
+  gmail.setOnTasksCreated(() => { publish(); void worker.tick(); });
+  gmail.start();
 });
 
 const shutdown = () => {
   clearInterval(sessionHeartbeat);
   worker.stop();
   watchRunner.stop();
+  gmail.stop();
   for (const client of clients.keys()) client.end();
   clients.clear();
   server.close(() => store.close());

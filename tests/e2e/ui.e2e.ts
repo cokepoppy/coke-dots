@@ -971,6 +971,10 @@ try {
     await createTask(alphaPage!, scheduledTask, true);
     await clickNav(alphaPage!, 'Scheduled');
     await alphaPage!.getByTestId('scheduled-hub').waitFor({ state: 'visible' });
+    const gmailMailbox = alphaPage!.getByTestId('gmail-mailbox');
+    await gmailMailbox.waitFor({ state: 'visible' });
+    assert.equal(await gmailMailbox.getByTestId('connect-gmail').isDisabled(), true, 'Gmail connect must stay disabled when Google OAuth is not configured');
+    assert.match(await gmailMailbox.innerText(), /需要单独授权 Gmail 只读访问/);
     const item = alphaPage!.locator('.scheduled-item').filter({ hasText: scheduledTask });
     await item.waitFor({ state: 'visible', timeout: 10_000 });
     const detail = alphaPage!.getByTestId('scheduled-detail');
@@ -1002,8 +1006,9 @@ try {
     await clickNav(alphaPage!, 'Scheduled');
     await search.fill(scheduledTask);
     await alphaPage!.locator('.scheduled-item').filter({ hasText: scheduledTask }).click();
-    await alphaPage!.locator('.scheduled-add-watch').click();
-    assert.equal(await alphaPage!.locator('.scheduled-add-watch').getAttribute('aria-expanded'), 'true');
+    const monitorPageButton = alphaPage!.getByRole('button', { name: '＋ Monitor a page' });
+    await monitorPageButton.click();
+    assert.equal(await monitorPageButton.getAttribute('aria-expanded'), 'true');
     await alphaPage!.getByLabel('HTTPS URL').waitFor({ state: 'visible' });
     await alphaPage!.getByRole('button', { name: 'Close monitor form' }).click();
     await detail.getByRole('button', { name: 'Open conversation' }).click();
@@ -1261,8 +1266,20 @@ try {
     const proposalPrompt = mockModelPrompts.find(prompt => prompt.includes(proposal)) || '';
     assert.match(proposalPrompt, /keep them as inactive proposals and choose done/);
     await clickNav(alphaPage!, 'Scheduled');
-    await alphaPage!.getByText('No scheduled tasks yet').first().waitFor({ state: 'visible' });
-    assert.equal(await alphaPage!.locator('.scheduled-item').count(), 0, 'Discussing ideas must not create a Scheduled entry');
+    assert.equal(
+      await alphaPage!.locator('.scheduled-item').filter({ hasText: proposal }).count(),
+      0,
+      'Discussing ideas must not create a Scheduled entry, even when other event triggers or ongoing work exist',
+    );
+    const proposalTask = await alphaPage!.evaluate(async (instruction: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string; scheduleMinutes: number | null; scheduleSpec: unknown | null; nextRunAt: string | null }[] };
+      return state.tasks.find(task => task.instruction === instruction) || null;
+    }, proposal);
+    assert(proposalTask, 'The automation-ideas prompt must remain a persisted task');
+    assert.equal(proposalTask.status, 'done', 'Automation suggestions must remain a completed conversation proposal');
+    assert.equal(proposalTask.scheduleMinutes, null);
+    assert.equal(proposalTask.scheduleSpec, null);
+    assert.equal(proposalTask.nextRunAt, null);
     await screenshot(alphaPage!, '07-automation-proposals-unscheduled');
     await clickNav(alphaPage!, '你的 dot');
   });
