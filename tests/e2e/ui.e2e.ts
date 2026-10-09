@@ -269,13 +269,23 @@ async function waitForComputerScreenshot(page: Page) {
 }
 
 async function clickComputerScreen(page: Page, x: number, y: number) {
-  const image = page.getByAltText('独立浏览器画面');
-  await waitForComputerScreenshot(page);
-  const measurements = await image.evaluate(element => {
-    const box = element.getBoundingClientRect();
-    const screenshot = element as HTMLImageElement;
-    return { left: box.left, top: box.top, width: box.width, height: box.height, naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight };
-  });
+  const measurementHandle = await page.waitForFunction(() => {
+    const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
+    if (!screenshot?.complete || screenshot.naturalWidth !== 1280 || screenshot.naturalHeight !== 820) return false;
+    const source = screenshot.currentSrc;
+    const box = screenshot.getBoundingClientRect();
+    const style = getComputedStyle(screenshot);
+    if (box.width <= 0 || box.height <= 0 || style.display === 'none' || style.visibility === 'hidden') return false;
+    return new Promise(resolve => requestAnimationFrame(() => {
+      if (screenshot.currentSrc !== source || !screenshot.complete || screenshot.naturalWidth !== 1280 || screenshot.naturalHeight !== 820) {
+        resolve(false);
+        return;
+      }
+      resolve({ left: box.left, top: box.top, width: box.width, height: box.height, naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight });
+    }));
+  }, null, { timeout: 20_000 });
+  const measurements = await measurementHandle.jsonValue() as { left: number; top: number; width: number; height: number; naturalWidth: number; naturalHeight: number };
+  await measurementHandle.dispose();
   assert(measurements.width > 0 && measurements.height > 0 && measurements.naturalWidth > 0 && measurements.naturalHeight > 0, 'Computer screenshot has no measurable image area');
   const scale = Math.min(measurements.width / measurements.naturalWidth, measurements.height / measurements.naturalHeight);
   const offsetX = (measurements.width - measurements.naturalWidth * scale) / 2;
