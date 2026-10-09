@@ -488,13 +488,66 @@ try {
   workerPortForward = null;
   console.log('Live Debian browser displayed the sanitized public-page fixture through its authenticated research endpoint');
 
+  const rendererHangScript = [
+    "const targets = await fetch('http://127.0.0.1:9222/json/list').then(response => response.json());",
+    "const target = targets.find(entry => entry.type === 'page');",
+    "if (!target) throw new Error('No Chromium page target is available');",
+    'const socket = new WebSocket(target.webSocketDebuggerUrl);',
+    "await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });",
+    "socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: 'while (true) {}', awaitPromise: false } }));",
+    "setTimeout(() => { socket.close(); process.exit(0); }, 150);",
+  ].join('\n');
+  const originalChromiumPid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'cat', '/tmp/dots-chrome.pid']);
+  command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'node', '--input-type=module', '-e', rendererHangScript]);
+  console.log('Injected a renderer-only hang into the disposable E2E tenant');
+
+  const recoveryDeadline = Date.now() + 90_000;
+  let currentChromiumPid = originalChromiumPid;
+  let computerReady = false;
+  while (Date.now() < recoveryDeadline) {
+    currentChromiumPid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'cat', '/tmp/dots-chrome.pid']);
+    if (currentChromiumPid !== originalChromiumPid) {
+      computerReady = await page.evaluate(async () => {
+        try {
+          const response = await fetch('/api/computer', { signal: AbortSignal.timeout(4_000) });
+          if (!response.ok) return false;
+          const result = await response.json() as { backend?: string };
+          return result.backend === 'linux-desktop';
+        } catch { return false; }
+      });
+      if (computerReady) break;
+    }
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 1000));
+  }
+  assert.notEqual(currentChromiumPid, originalChromiumPid, 'The desktop supervisor must restart only Chromium after a renderer hang');
+  assert(computerReady, 'The cloud computer state API must recover after Chromium is relaunched');
+  command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', `pod/${desktopPod}`, '--timeout=120s']);
+  const recoveredComputer = await page.evaluate(async () => {
+    const response = await fetch('/api/computer');
+    return { status: response.status, body: await response.json() as { backend?: string; error?: string } };
+  });
+  assert.equal(recoveredComputer.status, 200, `Cloud computer state must recover after the renderer restart: ${recoveredComputer.body.error || ''}`);
+  assert.equal(recoveredComputer.body.backend, 'linux-desktop');
+  assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'Renderer recovery must preserve the tenant workspace PVC');
+  const podState = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'pod', desktopPod, '-o', 'json'])) as {
+    status?: { containerStatuses?: { name: string; restartCount: number }[] };
+  };
+  for (const containerName of ['desktop', 'agent-runtime']) {
+    const container = podState.status?.containerStatuses?.find(status => status.name === containerName);
+    assert.equal(container?.restartCount, 0, `Renderer recovery must not restart the ${containerName} container`);
+  }
+  const agentHealth = JSON.parse(command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'node', '-e', "fetch('http://127.0.0.1:8083/healthz').then(async response => { console.log(JSON.stringify({ status: response.status, body: await response.json() })); process.exit(response.ok ? 0 : 1); })"])) as { status?: number; body?: { runtime?: string } };
+  assert.equal(agentHealth.status, 200);
+  assert.equal(agentHealth.body?.runtime, 'dots-agent-runtime', 'The Agent runtime must remain available during renderer recovery');
+  console.log('Chromium renderer recovered in place; Agent runtime process and tenant workspace remained available');
+
   command(['kubectl', '-n', namespace, 'delete', 'pod', desktopPod, '--wait=true', '--timeout=90s']);
   command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', 'pod', '-l', 'app=desktop', '--timeout=120s']);
   const restartedPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive a cloud computer Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', 'Chromium renderer hang triggers Chromium-only restart', 'Agent runtime and workspace remain available during renderer recovery', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
   logs.push(`Failure diagnostics: appServerExit=${appServer?.exitCode ?? 'running'} health=${health} page=${page?.url() ?? 'unavailable'}`);

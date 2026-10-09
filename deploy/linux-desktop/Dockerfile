@@ -24,7 +24,7 @@ RUN apt-get -o Acquire::Retries=5 update \
     && for attempt in 1 2 3 4 5; do \
       apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         ca-certificates chromium curl dbus-x11 fonts-dejavu-core fonts-noto-cjk locales \
-        novnc scrot tini websockify x11-utils x11vnc xdotool xfce4 xfce4-terminal xvfb \
+        novnc scrot tini util-linux websockify x11-utils x11vnc xdotool xfce4 xfce4-terminal xvfb \
       && break; \
       if [ "$attempt" -eq 5 ]; then exit 1; fi; \
       sleep 2; \
@@ -57,6 +57,7 @@ RUN node --input-type=module -e "await import('@mariozechner/pi-coding-agent'); 
 
 COPY --chmod=0755 deploy/linux-desktop/start-desktop.sh /usr/local/bin/start-dots-desktop
 COPY --chmod=0644 deploy/linux-desktop/computer-worker.mjs /opt/coke-dots/computer-worker.mjs
+COPY --chmod=0644 deploy/linux-desktop/renderer-health.mjs /opt/coke-dots/renderer-health.mjs
 COPY --chmod=0644 src/shared/public-web-policy.mjs /opt/coke-dots/public-web-policy.mjs
 COPY --chmod=0644 src/server/computer-home.mjs /opt/coke-dots/computer-home.mjs
 COPY --chmod=0644 deploy/linux-desktop/agent-runtime.mjs /opt/coke-dots/agent-runtime.mjs

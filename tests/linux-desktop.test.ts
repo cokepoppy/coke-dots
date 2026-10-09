@@ -19,7 +19,7 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(service.spec.ports.some(port => port.port === 9222), false, 'Raw Chromium CDP must stay inside the Pod');
   const secret = list.items.find(item => item.kind === 'Secret') as { stringData: Record<string, string> };
   assert.deepEqual(secret.stringData, { LINUX_DESKTOP_WORKER_TOKEN: 'worker-secret', DOTS_AGENT_RUNTIME_TOKEN: 'agent-secret' });
-  const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { automountServiceAccountToken: boolean; shareProcessNamespace?: boolean; containers: { name: string; env: { name: string; value?: string; valueFrom?: unknown }[]; securityContext: { runAsNonRoot: boolean; runAsUser: number; allowPrivilegeEscalation: boolean; readOnlyRootFilesystem: boolean } }[] } } } };
+  const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { automountServiceAccountToken: boolean; shareProcessNamespace?: boolean; containers: { name: string; env: { name: string; value?: string; valueFrom?: unknown }[]; startupProbe?: { timeoutSeconds?: number }; readinessProbe?: { timeoutSeconds?: number; failureThreshold?: number }; livenessProbe?: { timeoutSeconds?: number; failureThreshold?: number }; securityContext: { runAsNonRoot: boolean; runAsUser: number; allowPrivilegeEscalation: boolean; readOnlyRootFilesystem: boolean } }[] } } } };
   assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
   assert.equal(deployment.spec.template.spec.shareProcessNamespace, undefined, 'Desktop and Agent must not share a process namespace');
   const [desktop, runtime] = deployment.spec.template.spec.containers;
@@ -28,6 +28,11 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(desktop.securityContext.runAsNonRoot, true);
   assert.equal(desktop.securityContext.runAsUser, 1000);
   assert.equal(desktop.securityContext.allowPrivilegeEscalation, false);
+  assert.equal(desktop.startupProbe?.timeoutSeconds, 5, 'Chromium startup receives a bounded probe window');
+  assert.equal(desktop.readinessProbe?.timeoutSeconds, 5, 'readiness can exercise a bounded page-runtime probe');
+  assert.equal(desktop.readinessProbe?.failureThreshold, 2, 'a blocked renderer is removed from Service endpoints promptly');
+  assert.equal(desktop.livenessProbe?.timeoutSeconds, 5);
+  assert.equal(desktop.livenessProbe?.failureThreshold, 3, 'liveness restarts only when the desktop worker process itself stops responding');
   assert.equal(runtime.securityContext.runAsNonRoot, true);
   assert.equal(runtime.securityContext.runAsUser, 1001);
   assert.equal(runtime.securityContext.allowPrivilegeEscalation, false);
