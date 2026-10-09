@@ -4,6 +4,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
+import { createRendererHealthMonitor, RendererUnresponsiveError } from './renderer-health.mjs';
 
 const exec = promisify(execFile);
 const token = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
@@ -11,13 +12,69 @@ const port = Number(process.env.COKE_DESKTOP_WORKER_PORT || 8082);
 const resolution = String(process.env.COKE_DESKTOP_RESOLUTION || '1440x900').split('x').map(Number);
 let owner = 'agent';
 let browser;
+const rendererHealth = createRendererHealthMonitor();
+const rendererUnresponsiveMessage = new RendererUnresponsiveError(3_000).message;
+let rendererProbeFailures = 0;
+let rendererRecovery = null;
 
 if (!token) throw new Error('LINUX_DESKTOP_WORKER_TOKEN is required');
 
 async function page() {
+  if (browser && !browser.isConnected()) browser = undefined;
   if (!browser) browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
   const context = browser.contexts()[0];
   return context.pages()[0] || context.newPage();
+}
+
+async function rendererResponds() {
+  const ok = await rendererHealth.check(async () => {
+    const browserPage = await page();
+    const readyState = await browserPage.evaluate(() => document.readyState);
+    if (typeof readyState !== 'string') throw new Error('Chromium page did not return its document state');
+  });
+  if (ok) {
+    rendererProbeFailures = 0;
+    return true;
+  }
+  rendererProbeFailures += 1;
+  if (rendererHealth.unresponsive || rendererProbeFailures >= 3) {
+    rendererHealth.fail();
+    void recoverChromium();
+  }
+  return false;
+}
+
+async function recoverChromium() {
+  if (rendererRecovery) return rendererRecovery;
+  rendererRecovery = (async () => {
+    const previousPid = (await fs.readFile('/tmp/dots-chrome.pid', 'utf8')).trim();
+    if (!/^\d+$/.test(previousPid)) throw new Error('Chromium supervisor PID is unavailable');
+    process.kill(process.ppid, 'SIGUSR1');
+
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      const nextPid = (await fs.readFile('/tmp/dots-chrome.pid', 'utf8').catch(() => '')).trim();
+      if (/^\d+$/.test(nextPid) && nextPid !== previousPid) {
+        browser = undefined;
+        rendererHealth.reset();
+        rendererProbeFailures = 0;
+        try {
+          const browserPage = await page();
+          await rendererHealth.run(() => browserPage.evaluate(() => document.readyState));
+          process.stdout.write(`Chromium renderer recovered with process ${nextPid}\n`);
+          return;
+        } catch {
+          browser = undefined;
+          rendererHealth.reset();
+        }
+      }
+      await new Promise(resolvePromise => setTimeout(resolvePromise, 500));
+    }
+    throw new Error('Chromium did not recover within 45 seconds');
+  })().catch(error => {
+    process.stderr.write(`Chromium renderer recovery failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  }).finally(() => { rendererRecovery = null; });
+  return rendererRecovery;
 }
 
 function send(res, status, value, type = 'application/json; charset=utf-8') {
@@ -50,10 +107,11 @@ async function command(input) {
   const actor = input.actor === 'user' ? 'user' : 'agent';
   if (actor !== owner && action !== 'open') throw new Error(owner === 'user' ? 'The user currently controls this computer' : 'The agent currently controls this computer');
   if (action === 'open') {
-    const browserPage = await page();
-    const dotName = String(input.dotName || 'Dot').slice(0, 80);
-    await browserPage.title().catch(() => '');
-    return { ready: true };
+    return rendererHealth.run(async () => {
+      const browserPage = await page();
+      await browserPage.title();
+      return { ready: true };
+    });
   }
   if (action === 'navigate') {
     const url = new URL(String(input.url || ''));
@@ -82,8 +140,8 @@ http.createServer(async (req, res) => {
     const pathname = new URL(req.url || '/', 'http://127.0.0.1').pathname;
     if (req.method === 'GET' && pathname === '/healthz') return send(res, 200, { ok: true });
     if (req.method === 'GET' && pathname === '/readyz') {
+      if (!await rendererResponds()) return send(res, 503, { ok: false, error: rendererUnresponsiveMessage });
       try {
-        await page();
         await exec('xdpyinfo', ['-display', process.env.DISPLAY || ':1'], { timeout: 1500 });
         const agent = await fetch(`http://127.0.0.1:${process.env.DOTS_AGENT_RUNTIME_PORT || 8083}/healthz`, { signal: AbortSignal.timeout(1500) });
         if (!agent.ok) return send(res, 503, { ok: false });
@@ -104,14 +162,18 @@ http.createServer(async (req, res) => {
       return send(res, 200, { owner });
     }
     if (req.method === 'GET' && pathname === '/v1/state') {
-      const browserPage = await page();
-      return send(res, 200, { ready: true, owner, url: browserPage.url(), title: await browserPage.title().catch(() => '') });
+      const state = await rendererHealth.run(async () => {
+        const browserPage = await page();
+        return { ready: true, owner, url: browserPage.url(), title: await browserPage.title() };
+      });
+      return send(res, 200, state);
     }
     if (req.method === 'GET' && pathname === '/v1/screenshot') return send(res, 200, await screenshot(), 'image/png');
     if (req.method === 'POST' && pathname === '/v1/commands') return send(res, 200, await command(await body(req)));
     return send(res, 404, { error: 'not found' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'computer command failed';
-    return send(res, 400, { error: message.slice(0, 240) });
+    const status = error instanceof RendererUnresponsiveError ? 503 : 400;
+    return send(res, status, { error: message.slice(0, 240) });
   }
 }).listen(port, '0.0.0.0', () => process.stdout.write(`Dots desktop worker listening on ${port}\n`));

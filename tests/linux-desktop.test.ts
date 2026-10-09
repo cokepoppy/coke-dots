@@ -19,10 +19,16 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(service.spec.ports.some(port => port.port === 9222), false, 'Raw Chromium CDP must stay inside the Pod');
   const secret = list.items.find(item => item.kind === 'Secret') as { stringData: Record<string, string> };
   assert.deepEqual(secret.stringData, { LINUX_DESKTOP_WORKER_TOKEN: 'worker-secret', DOTS_AGENT_RUNTIME_TOKEN: 'agent-secret' });
-  const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { automountServiceAccountToken: boolean; containers: { securityContext: { runAsNonRoot: boolean; allowPrivilegeEscalation: boolean } }[] } } } };
+  const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { automountServiceAccountToken: boolean; containers: { securityContext: { runAsNonRoot: boolean; allowPrivilegeEscalation: boolean }; startupProbe?: { timeoutSeconds?: number }; readinessProbe?: { timeoutSeconds?: number; failureThreshold?: number }; livenessProbe?: { timeoutSeconds?: number; failureThreshold?: number } }[] } } } };
   assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
-  assert.equal(deployment.spec.template.spec.containers[0].securityContext.runAsNonRoot, true);
-  assert.equal(deployment.spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation, false);
+  const desktop = deployment.spec.template.spec.containers[0];
+  assert.equal(desktop.securityContext.runAsNonRoot, true);
+  assert.equal(desktop.securityContext.allowPrivilegeEscalation, false);
+  assert.equal(desktop.startupProbe?.timeoutSeconds, 5, 'Chromium startup receives a bounded probe window');
+  assert.equal(desktop.readinessProbe?.timeoutSeconds, 5, 'readiness can exercise a bounded page-runtime probe');
+  assert.equal(desktop.readinessProbe?.failureThreshold, 2, 'a blocked renderer is removed from Service endpoints promptly');
+  assert.equal(desktop.livenessProbe?.timeoutSeconds, 5);
+  assert.equal(desktop.livenessProbe?.failureThreshold, 3, 'liveness restarts only when the desktop worker process itself stops responding');
 });
 
 test('Linux desktop runtime scopes browser control and task dispatch to its connection', async () => {

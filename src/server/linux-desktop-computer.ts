@@ -42,7 +42,10 @@ export class LinuxDesktopComputer implements ComputerRuntime {
   async state(): Promise<ComputerState> {
     await this.ensureConnection();
     const response = await this.request('/v1/state');
-    if (!response.ok) throw new Error(`Linux 云电脑状态查询失败（HTTP ${response.status}）`);
+    if (!response.ok) {
+      const failure = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(failure.error || `Linux 云电脑状态查询失败（HTTP ${response.status}）`);
+    }
     const remote = await response.json() as { ready?: boolean; url?: string; title?: string; owner?: 'agent' | 'user' };
     return { ready: remote.ready === true, owner: remote.owner === 'user' ? 'user' : this.owner, url: remote.url || '', title: remote.title || '', backend: 'linux-desktop', width: 1440, height: 900 };
   }
@@ -251,8 +254,9 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 ...(process.env.DOTS_AGENT_KERNELS_JSON ? [{ name: 'DOTS_AGENT_KERNELS_JSON', value: process.env.DOTS_AGENT_KERNELS_JSON }] : []),
               ],
               ports: [{ name: 'novnc', containerPort: 6080 }, { name: 'worker', containerPort: 8082 }, { name: 'agent', containerPort: 8083 }, { name: 'cdp', containerPort: 9222 }],
-              readinessProbe: { httpGet: { path: '/readyz', port: 'worker' }, initialDelaySeconds: 10, periodSeconds: 5, failureThreshold: 36 },
-              livenessProbe: { httpGet: { path: '/healthz', port: 'worker' }, initialDelaySeconds: 30, periodSeconds: 10 },
+              startupProbe: { httpGet: { path: '/healthz', port: 'worker' }, periodSeconds: 5, timeoutSeconds: 5, failureThreshold: 36 },
+              readinessProbe: { httpGet: { path: '/readyz', port: 'worker' }, periodSeconds: 5, timeoutSeconds: 5, failureThreshold: 2 },
+              livenessProbe: { httpGet: { path: '/healthz', port: 'worker' }, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 3 },
               resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
               securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: ['ALL'] } },
               volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'shm', mountPath: '/dev/shm' }, { name: 'tmp', mountPath: '/tmp' }],

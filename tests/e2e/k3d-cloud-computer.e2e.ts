@@ -227,13 +227,64 @@ try {
   await page.screenshot({ path: join(artifacts, '03-agent-control-restored.png'), fullPage: true });
   console.log('Real cloud-browser navigate/click/type and control hand-back passed');
 
+  const rendererHangScript = [
+    "const targets = await fetch('http://127.0.0.1:9222/json/list').then(response => response.json());",
+    "const target = targets.find(entry => entry.type === 'page');",
+    "if (!target) throw new Error('No Chromium page target is available');",
+    'const socket = new WebSocket(target.webSocketDebuggerUrl);',
+    "await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });",
+    "socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: 'while (true) {}', awaitPromise: false } }));",
+    "setTimeout(() => { socket.close(); process.exit(0); }, 150);",
+  ].join('\n');
+  const originalChromiumPid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'cat', '/tmp/dots-chrome.pid']);
+  command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'node', '--input-type=module', '-e', rendererHangScript]);
+  console.log('Injected a renderer-only hang into the disposable E2E tenant');
+
+  const recoveryDeadline = Date.now() + 90_000;
+  let currentChromiumPid = originalChromiumPid;
+  let computerReady = false;
+  while (Date.now() < recoveryDeadline) {
+    currentChromiumPid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'cat', '/tmp/dots-chrome.pid']);
+    if (currentChromiumPid !== originalChromiumPid) {
+      computerReady = await page.evaluate(async () => {
+        try {
+          const response = await fetch('/api/computer', { signal: AbortSignal.timeout(4_000) });
+          if (!response.ok) return false;
+          const result = await response.json() as { backend?: string };
+          return result.backend === 'linux-desktop';
+        } catch { return false; }
+      });
+      if (computerReady) break;
+    }
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 1000));
+  }
+  assert.notEqual(currentChromiumPid, originalChromiumPid, 'The desktop supervisor must restart only Chromium after a renderer hang');
+  assert(computerReady, 'The cloud computer state API must recover after Chromium is relaunched');
+  command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', `pod/${desktopPod}`, '--timeout=120s']);
+  const recoveredComputer = await page.evaluate(async () => {
+    const response = await fetch('/api/computer');
+    return { status: response.status, body: await response.json() as { backend?: string; error?: string } };
+  });
+  assert.equal(recoveredComputer.status, 200, `Cloud computer state must recover after the renderer restart: ${recoveredComputer.body.error || ''}`);
+  assert.equal(recoveredComputer.body.backend, 'linux-desktop');
+  assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'cat', workspacePath]), runtimeTaskId, 'Renderer recovery must preserve the tenant workspace PVC');
+  const pod = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'pod', desktopPod, '-o', 'json'])) as {
+    status?: { containerStatuses?: { name: string; restartCount: number }[] };
+  };
+  const desktopContainer = pod.status?.containerStatuses?.find(container => container.name === 'desktop');
+  assert.equal(desktopContainer?.restartCount, 0, 'Renderer recovery must not restart the cloud computer container hosting the Agent runtime');
+  const agentHealth = JSON.parse(command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'node', '-e', "fetch('http://127.0.0.1:8083/healthz').then(async response => { console.log(JSON.stringify({ status: response.status, body: await response.json() })); process.exit(response.ok ? 0 : 1); })"])) as { status?: number; body?: { runtime?: string } };
+  assert.equal(agentHealth.status, 200);
+  assert.equal(agentHealth.body?.runtime, 'dots-agent-runtime', 'The Agent runtime must remain available during renderer recovery');
+  console.log('Chromium renderer recovered in place; Agent runtime process and tenant workspace remained available');
+
   command(['kubectl', '-n', namespace, 'delete', 'pod', desktopPod, '--wait=true', '--timeout=90s']);
   command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', 'pod', '-l', 'app=desktop', '--timeout=120s']);
   const restartedPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The tenant workspace artifact must survive a desktop Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'browser navigate/click/type', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'browser navigate/click/type', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'Chromium renderer hang triggers Chromium-only restart', 'Agent runtime and workspace remain available during renderer recovery', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);

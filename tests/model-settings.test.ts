@@ -22,14 +22,27 @@ test('model endpoint and name persist without a secret in SQLite', () => {
 });
 
 test('environment model credential is used without appearing in public settings', () => {
+  const original = {
+    nodeEnv: process.env.NODE_ENV,
+    e2eAuth: process.env.DOTS_E2E_AUTH,
+    apiKey: process.env.DOTS_MODEL_API_KEY,
+    model: process.env.DOTS_MODEL,
+  };
+  const tenantId = `isolated-env-model-test-${process.pid}`;
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_E2E_AUTH = '1';
   process.env.DOTS_MODEL_API_KEY = 'test-secret';
   process.env.DOTS_MODEL = 'env-model';
   try {
-    setModelMetadata('https://example.com/v1', '', 'legacy');
-    assert.equal(effectiveModelConfig()?.model, 'env-model');
-    assert.equal(effectiveModelConfig()?.apiKey, 'test-secret');
-    assert.equal(JSON.stringify(publicModelSettings()).includes('test-secret'), false);
-  } finally { delete process.env.DOTS_MODEL_API_KEY; delete process.env.DOTS_MODEL; }
+    setModelMetadata('https://example.com/v1', '', tenantId);
+    assert.equal(effectiveModelConfig(tenantId)?.model, 'env-model');
+    assert.equal(effectiveModelConfig(tenantId)?.apiKey, 'test-secret');
+    assert.equal(JSON.stringify(publicModelSettings(tenantId)).includes('test-secret'), false);
+  } finally {
+    for (const [key, value] of [['NODE_ENV', original.nodeEnv], ['DOTS_E2E_AUTH', original.e2eAuth], ['DOTS_MODEL_API_KEY', original.apiKey], ['DOTS_MODEL', original.model]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });
 
 test('the shared E2E model fixture can serve disposable test tenants without writing a key to Keychain', () => {
