@@ -318,11 +318,33 @@ export function desktopResourceIdentity(tenantId: string) {
   return { namespace, tenantHash };
 }
 
+export function isPinnedDesktopImageReference(reference: string) {
+  const value = reference.trim();
+  if (!value || /\s/.test(value)) return false;
+  const digestSeparator = value.lastIndexOf('@');
+  if (digestSeparator >= 0) {
+    const imageName = value.slice(0, digestSeparator);
+    return Boolean(imageName) && /^sha256:[a-f0-9]{64}$/i.test(value.slice(digestSeparator + 1));
+  }
+  const lastSlash = value.lastIndexOf('/');
+  const lastColon = value.lastIndexOf(':');
+  const tag = lastColon > lastSlash ? value.slice(lastColon + 1) : '';
+  return /^sha-[a-f0-9]{40}$/i.test(tag);
+}
+
+export function configuredDesktopImage(environment = process.env.NODE_ENV, configured = process.env.DOTS_LINUX_DESKTOP_IMAGE) {
+  const image = configured?.trim() || 'coke-dots-linux-desktop:dev';
+  if (environment === 'production' && !isPinnedDesktopImageReference(image)) {
+    throw new Error('生产环境的 Linux 云电脑必须配置固定镜像摘要，或使用 coke-dots-linux-desktop:sha-<40位Git提交>');
+  }
+  return image;
+}
+
 export function desktopResources(tenantId: string, workerToken: string, agentToken: string) {
   const identity = desktopResourceIdentity(tenantId);
   const namespace = identity.namespace;
   const name = 'desktop';
-  const image = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
+  const image = configuredDesktopImage();
   const pullPolicy = process.env.DOTS_LINUX_DESKTOP_IMAGE_PULL_POLICY || 'IfNotPresent';
   const volumeSize = process.env.DOTS_LINUX_DESKTOP_VOLUME_SIZE || '10Gi';
   const controlNamespace = process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || 'coke-dots';
@@ -343,6 +365,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
   const agentEngines = [...new Set(requestedAgentEngines)].join(',');
   const builtInAdapter = { command: 'node', args: ['/opt/coke-dots/cloud-kernel-adapter.mjs'] };
   const kernelAdapters = Object.fromEntries(agentEngines.split(',').filter(Boolean).map(engine => [engine, kernels[engine] || builtInAdapter]));
+  const imageAnnotations = { 'coke-dots.io/desktop-image': image };
   const objects: Record<string, unknown>[] = [
     {
       apiVersion: 'v1', kind: 'Secret', metadata: { name: 'desktop-runtime', namespace }, type: 'Opaque',
@@ -364,11 +387,11 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
       },
     },
     {
-      apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace, labels: { app: name, 'coke-dots.io/tenant-hash': identity.tenantHash } },
+      apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace, labels: { app: name, 'coke-dots.io/tenant-hash': identity.tenantHash }, annotations: imageAnnotations },
       spec: {
         replicas: 1, strategy: { type: 'Recreate' }, selector: { matchLabels: { app: name } },
         template: {
-          metadata: { labels: { app: name, 'coke-dots.io/tenant-hash': identity.tenantHash } },
+          metadata: { labels: { app: name, 'coke-dots.io/tenant-hash': identity.tenantHash }, annotations: imageAnnotations },
           spec: {
             automountServiceAccountToken: false,
             securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: 'RuntimeDefault' } },

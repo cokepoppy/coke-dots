@@ -10,19 +10,20 @@ OpenAI's [computer and apps documentation](https://learn.chatgpt.com/docs/dots/c
 
 ## Build and local K3D run
 
-Build the image from the repository root and make it available to the local K3D cluster:
+Build the image from a committed worker revision and import its commit-addressed tag to the intended local K3D cluster:
 
 ```sh
-docker build -f deploy/linux-desktop/Dockerfile -t coke-dots-linux-desktop:dev .
-k3d image import coke-dots-linux-desktop:dev -c <cluster-name>
+scripts/build-linux-desktop-image.sh <cluster-name>
 ```
+
+The script refuses dirty worker-image inputs, records the full Git revision in the image label, refuses to overwrite an existing revision tag built from another revision, and prints the exact image reference to configure. For production, set `DOTS_LINUX_DESKTOP_IMAGE` to that `sha-<40-character-revision>` tag or to a registry reference pinned by `@sha256:<digest>`. Production provisioning rejects `dev`, `latest`, and test tags before applying any tenant Kubernetes resources. The Deployment and Pod template record the selected reference in `coke-dots.io/desktop-image` annotations.
 
 Configure the host service before starting it:
 
 ```sh
 DOTS_COMPUTER_BACKEND=linux-desktop
 DOTS_LINUX_DESKTOP_TOKEN_SECRET=<random secret of at least 32 characters>
-DOTS_LINUX_DESKTOP_IMAGE=coke-dots-linux-desktop:dev
+DOTS_LINUX_DESKTOP_IMAGE=coke-dots-linux-desktop:sha-<40-character-revision>
 DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE=<namespace containing the Coke Dots service>
 ```
 
@@ -52,6 +53,6 @@ The mock E2E does not prove a real K3D Pod or Debian image starts. Build and K3D
 
 ### Recovering a stale local K3D image
 
-When reusing a mutable tag such as `coke-dots-linux-desktop:dev`, rebuilding it in Docker does not update an image already cached by a K3D node. If the desktop Pod is crash-looping after an image change, rebuild the image, import that tag into the intended cluster with `k3d image import`, and verify the recreated Pod's `imageID` and readiness. Before deleting or restarting a Pod in a shared cluster, verify its namespace and Coke Dots ownership labels; recreate only that Dots desktop resource. Do not restart the whole cluster or other namespaces.
+Do not reuse a `dev`, `latest`, or test tag for a production tenant. A mutable tag can resolve differently on the Mac and K3D node, and `IfNotPresent` can retain an older cached image. Build and import a new commit-addressed image for each worker source revision, update the service's `DOTS_LINUX_DESKTOP_IMAGE`, then verify that both containers in the tenant Deployment use that reference and that their running `imageID` values match. Before deleting or restarting a Pod in a shared cluster, verify its namespace and Coke Dots ownership labels; recreate only that Dots desktop resource. Do not restart the whole cluster or other namespaces.
 
 On 2026-10-08, the existing legacy desktop namespace had a stale cached image and its Pod was crash-looping. Rebuilding and importing the current image, then recreating only the verified Coke Dots desktop Pod, restored it to `1/1 Ready`. The live Dots computer API returned `ready: true` and opened the Debian desktop. A separate disposable-tenant K3D E2E then passed the Debian 13, noVNC, browser takeover, live Agent adapter, and persistent-workspace checks. Evidence is saved in `artifacts/e2e/k3d-cloud-computer-2026-10-08T02-10-08-893Z` (ignored local output).

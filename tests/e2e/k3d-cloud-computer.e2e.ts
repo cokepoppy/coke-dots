@@ -185,6 +185,29 @@ try {
   assert.equal(computerStatus.status, 200, 'The cloud computer API must connect to the tenant desktop');
   const desktopPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert(desktopPod, `The tenant namespace ${namespace} must contain its desktop Pod`);
+  const expectedWorkerImage = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
+  const deployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as {
+    metadata: { annotations?: Record<string, string> };
+    spec: { template: { metadata: { annotations?: Record<string, string> }; spec: { containers: { name: string; image: string; imagePullPolicy: string }[] } } };
+  };
+  assert.equal(deployment.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage, 'The Deployment must declare its selected worker release');
+  assert.equal(deployment.spec.template.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage, 'The Pod template must carry the same worker release');
+  const configuredContainers = deployment.spec.template.spec.containers
+    .map(container => ({ name: container.name, image: container.image, imagePullPolicy: container.imagePullPolicy }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  assert.deepEqual(configuredContainers, [
+    { name: 'agent-runtime', image: expectedWorkerImage, imagePullPolicy: 'IfNotPresent' },
+    { name: 'desktop', image: expectedWorkerImage, imagePullPolicy: 'IfNotPresent' },
+  ], 'The visible desktop and cloud Agent must use the same configured release image');
+  const pod = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'pod', desktopPod, '-o', 'json'])) as {
+    status: { containerStatuses: { name: string; image: string; imageID: string }[] };
+  };
+  const actualImageIDs = Object.fromEntries(pod.status.containerStatuses.map(container => [container.name, container.imageID]));
+  assert.deepEqual(Object.keys(actualImageIDs).sort(), ['agent-runtime', 'desktop']);
+  assert(actualImageIDs.desktop?.startsWith('sha256:'), 'Kubernetes must report the actual desktop image identity');
+  assert.equal(actualImageIDs['agent-runtime'], actualImageIDs.desktop, 'The Agent runtime and desktop must start from the same resolved image');
+  await writeFile(join(artifacts, 'cloud-computer-image.json'), `${JSON.stringify({ expectedWorkerImage, actualImageIDs }, null, 2)}\n`);
+  console.log(`Verified tenant desktop and Agent image ${expectedWorkerImage} (${actualImageIDs.desktop})`);
   const desktopUid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'id', '-u']);
   const agentUid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'id', '-u']);
   assert.equal(desktopUid, '1000', 'The visible cloud desktop must run as its isolated non-root UID');

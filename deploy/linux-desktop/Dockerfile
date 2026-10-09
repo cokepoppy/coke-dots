@@ -9,6 +9,9 @@ RUN gcc -O2 -Wall -Wextra -o /usr/local/bin/dots-set-window-decorations /tmp/set
 FROM node:22.23.1-trixie-slim AS desktop
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG COKE_DOTS_GIT_REVISION=unknown
+
+LABEL org.opencontainers.image.revision=$COKE_DOTS_GIT_REVISION
 
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
