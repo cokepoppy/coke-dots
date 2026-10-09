@@ -1264,6 +1264,7 @@ export class Store {
     return {
       profile: p,
       dotPaused: this.isDotPaused(tenantId),
+      workspaceCustomRulesEnabled: this.workspaceCustomActionRulesEnabled(tenantId),
       preferences: {
         desktopNotifications: this.getSetting('desktopNotifications', tenantId) === 'true',
         browserNotifications: this.browserNotificationMode(userId),
@@ -1465,6 +1466,18 @@ export class Store {
     return Boolean(this.db.prepare("SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=? AND role IN ('owner','admin')").get(tenantId, actorUserId));
   }
 
+  workspaceCustomActionRulesEnabled(tenantId: string) {
+    return this.getSetting('customActionRulesEnabled', tenantId) !== 'false';
+  }
+
+  setWorkspaceCustomActionRulesEnabled(tenantId: string, actorUserId: string, enabled: boolean) {
+    const membership = this.db.prepare(`SELECT t.kind,m.role FROM tenants t JOIN memberships m ON m.tenant_id=t.id
+      WHERE t.id=? AND m.user_id=?`).get(tenantId, actorUserId) as { kind: string; role: string } | undefined;
+    if (!membership || membership.kind !== 'workspace' || !['owner', 'admin'].includes(membership.role)) return false;
+    this.setSetting('customActionRulesEnabled', String(enabled), tenantId);
+    return true;
+  }
+
   isTenantMember(tenantId: string, userId: string) {
     return Boolean(this.db.prepare('SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=?').get(tenantId, userId));
   }
@@ -1478,7 +1491,9 @@ export class Store {
   personalActionRuleForTask(tenantId: string, taskId: string): PersonalActionRule | null {
     const row = this.db.prepare(`SELECT r.id,r.user_id AS userId,r.scope,r.instruction,r.mode,r.created_at AS createdAt,r.updated_at AS updatedAt
       FROM tasks t JOIN personal_action_rules r ON r.user_id=t.created_by_user_id AND r.scope='scratchpad-write'
-      WHERE t.tenant_id=? AND t.id=?`).get(tenantId, taskId) as PersonalActionRule | undefined;
+      WHERE t.tenant_id=? AND t.id=?
+        AND COALESCE((SELECT value FROM tenant_settings s WHERE s.tenant_id=t.tenant_id AND s.key='customActionRulesEnabled'),'true')='true'`)
+      .get(tenantId, taskId) as PersonalActionRule | undefined;
     return row || null;
   }
 

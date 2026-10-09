@@ -508,6 +508,9 @@ test('personal action rules follow one Google account across workspaces and appr
     assert.ok(store.acceptWorkspaceInvitation(workspace.id, betaSession, beta.user.id, beta.user.email));
     assert.equal(store.isWorkspaceAdmin(workspace.id, alpha.user.id), true);
     assert.equal(store.isWorkspaceAdmin(workspace.id, beta.user.id), false);
+    assert.equal(store.workspaceCustomActionRulesEnabled(workspace.id), true, 'Existing workspaces retain custom-rule behavior by default');
+    assert.equal(store.setWorkspaceCustomActionRulesEnabled(workspace.id, beta.user.id, false), false, 'A workspace member cannot change workspace custom-rule availability');
+    assert.equal(store.workspaceCustomActionRulesEnabled(workspace.id), true);
     const rule = store.savePersonalActionRule(alpha.user.id, 'Update release notes', 'ask-before');
     assert.equal(rule.mode, 'ask-before');
     assert.equal(store.personalActionRule(alpha.user.id)?.instruction, 'Update release notes', 'The same account rule remains available independently of its active tenant');
@@ -519,6 +522,15 @@ test('personal action rules follow one Google account across workspaces and appr
 
     const task = store.createTask('Create a page with release notes', null, 'model', workspace.id, null, null, [], alpha.user.id);
     assert.equal(store.personalActionRuleForTask(workspace.id, task.id)?.userId, alpha.user.id, 'A task uses the rule owned by the Google account that started it');
+    assert.equal(store.setWorkspaceCustomActionRulesEnabled(workspace.id, alpha.user.id, false), true);
+    assert.equal(store.workspaceCustomActionRulesEnabled(workspace.id), false);
+    assert.equal(store.snapshot(false, [], undefined, workspace.id).workspaceCustomRulesEnabled, false, 'Live workspace snapshots expose the disabled custom-rule permission');
+    assert.equal(store.personalActionRule(alpha.user.id)?.instruction, 'Update release notes', 'Disabling a workspace does not delete the account-level rule');
+    assert.equal(store.personalActionRuleForTask(workspace.id, task.id), null, 'A disabled workspace must not apply the account-level rule to its tasks');
+    const personalTask = store.createTask('Create a page in Alpha personal workspace', null, 'model', alpha.tenant.id, null, null, [], alpha.user.id);
+    assert.equal(store.personalActionRuleForTask(alpha.tenant.id, personalTask.id)?.instruction, 'Update release notes', 'Disabling one shared workspace must not affect the account rule in another tenant');
+    assert.equal(store.setWorkspaceCustomActionRulesEnabled(workspace.id, alpha.user.id, true), true);
+    assert.equal(store.personalActionRuleForTask(workspace.id, task.id)?.instruction, 'Update release notes', 'Re-enabling a workspace restores the saved account rule');
     store.updateTask(task.id, { status: 'working' }, workspace.id);
     const proposal = { action: 'create' as const, title: 'Release notes', content: '# Draft\n- Publish Friday' };
     const approval = store.requestPageActionApproval(workspace.id, task.id, proposal, 'Prepare the release notes page.', 'done', null);

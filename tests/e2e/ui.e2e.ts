@@ -3219,6 +3219,60 @@ try {
     await clickNav(alphaPage!, '你的 dot');
   });
 
+  await recordStep('Workspace admins can disable account custom rules without deleting them', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await openProfile(alphaPage!);
+    const adminRuleManager = alphaPage!.getByTestId('action-rule-manager');
+    const adminToggle = adminRuleManager.getByTestId('workspace-custom-rules-toggle');
+    await waitFor(async () => await adminToggle.isEnabled(), 10_000);
+    assert.equal(await adminToggle.isChecked(), true, 'An existing workspace should preserve the prior enabled behavior');
+    await adminToggle.uncheck();
+    await alphaPage!.getByText('This saved rule is not applied in this workspace.', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await adminRuleManager.getByRole('button', { name: 'Edit rule' }).count(), 0, 'A saved rule must not be editable while workspace rules are off');
+    assert.equal(await adminRuleManager.getByRole('button', { name: 'Delete rule' }).count(), 0, 'A saved rule must not be deletable from a workspace that disabled custom rules');
+    await screenshot(alphaPage!, '18e-workspace-custom-rules-disabled');
+
+    const bypassWriteStatus = await alphaPage!.evaluate(async () => fetch('/api/action-rule', {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ instruction: 'Bypass the workspace setting', mode: 'without-asking' }),
+    }).then(response => response.status));
+    assert.equal(bypassWriteStatus, 403, 'The server must reject a direct rule write while workspace custom rules are disabled');
+
+    await selectTenant(betaPage!, 'Alpha Shared');
+    await openProfile(betaPage!);
+    const memberRuleManager = betaPage!.getByTestId('action-rule-manager');
+    await memberRuleManager.getByTestId('workspace-custom-rules-setting').getByText('Off', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await memberRuleManager.getByTestId('workspace-custom-rules-toggle').count(), 0, 'A workspace member must not receive the admin toggle');
+    const memberToggleStatus = await betaPage!.evaluate(async () => fetch('/api/workspace/custom-action-rules', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: true }),
+    }).then(response => response.status));
+    assert.equal(memberToggleStatus, 403, 'A member cannot re-enable workspace custom rules through the API');
+    assert.equal(await memberRuleManager.getByTestId('custom-action-rule').getByText('Keep my account changes separate.').count(), 1, 'A disabled workspace must retain each member’s saved account rule');
+
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await clickNav(alphaPage!, '你的 dot');
+    const disabledInstruction = 'E2E workspace custom rules disabled — verify shared task policy';
+    const disabledPromptStart = mockModelPrompts.length;
+    await createTask(alphaPage!, disabledInstruction);
+    await waitFor(() => taskPrompts(disabledInstruction, disabledPromptStart).length === 1, 10_000);
+    assert.doesNotMatch(taskPrompts(disabledInstruction, disabledPromptStart)[0] || '', /Create or update the shared launch notes\./, 'A disabled workspace rule reached the model prompt');
+
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    const personalInstruction = 'E2E personal workspace custom rules remain enabled';
+    const personalPromptStart = mockModelPrompts.length;
+    await createTask(alphaPage!, personalInstruction);
+    await waitFor(() => taskPrompts(personalInstruction, personalPromptStart).length === 1, 10_000);
+    assert.match(taskPrompts(personalInstruction, personalPromptStart)[0] || '', /Create or update the shared launch notes\./, 'A workspace-specific disable leaked into the account’s personal workspace');
+
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await openProfile(alphaPage!);
+    const reenableToggle = alphaPage!.getByTestId('workspace-custom-rules-toggle');
+    await waitFor(async () => await reenableToggle.isEnabled(), 10_000);
+    await reenableToggle.check();
+    await alphaPage!.getByText('Ask before taking action', { exact: true }).waitFor({ state: 'visible' });
+    await clickNav(alphaPage!, '你的 dot');
+  });
+
   await recordStep('Scratchpad approvals belong to the task owner account and respect a decline', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await clickNav(alphaPage!, '你的 dot');

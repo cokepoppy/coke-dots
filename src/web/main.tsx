@@ -35,7 +35,7 @@ import './computer-choice.css';
 import './call-timeline.css';
 import './website-sign-in.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, dotPaused: false, preferences: { desktopNotifications: false, browserNotifications: 'never', reasoningEffort: 'high' }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], githubTriggers: [], gmail: { configured: false, pollIntervalSeconds: 60, connection: null, triggers: [] }, entries: [], configured: false, availableEngines: [], remoteEngines: [], eventTriggerEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, dotPaused: false, workspaceCustomRulesEnabled: true, preferences: { desktopNotifications: false, browserNotifications: 'never', reasoningEffort: 'high' }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], githubTriggers: [], gmail: { configured: false, pollIntervalSeconds: 60, connection: null, triggers: [] }, entries: [], configured: false, availableEngines: [], remoteEngines: [], eventTriggerEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
@@ -1129,7 +1129,7 @@ function Profile({ state, auth, onError, onSetDotPaused, onResetDot, onEditAppea
       <small>这些记忆只会提供给你个人工作区中的 Dot，每个账号最多 20 条。</small>
       {personalDotMemoryError && <small role="alert" className="member-error">{personalDotMemoryError}</small>}
     </div>
-    <PermissionRules userId={auth.user.id} />
+    <PermissionRules userId={auth.user.id} tenantId={auth.tenant.id} tenantKind={auth.tenant.kind} tenantRole={auth.tenant.role} workspaceCustomRulesEnabled={state.workspaceCustomRulesEnabled} />
     <div className="section-heading model-heading"><h2>工作区成员</h2><p>所有成员都必须使用对应 Google 账号登录并接受邀请后才能访问。邀请 7 天后过期；Coke Dots 不会代发邮件，请通过其他方式通知对方。当前角色：{auth.tenant.role}。</p></div>
     <div className="profile-card model-card">
       <div className="member-list">{members.map(member => <div className="member-row" key={member.id}>

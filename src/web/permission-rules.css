@@ -2,6 +2,12 @@
 .permission-rule-scope{display:flex;align-items:center;gap:12px}
 .permission-rule-icon{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:#28222f;color:#c0a4ed;font-size:18px}
 .permission-rule-scope>div,.permission-rule-row>div:first-child{display:grid;gap:5px;min-width:0}
+.permission-rule-workspace-setting{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 14px;border:1px solid #302d35;border-radius:10px;background:#131215}
+.permission-rule-workspace-setting>div{display:grid;gap:5px}
+.permission-rule-workspace-setting strong{color:#e9e5ee;font-size:11px;font-weight:580}
+.permission-rule-workspace-setting small,.permission-rule-workspace-status{color:#89848f;font-size:10px;line-height:1.5}
+.permission-rule-workspace-setting label{display:flex;align-items:center;gap:6px;color:#c6c1cb;font-size:10px;white-space:nowrap}
+.permission-rule-workspace-setting input{accent-color:#8069a8}
 .permission-rule-scope strong{color:#e9e5ee;font-size:12px;font-weight:580}
 .permission-rule-scope small,.permission-rule-note,.permission-rule-row small,.permission-rule-empty{color:#89848f;font-size:10px;line-height:1.5}
 .permission-rule-form{display:grid;gap:13px;padding:15px;border:1px solid #302d35;border-radius:10px;background:#131215}

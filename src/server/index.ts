@@ -432,6 +432,9 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, store.activityPage(session.tenant.id, before, limit, session.user.id));
     }
     if (path === '/api/action-rule' && req.method === 'GET') return reply(res, 200, store.personalActionRule(session.user.id));
+    if (path === '/api/workspace/custom-action-rules' && req.method === 'GET') {
+      return reply(res, 200, { enabled: store.workspaceCustomActionRulesEnabled(session.tenant.id) });
+    }
     if (path === '/api/memories' && req.method === 'GET') return reply(res, 200, store.tenantMemories(session.tenant.id));
     if (path === '/api/dot-memories' && req.method === 'GET') return reply(res, 200, store.personalDotMemories(session.user.id));
     if (path === '/api/pages' && req.method === 'GET') return reply(res, 200, store.tenantPages(session.tenant.id));
@@ -507,6 +510,7 @@ const server = createServer(async (req, res) => {
       return call ? reply(res, 200, call) : reply(res, 404, { error: 'Voice call not found' });
     }
     if (path === '/api/action-rule' && req.method === 'PUT') {
+      if (!store.workspaceCustomActionRulesEnabled(session.tenant.id)) return reply(res, 403, { error: '此工作区已停用自定义规则' });
       try {
         const rule = store.savePersonalActionRule(session.user.id, String(body.instruction || ''), String(body.mode || '') as ActionRuleMode);
         publish();
@@ -514,9 +518,18 @@ const server = createServer(async (req, res) => {
       } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法保存权限规则' }); }
     }
     if (path === '/api/action-rule' && req.method === 'DELETE') {
+      if (!store.workspaceCustomActionRulesEnabled(session.tenant.id)) return reply(res, 403, { error: '此工作区已停用自定义规则' });
       store.deletePersonalActionRule(session.user.id);
       publish();
       return reply(res, 200, { ok: true });
+    }
+    if (path === '/api/workspace/custom-action-rules' && req.method === 'PATCH') {
+      if (typeof body.enabled !== 'boolean') return reply(res, 400, { error: 'Invalid custom rules setting' });
+      if (!store.setWorkspaceCustomActionRulesEnabled(session.tenant.id, session.user.id, body.enabled)) {
+        return reply(res, 403, { error: '只有工作区所有者或管理员可以修改此设置' });
+      }
+      publish();
+      return reply(res, 200, { enabled: store.workspaceCustomActionRulesEnabled(session.tenant.id) });
     }
     if (path === '/api/pages' && req.method === 'POST') {
       try {
