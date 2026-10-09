@@ -9,9 +9,6 @@ RUN gcc -O2 -Wall -Wextra -o /usr/local/bin/dots-set-window-decorations /tmp/set
 FROM node:22.23.1-trixie-slim AS desktop
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG COKE_DOTS_GIT_REVISION=unknown
-
-LABEL org.opencontainers.image.revision=$COKE_DOTS_GIT_REVISION
 
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
@@ -71,6 +68,9 @@ RUN install -d -o node -g node -m 0755 /opt/coke-dots/icons
 COPY --chmod=0644 src/web/assets/dots-files.png /opt/coke-dots/icons/dots-files.png
 RUN install -d -o node -g node -m 0755 /opt/coke-dots/chrome-theme
 COPY --chmod=0644 deploy/linux-desktop/chrome-theme/manifest.json /opt/coke-dots/chrome-theme/manifest.json
+
+ARG COKE_DOTS_GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision=$COKE_DOTS_GIT_REVISION
 
 USER 1000:1000
 WORKDIR /workspace
