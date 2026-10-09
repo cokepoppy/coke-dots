@@ -1,6 +1,6 @@
 # Dots voice calls: public evidence and Coke Dots design
 
-Updated 2026-10-09 on `feature/voice-call-reference-fidelity`.
+Updated 2026-10-09 on `feature/voice-technology-architecture`.
 
 ## What OpenAI has publicly confirmed
 
@@ -12,6 +12,8 @@ Sources:
 
 - [OpenAI Dots messaging and voice documentation](https://learn.chatgpt.com/docs/dots/channels)
 - [OpenAI Dots tasks and memory](https://learn.chatgpt.com/docs/dots/tasks-and-memory)
+- [OpenAI Voice agents](https://developers.openai.com/api/docs/guides/voice-agents)
+- [OpenAI WebRTC connection guide](https://developers.openai.com/api/docs/guides/voice-webrtc)
 - [Futurepedia, I Tested OpenAI's New Personal Assistant Agent: DOTS](https://www.youtube.com/watch?v=V_1Vn2WfpEY), 06:26
 - [John Aspinall, I Tried ChatGPT Dots: Setup, Voice Calls & Real Tasks](https://www.youtube.com/watch?v=Q9tF0R8d_Co), 05:40, 06:11, 07:12, 13:58
 
@@ -19,7 +21,7 @@ Sources:
 
 The current call is a **chained browser voice path**, not a native speech-to-speech model session:
 
-1. The browser's Web Speech `SpeechRecognition` implementation listens to the microphone. The browser/OS speech service provides a finalized transcript; Coke Dots does not receive or persist the raw audio.
+1. The browser's Web Speech `SpeechRecognition` API opens the microphone and provides a finalized transcript to the page. Audio processing is browser/provider dependent and may use a remote speech service; the Coke Dots task API receives transcript text, not the raw audio, and the application does not persist call audio.
 2. Each final phrase goes through the same tenant-authenticated task API as typed work. A clarification uses the existing waiting task ID and task-reply endpoint.
 3. While the call remains open, the client polls `/api/state` and follows the task. The independent agent worker continues running if the call closes.
 4. Browser `speechSynthesis` reads short acknowledgements, questions, and final task results. Recognition pauses during playback to reduce self-transcription.
@@ -27,9 +29,31 @@ The current call is a **chained browser voice path**, not a native speech-to-spe
 
 This is deterministic enough for mocked Chrome E2E and it connects to the existing Pi/DeepSeek Harness task engines. It is not equivalent to a live full-duplex voice model: recognition and voice quality depend on browser support, the UI cannot cancel remote playback at the model, and polling adds delay. The current E2E injects speech through a fake browser recognizer; it does not claim live microphone or acoustic-quality coverage.
 
-## Recommended production path for Pi and DeepSeek Harness
+## Current official voice architectures and how they map to Coke Dots
 
-Keep voice as a transport/channel adapter around the existing task system. Do not move the Agent kernel out of the tenant's Debian cloud computer. The browser should own microphone permission and the call controls; the authenticated backend should own call identity, policy, event routing, and short-lived voice credentials. The tenant's Debian Agent Runtime should continue to own task execution and durable state.
+OpenAI's current [Voice agents documentation](https://developers.openai.com/api/docs/guides/voice-agents) presents three architectures; it does not identify the one used by Dots. **GPT-Live** supports full-duplex conversation and delegates reasoning and tool use to a separate backend. That backend can be a client-owned workflow and provider, or an OpenAI-hosted Responses model. **Realtime API** handles speech, reasoning, and tools in one session. A **chained voice pipeline** runs speech-to-text, the application's agent workflow, and text-to-speech as separate stages.
+
+For browser speech-to-speech applications, OpenAI recommends starting with its higher-level Voice Agents interface; its [WebRTC guide](https://developers.openai.com/api/docs/guides/voice-webrtc) describes the lower-level peer-connection path. The guide documents two session setups: a **unified server relay**, where the browser sends its SDP offer to the application server and the server calls OpenAI with its standard API key; or an **ephemeral client secret**, minted by the server and returned to the browser for a direct WebRTC connection. A standard API key remains server-side in both setups. Browser control events can use a WebRTC data channel. The server can also attach a stable, privacy-preserving `OpenAI-Safety-Identifier` when creating the session.
+
+For Coke Dots, **keep the chained flow as the default**: finalized speech becomes ordinary tenant-authenticated task or reply text, so Pi or DeepSeek Harness in the tenant's Debian computer remains the sole task kernel and its existing permissions, Activity history, approvals, and continuation semantics remain authoritative. If a separate OpenAI voice provider is configured later, GPT-Live's client-delegation mode is a documented option for keeping the selected Pi/DSH workflow as the backend while the voice model handles turn-taking and interruption. Give that voice session only a narrow tenant-scoped task/reply tool. A Realtime session that independently reasons and acts is a separate Agent backend and must be configured explicitly; it must not silently replace the selected kernel.
+
+```mermaid
+flowchart LR
+  U[Browser or Electron call UI] -->|transcript or typed message| V[Voice provider adapter]
+  V -->|authenticated task or reply| A[Dots API and policy]
+  A -->|scoped task| R[Tenant Debian cloud computer\nPi or DeepSeek Harness]
+  R -->|progress, question, result| A
+  A -->|text response| V
+  V -->|speech playback| U
+  U <-->|optional WebRTC media and events| L[GPT-Live voice session]
+  L -->|delegated work only| A
+```
+
+The diagram's GPT-Live route is an optional provider design, not a claim about Dots internals or current Coke Dots behavior. The checked-in implementation currently uses browser speech APIs and the task API; it has no Realtime/GPT-Live client-secret endpoint, WebRTC media session, or OpenAI voice credentials.
+
+## Provider boundary and production requirements
+
+Keep voice as a transport/channel adapter around the existing task system. Do not move the Agent kernel out of the tenant's Debian cloud computer. The browser should own microphone permission and the call controls; the authenticated backend should own call identity, policy, event routing, and any short-lived voice credentials. The tenant's Debian Agent Runtime should continue to own task execution and durable state.
 
 ```mermaid
 flowchart LR
@@ -49,14 +73,12 @@ Use a provider interface rather than binding the task kernel to a speech vendor:
 - `VoiceSessionTransport`: call ID, tenant/user authorization, and delivery of typed text and task progress.
 - Existing `AgentAdapter`: receives ordinary task instructions or replies and runs inside the tenant Debian computer.
 
-For best conversational latency, OpenAI's **Realtime API/GPT-Live WebRTC** is a technically documented option: browser microphone and generated speech use negotiated WebRTC media tracks, with JSON events over a data channel; the application server keeps the standard API key and creates the session. OpenAI recommends WebRTC for browser clients. This describes OpenAI's public developer API, **not confirmed Dots internals**, and it introduces a separate OpenAI voice-provider/cost configuration from the user's Pi/DeepSeek task kernel.
-
-For provider flexibility and direct compatibility with Pi/DeepSeek Harness, a **chained voice pipeline** is the better first target: speech-to-text → normal tenant task/reply → text-to-speech. OpenAI's voice-agent documentation names this as the controllable path when the application needs to inspect/transform text and replace each stage independently. It is easier to audit, replay in E2E, and route user intent to the existing Agent adapter, though it will have more latency than native speech-to-speech.
+The voice provider and task kernel must remain separate interfaces. A provider may emit final transcript, partial transcript, playback state, interruption, and disconnect events; only an authenticated transcript or explicit typed message should reach the ordinary task/reply API. Pi or DeepSeek Harness remains responsible for agent work. GPT-Live, if enabled later, should receive a narrow delegation tool that creates or updates a tenant-scoped task and streams back progress; it should not receive the cloud computer's direct browser or shell tools.
 
 Security and lifecycle requirements:
 
 - Bind every call, transcript, task, and stream to the authenticated user and tenant; never trust a client-supplied tenant ID.
-- Keep long-lived provider keys on the backend. If a Realtime provider is selected, issue only its short-lived client credential/session from a tenant-authorized backend endpoint.
+- Keep long-lived provider keys on the backend. If a WebRTC provider is selected, use the server-side SDP relay or issue only its short-lived client credential/session from a tenant-authorized backend endpoint.
 - Don't store audio by default. Store transcript only through the existing task/conversation record and make the retention rule explicit.
 - End-call cleanup must stop local tracks, audio playback, event subscriptions, and task polling. It must not cancel the separate agent job unless the user explicitly stops that task.
 - Model tests with deterministic audio/transcript fixtures; run a separate manual Chrome/Electron microphone check for permissions, echo cancellation, interruption, network loss, and real device playback.
