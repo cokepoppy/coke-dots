@@ -45,7 +45,9 @@ RUN install -d -o node -g node "$HOME" /workspace /opt/coke-dots /tmp/.X11-unix 
 
 # Ship the upstream DeepSeek Harness CLI in the Debian computer. Pi and the
 # TypeScript Harness client are installed from this repository's lockfile.
-RUN npm install --global --omit=dev --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2 \
+ARG npm_config_proxy
+RUN npm_config_proxy="${npm_config_proxy:-${https_proxy:-${http_proxy:-}}}" \
+    npm install --global --omit=dev --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2 \
     && test -x /usr/local/bin/dsh
 COPY --from=x11-helper-build /usr/local/bin/dots-set-window-decorations /usr/local/bin/dots-set-window-decorations
 

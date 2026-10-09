@@ -34,7 +34,11 @@ if docker image inspect "$image" >/dev/null 2>&1; then
 else
   proxy_args=()
   if [[ -n "${COKE_DOTS_DOCKER_BUILD_PROXY:-}" ]]; then
-    proxy_args+=(--build-arg "http_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}" --build-arg "https_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}")
+    proxy_args+=(
+      --build-arg "http_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}"
+      --build-arg "https_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}"
+      --build-arg "npm_config_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}"
+    )
   fi
   docker build "${proxy_args[@]}" --build-arg "COKE_DOTS_GIT_REVISION=$revision" --file deploy/linux-desktop/Dockerfile --tag "$image" .
 fi
