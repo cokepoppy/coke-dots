@@ -154,7 +154,13 @@ try {
   const currentContext = command(['kubectl', 'config', 'current-context']);
   assert.equal(currentContext, `k3d-${cluster}`, 'The K3D smoke test must use the explicitly selected Coke sandbox cluster');
   command(['kubectl', 'get', 'nodes']);
-  command(['docker', 'image', 'inspect', process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev']);
+  const workerImage = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
+  command(['docker', 'image', 'inspect', workerImage]);
+  const commitTag = workerImage.match(/:sha-([a-f0-9]{40})$/i);
+  if (commitTag) {
+    const labeledRevision = command(['docker', 'image', 'inspect', '--format={{index .Config.Labels "org.opencontainers.image.revision"}}', workerImage]);
+    assert.equal(labeledRevision, commitTag[1], 'A commit-addressed image tag must match the source revision embedded by the builder');
+  }
   if (runLiveAgentKernels) await configureLiveAgentKernels();
   console.log(`K3D preflight passed: ${cluster}`);
   await mkdir(artifacts, { recursive: true });
