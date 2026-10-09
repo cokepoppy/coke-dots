@@ -37,6 +37,9 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(runtime.securityContext.runAsUser, 1001);
   assert.equal(runtime.securityContext.allowPrivilegeEscalation, false);
   assert.equal(runtime.securityContext.readOnlyRootFilesystem, true);
+  assert.equal(runtime.readinessProbe?.timeoutSeconds, 5, 'agent readiness tolerates transient node and API latency');
+  assert.equal(runtime.livenessProbe?.timeoutSeconds, 5, 'agent liveness avoids restarting a responsive but briefly delayed runtime');
+  assert.equal(runtime.livenessProbe?.failureThreshold, 3);
   const desktopEnv = desktop.env.map(item => item.name);
   const runtimeEnv = runtime.env.map(item => item.name);
   assert.equal(desktopEnv.includes('DOTS_AGENT_RUNTIME_TOKEN'), false);
