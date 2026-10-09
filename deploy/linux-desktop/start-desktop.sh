@@ -125,8 +125,8 @@ node /opt/coke-dots/computer-worker.mjs >/tmp/dots-worker.log 2>&1 &
 worker_pid=$!
 banner_dismissed=0
 for _ in $(seq 1 45); do
-  chrome_window="$(xdotool search --onlyvisible --name 'Welcome back, Dot' 2>/dev/null | head -n 1 || true)"
-  if [[ -n "$chrome_window" ]] && xdotool getwindowname "$chrome_window" 2>/dev/null | grep -q 'Welcome back, Dot'; then
+  chrome_window="$(xdotool search --onlyvisible --name 'Welcome back,' 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$chrome_window" ]] && xdotool getwindowname "$chrome_window" 2>/dev/null | grep -q '^Welcome back, '; then
     timeout --foreground 2s xdotool windowactivate --sync "$chrome_window" || true
     # The source recording shows the Chromium tab strip directly, without an
     # operating-system titlebar. Keep Chromium's own tabs/address bar while
