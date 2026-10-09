@@ -985,6 +985,7 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   const dialog = page.getByRole('dialog', { name: 'Set up Slack' });
   await dialog.waitFor({ state: 'visible' });
   await page.getByTestId('slack-connect').waitFor({ state: 'visible' });
+  assert.equal(await page.getByTestId('slack-connect').innerText(), 'Add to Slack', 'The initial Slack setup CTA should match the observed video label');
   await screenshot(page, `${screenshotPrefix}-setup`);
   const authorizationPage = page.waitForURL(url => url.origin === mockSlackOrigin && url.pathname === '/oauth/v2/authorize', { timeout: 10_000 });
   await page.getByTestId('slack-connect').click();
