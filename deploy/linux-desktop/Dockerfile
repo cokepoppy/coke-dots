@@ -57,6 +57,7 @@ RUN node --input-type=module -e "await import('@mariozechner/pi-coding-agent'); 
 
 COPY --chmod=0755 deploy/linux-desktop/start-desktop.sh /usr/local/bin/start-dots-desktop
 COPY --chmod=0644 deploy/linux-desktop/computer-worker.mjs /opt/coke-dots/computer-worker.mjs
+COPY --chmod=0644 deploy/linux-desktop/browser-context.mjs /opt/coke-dots/browser-context.mjs
 COPY --chmod=0644 src/shared/public-web-policy.mjs /opt/coke-dots/public-web-policy.mjs
 COPY --chmod=0644 src/server/computer-home.mjs /opt/coke-dots/computer-home.mjs
 COPY --chmod=0644 deploy/linux-desktop/agent-runtime.mjs /opt/coke-dots/agent-runtime.mjs
@@ -67,6 +68,9 @@ RUN install -d -o node -g node -m 0755 /opt/coke-dots/icons
 COPY --chmod=0644 src/web/assets/dots-files.png /opt/coke-dots/icons/dots-files.png
 RUN install -d -o node -g node -m 0755 /opt/coke-dots/chrome-theme
 COPY --chmod=0644 deploy/linux-desktop/chrome-theme/manifest.json /opt/coke-dots/chrome-theme/manifest.json
+
+ARG COKE_DOTS_GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision=$COKE_DOTS_GIT_REVISION
 
 USER 1000:1000
 WORKDIR /workspace

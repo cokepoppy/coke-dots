@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
-import { configuredDesktopAgentEngines, desktopResourceIdentity, desktopResources, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
+import { configuredDesktopAgentEngines, configuredDesktopImage, desktopResourceIdentity, desktopResources, isPinnedDesktopImageReference, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
 
 test('Linux desktop resources isolate tenant namespaces and never publish CDP', () => {
   const alpha = desktopResourceIdentity('alpha-workspace');
@@ -38,6 +38,40 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(desktopEnv.includes('DOTS_AGENT_KERNELS_JSON'), false);
   assert.equal(runtimeEnv.includes('DOTS_AGENT_RUNTIME_TOKEN'), true);
   assert.equal(runtimeEnv.includes('LINUX_DESKTOP_WORKER_TOKEN'), true);
+});
+
+test('production cloud computers reject mutable worker tags and expose the selected release image', () => {
+  const commit = '0123456789abcdef0123456789abcdef01234567';
+  const commitImage = `coke-dots-linux-desktop:sha-${commit}`;
+  const digestImage = `registry.example.test/coke-dots-linux-desktop@sha256:${'a'.repeat(64)}`;
+  assert.equal(isPinnedDesktopImageReference(commitImage), true);
+  assert.equal(isPinnedDesktopImageReference(digestImage), true);
+  assert.equal(isPinnedDesktopImageReference('coke-dots-linux-desktop:dev'), false);
+  assert.equal(isPinnedDesktopImageReference('coke-dots-linux-desktop:test'), false);
+  assert.equal(isPinnedDesktopImageReference(`@sha256:${'a'.repeat(64)}`), false);
+  assert.equal(configuredDesktopImage('production', commitImage), commitImage);
+  assert.equal(configuredDesktopImage('production', digestImage), digestImage);
+  assert.throws(() => configuredDesktopImage('production', 'coke-dots-linux-desktop:dev'), /固定镜像摘要/);
+  assert.throws(() => configuredDesktopImage('production', undefined), /固定镜像摘要/);
+
+  const originalEnvironment = process.env.NODE_ENV;
+  const originalImage = process.env.DOTS_LINUX_DESKTOP_IMAGE;
+  process.env.NODE_ENV = 'production';
+  process.env.DOTS_LINUX_DESKTOP_IMAGE = commitImage;
+  try {
+    const resources = desktopResources('tenant-release', 'worker-secret', 'agent-secret')[1] as { items: Record<string, any>[] };
+    const deployment = resources.items.find(item => item.kind === 'Deployment') as {
+      metadata: { annotations: Record<string, string> };
+      spec: { template: { metadata: { annotations: Record<string, string> }; spec: { containers: { image: string; imagePullPolicy: string }[] } } };
+    };
+    assert.equal(deployment.metadata.annotations['coke-dots.io/desktop-image'], commitImage);
+    assert.equal(deployment.spec.template.metadata.annotations['coke-dots.io/desktop-image'], commitImage);
+    assert.deepEqual(deployment.spec.template.spec.containers.map(container => container.image), [commitImage, commitImage]);
+    assert.deepEqual(deployment.spec.template.spec.containers.map(container => container.imagePullPolicy), ['IfNotPresent', 'IfNotPresent']);
+  } finally {
+    if (originalEnvironment === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = originalEnvironment;
+    if (originalImage === undefined) delete process.env.DOTS_LINUX_DESKTOP_IMAGE; else process.env.DOTS_LINUX_DESKTOP_IMAGE = originalImage;
+  }
 });
 
 test('a fresh Linux desktop ships the Pi and DeepSeek Harness cloud kernel adapters without copying the shared API key into Kubernetes', () => {

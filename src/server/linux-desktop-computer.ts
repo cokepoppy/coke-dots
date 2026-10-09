@@ -7,6 +7,23 @@ import { validatePublicHttpsUrl } from '../shared/public-web-policy.mjs';
 const workerPort = 8082;
 const vncPort = 6080;
 
+export function isPinnedDesktopImageReference(value: string) {
+  const digestIndex = value.lastIndexOf('@sha256:');
+  if (digestIndex > 0 && !value.slice(0, digestIndex).endsWith('/') && /^[a-f0-9]{64}$/i.test(value.slice(digestIndex + '@sha256:'.length))) return true;
+  const lastSlash = value.lastIndexOf('/');
+  const lastColon = value.lastIndexOf(':');
+  const tag = lastColon > lastSlash ? value.slice(lastColon + 1) : '';
+  return lastColon > 0 && /^sha-[a-f0-9]{40}$/i.test(tag);
+}
+
+export function configuredDesktopImage(environment = process.env.NODE_ENV, configured = process.env.DOTS_LINUX_DESKTOP_IMAGE) {
+  const image = configured?.trim() || 'coke-dots-linux-desktop:dev';
+  if (environment === 'production' && !isPinnedDesktopImageReference(image)) {
+    throw new Error('生产环境的 Linux 云电脑必须配置固定镜像摘要，或使用 coke-dots-linux-desktop:sha-<40位Git提交>');
+  }
+  return image;
+}
+
 export interface DesktopConnection {
   workerUrl: URL;
   novncUrl: URL;
@@ -319,10 +336,11 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
   const identity = desktopResourceIdentity(tenantId);
   const namespace = identity.namespace;
   const name = 'desktop';
-  const image = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
+  const image = configuredDesktopImage();
   const pullPolicy = process.env.DOTS_LINUX_DESKTOP_IMAGE_PULL_POLICY || 'IfNotPresent';
   const volumeSize = process.env.DOTS_LINUX_DESKTOP_VOLUME_SIZE || '10Gi';
   const controlNamespace = process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || 'coke-dots';
+  const imageAnnotations = { 'coke-dots.io/desktop-image': image };
   let kernels: Record<string, { command: string; args: string[] }> = {};
   let kernelNames: string[] = [];
   try {
@@ -361,11 +379,11 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
       },
     },
     {
-      apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace, labels: { app: name, 'coke-dots.io/tenant-hash': identity.tenantHash } },
+      apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace, labels: { app: name, 'coke-dots.io/tenant-hash': identity.tenantHash }, annotations: imageAnnotations },
       spec: {
         replicas: 1, strategy: { type: 'Recreate' }, selector: { matchLabels: { app: name } },
         template: {
-          metadata: { labels: { app: name, 'coke-dots.io/tenant-hash': identity.tenantHash } },
+          metadata: { labels: { app: name, 'coke-dots.io/tenant-hash': identity.tenantHash }, annotations: imageAnnotations },
           spec: {
             automountServiceAccountToken: false,
             securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: 'RuntimeDefault' } },

@@ -185,6 +185,22 @@ try {
   assert.equal(computerStatus.status, 200, 'The cloud computer API must connect to the tenant desktop');
   const desktopPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert(desktopPod, `The tenant namespace ${namespace} must contain its desktop Pod`);
+  const expectedWorkerImage = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
+  const deployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as {
+    metadata: { annotations?: Record<string, string> };
+    spec: { template: { metadata: { annotations?: Record<string, string> }; spec: { containers: { image: string; imagePullPolicy: string }[] } } };
+  };
+  assert.equal(deployment.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage);
+  assert.equal(deployment.spec.template.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage);
+  assert.deepEqual(deployment.spec.template.spec.containers.map(container => ({ image: container.image, imagePullPolicy: container.imagePullPolicy })), [
+    { image: expectedWorkerImage, imagePullPolicy: 'IfNotPresent' },
+    { image: expectedWorkerImage, imagePullPolicy: 'IfNotPresent' },
+  ]);
+  const runningImages = command(['kubectl', '-n', namespace, 'get', 'pod', desktopPod, '-o', 'jsonpath={.status.containerStatuses[*].imageID}']).split(/\s+/).filter(Boolean);
+  assert.equal(runningImages.length, 2, 'Both the desktop worker and Agent runtime must report their immutable image identities');
+  assert(runningImages.every(image => /^sha256:[a-f0-9]{64}$/i.test(image)), `Kubernetes must report immutable image identities: ${runningImages.join(', ')}`);
+  await writeFile(join(artifacts, 'cloud-computer-image.json'), `${JSON.stringify({ expectedWorkerImage, runningImages }, null, 2)}\n`);
+  console.log(`Verified tenant desktop image ${expectedWorkerImage} (${runningImages.join(', ')})`);
   const desktopUid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'id', '-u']);
   const agentUid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'id', '-u']);
   assert.equal(desktopUid, '1000', 'The visible cloud desktop must run as its isolated non-root UID');
