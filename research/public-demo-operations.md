@@ -64,6 +64,16 @@ Run `npm run test:e2e:public-demo` to check the public redirect, health and auth
 
 This smoke does not authenticate a Google user, validate OAuth consent, inspect a signed-in tenant, or open the cloud desktop/noVNC socket. The completed real sign-in was a separate manual Chrome acceptance flow; repeat it when OAuth credentials, callback routing, or outbound proxy configuration changes.
 
+## Browser task notifications demo
+
+- Published on 2026-10-09 at `https://codex.cokeagent.com/dots-demo/demos/browser-task-notifications.webp`.
+- The animated WebP is 1,152×800, 237 frames, 19.96 seconds at 25 fps, with 1× action playback and four 2.5-second reading pauses. Full decode and Chrome playback with six distinct sampled frames passed. SHA-256: `5b58c3628fed67594673da70985c15d39e60f9263432fae985352d23b9993a0a`.
+- Source WebM, screenshots, manifest, and video check are in `artifacts/demos/browser-task-notifications-2026-10-09T01-49-25-787Z/`.
+- Publication copies only `public/demos/browser-task-notifications.webp` into the existing Mac demo runtime at `dist/demos/browser-task-notifications.webp`; it does not edit Nginx, the reverse tunnel, or other service files. The public smoke verifies HTTP 200, `image/webp`, full browser playback, and exact local/public byte equality.
+- The recording is a Chinese browser-notification walkthrough. Its notification card is a labeled recorder preview; the app's Notification API behavior and click-through are exercised by Chrome E2E, while native macOS notification delivery, Google OAuth, and a live model call are outside this demo's evidence.
+- A full public smoke on this date found that the already-hosted `cloud-computer-agent-actions.webp` and `proactive-cloud-computer-followthrough.webp` do not match the latest local recordings. Those two existing clips were left untouched during this notification-only publication. The new notification clip itself returned 200 with the expected type, exact SHA-256, and changing Chrome playback frames.
+- To run the public application and browser checks for one clip independently, use `DOTS_PUBLIC_DEMO_VIDEO=browser-task-notifications.webp npm run test:e2e:public-demo`. Without this environment variable the smoke checks all showcase videos.
+
 ## Cloud-computer Agent demo playback refresh
 
 - On 2026-10-09, the user said the 17.24-second, 0.5× export still felt too fast. The public cloud-computer clip now plays all recorded actions at 1× and pauses for 2.5 seconds after the computer opens, the public page appears, and the disclosed release time is visible. It retains a 2-second initial state and removes 61.6 seconds of frozen AI waiting. The verified WebP is 1,152×784, 230 decoded frames, and 16.76 seconds; its source and `.video-check.json` report are in `artifacts/demos/cloud-computer-agent-actions-20261009-rerun2/`.

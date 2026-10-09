@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { githubPullRequestActions, isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type GmailConnection, type GmailEventTrigger, type GitHubPullRequestAction, type GitHubPullRequestTrigger, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleNotificationPolicy, type ScheduleSpec, type ScheduledTaskRun, type ScheduledTaskRunStatus, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskDeliveryDestination, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
+import { githubPullRequestActions, isBrowserNotificationMode, isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type BrowserNotificationMode, type Engine, type Entry, type GmailConnection, type GmailEventTrigger, type GitHubPullRequestAction, type GitHubPullRequestTrigger, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleNotificationPolicy, type ScheduleSpec, type ScheduledTaskRun, type ScheduledTaskRunStatus, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskDeliveryDestination, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -165,6 +165,7 @@ export class Store {
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         engine TEXT NOT NULL DEFAULT 'model', reasoning_effort TEXT NOT NULL DEFAULT 'high', agent_session_id TEXT, parent_task_id TEXT,
         execution_mode TEXT NOT NULL DEFAULT 'standard', task_context TEXT NOT NULL DEFAULT '', created_by_user_id TEXT REFERENCES users(id),
+        notify_user INTEGER NOT NULL DEFAULT 1 CHECK(notify_user IN (0,1)),
         active_scheduled_execution_key TEXT
       );
       CREATE TABLE IF NOT EXISTS scheduled_task_runs (
@@ -216,6 +217,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS tenant_settings (
         tenant_id TEXT NOT NULL REFERENCES tenants(id), key TEXT NOT NULL, value TEXT NOT NULL,
         PRIMARY KEY(tenant_id,key)
+      );
+      CREATE TABLE IF NOT EXISTS user_settings (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, key TEXT NOT NULL, value TEXT NOT NULL,
+        PRIMARY KEY(user_id,key)
       );
       CREATE TABLE IF NOT EXISTS dot_pause_tasks (
         tenant_id TEXT NOT NULL REFERENCES tenants(id), task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -285,6 +290,7 @@ export class Store {
     this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
     this.addColumnIfMissing('tasks', 'parent_task_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'created_by_user_id', 'TEXT REFERENCES users(id)');
+    this.addColumnIfMissing('tasks', 'notify_user', 'INTEGER NOT NULL DEFAULT 1 CHECK(notify_user IN (0,1))');
     this.addColumnIfMissing('tasks', 'execution_mode', "TEXT NOT NULL DEFAULT 'standard'");
     this.addColumnIfMissing('tasks', 'task_context', "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing('watches', 'last_content', 'TEXT');
@@ -1260,6 +1266,7 @@ export class Store {
       dotPaused: this.isDotPaused(tenantId),
       preferences: {
         desktopNotifications: this.getSetting('desktopNotifications', tenantId) === 'true',
+        browserNotifications: this.browserNotificationMode(userId),
         reasoningEffort: isReasoningEffort(reasoningEffort) ? reasoningEffort : 'high',
       },
       computerAccess: {
@@ -1271,7 +1278,8 @@ export class Store {
       FROM tasks WHERE tenant_id=? AND (
         execution_mode!='proactive-research' OR status IN ('queued','working','failed','paused','stopped') OR (status='done' AND result IS NOT NULL)
       ) ORDER BY priority DESC,created_at DESC`).all(tenantId) as Record<string, unknown>[])
-        .filter(row => !isPrivateGmailTask(row) || Boolean(userId && row.created_by_user_id === userId)).map(toTask),
+        .filter(row => !isPrivateGmailTask(row) || Boolean(userId && row.created_by_user_id === userId))
+        .map(row => ({ ...toTask(row), isOwnedByCurrentUser: Boolean(userId && row.created_by_user_id === userId) })),
       watches: (this.db.prepare('SELECT * FROM watches WHERE tenant_id=? ORDER BY rowid DESC').all(tenantId) as Record<string, unknown>[]).map(toWatch),
       githubTriggers: this.githubPullRequestTriggers(tenantId),
       gmail: { configured: false, pollIntervalSeconds: 60, connection: userId ? this.gmailConnection(tenantId, userId) : null, triggers: userId ? this.gmailEventTriggers(tenantId, userId) : [] },
@@ -1876,12 +1884,13 @@ export class Store {
     return row?.executionKey ?? null;
   }
 
-  updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes' | 'scheduleSpec' | 'agentSessionId'>>, tenantId = 'legacy'): Task | null {
+  updateTask(id: string, change: Partial<Pick<Task, 'status' | 'priority' | 'instruction' | 'nextRunAt' | 'result' | 'error' | 'scheduleMinutes' | 'scheduleSpec' | 'agentSessionId' | 'notifyUser'>>, tenantId = 'legacy'): Task | null {
     const old = this.getTask(id, tenantId);
     if (!old) return null;
-    const next = { ...old, ...change, updatedAt: new Date().toISOString() };
-    this.db.prepare('UPDATE tasks SET instruction=?,status=?,priority=?,next_run_at=?,schedule_minutes=?,schedule_json=?,result=?,error=?,updated_at=?,agent_session_id=? WHERE tenant_id=? AND id=?')
-      .run(next.instruction, next.status, next.priority, next.nextRunAt, next.scheduleMinutes, next.scheduleSpec ? JSON.stringify(next.scheduleSpec) : null, next.result, next.error, next.updatedAt, next.agentSessionId, tenantId, id);
+    const notifyUser = change.notifyUser ?? (change.status === 'waiting' || change.status === 'failed' ? true : old.notifyUser);
+    const next = { ...old, ...change, notifyUser, updatedAt: new Date().toISOString() };
+    this.db.prepare('UPDATE tasks SET instruction=?,status=?,priority=?,next_run_at=?,schedule_minutes=?,schedule_json=?,result=?,error=?,updated_at=?,agent_session_id=?,notify_user=? WHERE tenant_id=? AND id=?')
+      .run(next.instruction, next.status, next.priority, next.nextRunAt, next.scheduleMinutes, next.scheduleSpec ? JSON.stringify(next.scheduleSpec) : null, next.result, next.error, next.updatedAt, next.agentSessionId, next.notifyUser ? 1 : 0, tenantId, id);
     return this.getTask(id, tenantId);
   }
 
@@ -2041,6 +2050,21 @@ export class Store {
   getSetting(key: string, tenantId = 'legacy'): string | null {
     const row = this.db.prepare('SELECT value FROM tenant_settings WHERE tenant_id=? AND key=?').get(tenantId, key) as { value: string } | undefined;
     return row?.value || null;
+  }
+
+  browserNotificationMode(userId?: string): BrowserNotificationMode {
+    if (!userId) return 'never';
+    const value = this.getUserSetting('browserNotifications', userId);
+    return isBrowserNotificationMode(value) ? value : 'never';
+  }
+
+  getUserSetting(key: string, userId: string): string | null {
+    const row = this.db.prepare('SELECT value FROM user_settings WHERE user_id=? AND key=?').get(userId, key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setUserSetting(key: string, value: string, userId: string) {
+    this.db.prepare('INSERT INTO user_settings(user_id,key,value) VALUES (?,?,?) ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value').run(userId, key, value);
   }
 
   modelSettingsTenants() {
@@ -2296,6 +2320,8 @@ function toTask(r: Record<string, unknown>): Task {
     scheduleSpec,
     deliveryDestination,
     notificationPolicy: r.notification_policy === 'every-run' ? 'every-run' : 'attention',
+    notifyUser: Number(r.notify_user ?? 1) === 1,
+    isOwnedByCurrentUser: false,
     result: r.result == null ? null : String(r.result), error: r.error == null ? null : String(r.error),
     createdAt: String(r.created_at), updatedAt: String(r.updated_at), unreadScheduledRunCount: Number(r.unread_scheduled_run_count || 0),
   };

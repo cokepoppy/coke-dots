@@ -10,6 +10,10 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
 export type TaskStatus = 'queued' | 'working' | 'delegating' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused' | 'stopped';
 export type TaskExecutionMode = 'standard' | 'read-only' | 'proactive-research';
 export type ScheduleNotificationPolicy = 'attention' | 'every-run';
+export type BrowserNotificationMode = 'never' | 'background' | 'always';
+export function isBrowserNotificationMode(value: unknown): value is BrowserNotificationMode {
+  return value === 'never' || value === 'background' || value === 'always';
+}
 export type TaskDeliveryDestination = { type: 'chat' } | { type: 'slack'; teamId: string; teamName: string };
 export type GitHubPullRequestAction = 'opened' | 'reopened' | 'synchronize' | 'ready_for_review' | 'closed';
 export const githubPullRequestActions: GitHubPullRequestAction[] = ['opened', 'reopened', 'synchronize', 'ready_for_review', 'closed'];
@@ -43,6 +47,8 @@ export interface Task {
   scheduleSpec: ScheduleSpec | null;
   deliveryDestination: TaskDeliveryDestination;
   notificationPolicy: ScheduleNotificationPolicy;
+  notifyUser: boolean;
+  isOwnedByCurrentUser: boolean;
   result: string | null;
   error: string | null;
   createdAt: string;
@@ -107,7 +113,7 @@ export interface VoiceCallSession {
 export interface Snapshot {
   profile: { name: string; avatarSetupCompletedAt: string | null; onboardingCompletedAt: string | null; onboardingCompletedName: string | null } & DotAppearance;
   dotPaused: boolean;
-  preferences: { desktopNotifications: boolean; reasoningEffort: ReasoningEffort };
+  preferences: { desktopNotifications: boolean; browserNotifications: BrowserNotificationMode; reasoningEffort: ReasoningEffort };
   computerAccess: { dotComputer: true; localComputer: boolean; configured: boolean };
   tasks: Task[];
   watches: Watch[];

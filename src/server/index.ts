@@ -5,7 +5,7 @@ import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
-import { githubPullRequestActions, isReasoningEffort, type ActionRuleMode, type DotAppearance, type Engine, type GitHubPullRequestAction, type ScheduleNotificationPolicy, type ScheduleSpec, type TaskDeliveryDestination } from '../shared/types.ts';
+import { githubPullRequestActions, isBrowserNotificationMode, isReasoningEffort, type ActionRuleMode, type DotAppearance, type Engine, type GitHubPullRequestAction, type ScheduleNotificationPolicy, type ScheduleSpec, type TaskDeliveryDestination } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 import { effectiveModelConfig, hasSharedModelKey, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, publicModelSettings, saveSharedModelKey, setSharedModelMetadata } from './model-settings.ts';
@@ -765,13 +765,17 @@ const server = createServer(async (req, res) => {
         if (typeof body.desktopNotifications !== 'boolean') return reply(res, 400, { error: 'Invalid notification preference' });
         store.setSetting('desktopNotifications', String(body.desktopNotifications), session.tenant.id);
       }
+      if (body.browserNotifications !== undefined) {
+        if (!isBrowserNotificationMode(body.browserNotifications)) return reply(res, 400, { error: 'Invalid browser notification preference' });
+        store.setUserSetting('browserNotifications', body.browserNotifications, session.user.id);
+      }
       if (body.reasoningEffort !== undefined) {
         if (!isReasoningEffort(body.reasoningEffort)) return reply(res, 400, { error: 'Invalid reasoning effort' });
         store.setSetting('reasoningEffort', body.reasoningEffort, session.tenant.id);
       }
-      if (body.desktopNotifications === undefined && body.reasoningEffort === undefined) return reply(res, 400, { error: 'No preference supplied' });
+      if (body.desktopNotifications === undefined && body.browserNotifications === undefined && body.reasoningEffort === undefined) return reply(res, 400, { error: 'No preference supplied' });
       publish();
-      return reply(res, 200, snapshot(session.tenant.id).preferences);
+      return reply(res, 200, snapshot(session.tenant.id, session.user.id).preferences);
     }
     if (path === '/api/computer-access' && req.method === 'PATCH') {
       if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以修改电脑访问设置' });

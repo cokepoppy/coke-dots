@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, ScheduleNotificationPolicy, ScheduleSpec, ScheduledTaskRun, Snapshot, Task, TaskDeliveryDestination, TaskStatus, VoiceCallSession, WebsiteSignInRequest } from '../shared/types.ts';
+import type { AttachmentSummary, BrowserNotificationMode, DotAppearance, Engine, Entry, PageActionApproval, PersonalDotMemory, ReasoningEffort, ScheduleNotificationPolicy, ScheduleSpec, ScheduledTaskRun, Snapshot, Task, TaskDeliveryDestination, TaskStatus, VoiceCallSession, WebsiteSignInRequest } from '../shared/types.ts';
 import { appFetch, appPath } from './api.ts';
 import './style.css';
 import './chat-theme.css';
@@ -28,13 +28,14 @@ import { DotSetupEditor } from './DotSetupEditor.tsx';
 import { DotComputerChoice } from './DotComputerChoice.tsx';
 import { VoiceCall } from './VoiceCall.tsx';
 import { DictationButton } from './DictationButton.tsx';
+import { browserNotificationAllowed, findTaskNotificationAlerts, taskNotificationCopy, type TaskNotificationState } from './task-notifications.ts';
 import './shell-replica.css';
 import './onboarding-replica.css';
 import './computer-choice.css';
 import './call-timeline.css';
 import './website-sign-in.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, dotPaused: false, preferences: { desktopNotifications: false, reasoningEffort: 'high' }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], githubTriggers: [], gmail: { configured: false, pollIntervalSeconds: 60, connection: null, triggers: [] }, entries: [], configured: false, availableEngines: [], remoteEngines: [], eventTriggerEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, dotPaused: false, preferences: { desktopNotifications: false, browserNotifications: 'never', reasoningEffort: 'high' }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], githubTriggers: [], gmail: { configured: false, pollIntervalSeconds: 60, connection: null, triggers: [] }, entries: [], configured: false, availableEngines: [], remoteEngines: [], eventTriggerEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
@@ -85,6 +86,8 @@ function App() {
   const [e2eAuthAvailable, setE2eAuthAvailable] = useState(false);
   const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
   const [state, setState] = useState<Snapshot>(initial);
+  const taskNotificationBaseline = useRef<TaskNotificationState[] | null>(null);
+  const taskNotificationScope = useRef('');
   const [voiceCalls, setVoiceCalls] = useState<VoiceCallSession[]>([]);
   const [voiceCallsScope, setVoiceCallsScope] = useState('');
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -261,11 +264,42 @@ function App() {
   }, [computerConnectedToast]);
 
   useEffect(() => {
+    if (!authContext) { taskNotificationBaseline.current = null; taskNotificationScope.current = ''; return; }
+    const scope = `${authContext.user.id}:${authContext.tenant.id}`;
+    taskNotificationScope.current = scope;
+    try {
+      const saved = localStorage.getItem(`coke-dots:task-notification-state:${scope}`);
+      const parsed = saved ? JSON.parse(saved) as TaskNotificationState[] : null;
+      taskNotificationBaseline.current = Array.isArray(parsed) ? parsed.filter(task => task && typeof task.id === 'string' && typeof task.status === 'string').slice(-500) : null;
+    } catch { taskNotificationBaseline.current = null; }
+  }, [authContext?.user.id, authContext?.tenant.id]);
+
+  useEffect(() => {
     if (!authContext) return;
     setStateLoaded(false);
     const stream = new EventSource(appPath('/api/events'));
     stream.onmessage = event => {
-      setState(JSON.parse(event.data));
+      const next = JSON.parse(event.data) as Snapshot;
+      const notificationTasks = next.tasks.map(task => ({ id: task.id, status: task.status, isOwnedByCurrentUser: task.isOwnedByCurrentUser, notifyUser: task.notifyUser, unreadScheduledRunCount: task.unreadScheduledRunCount || 0 }));
+      const previous = taskNotificationBaseline.current;
+      taskNotificationBaseline.current = notificationTasks;
+      const scope = `${authContext.user.id}:${authContext.tenant.id}`;
+      if (taskNotificationScope.current === scope) {
+        try { localStorage.setItem(`coke-dots:task-notification-state:${scope}`, JSON.stringify(notificationTasks.slice(-500))); } catch { /* Notifications still work for this page if storage is unavailable. */ }
+      }
+      if (next.preferences.browserNotifications !== 'never' && typeof Notification !== 'undefined' && Notification.permission === 'granted'
+        && browserNotificationAllowed(next.preferences.browserNotifications, document.visibilityState !== 'visible')) {
+        for (const alert of findTaskNotificationAlerts(previous, notificationTasks)) {
+          const notification = new Notification(next.profile.name, { body: taskNotificationCopy(alert.kind), tag: `coke-dots:${scope}:${alert.taskId}` });
+          notification.onclick = () => {
+            window.focus();
+            setSelected(alert.taskId);
+            setView('chat');
+            notification.close();
+          };
+        }
+      }
+      setState(next);
       setStateLoaded(true);
       setError(current => current === '与本机服务的连接已断开，正在重连。' ? '' : current);
     };
@@ -277,7 +311,7 @@ function App() {
       }).catch(() => undefined);
     };
     return () => stream.close();
-  }, [authContext?.tenant.id]);
+  }, [authContext?.tenant.id, authContext?.user.id]);
 
   const selectedTask = state.tasks.find(t => t.id === selected) || null;
   const entries = useMemo(() => selected ? state.entries.filter(e => e.taskId === selected) : state.entries, [state.entries, selected]);
@@ -886,6 +920,8 @@ function Profile({ state, auth, onError, onSetDotPaused, onResetDot, onEditAppea
   const [apiKey, setApiKey] = useState('');
   const [desktopNotifications, setDesktopNotifications] = useState(state.preferences.desktopNotifications);
   const [notificationBusy, setNotificationBusy] = useState(false);
+  const [browserNotifications, setBrowserNotifications] = useState<BrowserNotificationMode>(state.preferences.browserNotifications);
+  const [browserNotificationBusy, setBrowserNotificationBusy] = useState(false);
   const [memberEmail, setMemberEmail] = useState('');
   const [members, setMembers] = useState<TenantMember[]>([]);
   const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
@@ -911,6 +947,19 @@ function Profile({ state, auth, onError, onSetDotPaused, onResetDot, onEditAppea
   const canManageDot = ['owner', 'admin'].includes(auth.tenant.role);
   const canManageModelSettings = state.modelSettings.canManage ?? canManageDot;
   const canResetDot = auth.tenant.kind === 'personal' && auth.tenant.role === 'owner' && members.length === 1 && members[0]?.id === auth.user.id;
+  async function setBrowserNotificationPreference(mode: BrowserNotificationMode) {
+    setBrowserNotificationBusy(true);
+    try {
+      if (mode !== 'never') {
+        if (typeof Notification === 'undefined') throw new Error('当前浏览器不支持桌面通知。');
+        const permission = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
+        if (permission !== 'granted') throw new Error('浏览器未允许通知。请在浏览器网站设置中开启通知后重试。');
+      }
+      await request('/preferences', 'PATCH', { browserNotifications: mode });
+      setBrowserNotifications(mode);
+    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    finally { setBrowserNotificationBusy(false); }
+  }
   const refreshMembers = async () => {
     const response = await appFetch(`/api/tenants/${auth.tenant.id}/members`);
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
@@ -924,6 +973,7 @@ function Profile({ state, auth, onError, onSetDotPaused, onResetDot, onEditAppea
   useEffect(() => { setName(state.profile.name); }, [state.profile.name]);
   useEffect(() => { setDotMenuOpen(false); }, [auth.tenant.id]);
   useEffect(() => { setDesktopNotifications(state.preferences.desktopNotifications); }, [state.preferences.desktopNotifications]);
+  useEffect(() => { setBrowserNotifications(state.preferences.browserNotifications); }, [state.preferences.browserNotifications]);
   useEffect(() => { if (state.modelSettings.baseUrl) setBaseUrl(state.modelSettings.baseUrl); if (state.modelSettings.model) setModel(state.modelSettings.model); }, [state.modelSettings.baseUrl, state.modelSettings.model]);
   useEffect(() => { void refreshMembers().catch(error => setMembersError(String(error))); }, [auth.tenant.id]);
   useEffect(() => {
@@ -1032,9 +1082,10 @@ function Profile({ state, auth, onError, onSetDotPaused, onResetDot, onEditAppea
       <button className="primary" disabled={!['owner', 'admin'].includes(auth.tenant.role)} onClick={onManageComputerAccess}>更改电脑访问</button>
       {!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以更改此设置。</small>}
     </div>
-    <div className="section-heading model-heading"><h2>通知</h2><p>后台工作需要你处理或完成时，在这台 Mac 上提醒你。</p></div>
+    <div className="section-heading model-heading"><h2>通知</h2><p>设置服务端 Mac 提醒和当前 Google 账号的浏览器提醒。</p></div>
     <div className="profile-card model-card notification-card">
-      <label className="notification-toggle"><input aria-label="桌面通知" type="checkbox" checked={desktopNotifications} disabled={notificationBusy} onChange={async event => { const enabled = event.currentTarget.checked; setNotificationBusy(true); setDesktopNotifications(enabled); try { await request('/preferences', 'PATCH', { desktopNotifications: enabled }); } catch (error) { setDesktopNotifications(!enabled); onError(String(error)); } finally { setNotificationBusy(false); } }} /><span><strong>桌面通知</strong><small>{desktopNotifications ? '此工作区已开启任务和网页监控提醒。' : '此工作区的提醒目前关闭。'}</small></span></label>
+      <label className="notification-toggle"><input aria-label="桌面通知" type="checkbox" checked={desktopNotifications} disabled={notificationBusy} onChange={async event => { const enabled = event.currentTarget.checked; setNotificationBusy(true); setDesktopNotifications(enabled); try { await request('/preferences', 'PATCH', { desktopNotifications: enabled }); } catch (error) { setDesktopNotifications(!enabled); onError(String(error)); } finally { setNotificationBusy(false); } }} /><span><strong>服务端 Mac 通知</strong><small>{desktopNotifications ? '此工作区任务和网页监控会提醒运行 Coke Dots 服务的 Mac。' : '运行 Coke Dots 服务的 Mac 不会收到提醒。'}</small></span></label>
+      <label className="notification-toggle browser-notification-setting"><span><strong>浏览器通知</strong><small>此设置跟随你的 Google 账号，可在后台提醒任务进度。</small></span><select aria-label="浏览器通知方式" value={browserNotifications} disabled={browserNotificationBusy} onChange={event => void setBrowserNotificationPreference(event.currentTarget.value as BrowserNotificationMode)}><option value="never">关闭</option><option value="background">页面在后台时</option><option value="always">始终</option></select></label>
       <small className="notification-note">通知只显示 Dot 名称和事项状态，不包含任务结果正文。</small>
     </div>
     <div className="section-heading model-heading"><h2>工作区记忆</h2><p>你明确保存的偏好、决定和背景会提供给此工作区中的 Dot 任务。成员可查看；创建者和管理员可编辑或删除。不会自动从聊天中提取。</p></div>

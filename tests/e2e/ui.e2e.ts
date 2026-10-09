@@ -239,6 +239,7 @@ async function startMockModel() {
         const isPersonalMemoryRead = prompt.includes('E2E personal Dot memory — use my saved preferences');
         const isSharedMemoryIsolation = prompt.includes('E2E shared task — do not receive personal Dot notes');
         const isSharedModelReuse = prompt.includes('E2E shared Model API — second Google account runs a task');
+        const isBrowserNotificationTask = prompt.includes('E2E browser notification —');
         const isQuietNotificationCheck = prompt.includes('E2E notification criteria — routine success');
         const isSelfWakeResponsibility = prompt.includes('E2E personal agent self-wake — monitor the release approval');
         const hasSelfWakeCheckpoint = prompt.includes('Prior result: Checkpoint: I reviewed the timeline and will verify the approval response next.');
@@ -329,7 +330,7 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isRedirectedTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || (isSelfWakeResponsibility && hasSelfWakeCheckpoint) || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask || isGitHubTriggerTask || isGmailEventTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isBrowserNotificationTask || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isRedirectedTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || (isSelfWakeResponsibility && hasSelfWakeCheckpoint) || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask || isGitHubTriggerTask || isGmailEventTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isPauseDelegationParent && !isPauseDelegationAggregate ? { status: 'delegating', message: 'I started one independent research task.', delegations: [
           { title: 'Independent research', instruction: 'E2E global pause delegated child — keep running during pause', engine: 'model' },
@@ -337,7 +338,7 @@ async function startMockModel() {
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isGmailEventTask ? '订单 5831 已发货。邮件摘要中的额外指令被视为不可信内容；我没有发送或修改邮件。' : isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isSharedModelReuse ? 'The second Google account used the Coke Dots instance Model API configuration.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isGmailEventTask ? '订单 5831 已发货。邮件摘要中的额外指令被视为不可信内容；我没有发送或修改邮件。' : isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isBrowserNotificationTask ? '浏览器通知 E2E 任务已完成。' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isSharedModelReuse ? 'The second Google account used the Coke Dots instance Model API configuration.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isRedirectedTask) Object.assign(decision, { status: 'done', message: 'The risk register was prioritized under the new direction.' });
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isSelfWakeResponsibility) {
@@ -1186,6 +1187,21 @@ try {
   alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   betaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   gammaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
+  for (const context of [alphaContext, betaContext, gammaContext]) await context.addInitScript(`(() => {
+    const notificationRecords = [];
+    function MockNotification(title, options = {}) {
+      this.title = title;
+      this.body = options.body || '';
+      this.tag = options.tag || '';
+      this.onclick = null;
+      this.close = function () {};
+      notificationRecords.push(this);
+    }
+    Object.defineProperty(MockNotification, 'permission', { get: function () { return localStorage.getItem('e2e-notification-permission') === 'granted' ? 'granted' : 'default'; } });
+    Object.defineProperty(MockNotification, 'requestPermission', { value: function () { localStorage.setItem('e2e-notification-permission', 'granted'); return Promise.resolve('granted'); } });
+    Object.defineProperty(window, 'Notification', { configurable: true, value: MockNotification });
+    Object.defineProperty(window, '__dotsNotifications', { configurable: true, value: notificationRecords });
+  })()`);
   await alphaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
   await betaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
   await gammaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
@@ -1842,7 +1858,9 @@ try {
   await recordStep('Dot appearance changes persist within Alpha personal workspace', async () => {
     await openProfile(alphaPage!);
     await alphaPage!.getByLabel('桌面通知').check();
-    await alphaPage!.getByText('此工作区已开启任务和网页监控提醒。', { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.getByText('此工作区任务和网页监控会提醒运行 Coke Dots 服务的 Mac。', { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.getByLabel('浏览器通知方式').selectOption('background');
+    await alphaPage!.waitForFunction(() => document.querySelector<HTMLSelectElement>('select[aria-label="浏览器通知方式"]')?.value === 'background');
     await alphaPage!.getByLabel('名字').fill('Alpha Dot');
     await alphaPage!.getByRole('button', { name: '保存更改' }).click();
     await alphaPage!.locator('.profile-link strong').filter({ hasText: 'Alpha Dot' }).waitFor({ state: 'visible' });
@@ -1860,6 +1878,7 @@ try {
     await closeAccountMenu(alphaPage!);
     await alphaPage!.waitForFunction(() => document.querySelector<HTMLInputElement>('input[aria-label="桌面通知"]')?.checked === false);
     assert.equal(await alphaPage!.getByLabel('桌面通知').isChecked(), false, 'A new tenant inherited personal notification preferences');
+    assert.equal(await alphaPage!.getByLabel('浏览器通知方式').inputValue(), 'background', 'Browser notification preference must follow the Google account into a new workspace');
     await alphaPage!.locator('.profile-link strong').filter({ hasText: 'Dot' }).waitFor({ state: 'visible' });
     await clickNav(alphaPage!, '你的 dot');
     const sharedComputerChoice = alphaPage!.getByTestId('computer-choice');
@@ -1925,6 +1944,7 @@ try {
     assert.equal(memberSlackWrite.status, 403, 'The server must prevent a shared-workspace member from changing its Slack contact');
     assert.match(memberSlackWrite.body.error || '', /只有工作区所有者或管理员/);
     await openProfile(betaPage!);
+    assert.equal(await betaPage!.getByLabel('浏览器通知方式').inputValue(), 'never', 'A second account inherited Alpha’s browser notification preference');
     await betaPage!.locator('.member-row').filter({ hasText: 'alpha@example.test' }).waitFor({ state: 'visible' });
     assert.equal(await betaPage!.getByRole('button', { name: '添加工作区成员' }).isDisabled(), true, 'A regular member received workspace-admin controls');
     assert.equal(await betaPage!.getByRole('button', { name: '更改电脑访问' }).isDisabled(), true, 'A regular member cannot change shared computer access');
@@ -2016,6 +2036,55 @@ try {
     await screenshot(betaPage!, '13-beta-after-service-restart');
     await selectTenant(betaPage!, 'Beta workspace');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
+  });
+
+  await recordStep('Chrome sends background task notifications only to the owning Google account', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await selectTenant(betaPage!, 'Alpha Shared');
+    await openProfile(alphaPage!);
+    assert.equal(await alphaPage!.getByLabel('浏览器通知方式').inputValue(), 'background', 'Alpha’s account preference must follow into the shared workspace');
+    await openProfile(betaPage!);
+    assert.equal(await betaPage!.getByLabel('浏览器通知方式').inputValue(), 'never', 'Beta must keep a separate default preference in the same workspace');
+    await betaPage!.getByLabel('浏览器通知方式').selectOption('background');
+    await betaPage!.waitForFunction(async () => (await fetch('/api/state').then(response => response.json()) as { preferences: { browserNotifications: string } }).preferences.browserNotifications === 'background');
+    await clickNav(alphaPage!, '你的 dot');
+    await clickNav(betaPage!, '你的 dot');
+
+    const foregroundInstruction = 'E2E browser notification — foreground completion';
+    await createTask(alphaPage!, foregroundInstruction);
+    await waitForAsyncPredicate(alphaPage!, async (instruction: string) => {
+      const snapshot = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+      return snapshot.tasks.some(task => task.instruction === instruction && task.status === 'done');
+    }, foregroundInstruction, { timeout: 15_000 });
+    await delay(300);
+    const foregroundNotifications = await alphaPage!.evaluate(() => (window as unknown as { __dotsNotifications: { title: string; body: string }[] }).__dotsNotifications.length);
+    assert.equal(foregroundNotifications, 0, 'Background-only mode must stay quiet while the page is in front');
+
+    await alphaPage!.evaluate("Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })");
+    await betaPage!.evaluate("Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })");
+    const backgroundInstruction = 'E2E browser notification — background completion';
+    await createTask(alphaPage!, backgroundInstruction);
+    await waitForAsyncPredicate(alphaPage!, async (instruction: string) => {
+      const snapshot = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+      return snapshot.tasks.some(task => task.instruction === instruction && task.status === 'done');
+    }, backgroundInstruction, { timeout: 15_000 });
+    await alphaPage!.waitForFunction(() => (window as unknown as { __dotsNotifications: unknown[] }).__dotsNotifications.length === 1, null, { timeout: 10_000 });
+    await delay(300);
+    const alphaNotifications = await alphaPage!.evaluate(() => (window as unknown as { __dotsNotifications: { title: string; body: string; tag: string; onclick: ((event: Event) => void) | null }[] }).__dotsNotifications.map(item => ({ title: item.title, body: item.body, tag: item.tag, canOpenTask: typeof item.onclick === 'function' })));
+    const betaNotifications = await betaPage!.evaluate(() => (window as unknown as { __dotsNotifications: unknown[] }).__dotsNotifications.length);
+    assert.equal(alphaNotifications.length, 1, 'One completed task must create one browser notification');
+    assert.equal(alphaNotifications[0]?.body, '有一项工作已完成。');
+    assert.equal(alphaNotifications[0]?.title, 'Shared Dot');
+    assert.match(alphaNotifications[0]?.tag || '', /^coke-dots:/);
+    assert.equal(alphaNotifications[0]?.canOpenTask, true);
+    assert.equal(betaNotifications, 0, 'A shared-workspace member must not receive another account’s task notification');
+    assert.equal(JSON.stringify(alphaNotifications).includes(backgroundInstruction), false, 'Notification copy must not expose task prompt text');
+    await alphaPage!.evaluate(() => {
+      const notification = (window as unknown as { __dotsNotifications: { onclick: ((event: Event) => void) | null }[] }).__dotsNotifications[0];
+      notification?.onclick?.(new Event('click'));
+    });
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: backgroundInstruction }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '12b-alpha-browser-task-notification');
   });
 
   await recordStep('Chrome connects Gmail and runs a private, read-only Pi event task', async () => {

@@ -12,12 +12,19 @@ const runStamp = new Date().toISOString().replace(/[:.]/g, '-');
 const artifactRoot = resolve(process.env.DOTS_E2E_ARTIFACTS || join(projectRoot, 'artifacts', 'e2e', `public-demo-${runStamp}`));
 const screenshotPath = join(artifactRoot, 'public-demo-login.png');
 const videoDirectory = join(artifactRoot, 'video');
-const showcaseVideos = await Promise.all(([
+const showcaseVideoSpecs = [
   { file: 'proactive-release-date-conflict.webp', width: 1152, height: 800 },
   { file: 'cloud-computer-handoff.webp', width: 1152, height: 784 },
   { file: 'cloud-computer-agent-actions.webp', width: 1152, height: 784, minimumDurationSeconds: 16, minimumFrames: 220 },
   { file: 'proactive-cloud-computer-followthrough.webp', minimumWidth: 900, minimumHeight: 625, minimumDurationSeconds: 35, minimumFrames: 500 },
-] as { file: string; width?: number; height?: number; minimumWidth?: number; minimumHeight?: number; minimumDurationSeconds?: number; minimumFrames?: number }[]).map(async video => {
+  { file: 'browser-task-notifications.webp', width: 1152, height: 800, minimumDurationSeconds: 18, minimumFrames: 200 },
+] as { file: string; width?: number; height?: number; minimumWidth?: number; minimumHeight?: number; minimumDurationSeconds?: number; minimumFrames?: number }[];
+const requestedShowcaseVideo = process.env.DOTS_PUBLIC_DEMO_VIDEO;
+const selectedShowcaseVideoSpecs = requestedShowcaseVideo
+  ? showcaseVideoSpecs.filter(video => video.file === requestedShowcaseVideo)
+  : showcaseVideoSpecs;
+if (requestedShowcaseVideo) assert(selectedShowcaseVideoSpecs.length > 0, `Unknown DOTS_PUBLIC_DEMO_VIDEO: ${requestedShowcaseVideo}`);
+const showcaseVideos = await Promise.all(selectedShowcaseVideoSpecs.map(async video => {
   const bytes = await readFile(join(projectRoot, 'public', 'demos', video.file));
   const metadata = await sharp(bytes, { animated: true, limitInputPixels: 600_000_000 }).metadata();
   return {

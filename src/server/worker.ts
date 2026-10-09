@@ -232,7 +232,7 @@ export class Worker {
       if (proactiveResearch) {
         if (decision.status !== 'done' || typeof decision.proactiveFinding !== 'boolean') throw new Error('主动研究未返回有效的发现结果');
         const message = decision.proactiveFinding ? decision.message : null;
-        this.store.updateTask(task.id, { status: 'done', result: message, nextRunAt: null, error: null, agentSessionId: decision.sessionId || current.agentSessionId }, task.tenantId);
+        this.store.updateTask(task.id, { status: 'done', result: message, nextRunAt: null, error: null, agentSessionId: decision.sessionId || current.agentSessionId, notifyUser: decision.notifyUser !== false }, task.tenantId);
         if (message) {
           this.store.addEntry('dot', `我发现了一条可能相关的信息：${message}`, task.id, task.tenantId);
           if (decision.notifyUser !== false) this.notifyIfEnabled(task.tenantId, 'Dot 发现了一条与你当前工作可能相关的信息。');
@@ -319,6 +319,7 @@ export class Worker {
       this.store.updateTask(task.id, {
         status, result: ['done', 'scheduled'].includes(decision.status) ? decision.message : current.result,
         nextRunAt, error: null, agentSessionId: decision.sessionId || current.agentSessionId,
+        notifyUser: decision.status === 'waiting' ? true : decision.notifyUser !== false,
       }, task.tenantId);
       this.store.addEntry('dot', outputMessage, task.id, task.tenantId);
       recordRun(decision.status === 'waiting' ? 'waiting' : 'complete', decision.message, null,
