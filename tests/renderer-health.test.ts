@@ -1,6 +1,27 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createRendererHealthMonitor, RendererUnresponsiveError } from '../deploy/linux-desktop/renderer-health.mjs';
+import { BrowserContextUnavailableError, createRendererHealthMonitor, RendererUnresponsiveError, waitForDefaultBrowserContext } from '../deploy/linux-desktop/renderer-health.mjs';
+
+test('CDP context startup races are waited out instead of dereferencing an absent context', async () => {
+  const expectedContext = { pages: () => [] };
+  let available = false;
+  const browser = { isConnected: () => true, contexts: () => available ? [expectedContext] : [] };
+  setTimeout(() => { available = true; }, 20);
+  assert.equal(await waitForDefaultBrowserContext(browser, { timeoutMs: 150, pollIntervalMs: 5 }), expectedContext);
+});
+
+test('a CDP connection with no default context fails with a typed health error', async () => {
+  const browser = { isConnected: () => true, contexts: () => [] };
+  await assert.rejects(
+    waitForDefaultBrowserContext(browser, { timeoutMs: 15, pollIntervalMs: 2 }),
+    BrowserContextUnavailableError,
+  );
+});
+
+test('a disconnected CDP client does not leak a raw contexts or pages TypeError', async () => {
+  const browser = { isConnected: () => false, contexts: () => [] };
+  await assert.rejects(waitForDefaultBrowserContext(browser), BrowserContextUnavailableError);
+});
 
 test('renderer health checks share one successful page probe', async () => {
   const monitor = createRendererHealthMonitor(100);

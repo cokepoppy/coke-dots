@@ -7,6 +7,32 @@ export class RendererUnresponsiveError extends Error {
   }
 }
 
+export class BrowserContextUnavailableError extends RendererUnresponsiveError {
+  constructor(timeoutMs = 2_000) {
+    super(timeoutMs);
+    this.name = 'BrowserContextUnavailableError';
+    this.code = 'DOTS_BROWSER_CONTEXT_UNAVAILABLE';
+    this.timeoutMs = timeoutMs;
+    this.message = `Chromium CDP did not expose its default browser context within ${timeoutMs} ms`;
+  }
+}
+
+/** Chromium can accept CDP connections before its default page context is ready. */
+export async function waitForDefaultBrowserContext(browser, { timeoutMs = 2_000, pollIntervalMs = 50 } = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error('Context timeout must be a positive integer');
+  if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1) throw new Error('Context polling interval must be a positive integer');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (!browser.isConnected()) throw new BrowserContextUnavailableError(timeoutMs);
+    let context;
+    try { context = browser.contexts()[0]; }
+    catch { throw new BrowserContextUnavailableError(timeoutMs); }
+    if (context) return context;
+    await new Promise(resolve => setTimeout(resolve, Math.min(pollIntervalMs, Math.max(1, deadline - Date.now()))));
+  }
+  throw new BrowserContextUnavailableError(timeoutMs);
+}
+
 /** A timed-out CDP operation remains pending, so latch unhealthy and never enqueue more work. */
 export function createRendererHealthMonitor(timeoutMs = 3_000) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error('Renderer timeout must be a positive integer');

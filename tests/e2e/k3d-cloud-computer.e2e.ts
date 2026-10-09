@@ -524,10 +524,11 @@ try {
   command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', `pod/${desktopPod}`, '--timeout=120s']);
   const recoveredComputer = await page.evaluate(async () => {
     const response = await fetch('/api/computer');
-    return { status: response.status, body: await response.json() as { backend?: string; error?: string } };
+    return { status: response.status, body: await response.json() as { backend?: string; error?: string; title?: string } };
   });
   assert.equal(recoveredComputer.status, 200, `Cloud computer state must recover after the renderer restart: ${recoveredComputer.body.error || ''}`);
   assert.equal(recoveredComputer.body.backend, 'linux-desktop');
+  assert.equal(recoveredComputer.body.title, 'Welcome back, Roger', 'The personalized welcome page must be restored after Chromium relaunch');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'Renderer recovery must preserve the tenant workspace PVC');
   const podState = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'pod', desktopPod, '-o', 'json'])) as {
     status?: { containerStatuses?: { name: string; restartCount: number }[] };
