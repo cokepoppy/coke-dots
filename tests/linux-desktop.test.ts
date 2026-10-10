@@ -321,6 +321,58 @@ test('Linux desktop reconnects after a stale worker port-forward fails', async (
   }
 });
 
+test('Linux desktop reconciles tenant resources while its cached worker connection still responds', async () => {
+  let title = 'Existing desktop';
+  let needsReconcile = true;
+  let connectionCount = 0;
+  let reconcileCount = 0;
+  let closeCount = 0;
+  const server = createServer((req, res) => {
+    if (req.url === '/v1/state') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ready: true, owner: 'agent', url: 'https://example.test/', title }));
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+
+  const connector: DesktopConnector = {
+    async connect() {
+      connectionCount += 1;
+      const workerUrl = new URL(`http://127.0.0.1:${address.port}/`);
+      return { workerUrl, novncUrl: workerUrl, agentUrl: workerUrl, workerToken: 'worker', agentToken: 'agent' };
+    },
+    async reconcile() {
+      reconcileCount += 1;
+      if (!needsReconcile) return false;
+      needsReconcile = false;
+      title = 'Recovered from resource drift';
+      return true;
+    },
+    async close() { closeCount += 1; },
+  };
+  const computer = new LinuxDesktopComputer('tenant-resource-drift', connector, 50);
+
+  try {
+    assert.equal((await computer.state()).title, 'Existing desktop');
+    assert.equal((await computer.state()).title, 'Existing desktop');
+    assert.equal(reconcileCount, 0, 'Repeated status reads inside the reconciliation interval must not re-apply manifests');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    const [first, concurrent] = await Promise.all([computer.state(), computer.state()]);
+    assert.equal(first.title, 'Recovered from resource drift');
+    assert.equal(concurrent.title, 'Recovered from resource drift');
+    assert.equal(reconcileCount, 1, 'Concurrent reads must share one tenant reconciliation');
+    assert.equal(connectionCount, 2, 'A changed Deployment must discard the cached worker tunnel and reconnect');
+    assert.equal(closeCount, 1, 'The cached tunnel must close once after resource changes');
+  } finally {
+    await computer.close();
+    if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
 test('Linux desktop never replays a command after a port-forward transport failure', async () => {
   let commandCount = 0;
   const failedWorker = createServer((req, res) => {

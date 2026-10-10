@@ -606,8 +606,9 @@ try {
 
   // Simulate the production drift observed during the incident: a newer worker
   // image running under an old one-second Kubernetes readiness probe. The
-  // API's safe GET must reconnect after the resulting Pod replacement, re-apply
-  // the authoritative tenant resources, and recover without losing its PVC.
+  // API state reads periodically re-apply authoritative tenant resources, even
+  // when their cached worker tunnel is still responsive, then reconnect if the
+  // correction replaces the Pod.
   e2ePhase = 'probe-drift-recovery';
   command(['kubectl', '-n', namespace, 'patch', 'deployment', 'desktop', '--type=strategic', '--patch', JSON.stringify({
     spec: { template: { spec: { containers: [{ name: 'desktop', readinessProbe: { timeoutSeconds: 1, failureThreshold: 36 } }] } } },
@@ -618,14 +619,15 @@ try {
   assert.equal(staleDesktopContainer?.readinessProbe?.timeoutSeconds, 1, 'The isolated test must reproduce the stale one-second readiness probe');
   assert.equal(staleDesktopContainer?.readinessProbe?.failureThreshold, 36);
   console.log('Confirmed the tenant Deployment now contains the injected 1-second/36-failure probe');
-  command(['kubectl', '-n', namespace, 'rollout', 'status', 'deployment/desktop', '--timeout=180s']);
   e2ePhase = 'safe-state-reconnect';
+  command(['kubectl', '-n', namespace, 'rollout', 'status', 'deployment/desktop', '--timeout=180s']);
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 15_100));
   const beforeProbeReconcilePod = desktopPod;
   const reconciledState = await page.evaluate(async () => {
     const response = await fetch('/api/computer', { signal: AbortSignal.timeout(240_000) });
     return { status: response.status, body: await response.json() as { backend?: string; error?: string; title?: string } };
   });
-  console.log(`Safe computer-state GET after Pod replacement returned HTTP ${reconciledState.status}; title=${reconciledState.body.title || '(empty)'}${reconciledState.body.error ? `; error=${reconciledState.body.error}` : ''}`);
+  console.log(`Safe computer-state GET with a cached connection returned HTTP ${reconciledState.status}; title=${reconciledState.body.title || '(empty)'}${reconciledState.body.error ? `; error=${reconciledState.body.error}` : ''}`);
   assert.equal(reconciledState.status, 200, `A safe state GET must recover after Pod replacement and re-provisioning: ${reconciledState.body.error || ''}`);
   assert.equal(reconciledState.body.backend, 'linux-desktop');
   assert.equal(reconciledState.body.title, 'Welcome back, Roger', 'The cloud computer must restore its page after manifest reconciliation');
@@ -642,7 +644,7 @@ try {
     after: { pod: desktopPod, readinessTimeoutSeconds: reconciledDesktopContainer?.readinessProbe?.timeoutSeconds, readinessFailureThreshold: reconciledDesktopContainer?.readinessProbe?.failureThreshold, stateStatus: reconciledState.status, title: reconciledState.body.title, persistedWorkspace: true },
     computerApiFailures,
   }, null, 2)}\n`);
-  console.log('A drifted one-second readiness probe was reconciled on the safe GET reconnect; the replacement desktop returned HTTP 200 and retained tenant workspace data');
+  console.log('A drifted one-second readiness probe was reconciled from a safe state GET; the replacement desktop returned HTTP 200 and retained tenant workspace data');
 
   command(['kubectl', '-n', namespace, 'delete', 'pod', desktopPod, '--wait=true', '--timeout=90s']);
   command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', 'pod', '-l', 'app=desktop', '--timeout=120s']);

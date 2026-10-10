@@ -30,6 +30,8 @@ export function configuredDesktopAgentEngines(): ('pi' | 'dsh')[] {
 
 export interface DesktopConnector {
   connect(tenantId: string): Promise<DesktopConnection>;
+  /** Re-apply the authoritative tenant resources and report whether anything changed. */
+  reconcile?(tenantId: string): Promise<boolean>;
   close?(): Promise<void>;
   reset?(tenantId: string): Promise<void>;
 }
@@ -42,10 +44,16 @@ export interface DesktopConnector {
 export class LinuxDesktopComputer implements ComputerRuntime {
   private connection: DesktopConnection | null = null;
   private connecting: Promise<DesktopConnection> | null = null;
+  private reconciling: Promise<void> | null = null;
   private resetting: Promise<void> | null = null;
+  private lastReconciledAt = 0;
   private owner: 'agent' | 'user' = 'agent';
 
-  constructor(private readonly tenantId: string, private readonly connector: DesktopConnector = defaultDesktopConnector()) {}
+  constructor(
+    private readonly tenantId: string,
+    private readonly connector: DesktopConnector = defaultDesktopConnector(),
+    private readonly reconcileIntervalMs = process.env.NODE_ENV === 'test' ? 15_000 : 60_000,
+  ) {}
 
   async open(dotName = 'Dot') {
     await this.ensureConnection();
@@ -192,6 +200,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
   async close() {
     this.owner = 'agent';
     await this.connecting?.catch(() => undefined);
+    await this.reconciling?.catch(() => undefined);
     await this.resetting?.catch(() => undefined);
     this.connection = null;
     await this.connector.close?.();
@@ -252,12 +261,17 @@ export class LinuxDesktopComputer implements ComputerRuntime {
   private assertUserControl() { this.assertOpen(); if (this.owner !== 'user') throw new Error('请先选择“接管”以使用鼠标和键盘'); }
 
   private async ensureConnection() {
-    if (this.connection) return this.connection;
+    if (this.connection) {
+      await this.reconcileIfDue();
+      if (this.connection) return this.connection;
+    }
+    await this.reconciling?.catch(() => undefined);
     await this.resetting?.catch(() => undefined);
     if (this.connection) return this.connection;
     if (!this.connecting) {
       const connecting = this.connector.connect(this.tenantId).then(connection => {
         this.connection = connection;
+        this.lastReconciledAt = Date.now();
         return connection;
       }).finally(() => {
         if (this.connecting === connecting) this.connecting = null;
@@ -265,6 +279,32 @@ export class LinuxDesktopComputer implements ComputerRuntime {
       this.connecting = connecting;
     }
     return this.connecting;
+  }
+
+  private async reconcileIfDue() {
+    if (!this.connection || !this.connector.reconcile || Date.now() - this.lastReconciledAt < this.reconcileIntervalMs) return;
+    if (!this.reconciling) {
+      const connection = this.connection;
+      const reconciliation = (async () => {
+        if (this.connection !== connection) return;
+        const changed = await this.connector.reconcile!(this.tenantId);
+        this.lastReconciledAt = Date.now();
+        if (!changed || this.connection !== connection) return;
+
+        // A Deployment template change may replace its Pod. Drop the cached
+        // tunnel first, then reconnect so the next safe read waits for Ready.
+        process.stderr.write('Cloud desktop tenant resource drift detected; reconnecting\n');
+        this.connection = null;
+        const resetting = Promise.resolve(this.connector.close?.()).then(() => undefined, () => undefined);
+        this.resetting = resetting;
+        try { await resetting; }
+        finally { if (this.resetting === resetting) this.resetting = null; }
+      })().finally(() => {
+        if (this.reconciling === reconciliation) this.reconciling = null;
+      });
+      this.reconciling = reconciliation;
+    }
+    await this.reconciling;
   }
 
   private async invalidateConnection(connection: DesktopConnection) {
@@ -476,16 +516,32 @@ class KubectlDesktopConnector implements DesktopConnector {
 
   async connect(tenantId: string): Promise<DesktopConnection> {
     if (this.current) return this.current;
-    const signingKey = process.env.DOTS_LINUX_DESKTOP_TOKEN_SECRET;
-    if (!signingKey || signingKey.length < 32) throw new Error('Linux 云电脑需要配置至少 32 字符的 DOTS_LINUX_DESKTOP_TOKEN_SECRET');
+    const resources = this.resourcesFor(tenantId);
     const identity = desktopResourceIdentity(tenantId);
-    const workerToken = createHmac('sha256', signingKey).update(`worker:${tenantId}`).digest('base64url');
-    const agentToken = createHmac('sha256', signingKey).update(`agent:${tenantId}`).digest('base64url');
-    const resources = desktopResources(tenantId, workerToken, agentToken);
-    await kubectl(['apply', '-f', '-'], JSON.stringify(resources[0]));
-    await kubectl(['apply', '-f', '-'], JSON.stringify(resources[1]));
+    await kubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[0]));
+    await kubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[1]));
     await kubectl(['-n', identity.namespace, 'rollout', 'status', 'deployment/desktop', '--timeout=180s']);
 
+    return this.connectToTenant(identity, resources.workerToken, resources.agentToken);
+  }
+
+  async reconcile(tenantId: string) {
+    if (!this.current) return false;
+    const resources = this.resourcesFor(tenantId);
+    const namespaceResult = await kubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[0]));
+    const tenantResult = await kubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[1]));
+    return `${namespaceResult}\n${tenantResult}`.split('\n').some(line => /\b(?:configured|created)\s*$/.test(line));
+  }
+
+  private resourcesFor(tenantId: string) {
+    const signingKey = process.env.DOTS_LINUX_DESKTOP_TOKEN_SECRET;
+    if (!signingKey || signingKey.length < 32) throw new Error('Linux 云电脑需要配置至少 32 字符的 DOTS_LINUX_DESKTOP_TOKEN_SECRET');
+    const workerToken = createHmac('sha256', signingKey).update(`worker:${tenantId}`).digest('base64url');
+    const agentToken = createHmac('sha256', signingKey).update(`agent:${tenantId}`).digest('base64url');
+    return { resources: desktopResources(tenantId, workerToken, agentToken), workerToken, agentToken };
+  }
+
+  private async connectToTenant(identity: ReturnType<typeof desktopResourceIdentity>, workerToken: string, agentToken: string) {
     if (process.env.KUBERNETES_SERVICE_HOST && process.env.DOTS_LINUX_DESKTOP_FORCE_PORT_FORWARD !== '1') {
       const serviceHost = `desktop.${identity.namespace}.svc.cluster.local`;
       this.current = { workerUrl: new URL(`http://${serviceHost}:${workerPort}`), novncUrl: new URL(`http://${serviceHost}:${vncPort}`), agentUrl: new URL(`http://${serviceHost}:8083`), workerToken, agentToken };
