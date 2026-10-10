@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import { desktopResourceIdentity, desktopResources, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
+import { LinuxDesktopWorkerError } from '../src/server/computer-errors.ts';
 
 test('Linux desktop resources isolate tenant namespaces and never publish CDP', () => {
   const alpha = desktopResourceIdentity('alpha-workspace');
@@ -101,5 +102,37 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     await new Promise<void>(resolve => agentServer.close(() => resolve()));
+  }
+});
+
+test('Linux desktop preserves recoverable browser-context failures from its worker', async () => {
+  const server = createServer((req, res) => {
+    if (req.url === '/v1/commands') {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: '云电脑浏览器上下文尚未就绪，系统正在自动恢复', code: 'DOTS_BROWSER_CONTEXT_UNAVAILABLE' }));
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const connector: DesktopConnector = {
+    async connect() {
+      const url = new URL(`http://127.0.0.1:${address.port}/`);
+      return { workerUrl: url, novncUrl: url, agentUrl: url, workerToken: 'scoped-worker-token', agentToken: 'scoped-agent-token' };
+    },
+  };
+  try {
+    const computer = new LinuxDesktopComputer('tenant-alpha', connector);
+    await assert.rejects(computer.open(), error => {
+      assert(error instanceof LinuxDesktopWorkerError);
+      assert.equal(error.statusCode, 503);
+      assert.equal(error.code, 'DOTS_BROWSER_CONTEXT_UNAVAILABLE');
+      return true;
+    });
+    await computer.close();
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });

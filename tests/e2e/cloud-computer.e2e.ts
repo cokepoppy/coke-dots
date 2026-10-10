@@ -24,6 +24,7 @@ const machines = new Map<string, { owner: 'agent' | 'user'; url: string; title: 
 const workerTokens = new Map<string, string>();
 const agentTokens = new Map<string, string>();
 const agentCalls: Record<string, unknown>[] = [];
+const failNextOpen = new Set<string>();
 const browserActions: { hash: string; action: string }[] = [];
 const remoteHttpPaths: string[] = [];
 const remoteUpgradePaths: string[] = [];
@@ -105,6 +106,9 @@ async function startRemote() {
         if (route === '/v1/commands' && req.method === 'POST') {
           const body = await readJson(req);
           browserActions.push({ hash, action: String(body.action || '') });
+          if (body.action === 'open' && failNextOpen.delete(hash)) {
+            return content(res, 503, 'application/json', JSON.stringify({ error: '云电脑中的 Chromium 浏览器上下文未就绪，系统正在恢复', code: 'DOTS_BROWSER_CONTEXT_UNAVAILABLE' }));
+          }
           if (body.action === 'navigate') { machine.url = String(body.url); machine.title = `Visited ${new URL(machine.url).hostname}`; }
           return content(res, 200, 'application/json', JSON.stringify({ ready: true }));
         }
@@ -230,6 +234,15 @@ try {
   assert.equal(workerTokens.get(alphaHash)?.startsWith('Bearer '), true);
   await page.screenshot({ path: join(artifacts, '01-agent-view.png') });
 
+  failNextOpen.add(alphaHash);
+  const contextFailure = await page.evaluate(async () => {
+    const response = await fetch('/api/computer/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
+    return { status: response.status, body: await response.json() as { error?: string; code?: string } };
+  });
+  assert.equal(contextFailure.status, 503, 'The UI API must preserve a worker context-recovery response');
+  assert.equal(contextFailure.body.code, 'DOTS_BROWSER_CONTEXT_UNAVAILABLE');
+  assert.match(contextFailure.body.error || '', /Chromium 浏览器上下文未就绪/);
+
   await page.getByRole('button', { name: 'Take over' }).click();
   const vncFrame = page.getByTestId('linux-desktop-view');
   await vncFrame.waitFor({ state: 'visible' });
@@ -303,7 +316,7 @@ try {
   await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });
   await betaContext.close();
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'tenant token and runtime separation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'recoverable browser-context error status', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'tenant token and runtime separation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);

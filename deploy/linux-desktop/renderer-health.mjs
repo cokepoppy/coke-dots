@@ -13,7 +13,19 @@ export class BrowserContextUnavailableError extends RendererUnresponsiveError {
     this.name = 'BrowserContextUnavailableError';
     this.code = 'DOTS_BROWSER_CONTEXT_UNAVAILABLE';
     this.timeoutMs = timeoutMs;
-    this.message = `Chromium CDP did not expose its default browser context within ${timeoutMs} ms`;
+    this.message = `云电脑中的 Chromium 浏览器上下文未就绪，系统正在恢复（${timeoutMs} 毫秒）`;
+  }
+}
+
+export function isMissingBrowserContextPagesError(error) {
+  return error instanceof TypeError && /Cannot read properties of (?:undefined|null) \(reading ['"]pages['"]\)/.test(error.message);
+}
+
+export async function getBrowserPage(context) {
+  try { return context.pages()[0] || await context.newPage(); }
+  catch (error) {
+    if (isMissingBrowserContextPagesError(error)) throw new BrowserContextUnavailableError();
+    throw error;
   }
 }
 

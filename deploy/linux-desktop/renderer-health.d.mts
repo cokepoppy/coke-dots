@@ -12,6 +12,9 @@ export declare class BrowserContextUnavailableError extends RendererUnresponsive
   constructor(timeoutMs?: number);
 }
 
+export declare function isMissingBrowserContextPagesError(error: unknown): error is TypeError;
+export declare function getBrowserPage<T>(context: { pages(): T[]; newPage(): Promise<T> } | null | undefined): Promise<T>;
+
 export interface CdpBrowserLike {
   isConnected(): boolean;
   contexts(): Array<unknown>;

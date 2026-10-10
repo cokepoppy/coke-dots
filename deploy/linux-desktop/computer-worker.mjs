@@ -4,7 +4,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
-import { BrowserContextUnavailableError, createRendererHealthMonitor, RendererUnresponsiveError, waitForDefaultBrowserContext } from './renderer-health.mjs';
+import { BrowserContextUnavailableError, createRendererHealthMonitor, getBrowserPage, RendererUnresponsiveError, waitForDefaultBrowserContext } from './renderer-health.mjs';
 
 const exec = promisify(execFile);
 const token = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
@@ -58,7 +58,14 @@ async function page() {
       }
       throw error;
     }
-    return context.pages()[0] || await context.newPage();
+    try { return await getBrowserPage(context); }
+    catch (error) {
+      if (!(error instanceof BrowserContextUnavailableError)) throw error;
+      process.stderr.write(`${JSON.stringify({ event: 'dots_browser_context_missing_at_page_access', at: new Date().toISOString() })}\n`);
+      rendererHealth.fail();
+      void recoverChromium();
+      throw new BrowserContextUnavailableError();
+    }
   })();
   pageInitialization = pending;
   try { return await pending; }
@@ -213,6 +220,9 @@ http.createServer(async (req, res) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'computer command failed';
     const status = error instanceof RendererUnresponsiveError ? 503 : 400;
-    return send(res, status, { error: message.slice(0, 240) });
+    return send(res, status, {
+      error: message.slice(0, 240),
+      ...(error instanceof RendererUnresponsiveError ? { code: error.code } : {}),
+    });
   }
 }).listen(port, '0.0.0.0', () => process.stdout.write(`Dots desktop worker listening on ${port}\n`));
