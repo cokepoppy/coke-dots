@@ -1133,10 +1133,16 @@ try {
     ].join('\n');
     await alphaPage!.evaluate((script: string) => window.eval(script), voiceMockScript);
     await openProfile(alphaPage!);
+    const originalDotName = await alphaPage!.getByLabel('名字').inputValue();
+    assert.equal(originalDotName, 'Shared Dot', 'The shared-workspace profile fixture should be explicit before the reference capture');
+    await alphaPage!.getByLabel('名字').fill('dot');
+    await alphaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
+    await alphaPage!.locator('.profile-link strong').getByText('dot', { exact: true }).waitFor({ state: 'visible' });
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     const profileCall = alphaPage!.getByTestId('voice-call');
     await profileCall.waitFor({ state: 'visible' });
     assert.equal(await profileCall.getAttribute('data-variant'), 'handset');
+    assert.equal(await profileCall.locator('.voice-call-person > strong').innerText(), 'dot', 'The pixel-comparison frame must use the same visible Dot name as the reference video');
     const handsetBox = await profileCall.boundingBox();
     assert(handsetBox && handsetBox.height / handsetBox.width > 1.8 && handsetBox.height / handsetBox.width < 2.2, 'The standalone call should match the tall handset reference proportions');
     assert.match(await profileCall.locator('.voice-call-screen').evaluate(element => getComputedStyle(element).backgroundImage), /radial-gradient.*linear-gradient/);
@@ -1233,6 +1239,9 @@ try {
     assert.notEqual(await profileCall.getByTestId('voice-call-timer').innerText(), '0:00');
     await profileCall.getByRole('button', { name: '结束通话' }).click();
     await profileCall.waitFor({ state: 'hidden' });
+    await alphaPage!.getByLabel('名字').fill(originalDotName);
+    await alphaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
+    await alphaPage!.locator('.profile-link strong').getByText(originalDotName, { exact: true }).waitFor({ state: 'visible' });
 
     await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
     await alphaPage!.getByTestId('voice-call-launch').click();
