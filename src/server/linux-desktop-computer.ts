@@ -2,6 +2,7 @@ import { createHmac, createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import type { ComputerRuntime, ComputerState } from './computer.ts';
+import { LinuxDesktopWorkerError } from './computer-errors.ts';
 
 const workerPort = 8082;
 const vncPort = 6080;
@@ -42,7 +43,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
   async state(): Promise<ComputerState> {
     await this.ensureConnection();
     const response = await this.request('/v1/state');
-    if (!response.ok) throw new Error(`Linux 云电脑状态查询失败（HTTP ${response.status}）`);
+    if (!response.ok) await this.throwWorkerError(response, `Linux 云电脑状态查询失败（HTTP ${response.status}）`);
     const remote = await response.json() as { ready?: boolean; url?: string; title?: string; owner?: 'agent' | 'user' };
     return { ready: remote.ready === true, owner: remote.owner === 'user' ? 'user' : this.owner, url: remote.url || '', title: remote.title || '', backend: 'linux-desktop', width: 1440, height: 900 };
   }
@@ -92,7 +93,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
   async screenshot(): Promise<Buffer> {
     this.assertOpen();
     const response = await this.request('/v1/screenshot');
-    if (!response.ok) throw new Error(`Linux 云电脑截图失败（HTTP ${response.status}）`);
+    if (!response.ok) await this.throwWorkerError(response, `Linux 云电脑截图失败（HTTP ${response.status}）`);
     return Buffer.from(await response.arrayBuffer());
   }
 
@@ -126,15 +127,17 @@ export class LinuxDesktopComputer implements ComputerRuntime {
 
   private async setRemoteOwner(owner: 'agent' | 'user') {
     const response = await this.request('/v1/control', { method: 'POST', body: JSON.stringify({ owner }) });
-    if (!response.ok) throw new Error(`Linux 云电脑交接失败（HTTP ${response.status}）`);
+    if (!response.ok) await this.throwWorkerError(response, `Linux 云电脑交接失败（HTTP ${response.status}）`);
   }
 
   private async command(body: Record<string, unknown>) {
     const response = await this.request('/v1/commands', { method: 'POST', body: JSON.stringify(body) });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({})) as { error?: string };
-      throw new Error(error.error || `Linux 云电脑命令失败（HTTP ${response.status}）`);
-    }
+    if (!response.ok) await this.throwWorkerError(response, `Linux 云电脑命令失败（HTTP ${response.status}）`);
+  }
+
+  private async throwWorkerError(response: Response, fallback: string): Promise<never> {
+    const failure = await response.json().catch(() => ({})) as { error?: string; code?: string };
+    throw new LinuxDesktopWorkerError(failure.error || fallback, response.status, failure.code);
   }
 
   private async request(path: string, init: RequestInit = {}) {

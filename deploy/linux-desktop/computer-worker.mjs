@@ -4,7 +4,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
-import { BrowserContextNotReadyError, waitForDefaultBrowserContext } from './browser-context.mjs';
+import { BrowserContextNotReadyError, getBrowserPage, waitForDefaultBrowserContext } from './browser-context.mjs';
 
 const exec = promisify(execFile);
 const token = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
@@ -13,10 +13,11 @@ const resolution = String(process.env.COKE_DESKTOP_RESOLUTION || '1440x900').spl
 let owner = 'agent';
 let browser;
 let browserConnectPromise;
+let pageInitialization;
 
 if (!token) throw new Error('LINUX_DESKTOP_WORKER_TOKEN is required');
 
-async function page() {
+async function connectedBrowser() {
   if (browser && !browser.isConnected()) { browser = undefined; browserConnectPromise = undefined; }
   if (!browserConnectPromise) {
     browserConnectPromise = chromium.connectOverCDP('http://127.0.0.1:9222').then(connected => {
@@ -28,8 +29,31 @@ async function page() {
     }).catch(error => { browserConnectPromise = undefined; throw error; });
   }
   browser = await browserConnectPromise;
-  const context = await waitForDefaultBrowserContext(browser);
-  return context.pages()[0] || context.newPage();
+  return browser;
+}
+
+async function createPageWithContextRecovery() {
+  const connected = await connectedBrowser();
+  const context = await waitForDefaultBrowserContext(connected);
+  try { return await getBrowserPage(context); }
+  catch (error) {
+    if (!(error instanceof BrowserContextNotReadyError)) throw error;
+    process.stderr.write(`${JSON.stringify({ event: 'dots_browser_context_unavailable', at: new Date().toISOString(), recoveryAttempt: 1 })}\n`);
+    browser = undefined;
+    browserConnectPromise = undefined;
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const reconnected = await connectedBrowser();
+    const refreshedContext = await waitForDefaultBrowserContext(reconnected);
+    return getBrowserPage(refreshedContext);
+  }
+}
+
+async function page() {
+  if (pageInitialization) return pageInitialization;
+  const pending = createPageWithContextRecovery();
+  pageInitialization = pending;
+  try { return await pending; }
+  finally { if (pageInitialization === pending) pageInitialization = undefined; }
 }
 
 function send(res, status, value, type = 'application/json; charset=utf-8') {

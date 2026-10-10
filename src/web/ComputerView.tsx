@@ -40,12 +40,16 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
     if (state.owner !== 'user') return;
     const image = event.currentTarget;
     const rect = image.getBoundingClientRect();
-    const scale = Math.min(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
-    const offsetX = (rect.width - image.naturalWidth * scale) / 2;
-    const offsetY = (rect.height - image.naturalHeight * scale) / 2;
+    // The polling refresh can replace the screenshot URL while the previous
+    // frame is still visible. Keep coordinate mapping stable during that load.
+    const sourceWidth = image.naturalWidth || state.width || 1280;
+    const sourceHeight = image.naturalHeight || state.height || 820;
+    const scale = Math.min(rect.width / sourceWidth, rect.height / sourceHeight);
+    const offsetX = (rect.width - sourceWidth * scale) / 2;
+    const offsetY = (rect.height - sourceHeight * scale) / 2;
     const localX = event.clientX - rect.left - offsetX;
     const localY = event.clientY - rect.top - offsetY;
-    if (localX < 0 || localY < 0 || localX > image.naturalWidth * scale || localY > image.naturalHeight * scale) return;
+    if (localX < 0 || localY < 0 || localX > sourceWidth * scale || localY > sourceHeight * scale) return;
     void action('click', { x: Math.round(localX / scale), y: Math.round(localY / scale) });
   }
 

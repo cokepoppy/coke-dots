@@ -11,6 +11,7 @@ import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '.
 import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
+import { apiErrorResponse } from './computer-errors.ts';
 import { AuthService } from './auth.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
@@ -492,7 +493,8 @@ const server = createServer(async (req, res) => {
     }
     return reply(res, 404, { error: 'Not found' });
   } catch (error) {
-    return reply(res, error instanceof SyntaxError ? 400 : 500, { error: error instanceof Error ? error.message : String(error) });
+    const failure = apiErrorResponse(error);
+    return reply(res, failure.status, failure.body);
   }
 });
 

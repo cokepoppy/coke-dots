@@ -31,6 +31,7 @@ const browserWebSocketEvents: string[] = [];
 const remoteSocketEvents: string[] = [];
 const remoteSockets = new Set<Duplex>();
 let remoteServer: Server | null = null;
+let failNextOpenWithContextError = false;
 let appServer: ChildProcess | null = null;
 let browser: Browser | null = null;
 let page: Page | null = null;
@@ -105,6 +106,10 @@ async function startRemote() {
         if (route === '/v1/commands' && req.method === 'POST') {
           const body = await readJson(req);
           browserActions.push({ hash, action: String(body.action || '') });
+          if (body.action === 'open' && failNextOpenWithContextError) {
+            failNextOpenWithContextError = false;
+            return content(res, 503, 'application/json', JSON.stringify({ error: '云电脑中的 Chromium 浏览器上下文暂不可用，正在重新连接', code: 'DOTS_BROWSER_CONTEXT_UNAVAILABLE' }));
+          }
           if (body.action === 'navigate') { machine.url = String(body.url); machine.title = `Visited ${new URL(machine.url).hostname}`; }
           return content(res, 200, 'application/json', JSON.stringify({ ready: true }));
         }
@@ -228,6 +233,15 @@ try {
   const alphaHash = [...machines.keys()][0];
   assert(alphaHash, 'Opening cloud computer did not resolve a tenant runtime');
   assert.equal(workerTokens.get(alphaHash)?.startsWith('Bearer '), true);
+  failNextOpenWithContextError = true;
+  const recoverableContextFailure = await page.evaluate(async () => {
+    const response = await fetch('/api/computer/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dotName: 'Dot' }) });
+    return { status: response.status, body: await response.json() };
+  });
+  assert.deepEqual(recoverableContextFailure, {
+    status: 503,
+    body: { error: '云电脑中的 Chromium 浏览器上下文暂不可用，正在重新连接', code: 'DOTS_BROWSER_CONTEXT_UNAVAILABLE' },
+  }, 'Chrome API interaction should expose the recoverable worker error instead of flattening it into HTTP 500');
   await page.screenshot({ path: join(artifacts, '01-agent-view.png') });
 
   await page.getByRole('button', { name: 'Take over' }).click();
@@ -303,7 +317,7 @@ try {
   await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });
   await betaContext.close();
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'tenant token and runtime separation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'recoverable browser-context status and error code', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'tenant token and runtime separation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
