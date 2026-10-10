@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { accessSync, constants, existsSync } from 'node:fs';
 import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer } from 'node:net';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
+import { Entry } from '@napi-rs/keyring';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const artifactStamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -28,6 +31,10 @@ const serverLogs: string[] = [];
 const pageErrors: string[] = [];
 let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
+let mockSlackServer: Server | null = null;
+let mockSlackProviderOrigin = '';
+let mockSlackCodeExchanges = 0;
+let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
@@ -158,6 +165,62 @@ async function startMockModel() {
   return `http://127.0.0.1:${address.port}/v1`;
 }
 
+async function startMockSlackProvider() {
+  mockSlackCodeExchanges = 0;
+  mockSlackServer = createHttpServer((request, response) => {
+    const url = new URL(request.url || '/', 'http://127.0.0.1');
+    if (request.method === 'GET' && url.pathname === '/oauth/v2/authorize') {
+      const callback = new URL(url.searchParams.get('redirect_uri') || 'http://invalid/');
+      if (url.searchParams.get('client_id') !== 'coke-dots-slack-e2e-client' || url.searchParams.get('scope') !== 'chat:write' || callback.origin !== baseUrl || callback.pathname !== '/auth/slack/callback' || !url.searchParams.get('state')) {
+        response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+        response.end('Invalid Slack OAuth request');
+        return;
+      }
+      const approve = new URLSearchParams({ redirect_uri: callback.toString(), state: url.searchParams.get('state') || '' });
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(`<!doctype html><html><head><title>Slack authorization</title></head><body><main><h1>Authorize Coke Dots for ASPI</h1><p>Permission requested: chat:write</p><form method="get" action="/oauth/approve"><input type="hidden" name="redirect_uri" value="${approve.get('redirect_uri')}"><input type="hidden" name="state" value="${approve.get('state')}"><button type="submit">Allow access</button></form></main></body></html>`);
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/oauth/approve') {
+      const callback = new URL(url.searchParams.get('redirect_uri') || 'http://invalid/');
+      const state = url.searchParams.get('state') || '';
+      if (callback.origin !== baseUrl || callback.pathname !== '/auth/slack/callback' || !state) {
+        response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+        response.end('Invalid Slack OAuth approval');
+        return;
+      }
+      callback.searchParams.set('code', 'coke-dots-e2e-authorization-code');
+      callback.searchParams.set('state', state);
+      response.writeHead(302, { location: callback.toString(), 'cache-control': 'no-store' });
+      response.end();
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/oauth.v2.access') {
+      let raw = '';
+      request.setEncoding('utf8');
+      request.on('data', chunk => { raw += chunk; });
+      request.on('end', () => {
+        const body = new URLSearchParams(raw);
+        if (body.get('code') !== 'coke-dots-e2e-authorization-code' || body.get('client_id') !== 'coke-dots-slack-e2e-client' || body.get('client_secret') !== 'coke-dots-slack-e2e-secret' || body.get('redirect_uri') !== `${baseUrl}/auth/slack/callback`) {
+          response.writeHead(400, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ ok: false, error: 'invalid_e2e_oauth_exchange' }));
+          return;
+        }
+        mockSlackCodeExchanges += 1;
+        response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        response.end(JSON.stringify({ ok: true, access_token: 'xoxb-coke-dots-e2e-only-token', scope: 'chat:write', team: { id: 'TASPIE2E', name: 'ASPI' } }));
+      });
+      return;
+    }
+    response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    response.end('Not found');
+  });
+  await new Promise<void>((resolvePromise, reject) => mockSlackServer!.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  const address = mockSlackServer.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}`;
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -185,6 +248,11 @@ async function startServer(port: number) {
       DOTS_CLAUDE_BIN: e2eClaudeBin,
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
+      DOTS_KEYCHAIN_SERVICE: 'com.cokepoppy.coke-dots.e2e',
+      SLACK_CLIENT_ID: 'coke-dots-slack-e2e-client',
+      SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
+      SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
+      DOTS_E2E_SLACK_PROVIDER_URL: mockSlackProviderOrigin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -364,6 +432,7 @@ async function restartService() {
 try {
   e2ePort = await reservePort();
   baseUrl = `http://127.0.0.1:${e2ePort}`;
+  mockSlackProviderOrigin = await startMockSlackProvider();
   server = await startServer(e2ePort);
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
   alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
@@ -760,7 +829,7 @@ try {
     await contextPanel.getByRole('region', { name: 'Recent activity' }).getByText(alphaPrivateTask).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.timeline .message.user').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(219, 234, 254)');
     assert.equal(await contextPanel.getByRole('button', { name: 'Call' }).isDisabled(), false);
-    assert.equal(await contextPanel.getByRole('button', { name: 'Slack, not connected' }).isDisabled(), true);
+    assert.equal(await contextPanel.getByRole('button', { name: 'Slack' }).isDisabled(), false);
     assert.equal(await contextPanel.getByRole('region', { name: 'Skills' }).count(), 0, 'The observed details panel ends after Outputs; do not invent an unverified Skills section');
     assert.equal(await alphaPage!.evaluate(() => {
       const actions = document.querySelector('.top-actions')!.getBoundingClientRect();
@@ -777,6 +846,80 @@ try {
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
   });
 
+  await recordStep('Connect Slack in Chrome, authorize the mock workspace, and select it for the Alpha tenant', async () => {
+    const contextPanel = alphaPage!.getByTestId('dot-context-panel');
+    await contextPanel.getByRole('button', { name: 'Slack' }).click();
+    const modal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
+    await modal.waitFor({ state: 'visible' });
+    await modal.getByText('Your dot in', { exact: true }).waitFor({ state: 'visible' });
+    const workspacePlaceholder = modal.locator('.slack-current-workspace.is-placeholder');
+    await workspacePlaceholder.waitFor({ state: 'visible' });
+    assert.match(await workspacePlaceholder.innerText(), /Workspace/);
+    const connectButton = modal.getByTestId('slack-connect');
+    assert.equal(await connectButton.innerText(), 'Add to Slack');
+    assert.equal(await connectButton.isDisabled(), false);
+    await screenshot(alphaPage!, 'slack-setup-empty-workspace');
+
+    await modal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await modal.waitFor({ state: 'hidden' });
+    await alphaPage!.getByTestId('theme-toggle').click();
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'dark');
+    await contextPanel.getByRole('button', { name: 'Slack' }).click();
+    const darkModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
+    await darkModal.waitFor({ state: 'visible' });
+    assert.equal(await darkModal.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(7, 23, 14)');
+    assert.equal(await darkModal.locator('.slack-setup-workspace-card').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(11, 33, 21)');
+    await screenshot(alphaPage!, 'slack-setup-empty-workspace-dark');
+    await darkModal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await darkModal.waitFor({ state: 'hidden' });
+    await alphaPage!.getByTestId('theme-toggle').click();
+    assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
+    await contextPanel.getByRole('button', { name: 'Slack' }).click();
+    await modal.waitFor({ state: 'visible' });
+
+    await Promise.all([
+      alphaPage!.waitForURL(url => url.origin === mockSlackProviderOrigin && url.pathname === '/oauth/v2/authorize', { timeout: 10_000 }),
+      connectButton.click(),
+    ]);
+    await alphaPage!.getByRole('heading', { name: 'Authorize Coke Dots for ASPI' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByText('Permission requested: chat:write', { exact: true }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, 'slack-mock-consent');
+    await Promise.all([
+      alphaPage!.waitForURL(url => url.origin === new URL(baseUrl).origin && url.pathname === '/', { timeout: 15_000 }),
+      alphaPage!.getByRole('button', { name: 'Allow access' }).click(),
+    ]);
+
+    const connectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
+    await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
+    const workspace = connectedModal.getByLabel('Slack workspace');
+    await workspace.waitFor({ state: 'visible' });
+    assert.equal(await workspace.inputValue(), 'TASPIE2E');
+    assert.deepEqual(await workspace.locator('option').allTextContents(), ['ASPI']);
+    assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Add to Slack');
+    await screenshot(alphaPage!, 'slack-workspace-installed');
+
+    await connectedModal.getByTestId('slack-connect').click();
+    await connectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
+    const tenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    assert(tenantId, 'The Alpha tenant id must be present before checking tenant-scoped Slack credentials');
+    e2eSlackTokenAccount = `tenant-${createHash('sha256').update(`${tenantId}\0TASPIE2E`).digest('hex')}-slack-bot-token`;
+    const storedToken = new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).getPassword();
+    assert.equal(storedToken, 'xoxb-coke-dots-e2e-only-token', 'OAuth token should be persisted only in the isolated E2E keychain');
+    const slackState = await alphaPage!.evaluate(async () => await (await fetch('/api/slack')).json()) as { installations: { teamId: string; teamName: string; contactEnabled: boolean }[] };
+    assert.deepEqual(slackState.installations.map(item => ({ teamId: item.teamId, teamName: item.teamName, contactEnabled: item.contactEnabled })), [
+      { teamId: 'TASPIE2E', teamName: 'ASPI', contactEnabled: true },
+    ]);
+    assert.equal(JSON.stringify(slackState).includes(storedToken), false, 'Slack OAuth token must not be returned by the API');
+    const sqlite = new DatabaseSync(join(testDataDir, 'dots.db'), { readOnly: true });
+    const storedInstallation = sqlite.prepare('SELECT team_id,team_name,scopes_json FROM slack_installations').all();
+    sqlite.close();
+    assert.equal(JSON.stringify(storedInstallation).includes(storedToken), false, 'Slack OAuth token must not be stored in SQLite');
+    assert.equal(mockSlackCodeExchanges, 1, 'Chrome should complete exactly one Slack OAuth code exchange');
+    await screenshot(alphaPage!, 'slack-workspace-selected');
+    await connectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await connectedModal.waitFor({ state: 'hidden' });
+  });
+
   await recordStep('Dot computer shortcut opens the tenant-isolated browser workspace', async () => {
     await alphaPage!.getByTestId('dot-computer-row').click();
     await alphaPage!.getByRole('heading', { name: '打开独立电脑' }).waitFor({ state: 'visible' });
@@ -791,6 +934,8 @@ try {
     assert.equal(await betaPage!.getByTestId('dot-context-panel').count(), 0, 'Beta personal onboarding inherited Alpha conversation context');
     const betaState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json());
     assert.deepEqual(betaState.computerAccess, { dotComputer: true, localComputer: true, configured: false }, 'A different account must receive its own unconfigured computer-access choice');
+    const betaSlackState = await betaPage!.evaluate(async () => await (await fetch('/api/slack')).json()) as { installations: unknown[] };
+    assert.deepEqual(betaSlackState.installations, [], 'Beta must not inherit Alpha personal Slack installations');
     await assertNoVisibleText(betaPage!, alphaPrivateTask);
     await screenshot(betaPage!, '04-beta-isolated');
   });
@@ -947,6 +1092,11 @@ try {
       return { status: response.status, body: await response.json() };
     });
     assert.equal(memberComputerWrite.status, 403, 'The server must enforce workspace-admin access for shared computer settings');
+    const memberSlackWrite = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/slack/contact', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ teamId: 'TASPIE2E' }) });
+      return { status: response.status, body: await response.json() };
+    });
+    assert.equal(memberSlackWrite.status, 403, 'A regular shared-workspace member must not change the Slack contact workspace');
     await screenshot(betaPage!, '10-beta-shared-member');
 
     await signIn(gammaPage!, 'gamma@example.test');
@@ -1244,6 +1394,33 @@ try {
     await alphaPage!.locator('.profile-link strong').getByText(originalDotName, { exact: true }).waitFor({ state: 'visible' });
 
     await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
+    const headerCallLaunch = alphaPage!.getByTestId('conversation-call-launch');
+    await headerCallLaunch.waitFor({ state: 'visible' });
+    const headerCallBox = await headerCallLaunch.boundingBox();
+    const chatContextBox = await alphaPage!.locator('.dot-context-panel').boundingBox();
+    assert(headerCallBox && chatContextBox && headerCallBox.y < 40 && headerCallBox.x + headerCallBox.width <= chatContextBox.x,
+      'The conversation-header call action should sit at the upper right edge of the chat pane, before the Dot details panel');
+    const headerActionsBox = await alphaPage!.locator('.top-actions').boundingBox();
+    assert(headerCallBox && headerActionsBox && headerCallBox.x >= headerActionsBox.x + headerActionsBox.width,
+      'The conversation-header call action should not overlap workspace or theme controls');
+    await screenshot(alphaPage!, 'voice-call-header-entry-idle');
+    await headerCallLaunch.click();
+    const headerCall = alphaPage!.getByTestId('voice-call');
+    await headerCall.waitFor({ state: 'visible' });
+    assert.equal(await headerCall.getAttribute('data-variant'), 'desktop', 'The conversation-header phone action should enter the desktop call flow');
+    assert.equal(await alphaPage!.locator('.top-actions').evaluate(element => getComputedStyle(element).display), 'none',
+      'The compact active call controls should have a clear header row without workspace controls beneath them');
+    await screenshot(alphaPage!, 'voice-call-header-entry');
+    await headerCall.getByRole('button', { name: '结束通话' }).click();
+    await headerCall.waitFor({ state: 'hidden' });
+
+    await alphaPage!.getByTestId('context-call-launch').click();
+    const contextCall = alphaPage!.getByTestId('voice-call');
+    await contextCall.waitFor({ state: 'visible' });
+    assert.equal(await contextCall.getAttribute('data-variant'), 'desktop', 'The Dot details-panel Call action should use the desktop call flow');
+    await contextCall.getByRole('button', { name: '结束通话' }).click();
+    await contextCall.waitFor({ state: 'hidden' });
+
     await alphaPage!.getByTestId('voice-call-launch').click();
     const call = alphaPage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
@@ -1336,12 +1513,12 @@ try {
       return snapshot.tasks.some(task => task.instruction === text && task.status === 'done' && task.result === 'Voice request finished after the call ended.');
     }, instruction, { timeout: 15_000 });
     const alphaCalls = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null; durationSeconds: number | null }[];
-    assert.equal(alphaCalls.length, 2, 'Conversation and Dot profile call entry points must each persist a call');
+    assert.equal(alphaCalls.length, 4, 'Conversation header, context panel, composer, and Dot profile call entry points must each persist a call');
     assert(alphaCalls.every(item => item.endedAt), 'Ending each call must persist its completion time');
     assert(alphaCalls.some(item => item.durationSeconds !== null && item.durationSeconds >= 1));
 
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 4, null, { timeout: 10_000 });
     await alphaPage!.waitForFunction(() => {
       const timeline = document.querySelector('.timeline');
       const composer = document.querySelector('.composer-wrap');
@@ -1349,14 +1526,14 @@ try {
     }, null, { timeout: 5_000 });
     const timelineTimes = await alphaPage!.locator('.timeline [data-testid="chat-timeline-item"]').evaluateAll(elements => elements.map(element => Date.parse(element.getAttribute('data-timestamp') || '')));
     assert(timelineTimes.every((time, index) => index === 0 || timelineTimes[index - 1]! <= time), 'Conversation entries and ended-call chips must appear in chronological order');
-    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 2, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
-    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 2, 'The ended-call state should retain the optional label visible in the reference');
+    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 4, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
+    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 4, 'The ended-call state should retain the optional label visible in the reference');
     await screenshot(alphaPage!, 'voice-call-ended-in-conversation');
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 4, null, { timeout: 10_000 });
     await alphaPage!.waitForFunction(() => {
       const timeline = document.querySelector('.timeline');
       const composer = document.querySelector('.composer-wrap');
@@ -1366,7 +1543,7 @@ try {
     await selectTenant(alphaPage!, 'Alpha workspace');
     await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 0, null, { timeout: 10_000 });
     await selectTenant(alphaPage!, 'Alpha Shared');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 4, null, { timeout: 10_000 });
 
     await selectTenant(betaPage!, 'Alpha Shared');
     const betaSharedCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));
@@ -1891,6 +2068,10 @@ try {
   await browser?.close().catch(() => undefined);
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
+  if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
+  if (e2eSlackTokenAccount) {
+    try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
+  }
   testModelBaseUrl = '';
   testModelApiKey = '';
   testModelName = '';

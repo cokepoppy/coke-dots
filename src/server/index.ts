@@ -13,6 +13,7 @@ import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { apiErrorResponse } from './computer-errors.ts';
 import { AuthService } from './auth.ts';
+import { SlackService } from './slack.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -25,6 +26,7 @@ const host = '127.0.0.1';
 const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
 const auth = new AuthService(store, port);
+const slack = new SlackService(store, port);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
@@ -81,6 +83,7 @@ const server = createServer(async (req, res) => {
   const path = url.pathname;
 
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
+  if (path === '/auth/slack/callback' && req.method === 'GET') return slack.finish(req, res, url, auth.session(req));
   if (!path.startsWith('/api/')) return serveStatic(req, res);
   if (path === '/api/health' && req.method === 'GET') return reply(res, 200, { ok: true });
   if (path === '/api/auth/config' && req.method === 'GET') return reply(res, 200, { googleConfigured: auth.configured(), e2eAuthAvailable: auth.e2eAuthAvailable() });
@@ -112,6 +115,14 @@ const server = createServer(async (req, res) => {
   const session = auth.session(req);
   if (!session) return reply(res, 401, { error: '请先使用 Google 登录' });
   if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+
+  if (path === '/api/slack' && req.method === 'GET') return reply(res, 200, slack.snapshot(session.tenant.id));
+  if (path === '/api/slack/oauth/start' && req.method === 'GET') return slack.begin(req, res, session);
+  if (path === '/api/slack/contact' && req.method === 'POST') {
+    const body = await readJson(req);
+    const result = slack.setContactWorkspace(session, String(body.teamId || ''));
+    return result.status === 200 ? reply(res, 200, result.value) : reply(res, result.status, { error: result.error });
+  }
 
   try {
     if (path === '/api/events' && req.method === 'GET') {
@@ -503,7 +514,8 @@ function isLocalRequest(req: IncomingMessage) {
   const hostname = req.headers.host?.split(':')[0];
   const origin = req.headers.origin;
   const oauthCallback = req.method === 'GET' && req.url?.split('?')[0] === '/auth/google/callback' && origin === 'https://accounts.google.com';
-  const allowedOrigin = !origin || isAllowedLocalOrigin(origin) || oauthCallback;
+  const slackCallback = req.method === 'GET' && req.url?.split('?')[0] === '/auth/slack/callback' && ['https://slack.com', 'https://slack-gov.com'].includes(origin || '');
+  const allowedOrigin = !origin || isAllowedLocalOrigin(origin) || oauthCallback || slackCallback;
   return (remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1') &&
     (hostname === '127.0.0.1' || hostname === 'localhost') &&
     allowedOrigin;
