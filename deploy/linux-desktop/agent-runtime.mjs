@@ -7,7 +7,7 @@ const token = String(process.env.DOTS_AGENT_RUNTIME_TOKEN || '');
 const port = Number(process.env.DOTS_AGENT_RUNTIME_PORT || 8083);
 const workerPort = Number(process.env.LINUX_DESKTOP_WORKER_PORT || 8082);
 const workspace = path.resolve(process.env.DOTS_AGENT_WORKSPACE || '/workspace');
-const allowedEngines = new Set(String(process.env.DOTS_DESKTOP_AGENT_ADAPTERS || '').split(',').map(value => value.trim()).filter(Boolean));
+const allowedEngines = new Set(String(process.env.DOTS_DESKTOP_AGENT_ADAPTERS || '').split(',').map(value => value.trim()).filter(value => ['pi', 'dsh'].includes(value)));
 const configured = parseAdapterConfig(process.env.DOTS_AGENT_KERNELS_JSON || '{}');
 let active = null;
 const queue = [];
@@ -17,12 +17,15 @@ if (!token) throw new Error('DOTS_AGENT_RUNTIME_TOKEN is required');
 function parseAdapterConfig(raw) {
   const value = JSON.parse(raw);
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('DOTS_AGENT_KERNELS_JSON must be an object');
+  const supported = {};
   for (const [engine, adapter] of Object.entries(value)) {
-    if (!['claude', 'pi', 'dsh'].includes(engine) || !adapter || typeof adapter !== 'object' || typeof adapter.command !== 'string' || !Array.isArray(adapter.args) || adapter.args.some(arg => typeof arg !== 'string')) {
+    if (!['pi', 'dsh'].includes(engine)) continue;
+    if (!adapter || typeof adapter !== 'object' || typeof adapter.command !== 'string' || !Array.isArray(adapter.args) || adapter.args.some(arg => typeof arg !== 'string')) {
       throw new Error(`Invalid kernel adapter config for ${engine}`);
     }
+    supported[engine] = adapter;
   }
-  return value;
+  return supported;
 }
 
 function send(res, status, value) {
@@ -82,7 +85,7 @@ async function drainQueue() {
 async function executeKernel(input, requestSignal, slot) {
   const engine = String(input.engine || '');
   if (!allowedEngines.has(engine)) throw new Error(`Agent kernel '${engine}' is not enabled for this workspace`);
-  if (!['claude', 'pi', 'dsh'].includes(engine)) throw new Error(`Agent kernel '${engine}' needs an installed adapter`);
+  if (!['pi', 'dsh'].includes(engine)) throw new Error(`Agent kernel '${engine}' needs an installed adapter`);
   const adapter = configured[engine];
   if (!adapter) throw new Error(`Agent kernel '${engine}' is enabled but no adapter is installed in this image`);
   const taskId = String(input.taskId || '');
