@@ -34,6 +34,9 @@ let mockSlackProviderOrigin = '';
 let mockSlackCodeExchanges = 0;
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
+let mockModelRequests: { prompt: string; authorization: string }[] = [];
+let priorE2ESharedModelKey: string | null = null;
+const e2eSharedModelKeyEntry = new Entry('com.cokepoppy.coke-dots.e2e', 'shared-model-api-key');
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
 let pauseModelHeld = false;
@@ -82,6 +85,7 @@ async function reservePort() {
 
 async function startMockModel() {
   mockModelPrompts = [];
+  mockModelRequests = [];
   mockModelServer = createHttpServer((request, response) => {
     let raw = '';
     request.setEncoding('utf8');
@@ -93,6 +97,7 @@ async function startMockModel() {
         const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
         const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
         mockModelPrompts.push(prompt);
+        mockModelRequests.push({ prompt, authorization: String(request.headers.authorization || '') });
         const hasReply = prompt.includes('User reply: Use Friday.');
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
@@ -106,6 +111,7 @@ async function startMockModel() {
         const isParallelTask = prompt.includes('E2E parallel work —');
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
         const isDelegationAggregate = prompt.includes('E2E delegation goal — build a launch packet') && prompt.includes('Delegated task results:');
+        const isSharedModelTask = prompt.includes('E2E shared model call from Beta account');
         const delegatedChild = ['Market scan', 'Competitor scan', 'Launch risks'].find(title => prompt.includes(`E2E delegated child — ${title.toLowerCase()}`));
         if (isPauseTask && !pauseModelHeld) {
           pauseModelHeld = true;
@@ -133,13 +139,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -233,9 +239,9 @@ async function startServer(port: number) {
       DOTS_CHROME_BIN: chromePath,
       GOOGLE_CLIENT_ID: '',
       GOOGLE_CLIENT_SECRET: '',
-      DOTS_MODEL_BASE_URL: testModelBaseUrl,
-      DOTS_MODEL_API_KEY: testModelApiKey,
-      DOTS_MODEL: testModelName,
+      DOTS_MODEL_BASE_URL: '',
+      DOTS_MODEL_API_KEY: '',
+      DOTS_MODEL: '',
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
       DOTS_KEYCHAIN_SERVICE: 'com.cokepoppy.coke-dots.e2e',
@@ -422,6 +428,11 @@ async function restartService() {
 try {
   e2ePort = await reservePort();
   baseUrl = `http://127.0.0.1:${e2ePort}`;
+  try { priorE2ESharedModelKey = e2eSharedModelKeyEntry.getPassword() || null; } catch { priorE2ESharedModelKey = null; }
+  try { e2eSharedModelKeyEntry.deletePassword(); } catch { /* The isolated E2E service may be empty. */ }
+  testModelBaseUrl = await startMockModel();
+  testModelApiKey = 'e2e-shared-model-key';
+  testModelName = 'e2e-shared-model';
   mockSlackProviderOrigin = await startMockSlackProvider();
   server = await startServer(e2ePort);
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
@@ -1034,6 +1045,60 @@ try {
     await weeklyDetail.getByRole('button', { name: 'Cancel schedule' }).click();
   });
 
+  await recordStep('Alpha configures one shared Model API and Beta can read but cannot edit it', async () => {
+    await openProfile(alphaPage!);
+    await alphaPage!.getByLabel('共享模型 API 地址').fill(testModelBaseUrl);
+    await alphaPage!.getByLabel('共享模型名称').fill(testModelName);
+    await alphaPage!.getByLabel('共享模型 API 密钥').fill(testModelApiKey);
+    await alphaPage!.getByRole('button', { name: '保存共享模型设置' }).click();
+    const alphaState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    const alphaTenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    assert.equal(alphaState.modelSettings.baseUrl, testModelBaseUrl);
+    assert.equal(alphaState.modelSettings.model, testModelName);
+    assert.equal(alphaState.modelSettings.hasKey, true);
+    assert.equal(alphaState.modelSettings.adminTenantId, alphaTenantId);
+    assert(alphaState.availableEngines.includes('model'), 'Saving the shared API must enable Model API tasks in the admin workspace');
+    assert.equal(JSON.stringify(alphaState).includes(testModelApiKey), false, 'The API key must never be returned by the state endpoint');
+    await screenshot(alphaPage!, 'shared-model-settings-admin');
+
+    const betaTenantId = await betaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    const betaState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    assert.equal(betaState.modelSettings.hasKey, true, 'A second Google account must see that the instance Model API is configured');
+    assert.equal(betaState.modelSettings.baseUrl, testModelBaseUrl);
+    assert.equal(betaState.modelSettings.model, testModelName);
+    assert.notEqual(betaState.modelSettings.adminTenantId, betaTenantId, 'The second account must not become the model administrator');
+    assert(betaState.availableEngines.includes('model'), 'A fresh tenant must inherit the instance Model API availability');
+    await openProfile(betaPage!);
+    await betaPage!.getByTestId('shared-model-settings-readonly').waitFor({ state: 'visible' });
+    const deniedModelWrite = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/model-settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://attacker.example/v1', model: 'other-model', apiKey: '' }) });
+      return { status: response.status, body: await response.json() as { error?: string } };
+    });
+    assert.equal(deniedModelWrite.status, 403, 'A different account must not be allowed to change the shared instance model');
+    await clickNav(betaPage!, '你的 dot');
+
+    const betaComputerChoice = betaPage!.getByTestId('computer-choice');
+    if (await betaComputerChoice.isVisible()) {
+      await betaComputerChoice.getByRole('button', { name: 'Continue' }).click();
+      await betaPage!.getByTestId('dot-onboarding').waitFor({ state: 'visible' });
+      await clickNav(betaPage!, 'Activity');
+      await clickNav(betaPage!, '新聊天');
+    }
+
+    const sharedModelInstruction = 'E2E shared model call from Beta account — 用中文确认模型调用成功';
+    const requestStart = mockModelRequests.length;
+    await createTask(betaPage!, sharedModelInstruction);
+    await betaPage!.waitForFunction(async (instruction: string) => {
+      const snapshot = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; result: string | null; engine: string }[] };
+      const task = snapshot.tasks.find(candidate => candidate.instruction === instruction);
+      return task?.engine === 'model' && task.status === 'done' && task.result?.includes('共享模型 API 已在第二个 Google 账号中成功调用。');
+    }, sharedModelInstruction, { timeout: 20_000 });
+    await waitFor(() => mockModelRequests.slice(requestStart).some(request => request.prompt.includes(sharedModelInstruction)), 5_000);
+    const betaModelRequest = mockModelRequests.slice(requestStart).find(request => request.prompt.includes(sharedModelInstruction));
+    assert.equal(betaModelRequest?.authorization, `Bearer ${testModelApiKey}`, 'Beta must execute a real authenticated model HTTP request with the instance-shared credential');
+    await screenshot(betaPage!, 'shared-model-task-from-beta');
+  });
+
   await recordStep('Dot appearance changes persist within Alpha personal workspace', async () => {
     await openProfile(alphaPage!);
     await alphaPage!.getByLabel('桌面通知').check();
@@ -1135,20 +1200,18 @@ try {
     await selectTenant(betaPage!, 'Beta workspace');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
     await assertNoVisibleText(betaPage!, 'E2E shared workspace task — prepare the team review');
-    assert.equal(await betaPage!.locator('.task-links button').count(), 0);
+    await (await taskNavigationItem(betaPage!, 'E2E shared model call from Beta account')).waitFor({ state: 'visible' });
+    assert.equal(await betaPage!.locator('.task-links button').count(), 1, 'Beta should retain its own shared-model test task while Alpha workspace tasks remain isolated');
     await screenshot(betaPage!, '11-beta-personal-isolation');
     await clickNav(betaPage!, 'Activity');
     const activityFeed = betaPage!.getByTestId('activity-feed');
     await activityFeed.waitFor({ state: 'visible' });
-    await activityFeed.getByText('还没有活动记录。', { exact: true }).waitFor({ state: 'visible' });
+    await activityFeed.getByTestId('activity-entry').filter({ hasText: 'E2E shared model call from Beta account' }).first().waitFor({ state: 'visible' });
     assert.equal(await activityFeed.getByTestId('activity-entry').filter({ hasText: alphaPrivateTask }).count(), 0, 'Beta received an Alpha activity entry');
     await screenshot(betaPage!, '11b-beta-private-activity');
   });
 
   await recordStep('Restart the local service and recover both authenticated tenant sessions and task data', async () => {
-    testModelBaseUrl = await startMockModel();
-    testModelApiKey = 'e2e-local-only';
-    testModelName = 'e2e-model';
     await restartService();
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await betaPage!.reload({ waitUntil: 'domcontentloaded' });
@@ -1169,6 +1232,11 @@ try {
     await screenshot(alphaPage!, '12-alpha-after-service-restart');
     await screenshot(betaPage!, '13-beta-after-service-restart');
     await selectTenant(betaPage!, 'Beta workspace');
+    const betaModelState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    assert.equal(betaModelState.modelSettings.baseUrl, testModelBaseUrl, 'Shared model endpoint did not survive restart');
+    assert.equal(betaModelState.modelSettings.model, testModelName, 'Shared model name did not survive restart');
+    assert.equal(betaModelState.modelSettings.hasKey, true, 'Shared model Keychain credential did not survive restart');
+    assert(betaModelState.availableEngines.includes('model'), 'Beta lost access to the instance model after restart');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
   });
 
@@ -2068,6 +2136,10 @@ try {
   await browser?.close().catch(() => undefined);
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
+  try {
+    if (priorE2ESharedModelKey) e2eSharedModelKeyEntry.setPassword(priorE2ESharedModelKey);
+    else e2eSharedModelKeyEntry.deletePassword();
+  } catch { /* Restore only the isolated E2E Keychain service. */ }
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
   if (e2eSlackTokenAccount) {
     try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }

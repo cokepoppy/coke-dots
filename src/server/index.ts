@@ -8,7 +8,7 @@ import { adapters } from './adapters.ts';
 import { isEngine, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
-import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
+import { loadModelSettings, migrateTenantModelKey, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { apiErrorResponse } from './computer-errors.ts';
@@ -25,6 +25,21 @@ const port = Number(process.env.DOTS_PORT || 4317);
 const host = '127.0.0.1';
 const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
+const priorModelAdminTenantId = store.getAppSetting('modelSettingsAdminTenantId');
+const modelSettingsCandidates = store.modelSettingsCandidates();
+const migratedModelKeyTenantId = migrateTenantModelKey([
+  ...(priorModelAdminTenantId ? [priorModelAdminTenantId] : []),
+  ...modelSettingsCandidates.map(item => item.tenantId),
+]);
+const modelSettingsSource = modelSettingsCandidates.find(item => item.tenantId === priorModelAdminTenantId)
+  || modelSettingsCandidates.find(item => item.tenantId === migratedModelKeyTenantId)
+  || modelSettingsCandidates.find(item => item.tenantId === 'legacy')
+  || modelSettingsCandidates.find(item => item.baseUrl || item.model);
+if (modelSettingsSource) {
+  if (!store.getAppSetting('modelBaseUrl') && modelSettingsSource.baseUrl) store.setAppSetting('modelBaseUrl', modelSettingsSource.baseUrl);
+  if (!store.getAppSetting('modelName') && modelSettingsSource.model) store.setAppSetting('modelName', modelSettingsSource.model);
+}
+if (!priorModelAdminTenantId && migratedModelKeyTenantId) store.setAppSetting('modelSettingsAdminTenantId', migratedModelKeyTenantId);
 const auth = new AuthService(store, port);
 const slack = new SlackService(store, port);
 const computers = new Map<string, ComputerRuntime>();
@@ -40,9 +55,10 @@ const configuredDesktopEngines = () => {
 const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...configuredDesktopEngines()])];
 
 function snapshot(tenantId: string) {
-  loadModelSettings(store.getSetting('modelBaseUrl', tenantId), store.getSetting('modelName', tenantId), tenantId);
+  const adminTenantId = store.getAppSetting('modelSettingsAdminTenantId');
+  loadModelSettings(store.getAppSetting('modelBaseUrl'), store.getAppSetting('modelName'), adminTenantId);
   const available = availableFor(tenantId);
-  return store.snapshot(available.includes('model'), available, publicModelSettings(tenantId), tenantId);
+  return store.snapshot(available.includes('model'), available, publicModelSettings(adminTenantId), tenantId);
 }
 
 function computerFor(tenantId: string): ComputerRuntime {
@@ -430,12 +446,16 @@ const server = createServer(async (req, res) => {
       try { parsed = new URL(baseUrl); } catch { return reply(res, 400, { error: '模型地址无效' }); }
       const localHttp = parsed.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(parsed.hostname);
       if ((!localHttp && parsed.protocol !== 'https:') || parsed.username || parsed.password || !model || model.length > 120 || apiKey.length > 5000) return reply(res, 400, { error: '模型配置无效' });
-      if (apiKey) saveModelKey(apiKey, session.tenant.id);
-      store.setSetting('modelBaseUrl', baseUrl, session.tenant.id);
-      store.setSetting('modelName', model, session.tenant.id);
-      setModelMetadata(baseUrl, model, session.tenant.id);
+      if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以修改共享模型 API' });
+      const configuredAdmin = store.getAppSetting('modelSettingsAdminTenantId');
+      const adminTenantId = configuredAdmin || store.claimAppSetting('modelSettingsAdminTenantId', session.tenant.id);
+      if (adminTenantId !== session.tenant.id) return reply(res, 403, { error: '只有模型配置管理员工作区可以修改共享模型 API' });
+      if (apiKey) saveModelKey(apiKey);
+      store.setAppSetting('modelBaseUrl', baseUrl);
+      store.setAppSetting('modelName', model);
+      setModelMetadata(baseUrl, model, adminTenantId);
       publish();
-      return reply(res, 200, publicModelSettings(session.tenant.id));
+      return reply(res, 200, publicModelSettings(adminTenantId));
     }
     const approvalMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/approval$/);
     if (approvalMatch && req.method === 'GET') {
