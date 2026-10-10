@@ -15,6 +15,15 @@ export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantS
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
 export interface SlackOAuthFlow { stateHash: string; tenantId: string; userId: string; expiresAt: string; returnTo: string }
 export interface SlackInstallation { tenantId: string; teamId: string; teamName: string; scopes: string[]; installedAt: string; contactEnabled: boolean }
+export interface SlackDirectMessage {
+  eventId: string; teamId: string; userId: string; channelId: string; threadTs: string; text: string;
+  threadReply?: boolean; replyThreadTs?: string | null; privateReplyUserId?: string;
+}
+export type SlackMessageIngestResult =
+  | { kind: 'duplicate' }
+  | { kind: 'ignored' }
+  | { kind: 'link-required'; tenantId: string; teamName: string; eventId: string }
+  | { kind: 'task'; tenantId: string; taskId: string; created: boolean };
 export interface StoredTaskAttachment extends AttachmentSummary { tenantId: string; uploadedBy: string; taskId: string | null; content: Uint8Array; createdAt: string }
 
 export class Store {
@@ -62,6 +71,35 @@ export class Store {
         contact_enabled INTEGER NOT NULL DEFAULT 0 CHECK(contact_enabled IN (0,1)), PRIMARY KEY(tenant_id,team_id)
       );
       CREATE UNIQUE INDEX IF NOT EXISTS slack_one_contact_per_tenant ON slack_installations(tenant_id) WHERE contact_enabled=1;
+      CREATE TABLE IF NOT EXISTS slack_event_receipts (
+        event_id TEXT PRIMARY KEY, team_id TEXT NOT NULL, tenant_id TEXT REFERENCES tenants(id),
+        status TEXT NOT NULL CHECK(status IN ('link_required','queued','ignored')), received_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS slack_user_links (
+        team_id TEXT NOT NULL, slack_user_id TEXT NOT NULL, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        user_id TEXT NOT NULL REFERENCES users(id), linked_at TEXT NOT NULL,
+        PRIMARY KEY(team_id,slack_user_id)
+      );
+      CREATE INDEX IF NOT EXISTS slack_user_links_member ON slack_user_links(tenant_id,user_id);
+      CREATE TABLE IF NOT EXISTS slack_link_challenges (
+        event_id TEXT PRIMARY KEY REFERENCES slack_event_receipts(event_id), code_hash TEXT NOT NULL UNIQUE,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id), team_id TEXT NOT NULL, slack_user_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL, thread_ts TEXT NOT NULL, expires_at TEXT NOT NULL,
+        prompt_sent_at TEXT, next_attempt_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS slack_link_challenges_pending ON slack_link_challenges(prompt_sent_at,next_attempt_at,expires_at);
+      CREATE TABLE IF NOT EXISTS slack_thread_tasks (
+        tenant_id TEXT NOT NULL REFERENCES tenants(id), team_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+        thread_ts TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id), updated_at TEXT NOT NULL, reply_user_id TEXT,
+        PRIMARY KEY(tenant_id,team_id,channel_id,thread_ts)
+      );
+      CREATE TABLE IF NOT EXISTS slack_task_outbox (
+        event_id TEXT PRIMARY KEY REFERENCES slack_event_receipts(event_id), tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        team_id TEXT NOT NULL, channel_id TEXT NOT NULL, thread_ts TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id),
+        status TEXT NOT NULL CHECK(status IN ('pending','sending','sent','failed')), attempts INTEGER NOT NULL DEFAULT 0,
+        claim_at TEXT, next_attempt_at TEXT NOT NULL, sent_at TEXT, last_error TEXT, reply_user_id TEXT, reply_thread_ts TEXT
+      );
+      CREATE INDEX IF NOT EXISTS slack_task_outbox_pending ON slack_task_outbox(status,next_attempt_at);
       CREATE TABLE IF NOT EXISTS desktop_handoffs (
         handoff_hash TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id), tenant_id TEXT REFERENCES tenants(id), expires_at TEXT NOT NULL
       );
@@ -171,6 +209,9 @@ export class Store {
       CREATE INDEX IF NOT EXISTS watches_due ON watches(status, next_check_at);
       CREATE INDEX IF NOT EXISTS watches_tenant ON watches(tenant_id, status, next_check_at);
     `);
+    this.addColumnIfMissing('slack_thread_tasks', 'reply_user_id', 'TEXT');
+    this.addColumnIfMissing('slack_task_outbox', 'reply_user_id', 'TEXT');
+    this.addColumnIfMissing('slack_task_outbox', 'reply_thread_ts', 'TEXT');
     const now = new Date().toISOString();
     this.db.prepare("UPDATE tasks SET status='queued', next_run_at=?, updated_at=? WHERE status='working'").run(now, now);
     this.db.prepare('DELETE FROM auth_sessions WHERE expires_at <= ?').run(now);
@@ -259,6 +300,8 @@ export class Store {
     try {
       const exists = this.db.prepare('SELECT 1 FROM slack_installations WHERE tenant_id=? AND team_id=?').get(tenantId, teamId);
       if (!exists) { this.db.exec('COMMIT'); return false; }
+      const connectedElsewhere = this.db.prepare('SELECT 1 FROM slack_installations WHERE team_id=? AND contact_enabled=1 AND tenant_id<>?').get(teamId, tenantId);
+      if (connectedElsewhere) { this.db.exec('COMMIT'); return false; }
       this.db.prepare('UPDATE slack_installations SET contact_enabled=0 WHERE tenant_id=?').run(tenantId);
       this.db.prepare('UPDATE slack_installations SET contact_enabled=1 WHERE tenant_id=? AND team_id=?').run(tenantId, teamId);
       this.db.exec('COMMIT');
@@ -268,6 +311,144 @@ export class Store {
 
   slackInstallation(tenantId: string, teamId: string) {
     return this.slackInstallations(tenantId).find(item => item.teamId === teamId) || null;
+  }
+
+  activeSlackInstallation(teamId: string): { tenantId: string; teamId: string; teamName: string } | null {
+    const rows = this.db.prepare('SELECT tenant_id AS tenantId,team_id AS teamId,team_name AS teamName FROM slack_installations WHERE team_id=? AND contact_enabled=1')
+      .all(teamId) as unknown as { tenantId: string; teamId: string; teamName: string }[];
+    return rows.length === 1 ? rows[0]! : null;
+  }
+
+  ingestSlackDirectMessage(message: SlackDirectMessage, codeHash: string, challengeExpiresAt: string, now = new Date().toISOString()): SlackMessageIngestResult {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const inserted = this.db.prepare('INSERT OR IGNORE INTO slack_event_receipts(event_id,team_id,status,received_at) VALUES (?,? ,\'ignored\',?)')
+        .run(message.eventId, message.teamId, now);
+      if (!Number(inserted.changes)) {
+        const prior = this.db.prepare('SELECT status,tenant_id AS tenantId FROM slack_event_receipts WHERE event_id=?').get(message.eventId) as { status: string; tenantId: string | null } | undefined;
+        this.db.exec('COMMIT');
+        return prior?.status === 'link_required' && prior.tenantId
+          ? { kind: 'link-required', tenantId: prior.tenantId, teamName: this.activeSlackInstallation(message.teamId)?.teamName || 'Slack', eventId: message.eventId }
+          : { kind: 'duplicate' };
+      }
+
+      const installations = this.db.prepare('SELECT tenant_id AS tenantId,team_name AS teamName FROM slack_installations WHERE team_id=? AND contact_enabled=1')
+        .all(message.teamId) as unknown as { tenantId: string; teamName: string }[];
+      if (installations.length !== 1) { this.db.exec('COMMIT'); return { kind: 'ignored' }; }
+      const installation = installations[0]!;
+      this.db.prepare('UPDATE slack_event_receipts SET tenant_id=? WHERE event_id=?').run(installation.tenantId, message.eventId);
+      const link = this.db.prepare('SELECT tenant_id AS tenantId,user_id AS userId FROM slack_user_links WHERE team_id=? AND slack_user_id=?')
+        .get(message.teamId, message.userId) as { tenantId: string; userId: string } | undefined;
+      if (!link) {
+        this.db.prepare('DELETE FROM slack_link_challenges WHERE team_id=? AND slack_user_id=?').run(message.teamId, message.userId);
+        this.db.prepare(`INSERT INTO slack_link_challenges(event_id,code_hash,tenant_id,team_id,slack_user_id,channel_id,thread_ts,expires_at,next_attempt_at)
+          VALUES (?,?,?,?,?,?,?,?,?)`).run(message.eventId, codeHash, installation.tenantId, message.teamId, message.userId, message.channelId, message.threadTs, challengeExpiresAt, now);
+        this.db.prepare("UPDATE slack_event_receipts SET status='link_required' WHERE event_id=?").run(message.eventId);
+        this.db.exec('COMMIT');
+        return { kind: 'link-required', tenantId: installation.tenantId, teamName: installation.teamName, eventId: message.eventId };
+      }
+      const isMember = this.db.prepare('SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=?').get(installation.tenantId, link.userId);
+      if (link.tenantId !== installation.tenantId || !isMember) {
+        this.db.prepare('DELETE FROM slack_user_links WHERE team_id=? AND slack_user_id=?').run(message.teamId, message.userId);
+        this.db.exec('COMMIT');
+        return { kind: 'ignored' };
+      }
+
+      const previousThread = message.threadReply
+        ? this.db.prepare('SELECT task_id AS taskId FROM slack_thread_tasks WHERE tenant_id=? AND team_id=? AND channel_id=? AND thread_ts=?')
+          .get(installation.tenantId, message.teamId, message.channelId, message.threadTs) as { taskId: string } | undefined
+        : undefined;
+      const waitingTask = previousThread ? this.db.prepare("SELECT status FROM tasks WHERE tenant_id=? AND id=?")
+        .get(installation.tenantId, previousThread.taskId) as { status: string } | undefined : undefined;
+      const currentTime = new Date(now).toISOString();
+      let taskId: string;
+      let created: boolean;
+      if (previousThread && waitingTask?.status === 'waiting') {
+        const old = this.db.prepare('SELECT instruction FROM tasks WHERE tenant_id=? AND id=?').get(installation.tenantId, previousThread.taskId) as { instruction: string };
+        taskId = previousThread.taskId;
+        created = false;
+        this.db.prepare("UPDATE tasks SET instruction=?,status='queued',next_run_at=?,error=NULL,updated_at=? WHERE tenant_id=? AND id=?")
+          .run(`${old.instruction}\n\nUser reply: ${message.text}`, currentTime, currentTime, installation.tenantId, taskId);
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+          .run(installation.tenantId, taskId, 'user', message.text, currentTime);
+      } else {
+        taskId = randomUUID();
+        created = true;
+        const title = message.text.trim().split(/[.!?。！？\n]/)[0]?.slice(0, 64) || 'Slack 私信';
+        this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json)
+          VALUES (?,?,?,?, 'queued',0,?,NULL,NULL,NULL,?,?,'model',NULL,NULL)`)
+          .run(taskId, installation.tenantId, title, message.text, currentTime, currentTime, currentTime);
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+          .run(installation.tenantId, taskId, 'user', message.text, currentTime);
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+          .run(installation.tenantId, taskId, 'system', '已通过 Slack 私信收到这项工作。', currentTime);
+      }
+      this.db.prepare(`INSERT INTO slack_thread_tasks(tenant_id,team_id,channel_id,thread_ts,task_id,updated_at,reply_user_id) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(tenant_id,team_id,channel_id,thread_ts) DO UPDATE SET task_id=excluded.task_id,updated_at=excluded.updated_at,reply_user_id=excluded.reply_user_id`)
+        .run(installation.tenantId, message.teamId, message.channelId, message.threadTs, taskId, currentTime, message.privateReplyUserId || null);
+      this.db.prepare(`INSERT INTO slack_task_outbox(event_id,tenant_id,team_id,channel_id,thread_ts,task_id,status,next_attempt_at,reply_user_id,reply_thread_ts)
+        VALUES (?,?,?,?,?,?,'pending',?,?,?)`).run(message.eventId, installation.tenantId, message.teamId, message.channelId,
+          message.threadTs, taskId, currentTime, message.privateReplyUserId || null, message.replyThreadTs || null);
+      this.db.prepare("UPDATE slack_event_receipts SET status='queued' WHERE event_id=?").run(message.eventId);
+      this.db.exec('COMMIT');
+      return { kind: 'task', tenantId: installation.tenantId, taskId, created };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  pendingSlackLinkChallenges(now = new Date().toISOString(), limit = 20) {
+    return this.db.prepare(`SELECT event_id AS eventId,tenant_id AS tenantId,team_id AS teamId,slack_user_id AS slackUserId,
+      channel_id AS channelId,thread_ts AS threadTs,expires_at AS expiresAt,attempts
+      FROM slack_link_challenges WHERE prompt_sent_at IS NULL AND expires_at>? AND next_attempt_at<=?
+      ORDER BY next_attempt_at,event_id LIMIT ?`).all(now, now, limit) as unknown as
+      { eventId: string; tenantId: string; teamId: string; slackUserId: string; channelId: string; threadTs: string; expiresAt: string; attempts: number }[];
+  }
+
+  finishSlackLinkPrompt(eventId: string, success: boolean, nextAttemptAt: string, error: string | null = null) {
+    this.db.prepare(`UPDATE slack_link_challenges SET prompt_sent_at=?,next_attempt_at=?,attempts=attempts+1,last_error=? WHERE event_id=?`)
+      .run(success ? new Date().toISOString() : null, nextAttemptAt, error ? error.slice(0, 200) : null, eventId);
+  }
+
+  claimSlackAccount(codeHash: string, tenantId: string, userId: string, now = new Date().toISOString()): 'linked' | 'expired' | 'wrong-workspace' | 'not-member' | 'already-linked' {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const challenge = this.db.prepare('SELECT team_id AS teamId,slack_user_id AS slackUserId,tenant_id AS tenantId,expires_at AS expiresAt FROM slack_link_challenges WHERE code_hash=?')
+        .get(codeHash) as { teamId: string; slackUserId: string; tenantId: string; expiresAt: string } | undefined;
+      if (!challenge || challenge.expiresAt <= now) { this.db.exec('COMMIT'); return 'expired'; }
+      if (challenge.tenantId !== tenantId) { this.db.exec('COMMIT'); return 'wrong-workspace'; }
+      const member = this.db.prepare('SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=?').get(tenantId, userId);
+      if (!member) { this.db.exec('COMMIT'); return 'not-member'; }
+      const existing = this.db.prepare('SELECT tenant_id AS tenantId,user_id AS userId FROM slack_user_links WHERE team_id=? AND slack_user_id=?')
+        .get(challenge.teamId, challenge.slackUserId) as { tenantId: string; userId: string } | undefined;
+      if (existing && (existing.tenantId !== tenantId || existing.userId !== userId)) { this.db.exec('COMMIT'); return 'already-linked'; }
+      this.db.prepare('INSERT OR IGNORE INTO slack_user_links(team_id,slack_user_id,tenant_id,user_id,linked_at) VALUES (?,?,?,?,?)')
+        .run(challenge.teamId, challenge.slackUserId, tenantId, userId, now);
+      this.db.prepare('DELETE FROM slack_link_challenges WHERE code_hash=?').run(codeHash);
+      this.db.exec('COMMIT');
+      return 'linked';
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  pendingSlackTaskReplies(now = new Date().toISOString(), limit = 20) {
+    this.db.prepare("UPDATE slack_task_outbox SET status='pending',claim_at=NULL WHERE status='sending' AND claim_at<?")
+      .run(new Date(Date.now() - 60_000).toISOString());
+    return this.db.prepare(`SELECT o.event_id AS eventId,o.tenant_id AS tenantId,o.team_id AS teamId,o.channel_id AS channelId,
+      o.thread_ts AS threadTs,o.reply_user_id AS replyUserId,o.reply_thread_ts AS replyThreadTs,o.task_id AS taskId,t.status,
+      (SELECT body FROM entries e WHERE e.tenant_id=t.tenant_id AND e.task_id=t.id AND e.kind='dot' ORDER BY e.id DESC LIMIT 1) AS dotReply
+      FROM slack_task_outbox o JOIN tasks t ON t.tenant_id=o.tenant_id AND t.id=o.task_id
+      WHERE o.status='pending' AND o.next_attempt_at<=? AND t.status IN ('waiting','done','failed','stopped')
+      ORDER BY o.next_attempt_at,o.event_id LIMIT ?`).all(now, limit) as unknown as
+      { eventId: string; tenantId: string; teamId: string; channelId: string; threadTs: string; replyUserId: string | null; replyThreadTs: string | null; taskId: string; status: string; dotReply: string | null }[];
+  }
+
+  claimSlackTaskReply(eventId: string, now = new Date().toISOString()) {
+    return Number(this.db.prepare("UPDATE slack_task_outbox SET status='sending',claim_at=?,attempts=attempts+1 WHERE event_id=? AND status='pending' AND next_attempt_at<=?")
+      .run(now, eventId, now).changes) === 1;
+  }
+
+  finishSlackTaskReply(eventId: string, success: boolean, permanentFailure: boolean, nextAttemptAt: string, error: string | null = null) {
+    const status = success ? 'sent' : permanentFailure ? 'failed' : 'pending';
+    this.db.prepare('UPDATE slack_task_outbox SET status=?,claim_at=NULL,sent_at=?,next_attempt_at=?,last_error=? WHERE event_id=?')
+      .run(status, success ? new Date().toISOString() : null, nextAttemptAt, error ? error.slice(0, 200) : null, eventId);
   }
 
   removeSlackInstallation(tenantId: string, teamId: string) {
@@ -466,6 +647,7 @@ export class Store {
     if (!target) return { ok: false as const, error: '成员不存在' };
     if (target.role === 'owner') return { ok: false as const, error: '不能移除工作区所有者' };
     this.db.prepare('DELETE FROM memberships WHERE tenant_id=? AND user_id=?').run(tenantId, memberUserId);
+    this.db.prepare('DELETE FROM slack_user_links WHERE tenant_id=? AND user_id=?').run(tenantId, memberUserId);
     this.db.prepare('DELETE FROM auth_sessions WHERE user_id=? AND active_tenant_id=?').run(memberUserId, tenantId);
     return { ok: true as const };
   }
