@@ -279,8 +279,8 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   return <section className={`voice-call-dock${expanded ? ' voice-call-expanded' : ''}`} role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="handset">
     <div className="voice-call-screen">
       <div className="voice-call-statusbar" aria-hidden="true">
-        <span>12:55</span><span className="voice-call-notch" />
-        <span className="voice-call-status-icons"><i className="voice-call-silent">⌁</i><i className="voice-call-signal">▮▮▮</i><i className="voice-call-wifi">◔</i><i className="voice-call-battery" /></span>
+        <span className="voice-call-status-time">12:55</span><span className="voice-call-notch" />
+        <span className="voice-call-status-icons"><svg className="voice-call-silent" viewBox="0 0 16 16"><path d="M3.5 11.5h9c-.9-1.2-1.2-2.1-1.2-4.3a3.3 3.3 0 0 0-6.6 0c0 2.2-.3 3.1-1.2 4.3ZM6.6 13.2h2.8M2.5 2.5l11 11" /></svg><svg className="voice-call-signal" viewBox="0 0 14 12"><path d="M1 11V8.5h2V11zM4.5 11V6h2v5zM8 11V3.5h2V11zM11.5 11V1h2v10z" /></svg><svg className="voice-call-wifi" viewBox="0 0 16 14"><path d="M1.5 4.5c4-3.5 9-3.5 13 0M4 7c2.4-2.1 5.6-2.1 8 0M6.5 9.5c.9-.8 2.1-.8 3 0" /><circle cx="8" cy="12" r=".7" fill="currentColor" /></svg><i className="voice-call-battery" /></span>
       </div>
       <button type="button" className="voice-call-expand" aria-label={expanded ? '收起通话界面' : '展开通话界面'} aria-pressed={expanded} onClick={() => setExpanded(value => !value)}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m0-4 6 6m6-6h4v4m0-4-6 6M4 16v4h4m-4 0 6-6m10 2v4h-4m4 0-6-6" /></svg>

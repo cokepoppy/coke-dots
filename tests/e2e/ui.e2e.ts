@@ -1172,6 +1172,47 @@ try {
       assert(Math.abs(actual.diameter - diameter) <= handsetReference.tolerance.normalizedDiameter,
         `${reference.name} diameter should match the 06:50.9 frame: expected ${diameter.toFixed(3)}, saw ${actual.diameter.toFixed(3)}`);
     });
+    const upperFrameReference = JSON.parse(await readFile(join(projectRoot, 'research/comparisons/voice-call-v1-0626-upper-screen.json'), 'utf8')) as {
+      measuredElements: {
+        statusTimeLeft: number;
+        statusTimeBoxTop: number;
+        avatarTop: number;
+        avatarDiameter: number;
+        nameBoxTop: number;
+        timerBoxTop: number;
+        tolerancePx: { statusTime: number; avatarTop: number; avatarDiameter: number; textTop: number };
+      };
+    };
+    const upperFrameGeometry = await profileCall.evaluate(element => {
+      const dock = element.getBoundingClientRect();
+      const avatar = element.querySelector<HTMLElement>('.voice-call-avatar')!.getBoundingClientRect();
+      const name = element.querySelector<HTMLElement>('.voice-call-person > strong')!.getBoundingClientRect();
+      const timer = element.querySelector<HTMLElement>('.voice-call-screen-timer')!.getBoundingClientRect();
+      const statusTime = element.querySelector<HTMLElement>('.voice-call-status-time')!.getBoundingClientRect();
+      return {
+        statusTimeLeft: statusTime.left - dock.left,
+        statusTimeBoxTop: statusTime.top - dock.top,
+        statusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
+        avatarTop: avatar.top - dock.top,
+        avatarDiameter: avatar.width,
+        nameBoxTop: name.top - dock.top,
+        timerBoxTop: timer.top - dock.top,
+      };
+    });
+    const upperTolerance = upperFrameReference.measuredElements.tolerancePx;
+    assert(Math.abs(upperFrameGeometry.statusTimeLeft - upperFrameReference.measuredElements.statusTimeLeft) <= upperTolerance.statusTime,
+      `Status time should match the 06:26 frame horizontally: expected ${upperFrameReference.measuredElements.statusTimeLeft}px, saw ${upperFrameGeometry.statusTimeLeft.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.statusTimeBoxTop - upperFrameReference.measuredElements.statusTimeBoxTop) <= upperTolerance.statusTime,
+      `Status time should match the 06:26 frame vertically: expected ${upperFrameReference.measuredElements.statusTimeBoxTop}px, saw ${upperFrameGeometry.statusTimeBoxTop.toFixed(1)}px`);
+    assert.equal(upperFrameGeometry.statusIconCount, 3, 'iOS status symbols should use the measured silent, signal, and Wi-Fi glyphs');
+    assert(Math.abs(upperFrameGeometry.avatarTop - upperFrameReference.measuredElements.avatarTop) <= upperTolerance.avatarTop,
+      `Avatar top should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarTop}px, saw ${upperFrameGeometry.avatarTop.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.avatarDiameter - upperFrameReference.measuredElements.avatarDiameter) <= upperTolerance.avatarDiameter,
+      `Avatar size should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarDiameter}px, saw ${upperFrameGeometry.avatarDiameter.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.nameBoxTop - upperFrameReference.measuredElements.nameBoxTop) <= upperTolerance.textTop,
+      `Dot name should match the 06:26 frame: expected ${upperFrameReference.measuredElements.nameBoxTop}px, saw ${upperFrameGeometry.nameBoxTop.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.timerBoxTop - upperFrameReference.measuredElements.timerBoxTop) <= upperTolerance.textTop,
+      `Call timer should match the 06:26 frame: expected ${upperFrameReference.measuredElements.timerBoxTop}px, saw ${upperFrameGeometry.timerBoxTop.toFixed(1)}px`);
     await waitFor(async () => {
       const [minutes, seconds] = (await profileCall.getByTestId('voice-call-timer').innerText()).split(':').map(Number);
       return Number.isFinite(minutes) && Number.isFinite(seconds) && minutes * 60 + seconds >= 6;
