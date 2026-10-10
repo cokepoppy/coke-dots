@@ -4,6 +4,13 @@
 .dot-chat-mode .topbar-title{display:none}
 .dot-chat-mode .surface-switcher{display:none}
 .dot-chat-mode .top-actions{gap:6px}
+.dot-chat-mode .dot-conversation-actions{display:flex;align-items:center;gap:0}
+.dot-chat-mode .conversation-call-launch{width:28px;height:28px;display:grid;place-items:center;padding:0;border:0;border-radius:8px;background:transparent;color:#77747d;cursor:pointer}
+.dot-chat-mode .conversation-call-launch:hover{background:#efedf1;color:#3f3b44}
+.dot-chat-mode .conversation-call-launch:focus-visible{outline:2px solid #8d75b7;outline-offset:2px}
+.dot-chat-mode .conversation-call-launch svg{width:15px;height:15px;fill:currentColor}
+.dots-dark.dot-chat-mode .conversation-call-launch{color:#d3ced8}
+.dots-dark.dot-chat-mode .conversation-call-launch:hover{background:#35303b;color:#f1edf4}
 .dot-context-mode .topbar{right:282px}
 .dot-chat-mode .theme-toggle{height:27px;padding:0 8px;font-size:10px}
 .dot-chat-mode .workspace-switcher select{max-width:140px}

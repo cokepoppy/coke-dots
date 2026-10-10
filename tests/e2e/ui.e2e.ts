@@ -3050,6 +3050,27 @@ try {
     await alphaPage!.locator('.profile-link strong').getByText(originalDotName, { exact: true }).waitFor({ state: 'visible' });
 
     await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
+    const headerCallLaunch = alphaPage!.getByTestId('conversation-call-launch');
+    await headerCallLaunch.waitFor({ state: 'visible' });
+    const headerCallBox = await headerCallLaunch.boundingBox();
+    const chatContextBox = await alphaPage!.locator('.dot-context-panel').boundingBox();
+    assert(headerCallBox && chatContextBox && headerCallBox.y < 40 && headerCallBox.x + headerCallBox.width <= chatContextBox.x,
+      'The conversation-header call action should sit at the upper right edge of the chat pane, before the Dot details panel');
+    await headerCallLaunch.click();
+    const headerCall = alphaPage!.getByTestId('voice-call');
+    await headerCall.waitFor({ state: 'visible' });
+    assert.equal(await headerCall.getAttribute('data-variant'), 'desktop', 'The conversation-header phone action should enter the desktop call flow');
+    await screenshot(alphaPage!, 'voice-call-header-entry');
+    await headerCall.getByRole('button', { name: '结束通话' }).click();
+    await headerCall.waitFor({ state: 'hidden' });
+
+    await alphaPage!.getByTestId('context-call-launch').click();
+    const contextCall = alphaPage!.getByTestId('voice-call');
+    await contextCall.waitFor({ state: 'visible' });
+    assert.equal(await contextCall.getAttribute('data-variant'), 'desktop', 'The Dot details-panel Call action should use the desktop call flow');
+    await contextCall.getByRole('button', { name: '结束通话' }).click();
+    await contextCall.waitFor({ state: 'hidden' });
+
     await alphaPage!.getByTestId('voice-call-launch').click();
     const call = alphaPage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
@@ -3144,12 +3165,12 @@ try {
       return snapshot.tasks.some(task => task.instruction === text && task.status === 'done' && task.result === 'Voice request finished after the call ended.');
     }, instruction, { timeout: 15_000 });
     const alphaCalls = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null; durationSeconds: number | null }[];
-    assert.equal(alphaCalls.length, 2, 'Conversation and Dot profile call entry points must each persist a call');
+    assert.equal(alphaCalls.length, 4, 'Conversation header, context panel, composer, and Dot profile call entry points must each persist a call');
     assert(alphaCalls.every(item => item.endedAt), 'Ending each call must persist its completion time');
     assert(alphaCalls.some(item => item.durationSeconds !== null && item.durationSeconds >= 1));
 
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 4, null, { timeout: 10_000 });
     await alphaPage!.waitForFunction(() => {
       const timeline = document.querySelector('.timeline');
       const composer = document.querySelector('.composer-wrap');
@@ -3157,14 +3178,14 @@ try {
     }, null, { timeout: 5_000 });
     const timelineTimes = await alphaPage!.locator('.timeline [data-testid="chat-timeline-item"]').evaluateAll(elements => elements.map(element => Date.parse(element.getAttribute('data-timestamp') || '')));
     assert(timelineTimes.every((time, index) => index === 0 || timelineTimes[index - 1]! <= time), 'Conversation entries and ended-call chips must appear in chronological order');
-    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 2, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
-    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 2, 'The ended-call state should retain the optional label visible in the reference');
+    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 4, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
+    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 4, 'The ended-call state should retain the optional label visible in the reference');
     await screenshot(alphaPage!, 'voice-call-ended-in-conversation');
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 4, null, { timeout: 10_000 });
     await alphaPage!.waitForFunction(() => {
       const timeline = document.querySelector('.timeline');
       const composer = document.querySelector('.composer-wrap');
@@ -3174,7 +3195,7 @@ try {
     await selectTenant(alphaPage!, 'Alpha workspace');
     await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 0, null, { timeout: 10_000 });
     await selectTenant(alphaPage!, 'Alpha Shared');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 4, null, { timeout: 10_000 });
 
     await selectTenant(betaPage!, 'Alpha Shared');
     const betaSharedCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));
