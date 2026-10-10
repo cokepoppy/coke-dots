@@ -42,7 +42,7 @@ export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSt
     </div>
 
     <div className="context-quick-actions">
-      <button type="button" onClick={onStartCall} aria-label="Call"><span aria-hidden="true">☎</span>Call</button>
+      <button type="button" data-testid="context-call-launch" onClick={onStartCall} aria-label="Call"><span aria-hidden="true">☎</span>Call</button>
       <button type="button" onClick={onOpenSlack} aria-label="Slack"><span className="slack-mark" aria-hidden="true">✣</span>Slack</button>
     </div>
 

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { appendFile, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { accessSync, constants, existsSync } from 'node:fs';
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
@@ -1283,25 +1283,158 @@ try {
     ].join('\n');
     await alphaPage!.evaluate((script: string) => window.eval(script), voiceMockScript);
     await openProfile(alphaPage!);
+    const originalDotName = await alphaPage!.getByLabel('名字').inputValue();
+    assert.equal(originalDotName, 'Shared Dot', 'The shared-workspace profile fixture should be explicit before the reference capture');
+    await alphaPage!.getByLabel('名字').fill('dot');
+    await alphaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
+    await alphaPage!.locator('.profile-link strong').getByText('dot', { exact: true }).waitFor({ state: 'visible' });
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     const profileCall = alphaPage!.getByTestId('voice-call');
     await profileCall.waitFor({ state: 'visible' });
+    assert.equal(await profileCall.getAttribute('data-variant'), 'handset');
+    assert.equal(await profileCall.locator('.voice-call-person > strong').innerText(), 'dot', 'The pixel-comparison frame must use the same visible Dot name as the reference video');
+    const handsetBox = await profileCall.boundingBox();
+    assert(handsetBox && handsetBox.height / handsetBox.width > 1.8 && handsetBox.height / handsetBox.width < 2.2, 'The standalone call should match the tall handset reference proportions');
+    assert.match(await profileCall.locator('.voice-call-screen').evaluate(element => getComputedStyle(element).backgroundImage), /radial-gradient.*linear-gradient/);
+    assert.equal(await profileCall.getByRole('button', { name: '结束通话' }).innerText(), 'End');
+    assert.equal(await profileCall.getByRole('button', { name: '关闭扬声器' }).innerText(), 'Speaker');
+    assert.equal(await profileCall.getByRole('button', { name: '静音' }).innerText(), 'Mute');
+    const handsetReference = JSON.parse(await readFile(join(projectRoot, 'research/comparisons/voice-call-mobile-v1-0650.json'), 'utf8')) as {
+      source: { crop: { width: number; height: number } };
+      controls: { name: string; center: { x: number; y: number }; diameter: number }[];
+      tolerance: { normalizedPosition: number; normalizedDiameter: number };
+    };
+    const handsetGeometry = await profileCall.evaluate(element => {
+      const dock = element.getBoundingClientRect();
+      return Array.from(element.querySelectorAll<HTMLElement>('.voice-call-control-icon')).map(icon => {
+        const box = icon.getBoundingClientRect();
+        return {
+          x: (box.left + box.width / 2 - dock.left) / dock.width,
+          y: (box.top + box.height / 2 - dock.top) / dock.height,
+          diameter: box.width / dock.width,
+        };
+      });
+    });
+    assert.equal(handsetGeometry.length, handsetReference.controls.length);
+    handsetReference.controls.forEach((reference, index) => {
+      const actual = handsetGeometry[index]!;
+      const x = reference.center.x / handsetReference.source.crop.width;
+      const y = reference.center.y / handsetReference.source.crop.height;
+      const diameter = reference.diameter / handsetReference.source.crop.width;
+      assert(Math.abs(actual.x - x) <= handsetReference.tolerance.normalizedPosition,
+        `${reference.name} center should match the 06:50.9 frame horizontally: expected ${x.toFixed(3)}, saw ${actual.x.toFixed(3)}`);
+      assert(Math.abs(actual.y - y) <= handsetReference.tolerance.normalizedPosition,
+        `${reference.name} center should match the 06:50.9 frame vertically: expected ${y.toFixed(3)}, saw ${actual.y.toFixed(3)}`);
+      assert(Math.abs(actual.diameter - diameter) <= handsetReference.tolerance.normalizedDiameter,
+        `${reference.name} diameter should match the 06:50.9 frame: expected ${diameter.toFixed(3)}, saw ${actual.diameter.toFixed(3)}`);
+    });
+    const upperFrameReference = JSON.parse(await readFile(join(projectRoot, 'research/comparisons/voice-call-v1-0626-upper-screen.json'), 'utf8')) as {
+      measuredElements: {
+        statusTimeLeft: number;
+        statusTimeBoxTop: number;
+        avatarTop: number;
+        avatarDiameter: number;
+        nameBoxTop: number;
+        timerBoxTop: number;
+        tolerancePx: { statusTime: number; avatarTop: number; avatarDiameter: number; textTop: number };
+      };
+    };
+    const upperFrameGeometry = await profileCall.evaluate(element => {
+      const dock = element.getBoundingClientRect();
+      const avatar = element.querySelector<HTMLElement>('.voice-call-avatar')!.getBoundingClientRect();
+      const name = element.querySelector<HTMLElement>('.voice-call-person > strong')!.getBoundingClientRect();
+      const timer = element.querySelector<HTMLElement>('.voice-call-screen-timer')!.getBoundingClientRect();
+      const statusTime = element.querySelector<HTMLElement>('.voice-call-status-time')!.getBoundingClientRect();
+      return {
+        statusTimeLeft: statusTime.left - dock.left,
+        statusTimeBoxTop: statusTime.top - dock.top,
+        statusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
+        avatarTop: avatar.top - dock.top,
+        avatarDiameter: avatar.width,
+        nameBoxTop: name.top - dock.top,
+        timerBoxTop: timer.top - dock.top,
+      };
+    });
+    const upperTolerance = upperFrameReference.measuredElements.tolerancePx;
+    assert(Math.abs(upperFrameGeometry.statusTimeLeft - upperFrameReference.measuredElements.statusTimeLeft) <= upperTolerance.statusTime,
+      `Status time should match the 06:26 frame horizontally: expected ${upperFrameReference.measuredElements.statusTimeLeft}px, saw ${upperFrameGeometry.statusTimeLeft.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.statusTimeBoxTop - upperFrameReference.measuredElements.statusTimeBoxTop) <= upperTolerance.statusTime,
+      `Status time should match the 06:26 frame vertically: expected ${upperFrameReference.measuredElements.statusTimeBoxTop}px, saw ${upperFrameGeometry.statusTimeBoxTop.toFixed(1)}px`);
+    assert.equal(upperFrameGeometry.statusIconCount, 3, 'iOS status symbols should use the measured silent, signal, and Wi-Fi glyphs');
+    assert(Math.abs(upperFrameGeometry.avatarTop - upperFrameReference.measuredElements.avatarTop) <= upperTolerance.avatarTop,
+      `Avatar top should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarTop}px, saw ${upperFrameGeometry.avatarTop.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.avatarDiameter - upperFrameReference.measuredElements.avatarDiameter) <= upperTolerance.avatarDiameter,
+      `Avatar size should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarDiameter}px, saw ${upperFrameGeometry.avatarDiameter.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.nameBoxTop - upperFrameReference.measuredElements.nameBoxTop) <= upperTolerance.textTop,
+      `Dot name should match the 06:26 frame: expected ${upperFrameReference.measuredElements.nameBoxTop}px, saw ${upperFrameGeometry.nameBoxTop.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.timerBoxTop - upperFrameReference.measuredElements.timerBoxTop) <= upperTolerance.textTop,
+      `Call timer should match the 06:26 frame: expected ${upperFrameReference.measuredElements.timerBoxTop}px, saw ${upperFrameGeometry.timerBoxTop.toFixed(1)}px`);
+    await waitFor(async () => {
+      const [minutes, seconds] = (await profileCall.getByTestId('voice-call-timer').innerText()).split(':').map(Number);
+      return Number.isFinite(minutes) && Number.isFinite(seconds) && minutes * 60 + seconds >= 6;
+    }, 10_000);
+    await screenshot(alphaPage!, 'voice-call-handset-reference');
+    await profileCall.screenshot({ path: join(screenshotsDir, 'voice-call-handset-phone.png') });
+    screenshotNames.push('voice-call-handset-phone.png');
+    await profileCall.getByRole('button', { name: '展开通话界面' }).click();
+    assert.equal(await profileCall.getByRole('button', { name: '收起通话界面' }).getAttribute('aria-pressed'), 'true');
+    await profileCall.getByRole('button', { name: '收起通话界面' }).click();
+    await profileCall.getByRole('button', { name: '关闭扬声器' }).click();
+    assert.equal(await profileCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
+    await profileCall.getByRole('button', { name: '静音' }).click();
+    assert.equal(await profileCall.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
+    await profileCall.getByRole('button', { name: '取消静音' }).click();
+    await profileCall.getByRole('button', { name: '打开扬声器' }).click();
+    await delay(1100);
+    assert.notEqual(await profileCall.getByTestId('voice-call-timer').innerText(), '0:00');
     await profileCall.getByRole('button', { name: '结束通话' }).click();
     await profileCall.waitFor({ state: 'hidden' });
+    await alphaPage!.getByLabel('名字').fill(originalDotName);
+    await alphaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
+    await alphaPage!.locator('.profile-link strong').getByText(originalDotName, { exact: true }).waitFor({ state: 'visible' });
 
     await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
+    const headerCallLaunch = alphaPage!.getByTestId('conversation-call-launch');
+    await headerCallLaunch.waitFor({ state: 'visible' });
+    const headerCallBox = await headerCallLaunch.boundingBox();
+    const chatContextBox = await alphaPage!.locator('.dot-context-panel').boundingBox();
+    assert(headerCallBox && chatContextBox && headerCallBox.y < 40 && headerCallBox.x + headerCallBox.width <= chatContextBox.x,
+      'The conversation-header call action should sit at the upper right edge of the chat pane, before the Dot details panel');
+    const headerActionsBox = await alphaPage!.locator('.top-actions').boundingBox();
+    assert(headerCallBox && headerActionsBox && headerCallBox.x >= headerActionsBox.x + headerActionsBox.width,
+      'The conversation-header call action should not overlap workspace or theme controls');
+    await screenshot(alphaPage!, 'voice-call-header-entry-idle');
+    await headerCallLaunch.click();
+    const headerCall = alphaPage!.getByTestId('voice-call');
+    await headerCall.waitFor({ state: 'visible' });
+    assert.equal(await headerCall.getAttribute('data-variant'), 'desktop', 'The conversation-header phone action should enter the desktop call flow');
+    assert.equal(await alphaPage!.locator('.top-actions').evaluate(element => getComputedStyle(element).display), 'none',
+      'The compact active call controls should have a clear header row without workspace controls beneath them');
+    await screenshot(alphaPage!, 'voice-call-header-entry');
+    await headerCall.getByRole('button', { name: '结束通话' }).click();
+    await headerCall.waitFor({ state: 'hidden' });
+
+    await alphaPage!.getByTestId('context-call-launch').click();
+    const contextCall = alphaPage!.getByTestId('voice-call');
+    await contextCall.waitFor({ state: 'visible' });
+    assert.equal(await contextCall.getAttribute('data-variant'), 'desktop', 'The Dot details-panel Call action should use the desktop call flow');
+    await contextCall.getByRole('button', { name: '结束通话' }).click();
+    await contextCall.waitFor({ state: 'hidden' });
+
     await alphaPage!.getByTestId('voice-call-launch').click();
     const call = alphaPage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeRecognition));
-    await call.getByRole('button', { name: '关闭扬声器' }).click();
-    assert.equal(await call.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
+    assert.equal(await call.getAttribute('data-variant'), 'desktop');
+    assert.equal(await call.locator('.voice-call-screen').count(), 0, 'Desktop chat calls should use the compact V2 controls, not the handset surface');
+    const inlineBox = await call.boundingBox();
+    const contextBox = await alphaPage!.locator('.dot-context-panel').boundingBox();
+    assert(inlineBox && contextBox && inlineBox.y < 40 && inlineBox.x + inlineBox.width <= contextBox.x, 'Desktop call controls should sit at the upper right of the conversation pane, before the context panel');
+    assert.match(await call.getByRole('button', { name: '静音' }).evaluate(element => getComputedStyle(element).backgroundColor), /rgb\(40, 116, 95\)/);
+    await screenshot(alphaPage!, 'voice-call-active-reference');
     await call.getByRole('button', { name: '静音' }).click();
     assert.equal(await call.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
     await call.getByRole('button', { name: '取消静音' }).click();
-    await call.getByRole('button', { name: '打开扬声器' }).click();
-    await delay(1100);
-    assert.notEqual(await call.getByTestId('voice-call-timer').innerText(), '00:00', 'The call timer should advance while connected');
 
     let speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
     const clarification = 'E2E voice clarification — ask which launch date to use';
@@ -1310,8 +1443,9 @@ try {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, clarification);
-    await call.getByText(clarification, { exact: true }).waitFor({ state: 'visible' });
-    await call.getByText('等待你的回复', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: clarification }).waitFor({ state: 'visible' });
+    await call.getByTestId('voice-call-transcript').waitFor({ state: 'attached' });
+    await waitFor(async () => (await call.getByTestId('voice-call-transcript').getAttribute('data-task-status')) === '等待你的回复', 15_000);
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
       return speechOutput.includes('What launch date should I use?');
@@ -1328,7 +1462,6 @@ try {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, 'Use Friday.');
-    await call.getByText('Use Friday.', { exact: true }).waitFor({ state: 'visible' });
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: 'Use Friday.' }).waitFor({ state: 'visible' });
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
@@ -1351,7 +1484,7 @@ try {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, instruction);
-    await call.getByText(instruction, { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: instruction }).waitFor({ state: 'visible' });
     await waitFor(() => Boolean(heldVoiceModelRelease), 10_000);
     await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
     await screenshot(alphaPage!, 'voice-call-task-running');
@@ -1362,7 +1495,7 @@ try {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, responseInstruction);
-    await call.getByText(responseInstruction, { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: responseInstruction }).waitFor({ state: 'visible' });
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
       return speechOutput.includes('Voice response returned from the model.');
@@ -1380,9 +1513,37 @@ try {
       return snapshot.tasks.some(task => task.instruction === text && task.status === 'done' && task.result === 'Voice request finished after the call ended.');
     }, instruction, { timeout: 15_000 });
     const alphaCalls = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null; durationSeconds: number | null }[];
-    assert.equal(alphaCalls.length, 2, 'Conversation and Dot profile call entry points must each persist a call');
+    assert.equal(alphaCalls.length, 4, 'Conversation header, context panel, composer, and Dot profile call entry points must each persist a call');
     assert(alphaCalls.every(item => item.endedAt), 'Ending each call must persist its completion time');
     assert(alphaCalls.some(item => item.durationSeconds !== null && item.durationSeconds >= 1));
+
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 4, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => {
+      const timeline = document.querySelector('.timeline');
+      const composer = document.querySelector('.composer-wrap');
+      return Boolean(timeline && timeline.scrollHeight > timeline.clientHeight + 48 && timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 48 && composer && composer.getBoundingClientRect().bottom <= window.innerHeight + 1 && document.documentElement.scrollHeight <= window.innerHeight + 1);
+    }, null, { timeout: 5_000 });
+    const timelineTimes = await alphaPage!.locator('.timeline [data-testid="chat-timeline-item"]').evaluateAll(elements => elements.map(element => Date.parse(element.getAttribute('data-timestamp') || '')));
+    assert(timelineTimes.every((time, index) => index === 0 || timelineTimes[index - 1]! <= time), 'Conversation entries and ended-call chips must appear in chronological order');
+    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 4, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
+    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 4, 'The ended-call state should retain the optional label visible in the reference');
+    await screenshot(alphaPage!, 'voice-call-ended-in-conversation');
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 4, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => {
+      const timeline = document.querySelector('.timeline');
+      const composer = document.querySelector('.composer-wrap');
+      return Boolean(timeline && timeline.scrollHeight > timeline.clientHeight + 48 && timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 48 && composer && composer.getBoundingClientRect().bottom <= window.innerHeight + 1 && document.documentElement.scrollHeight <= window.innerHeight + 1);
+    }, null, { timeout: 5_000 });
+    await screenshot(alphaPage!, 'voice-call-ended-after-reload');
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 0, null, { timeout: 10_000 });
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 4, null, { timeout: 10_000 });
 
     await selectTenant(betaPage!, 'Alpha Shared');
     const betaSharedCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));

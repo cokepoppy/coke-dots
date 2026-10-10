@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, ScheduleSpec, Snapshot, Task, TaskStatus, VoiceCallSession } from '../shared/types.ts';
+import { appFetch } from './api.ts';
 import './style.css';
 import './chat-theme.css';
 import './watch.css';
@@ -29,6 +30,7 @@ import { DictationButton } from './DictationButton.tsx';
 import './shell-replica.css';
 import './onboarding-replica.css';
 import './computer-choice.css';
+import './call-timeline.css';
 
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
@@ -36,6 +38,9 @@ type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
 interface WorkspaceInvitation { tenantId: string; tenantName?: string; email: string; role: string; invitedAt: string; expiresAt: string }
 interface TenantMemory { id: string; tenantId: string; note: string; createdBy: string; createdByName: string; createdAt: string; updatedAt: string }
+type ChatTimelineItem =
+  | { id: string; at: string; source: 'entry'; entry: Entry }
+  | { id: string; at: string; source: 'call-ended'; call: VoiceCallSession };
 const statusText: Record<TaskStatus, string> = {
   queued: '排队中', working: '工作中', delegating: '并行处理中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停', stopped: '已停止',
 };
@@ -73,6 +78,10 @@ function App() {
   const [e2eAuthAvailable, setE2eAuthAvailable] = useState(false);
   const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
   const [state, setState] = useState<Snapshot>(initial);
+  const [voiceCalls, setVoiceCalls] = useState<VoiceCallSession[]>([]);
+  const [voiceCallsScope, setVoiceCallsScope] = useState('');
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const timelineAtBottomRef = useRef(true);
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [avatarSetupOpen, setAvatarSetupOpen] = useState(false);
   const [computerAccessOpen, setComputerAccessOpen] = useState(false);
@@ -157,6 +166,19 @@ function App() {
   }, [authContext?.tenant.id, authContext?.user.id]);
 
   useEffect(() => {
+    setVoiceCalls([]);
+    setVoiceCallsScope('');
+    if (!authContext) return;
+    const scope = `${authContext.tenant.id}:${authContext.user.id}`;
+    const controller = new AbortController();
+    void appFetch('/api/voice-calls', { signal: controller.signal })
+      .then(async response => response.ok ? await response.json() as VoiceCallSession[] : [])
+      .then(items => { setVoiceCalls(items); setVoiceCallsScope(scope); })
+      .catch(error => { if (!(error instanceof Error && error.name === 'AbortError')) { setVoiceCalls([]); setVoiceCallsScope(scope); } });
+    return () => controller.abort();
+  }, [authContext?.tenant.id, authContext?.user.id]);
+
+  useEffect(() => {
     if (!authContext) { setTheme('light'); return; }
     try {
       setTheme(localStorage.getItem(`coke-dots:theme:${authContext.user.id}`) === 'dark' ? 'dark' : 'light');
@@ -185,7 +207,31 @@ function App() {
 
   const selectedTask = state.tasks.find(t => t.id === selected) || null;
   const entries = useMemo(() => selected ? state.entries.filter(e => e.taskId === selected) : state.entries, [state.entries, selected]);
+  const currentVoiceCallScope = authContext ? `${authContext.tenant.id}:${authContext.user.id}` : '';
+  const currentVoiceCalls = voiceCallsScope === currentVoiceCallScope ? voiceCalls : [];
+  const voiceCallsLoaded = voiceCallsScope === currentVoiceCallScope;
+  const timelineItems = useMemo<ChatTimelineItem[]>(() => {
+    const items: ChatTimelineItem[] = entries.map(entry => ({ id: `entry-${entry.id}`, at: entry.createdAt, source: 'entry', entry }));
+    if (!selected) {
+      for (const call of currentVoiceCalls) if (call.endedAt) items.push({ id: `call-${call.id}`, at: call.endedAt, source: 'call-ended', call });
+    }
+    return items.sort((left, right) => Date.parse(left.at) - Date.parse(right.at) || left.id.localeCompare(right.id));
+  }, [entries, selected, currentVoiceCalls]);
+  const hasConversationHistory = entries.length > 0 || timelineItems.some(item => item.source === 'call-ended');
   const active = state.tasks.filter(t => ['queued', 'working', 'waiting', 'scheduled'].includes(t.status));
+
+  useLayoutEffect(() => { timelineAtBottomRef.current = true; }, [view, selected]);
+  useLayoutEffect(() => {
+    const timeline = timelineRef.current;
+    if (timeline && timelineAtBottomRef.current) timeline.scrollTop = timeline.scrollHeight;
+  }, [timelineItems, view, selected, stateLoaded]);
+
+  async function refreshVoiceCalls() {
+    const response = await appFetch('/api/voice-calls');
+    if (!response.ok) throw new Error('读取通话记录失败：HTTP ' + response.status);
+    setVoiceCalls(await response.json() as VoiceCallSession[]);
+    if (authContext) setVoiceCallsScope(`${authContext.tenant.id}:${authContext.user.id}`);
+  }
 
   function openPage(pageId: string, taskId: string | null = null) {
     setSelectedPageId(pageId);
@@ -333,10 +379,10 @@ function App() {
   if (!authContext) return <LoginScreen googleConfigured={googleConfigured} e2eAuthAvailable={e2eAuthAvailable} />;
 
   const workSurface = ['activity', 'scheduled', 'computer', 'pages'].includes(view);
-  const onboardingMode = view === 'chat' && !selectedTask && entries.length === 0;
+  const onboardingMode = view === 'chat' && !selectedTask && !hasConversationHistory && voiceCallsLoaded;
   const computerChoiceMode = onboardingMode && !state.computerAccess.configured;
-  const contextMode = view === 'chat' && Boolean(selectedTask || entries.length > 0);
-  return <div className={`shell ${theme === 'dark' ? 'dots-dark' : ''} ${view === 'home' ? 'home-mode' : ''} ${view === 'chat' ? 'dot-chat-mode' : ''} ${contextMode ? 'dot-context-mode' : ''} ${onboardingMode ? 'dot-onboarding-mode' : ''} ${computerChoiceMode ? 'dot-computer-choice-mode' : ''} ${view === 'scheduled' ? 'scheduled-mode' : ''} ${view === 'chat' && selectedPageId ? 'page-open-mode' : ''}`} data-testid="app-shell" data-theme={theme} data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
+  const contextMode = view === 'chat' && Boolean(selectedTask || hasConversationHistory);
+  return <div className={`shell ${theme === 'dark' ? 'dots-dark' : ''} ${view === 'home' ? 'home-mode' : ''} ${view === 'chat' ? 'dot-chat-mode' : ''} ${contextMode ? 'dot-context-mode' : ''} ${contextMode && voiceCallOpen ? 'voice-call-active-mode' : ''} ${onboardingMode ? 'dot-onboarding-mode' : ''} ${computerChoiceMode ? 'dot-computer-choice-mode' : ''} ${view === 'scheduled' ? 'scheduled-mode' : ''} ${view === 'chat' && selectedPageId ? 'page-open-mode' : ''}`} data-testid="app-shell" data-theme={theme} data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
     <aside className="icon-rail" aria-label="主导航">
       <button className={`rail-button ${view === 'home' ? 'selected' : ''}`} aria-label="新聊天" title="新聊天" onClick={() => { setSelectedPageId(null); setSelected(null); setView('home'); }}>⌂</button>
       <button className={`rail-button ${view === 'pages' ? 'selected' : ''}`} aria-label="Scratchpad" title="Scratchpad" onClick={() => { setSelectedPageId(null); setView('pages'); }}>▱</button>
@@ -357,14 +403,16 @@ function App() {
       <button className="profile-link" onClick={() => { setSelectedPageId(null); setView('profile'); }}><DotAvatar appearance={state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
-      <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
+      <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div>{contextMode && !voiceCallOpen && <div className="dot-conversation-actions"><button type="button" data-testid="conversation-call-launch" className="conversation-call-launch" aria-label="Call" title="Call" onMouseDown={event => event.preventDefault()} onClick={() => setVoiceCallOpen(true)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 3.8 10 7.2 8.2 9.1a13 13 0 0 0 6.7 6.7l1.9-1.8 3.4 2.9-.8 3.2a1.8 1.8 0 0 1-2 1.4C9 20.2 3.8 15 2.5 6.6a1.8 1.8 0 0 1 1.4-2z" /></svg></button></div>}</header>
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {computerConnectedToast && <div className="computer-connected-toast" data-testid="computer-connected-toast" role="status"><span className="computer-connected-icon" aria-hidden="true">✓</span><span>The computer is connected to your dot</span><button type="button" aria-label="Dismiss notification" onClick={() => setComputerConnectedToast(false)}>×</button></div>}
       {(view === 'home' || view === 'chat') && <div className="chat-layout"><section className="chat-panel">
-        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What's on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} computerAccess={state.computerAccess} onComputerAccess={saveComputerAccess} onEditSetup={openDotCustomizer} /> : <div className="timeline">
+        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What's on your mind today?</h1></div> : !voiceCallsLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : !selectedTask && !hasConversationHistory ? <DotOnboarding profile={state.profile} computerAccess={state.computerAccess} onComputerAccess={saveComputerAccess} onEditSetup={openDotCustomizer} /> : <div className="timeline" ref={timelineRef} onScroll={() => { const timeline = timelineRef.current; if (timeline) timelineAtBottomRef.current = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 48; }}>
           {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
-          {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={entry.body} onOpenPage={id => openPage(id, entry.taskId)} />{Boolean(entry.attachments?.length) && <ul className="message-attachments" data-testid="message-attachments" aria-label="附加文件">{entry.attachments!.map(attachment => <li key={attachment.id}><span aria-hidden="true">▤</span><span>{attachment.name}</span></li>)}</ul>}</div></article>)}
+          {timelineItems.map(item => item.source === 'entry'
+            ? <article key={item.id} data-testid="chat-timeline-item" data-timestamp={item.at} className={`message ${item.entry.kind}`}><div className="message-avatar">{item.entry.kind === 'user' ? '你' : item.entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{item.entry.kind === 'user' ? '你' : item.entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(item.entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={item.entry.body} onOpenPage={id => openPage(id, item.entry.taskId)} />{Boolean(item.entry.attachments?.length) && <ul className="message-attachments" data-testid="message-attachments" aria-label="附加文件">{item.entry.attachments!.map(attachment => <li key={attachment.id}><span aria-hidden="true">▤</span><span>{attachment.name}</span></li>)}</ul>}</div></article>
+            : <article key={item.id} data-testid="chat-timeline-item" data-timestamp={item.at} className="message voice-call-ended" data-call-id={item.call.id}><div className="voice-call-ended-chip"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7.1 3.8 10 7.2 8.2 9.1a13 13 0 0 0 6.7 6.7l1.9-1.8 3.4 2.9-.8 3.2a1.8 1.8 0 0 1-2 1.4C9 20.2 3.8 15 2.5 6.6a1.8 1.8 0 0 1 1.4-2z" fill="currentColor" /></svg>Me: Call ended</div><small>Optional</small></article>)}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
         </div>}
         <div className="composer-wrap">
@@ -385,7 +433,7 @@ function App() {
     {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, false, true)} />}
     {computerAccessOpen && <DotComputerChoice localComputer={state.computerAccess.localComputer} mode="settings" onSave={saveComputerAccess} onCancel={() => setComputerAccessOpen(false)} />}
     {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, !state.profile.onboardingCompletedAt)} />}
-    {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} onTranscript={submitVoiceTranscript} onClose={() => setVoiceCallOpen(false)} />}
+    {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} displayMode={contextMode ? 'desktop' : 'handset'} onTranscript={submitVoiceTranscript} onClose={() => { setVoiceCallOpen(false); void refreshVoiceCalls().catch(reason => setError(reason instanceof Error ? reason.message : String(reason))); }} />}
     {slackModalOpen && authContext && <SlackSetupModal key={authContext.tenant.id} dotName={state.profile.name} canManage={['owner', 'admin'].includes(authContext.tenant.role)} onClose={() => setSlackModalOpen(false)} onConnectSlack={() => {
       try { sessionStorage.setItem('coke-dots:slack-return-state', JSON.stringify({ view, selected })); } catch { /* Restore the home view if session storage is unavailable. */ }
       window.location.assign(appPath('/api/slack/oauth/start'));
