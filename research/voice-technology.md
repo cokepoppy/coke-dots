@@ -1,10 +1,10 @@
 # Dots voice calls: public evidence and Coke Dots design
 
-Updated 2026-10-09 on `feature/voice-call-reference-fidelity`.
+Updated 2026-10-10 on `feature/voice-call-reference-fidelity`.
 
 ## What OpenAI has publicly confirmed
 
-OpenAI's Dots documentation describes product behavior, not the internals of the phone call stack. A user starts a call from the Dot conversation (or the Dot profile in the desktop app), may keep typing while speaking, and may hear a progress update or a question from the Dot. Ending the call closes the voice conversation while previously assigned work can continue. The task uses selected conversation context, which may not be identical to the full context available to background work. The docs do not identify the codec, transport, speech-recognition model, voice model, or audio-retention policy used by Dots.
+OpenAI's [Dots channels documentation](https://learn.chatgpt.com/docs/dots/channels) describes product behavior, not the internals of the phone call stack. A user starts a call from the Dot conversation or the Dot profile in the desktop app, may keep typing while speaking, and may hear a progress update or a question from the Dot. Ending the call closes the voice conversation while previously assigned work can continue. Calls initiated by the Dot are documented as planned after launch. The docs do not identify the codec, transport, speech-recognition model, voice model, or audio-retention policy used by Dots.
 
 The Futurepedia V1 video at 06:26 shows the call screen with a Dot avatar/name, elapsed timer, Speaker, End, and Mute buttons. The spoken request is shown in the review video, not as a transcript inside the phone UI. John Aspinall's V2 video shows a call alongside the Dot conversation and context panel at 05:40 and 06:11, with compact microphone and hang-up controls at the conversation's upper right; at 13:58 a “Me: Call ended” event appears in the conversation. These are product observations only; the video does not reveal Dots' network or model implementation.
 
@@ -49,9 +49,9 @@ Use a provider interface rather than binding the task kernel to a speech vendor:
 - `VoiceSessionTransport`: call ID, tenant/user authorization, and delivery of typed text and task progress.
 - Existing `AgentAdapter`: receives ordinary task instructions or replies and runs inside the tenant Debian computer.
 
-For best conversational latency, OpenAI's **Realtime API/GPT-Live WebRTC** is a technically documented option: browser microphone and generated speech use negotiated WebRTC media tracks, with JSON events over a data channel; the application server keeps the standard API key and creates the session. OpenAI recommends WebRTC for browser clients. This describes OpenAI's public developer API, **not confirmed Dots internals**, and it introduces a separate OpenAI voice-provider/cost configuration from the user's Pi/DeepSeek task kernel.
+For low-latency speech-to-speech, OpenAI's public [voice-agent guide](https://developers.openai.com/api/docs/guides/voice-agents) documents a Realtime session in the browser, handling audio turns, tools, interruptions, and handoffs. The [WebRTC guide](https://developers.openai.com/api/docs/guides/voice-webrtc) sends microphone and generated audio over negotiated WebRTC media tracks, with JSON events over a data channel; a trusted server creates the session or mints a short-lived client key, while the standard API key stays server-side. OpenAI recommends WebRTC for browser/mobile Realtime clients. This is a public developer API design, **not confirmed Dots internals**, and it introduces a separate voice provider and billing profile from the user's Pi/DeepSeek task kernel.
 
-For provider flexibility and direct compatibility with Pi/DeepSeek Harness, a **chained voice pipeline** is the better first target: speech-to-text → normal tenant task/reply → text-to-speech. OpenAI's voice-agent documentation names this as the controllable path when the application needs to inspect/transform text and replace each stage independently. It is easier to audit, replay in E2E, and route user intent to the existing Agent adapter, though it will have more latency than native speech-to-speech.
+For provider flexibility and direct compatibility with Pi/DeepSeek Harness, the current **chained voice pipeline** is the right first target: speech-to-text → normal tenant task/reply → text-to-speech. OpenAI's guide describes this as the path for inspecting or transforming intermediate text and replacing each stage independently. It is easier to audit, replay in E2E, and route user intent to the existing Agent adapter, though it has more latency than speech-to-speech.
 
 Security and lifecycle requirements:
 
