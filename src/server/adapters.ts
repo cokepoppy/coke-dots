@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { accessSync, constants } from 'node:fs';
+import { accessSync, chmodSync, constants, mkdirSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { ScratchpadPageAction, TenantActionRule } from '../shared/types.ts';
 import { effectiveModelConfig } from './model-settings.ts';
 
@@ -28,6 +28,68 @@ export type AgentPageAction = ScratchpadPageAction;
 export interface AgentDelegation { title: string; instruction: string; engine?: Engine }
 export interface AgentDecision { status: 'done' | 'waiting' | 'scheduled' | 'delegating'; message: string; nextMinutes?: number; sessionId?: string; pageAction?: AgentPageAction; delegations?: AgentDelegation[] }
 export interface AgentAdapter { id: Engine; available(tenantId?: string): boolean; run(input: AgentRequest): Promise<AgentDecision> }
+
+interface PiSessionManager {
+  appendMessage(message: unknown): string;
+  getEntries(): unknown[];
+  getSessionFile(): string | undefined;
+  getSessionId(): string;
+}
+interface PiSdk {
+  SessionManager: {
+    create: (cwd: string, sessionDir?: string) => PiSessionManager;
+    open: (path: string, sessionDir?: string, cwdOverride?: string) => PiSessionManager;
+    list: (cwd: string, sessionDir?: string) => Promise<{ path: string; id: string }[]>;
+  };
+  createAgentSession: (options: Record<string, unknown>) => Promise<{
+    session: {
+      prompt: (text: string) => Promise<void>;
+      messages: unknown[];
+      dispose: () => void;
+      subscribe: (handler: (event: Record<string, unknown>) => void) => () => void;
+    };
+  }>;
+  createReadOnlyTools: (cwd: string) => unknown[];
+}
+
+/** Resolve a Pi session only from the current task's private workspace directory. */
+export async function resolvePiSessionManager(sdk: Pick<PiSdk, 'SessionManager'>, workspacePath: string, sessionId: string | null): Promise<PiSessionManager> {
+  const workspace = realpathSync(resolve(workspacePath));
+  const stateRootPath = join(workspace, '.coke-dots');
+  mkdirSync(stateRootPath, { recursive: true, mode: 0o700 });
+  const stateRoot = realpathSync(stateRootPath);
+  if (!isPathInside(workspace, stateRoot)) throw new Error('Pi 状态目录超出当前任务工作区');
+  const requestedSessionDir = join(stateRoot, 'pi-sessions');
+  mkdirSync(requestedSessionDir, { recursive: true, mode: 0o700 });
+  const sessionDir = realpathSync(requestedSessionDir);
+  if (!isPathInside(stateRoot, sessionDir)) throw new Error('Pi 会话目录超出当前任务状态目录');
+  chmodSync(sessionDir, 0o700);
+
+  const sessions = await sdk.SessionManager.list(workspace, sessionDir);
+  let selected: { path: string; id: string } | undefined;
+  if (sessionId) {
+    const matches = sessions.filter(session => session.id === sessionId);
+    if (matches.length !== 1) throw new Error('Pi 会话不存在或不唯一，已停止以避免切换任务上下文');
+    selected = matches[0];
+  } else if (sessions.length === 1) {
+    // Recover a first turn if the process stopped before Coke Dots stored its session ID.
+    selected = sessions[0];
+  } else if (sessions.length > 1) {
+    throw new Error('Pi 工作区存在多个会话但任务没有会话 ID，已停止以避免混用上下文');
+  }
+
+  if (selected) {
+    const sessionPath = realpathSync(selected.path);
+    if (!isPathInside(sessionDir, sessionPath)) throw new Error('Pi 会话文件超出当前任务会话目录');
+    return sdk.SessionManager.open(sessionPath, sessionDir, workspace);
+  }
+  return sdk.SessionManager.create(workspace, sessionDir);
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const pathFromRoot = relative(root, candidate);
+  return pathFromRoot === '' || (pathFromRoot !== '..' && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot));
+}
 
 const instruction = 'You are a personal agent. Finish with one JSON object only: {"status":"done|waiting|scheduled|delegating","message":"...","nextMinutes":15,"delegations":[{"title":"...","instruction":"...","engine":"model|claude|pi|dsh (optional)"}]}. Use status delegating only when independent bounded work streams would materially improve the result; create at most 3 children. A child task cannot delegate or schedule more work. Do not split a request into children that need shared mutable state or an ordered handoff. When child results are supplied, synthesize them and finish without creating more children. When a Scratchpad page operation is allowed by the active tenant rule and relevant to the task, create it with "pageAction":{"action":"create","title":"...","content":"..."}; update an existing listed page with "pageAction":{"action":"update","pageId":"...","title":"...","content":"..."}. Use only listed page IDs. Page actions write only to this tenant-scoped local Scratchpad. Do not claim external actions you did not perform. Do not send messages, change external accounts, or edit files. If an action would require that access, choose waiting and explain the needed permission. For an ongoing check, choose scheduled. When the user asks for automation ideas, keep them as inactive proposals and choose done; do not schedule them unless the user chooses an idea and asks to set it up with its sources, timing, and review requirements. Use the user language.';
 const actionRuleText = (rule: TenantActionRule | null | undefined) => {
@@ -118,15 +180,12 @@ export const adapters: Record<Engine, AgentAdapter> = {
     available: () => Boolean(process.env.DOTS_PI_ENABLED === '1' && packageAvailable('@mariozechner/pi-coding-agent')),
     async run(input) {
       const moduleName = '@mariozechner/pi-coding-agent';
-      const sdk = await import(moduleName) as {
-        createAgentSession: (options: Record<string, unknown>) => Promise<{ session: { prompt: (text: string) => Promise<void>; messages: unknown[]; sessionId: string; dispose: () => void; subscribe: (handler: (event: Record<string, unknown>) => void) => () => void } }>;
-        SessionManager: { inMemory: (cwd: string) => unknown };
-        createReadOnlyTools: (cwd: string) => unknown[];
-      };
+      const sdk = await import(moduleName) as unknown as PiSdk;
+      const sessionManager = await resolvePiSessionManager(sdk, input.workspace, input.sessionId);
       const { session } = await sdk.createAgentSession({
         cwd: input.workspace,
         tools: sdk.createReadOnlyTools(input.workspace),
-        sessionManager: sdk.SessionManager.inMemory(input.workspace),
+        sessionManager,
       });
       const unsubscribe = session.subscribe(event => { if (event.type === 'tool_execution_start') input.onEvent('Pi 正在使用只读工具。'); });
       let sessionDisposed = false;
@@ -138,7 +197,7 @@ export const adapters: Record<Engine, AgentAdapter> = {
         await session.prompt(formatAgentPrompt(input));
         const assistant = [...session.messages].reverse().find((row: unknown) => (row as { role?: string }).role === 'assistant') as { content?: { type?: string; text?: string }[] } | undefined;
         const text = assistant?.content?.filter(item => item.type === 'text').map(item => item.text || '').join('\n') || '';
-        return parseDecision(text, undefined, { allowDelegation: input.allowDelegation !== false, availableEngines: input.availableEngines });
+        return parseDecision(text, sessionManager.getSessionId(), { allowDelegation: input.allowDelegation !== false, availableEngines: input.availableEngines });
       } finally { input.signal?.removeEventListener('abort', disposeSession); unsubscribe(); disposeSession(); }
     },
   },
