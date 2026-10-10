@@ -10,5 +10,16 @@
   "implementationRect": { "x": 500, "y": 50, "width": 440, "height": 649 },
   "output": "../../artifacts/reference-comparison/voice-call-v1-0626-upper-screen",
   "threshold": 32,
+  "measuredElements": {
+    "alignedCropWidth": 440,
+    "statusTimeLeft": 64,
+    "statusTimeBoxTop": 37,
+    "avatarTop": 80,
+    "avatarDiameter": 52,
+    "nameBoxTop": 140,
+    "timerBoxTop": 193,
+    "tolerancePx": { "statusTime": 8, "avatarTop": 7, "avatarDiameter": 6, "textTop": 8 },
+    "note": "Approximate bounds measured from the compressed 06:26 video frame after scaling the phone crop to 440 px wide. Text box tops subtract the 4 px Arial glyph inset visible in the matching Chrome render. The handset is slightly angled in the source, so horizontal centering is not asserted."
+  },
   "note": "The 06:26 YouTube frame has subtitle and player overlays across the bottom of the handset. This comparison measures only the upper 800 source pixels, before those overlays, after aligning the same handset crop and aspect ratio. It is a compressed-video diagnostic, not original CSS-pixel parity."
 }
