@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { appendFile, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
@@ -34,6 +34,9 @@ let mockModelServer: Server | null = null;
 let mockSlackServer: Server | null = null;
 let mockSlackProviderOrigin = '';
 let mockSlackCodeExchanges = 0;
+let mockSlackMessages: { channel: string; thread_ts?: string; text: string }[] = [];
+let mockSlackOpenedDms: string[] = [];
+const slackSigningSecret = 'coke-dots-slack-e2e-signing-secret';
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
 let heldPauseModelRelease: (() => void) | null = null;
@@ -105,6 +108,7 @@ async function startMockModel() {
         const hasReply = prompt.includes('User reply: Use Friday.');
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
+        const isSlackTask = prompt.includes('E2E Slack DM —') || prompt.includes('E2E Slack mention —');
         const isMemoryCheck = prompt.includes('E2E memory prompt — apply the saved workspace preference');
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
         const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
@@ -142,13 +146,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isSlackTask || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'claude' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isSlackTask ? 'Slack 任务已完成：发布风险摘要已整理。' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ends.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -167,18 +171,20 @@ async function startMockModel() {
 
 async function startMockSlackProvider() {
   mockSlackCodeExchanges = 0;
+  mockSlackMessages = [];
+  mockSlackOpenedDms = [];
   mockSlackServer = createHttpServer((request, response) => {
     const url = new URL(request.url || '/', 'http://127.0.0.1');
     if (request.method === 'GET' && url.pathname === '/oauth/v2/authorize') {
       const callback = new URL(url.searchParams.get('redirect_uri') || 'http://invalid/');
-      if (url.searchParams.get('client_id') !== 'coke-dots-slack-e2e-client' || url.searchParams.get('scope') !== 'chat:write' || callback.origin !== baseUrl || callback.pathname !== '/auth/slack/callback' || !url.searchParams.get('state')) {
+      if (url.searchParams.get('client_id') !== 'coke-dots-slack-e2e-client' || url.searchParams.get('scope') !== 'chat:write,im:history,im:write,app_mentions:read' || callback.origin !== baseUrl || callback.pathname !== '/auth/slack/callback' || !url.searchParams.get('state')) {
         response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
         response.end('Invalid Slack OAuth request');
         return;
       }
       const approve = new URLSearchParams({ redirect_uri: callback.toString(), state: url.searchParams.get('state') || '' });
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      response.end(`<!doctype html><html><head><title>Slack authorization</title></head><body><main><h1>Authorize Coke Dots for ASPI</h1><p>Permission requested: chat:write</p><form method="get" action="/oauth/approve"><input type="hidden" name="redirect_uri" value="${approve.get('redirect_uri')}"><input type="hidden" name="state" value="${approve.get('state')}"><button type="submit">Allow access</button></form></main></body></html>`);
+      response.end(`<!doctype html><html><head><title>Slack authorization</title></head><body><main><h1>Authorize Coke Dots for ASPI</h1><p>Permission requested: chat:write, im:history, im:write, app_mentions:read</p><form method="get" action="/oauth/approve"><input type="hidden" name="redirect_uri" value="${approve.get('redirect_uri')}"><input type="hidden" name="state" value="${approve.get('state')}"><button type="submit">Allow access</button></form></main></body></html>`);
       return;
     }
     if (request.method === 'GET' && url.pathname === '/oauth/approve') {
@@ -208,7 +214,41 @@ async function startMockSlackProvider() {
         }
         mockSlackCodeExchanges += 1;
         response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-        response.end(JSON.stringify({ ok: true, access_token: 'xoxb-coke-dots-e2e-only-token', scope: 'chat:write', team: { id: 'TASPIE2E', name: 'ASPI' } }));
+        response.end(JSON.stringify({ ok: true, access_token: 'xoxb-coke-dots-e2e-only-token', scope: 'chat:write,im:history,im:write,app_mentions:read', team: { id: 'TASPIE2E', name: 'ASPI' } }));
+      });
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/conversations.open') {
+      let raw = '';
+      request.setEncoding('utf8');
+      request.on('data', chunk => { raw += chunk; });
+      request.on('end', () => {
+        if (request.headers.authorization !== 'Bearer xoxb-coke-dots-e2e-only-token') {
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ ok: false, error: 'invalid_auth' }));
+          return;
+        }
+        const body = JSON.parse(raw) as { users: string };
+        mockSlackOpenedDms.push(body.users);
+        response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        response.end(JSON.stringify({ ok: true, channel: { id: 'DASPIUSERDM' } }));
+      });
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/chat.postMessage') {
+      let raw = '';
+      request.setEncoding('utf8');
+      request.on('data', chunk => { raw += chunk; });
+      request.on('end', () => {
+        if (request.headers.authorization !== 'Bearer xoxb-coke-dots-e2e-only-token') {
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ ok: false, error: 'invalid_auth' }));
+          return;
+        }
+        const message = JSON.parse(raw) as { channel: string; thread_ts: string; text: string };
+        mockSlackMessages.push(message);
+        response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        response.end(JSON.stringify({ ok: true, channel: message.channel, ts: '1780873801.000002', message }));
       });
       return;
     }
@@ -219,6 +259,14 @@ async function startMockSlackProvider() {
   const address = mockSlackServer.address();
   assert(address && typeof address !== 'string');
   return `http://127.0.0.1:${address.port}`;
+}
+
+async function sendSlackEvent(payload: object, timestamp = String(Math.floor(Date.now() / 1000)), signatureOverride?: string) {
+  const raw = JSON.stringify(payload);
+  const signature = signatureOverride || `v0=${createHmac('sha256', slackSigningSecret).update(`v0:${timestamp}:`).update(raw).digest('hex')}`;
+  return fetch(`${baseUrl}/api/slack/events`, { method: 'POST', headers: {
+    'content-type': 'application/json', 'x-slack-request-timestamp': timestamp, 'x-slack-signature': signature,
+  }, body: raw });
 }
 
 function captureServerOutput(child: ChildProcess) {
@@ -252,6 +300,8 @@ async function startServer(port: number) {
       SLACK_CLIENT_ID: 'coke-dots-slack-e2e-client',
       SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
       SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
+      SLACK_SIGNING_SECRET: slackSigningSecret,
+      DOTS_APP_URL: baseUrl,
       DOTS_E2E_SLACK_PROVIDER_URL: mockSlackProviderOrigin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -882,7 +932,7 @@ try {
       connectButton.click(),
     ]);
     await alphaPage!.getByRole('heading', { name: 'Authorize Coke Dots for ASPI' }).waitFor({ state: 'visible' });
-    await alphaPage!.getByText('Permission requested: chat:write', { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.getByText('Permission requested: chat:write, im:history, im:write, app_mentions:read', { exact: true }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'slack-mock-consent');
     await Promise.all([
       alphaPage!.waitForURL(url => url.origin === new URL(baseUrl).origin && url.pathname === '/', { timeout: 15_000 }),
@@ -1169,6 +1219,69 @@ try {
     await screenshot(betaPage!, '13-beta-after-service-restart');
     await selectTenant(betaPage!, 'Beta workspace');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
+  });
+
+  await recordStep('Link a Slack member from a private DM, run a DM task, and route a channel mention back privately', async () => {
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    const taskIdsBeforeLink = await alphaPage!.evaluate(async () => (await (await fetch('/api/state')).json()).tasks.map((task: { id: string }) => task.id) as string[]);
+    const linkEvent = {
+      type: 'event_callback', event_id: 'EvSLACKLINK0001', team_id: 'TASPIE2E',
+      event: { type: 'message', channel_type: 'im', user: 'UASPIUSER', channel: 'DASPIUSER', ts: '1780874000.000001', text: 'Hi, please link my account.' },
+    };
+    const linkResponse = await sendSlackEvent(linkEvent);
+    assert.equal(linkResponse.status, 200, 'Slack Events API should acknowledge a valid DM');
+    await waitFor(() => mockSlackMessages.some(message => message.text.includes('slackLink=') && message.text.includes('连接账号')), 10_000);
+    const linkPrompt = mockSlackMessages.find(message => message.text.includes('slackLink='))!;
+    assert.equal(linkPrompt.channel, 'DASPIUSERDM', 'The account-link URL must be delivered in a private DM');
+    assert.equal(linkPrompt.thread_ts, undefined, 'A private account-link message should not be attached to a shared conversation');
+    assert.deepEqual(mockSlackOpenedDms, ['UASPIUSER']);
+    const linkUrl = linkPrompt.text.match(/<([^|]+)\|连接账号>/)?.[1];
+    assert(linkUrl, 'The private Slack response should include a one-time Coke Dots link');
+    const linkedStateBeforeClaim = await alphaPage!.evaluate(async () => (await (await fetch('/api/state')).json()).tasks.map((task: { id: string }) => task.id) as string[]);
+    assert.deepEqual(linkedStateBeforeClaim, taskIdsBeforeLink, 'An unlinked Slack identity must not create work');
+
+    // Slack opens the one-time link as a fresh browser navigation. Using the
+    // already-open app page would make this a same-document hash change, which
+    // does not rerun the app's initial link-fragment handler.
+    const linkPage = await alphaPage!.context().newPage();
+    await linkPage.goto(linkUrl);
+    const accountLinkModal = linkPage.getByRole('dialog', { name: 'Connect your Slack account' });
+    await accountLinkModal.waitFor({ state: 'visible' });
+    await screenshot(linkPage, 'slack-account-link-confirmation');
+    await accountLinkModal.getByTestId('slack-link-confirm').click();
+    await accountLinkModal.getByRole('status').filter({ hasText: 'This Slack account is connected' }).waitFor({ state: 'visible' });
+    await accountLinkModal.getByRole('button', { name: 'Done' }).click();
+    await accountLinkModal.waitFor({ state: 'hidden' });
+    await linkPage.close();
+
+    const dmMessageStart = mockSlackMessages.length;
+    const dmEvent = {
+      type: 'event_callback', event_id: 'EvSLACKDM000001', team_id: 'TASPIE2E',
+      event: { type: 'message', channel_type: 'im', user: 'UASPIUSER', channel: 'DASPIUSER', ts: '1780874010.000001', text: 'E2E Slack DM — summarize the launch risk.' },
+    };
+    assert.equal((await sendSlackEvent(dmEvent)).status, 200);
+    await waitFor(() => mockSlackMessages.slice(dmMessageStart).some(message => message.channel === 'DASPIUSER' && message.text === 'Slack 任务已完成：发布风险摘要已整理。'), 10_000);
+    const dmReply = mockSlackMessages.slice(dmMessageStart).find(message => message.channel === 'DASPIUSER')!;
+    assert.equal(dmReply.thread_ts, undefined, 'A normal Slack DM response should stay in the same conversation, not create a reply thread');
+
+    const mentionEvent = {
+      type: 'event_callback', event_id: 'EvSLACKMENTION001', team_id: 'TASPIE2E',
+      event: { type: 'app_mention', user: 'UASPIUSER', channel: 'CCHANNEL1', ts: '1780874020.000001', thread_ts: '1780874015.000001', text: '<@UBOT> E2E Slack mention — summarize the launch risk.' },
+    };
+    const mentionStart = mockSlackMessages.length;
+    assert.equal((await sendSlackEvent(mentionEvent)).status, 200, 'Slack app_mention events should start work');
+    await waitFor(() => mockSlackMessages.slice(mentionStart).some(message => message.channel === 'DASPIUSERDM' && message.text === 'Slack 任务已完成：发布风险摘要已整理。'), 10_000);
+    assert.equal(mockSlackOpenedDms.at(-1), 'UASPIUSER', 'A shared-channel mention should return privately to its requester by default');
+    assert.equal(mockSlackMessages.slice(mentionStart).some(message => message.channel === 'CCHANNEL1'), false, 'The result should not be posted to the shared channel');
+
+    const taskCountBeforeDuplicate = await alphaPage!.evaluate(async () => (await (await fetch('/api/state')).json()).tasks.length as number);
+    assert.equal((await sendSlackEvent(mentionEvent)).status, 200, 'Slack retries should be acknowledged');
+    await delay(100);
+    const taskCountAfterDuplicate = await alphaPage!.evaluate(async () => (await (await fetch('/api/state')).json()).tasks.length as number);
+    assert.equal(taskCountAfterDuplicate, taskCountBeforeDuplicate, 'Duplicate Slack event IDs must not create duplicate tasks');
+    await clickNav(alphaPage!, 'Activity');
+    await alphaPage!.getByTestId('activity-feed').getByText(/E2E Slack (DM|mention)/).first().waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, 'slack-dm-and-mention-activity');
   });
 
   await recordStep('Upload a text source, restore it after reload, and pass its contents to the agent', async () => {

@@ -63,6 +63,7 @@ function publish() {
     try { client.write(`data: ${JSON.stringify(snapshot(session.tenant.id))}\n\n`); }
     catch { client.end(); clients.delete(client); }
   }
+  void slack.flushOutbox();
 }
 
 const sessionHeartbeat = setInterval(() => {
@@ -78,9 +79,31 @@ const watchRunner = new WatchRunner(store, publish);
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-store');
-  if (!isLocalRequest(req)) return reply(res, 403, { error: 'Local access only' });
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  const slackEventRequest = isSlackEventRequest(req);
+  if (!isLocalRequest(req) && !slackEventRequest) return reply(res, 403, { error: 'Local access only' });
   const url = new URL(req.url || '/', `http://${host}:${port}`);
   const path = url.pathname;
+
+  if (slackEventRequest) {
+    if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return reply(res, 415, { error: 'Slack events must use application/json' });
+    let rawBody: Buffer;
+    try { rawBody = await readBytes(req, 1_000_000); }
+    catch { return reply(res, 413, { error: 'Slack event payload is too large' }); }
+    if (!slack.verifyEventRequest(rawBody, req.headers['x-slack-request-timestamp'], req.headers['x-slack-signature'])) {
+      return reply(res, 401, { error: 'Invalid Slack request signature' });
+    }
+    const result = slack.receiveEvent(rawBody);
+    if (result.kind === 'challenge') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ challenge: result.challenge }));
+      return;
+    }
+    reply(res, 200, { ok: true });
+    if (result.kind === 'task') { publish(); void worker.tick(); }
+    setImmediate(() => void slack.flushOutbox());
+    return;
+  }
 
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
   if (path === '/auth/slack/callback' && req.method === 'GET') return slack.finish(req, res, url, auth.session(req));
@@ -122,6 +145,15 @@ const server = createServer(async (req, res) => {
     const body = await readJson(req);
     const result = slack.setContactWorkspace(session, String(body.teamId || ''));
     return result.status === 200 ? reply(res, 200, result.value) : reply(res, result.status, { error: result.error });
+  }
+  if (path === '/api/slack/link/claim' && req.method === 'POST') {
+    const body = await readJson(req);
+    const result = slack.claimAccount(session, String(body.code || ''));
+    if (result === 'linked') return reply(res, 200, { ok: true });
+    if (result === 'wrong-workspace') return reply(res, 403, { error: '请切换到 Slack 所连接的 Coke Dots 工作区后重试。' });
+    if (result === 'not-member') return reply(res, 403, { error: '你的账号不是此 Coke Dots 工作区成员。' });
+    if (result === 'already-linked') return reply(res, 409, { error: '此 Slack 账号已连接到另一个 Coke Dots 账号。' });
+    return reply(res, 410, { error: 'Slack 连接链接已过期，请回到 Slack 重新发送消息获取新链接。' });
   }
 
   try {
@@ -521,6 +553,10 @@ function isLocalRequest(req: IncomingMessage) {
     allowedOrigin;
 }
 
+function isSlackEventRequest(req: IncomingMessage) {
+  return req.method === 'POST' && req.url?.split('?')[0] === '/api/slack/events';
+}
+
 function validMutationOrigin(req: IncomingMessage) {
   if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method || '')) return true;
   if (!req.headers.origin) return false;
@@ -592,12 +628,14 @@ server.listen(port, host, () => {
   console.log(`Coke Dots service listening on http://${host}:${port}`);
   worker.start();
   watchRunner.start();
+  slack.start();
 });
 
 const shutdown = () => {
   clearInterval(sessionHeartbeat);
   worker.stop();
   watchRunner.stop();
+  slack.stop();
   for (const client of clients.keys()) client.end();
   clients.clear();
   server.close(() => store.close());

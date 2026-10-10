@@ -15,6 +15,7 @@ import './pages.css';
 import { ComputerView } from './ComputerView.tsx';
 import { DotContextPanel } from './DotContextPanel.tsx';
 import { SlackSetupModal } from './SlackSetupModal.tsx';
+import { SlackAccountLinkModal } from './SlackAccountLinkModal.tsx';
 import { appPath } from './api.ts';
 import { ScheduledView } from './ScheduledView.tsx';
 import { PagePane, PagesView, ScratchpadNavigationPane } from './Pages.tsx';
@@ -79,6 +80,7 @@ function App() {
   const [computerConnectedToast, setComputerConnectedToast] = useState(false);
   const [voiceCallOpen, setVoiceCallOpen] = useState(false);
   const [slackModalOpen, setSlackModalOpen] = useState(false);
+  const [slackLinkCode, setSlackLinkCode] = useState('');
   const [view, setView] = useState<'home' | 'chat' | 'activity' | 'scheduled' | 'computer' | 'profile' | 'pages'>('home');
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
@@ -117,6 +119,24 @@ function App() {
     refresh();
     const timer = window.setInterval(refresh, 15_000);
     return () => window.clearInterval(timer);
+  }, [authContext?.user.id]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const fragment = new URLSearchParams(url.hash.replace(/^#/, ''));
+    const code = fragment.get('slackLink') || '';
+    if (!code) return;
+    try { sessionStorage.setItem('coke-dots:slack-link-code', code); } catch { /* Keep the link in the address bar if session storage is unavailable. */ }
+    url.hash = '';
+    window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+  }, []);
+
+  useEffect(() => {
+    if (!authContext) return;
+    try {
+      const code = sessionStorage.getItem('coke-dots:slack-link-code') || '';
+      if (/^[A-Za-z0-9_-]{40,60}$/.test(code)) setSlackLinkCode(code);
+    } catch { /* The link can be opened again from Slack if session storage is disabled. */ }
   }, [authContext?.user.id]);
 
   useEffect(() => {
@@ -386,6 +406,9 @@ function App() {
     {computerAccessOpen && <DotComputerChoice localComputer={state.computerAccess.localComputer} mode="settings" onSave={saveComputerAccess} onCancel={() => setComputerAccessOpen(false)} />}
     {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, !state.profile.onboardingCompletedAt)} />}
     {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} onTranscript={submitVoiceTranscript} onClose={() => setVoiceCallOpen(false)} />}
+    {slackLinkCode && authContext && <SlackAccountLinkModal code={slackLinkCode} onClose={() => setSlackLinkCode('')} onLinked={() => {
+      try { sessionStorage.removeItem('coke-dots:slack-link-code'); } catch { /* The challenge is single use on the server. */ }
+    }} />}
     {slackModalOpen && authContext && <SlackSetupModal key={authContext.tenant.id} dotName={state.profile.name} canManage={['owner', 'admin'].includes(authContext.tenant.role)} onClose={() => setSlackModalOpen(false)} onConnectSlack={() => {
       try { sessionStorage.setItem('coke-dots:slack-return-state', JSON.stringify({ view, selected })); } catch { /* Restore the home view if session storage is unavailable. */ }
       window.location.assign(appPath('/api/slack/oauth/start'));
