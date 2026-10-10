@@ -13,6 +13,7 @@ import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { configuredDesktopAgentEngines, LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
+import { GmailService } from './gmail.ts';
 import { TeamsService } from './teams.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
@@ -50,6 +51,7 @@ function initializeModelSettings() {
 initializeModelSettings();
 const auth = new AuthService(store, port);
 const slack = new SlackService(store, port);
+const gmail = new GmailService(store, port);
 const teams = new TeamsService(store);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
@@ -98,7 +100,8 @@ const sessionHeartbeat = setInterval(() => {
   }
 }, 30_000);
 
-const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor);
+const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor,
+  (userId, prompt, signal) => gmail.contextForTask(userId, prompt, signal));
 const watchRunner = new WatchRunner(store, publish, e2eWatchFetcher());
 
 async function tenantRuntimeDirectoriesForReset(tenantId: string) {
@@ -172,7 +175,10 @@ const server = createServer(async (req, res) => {
   }
   if (!isLocalRequest(req, path)) return reply(res, 403, { error: 'Local access only' });
 
-  if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
+  if (path === '/auth/google/callback' && req.method === 'GET') {
+    if ((url.searchParams.get('state') || '').startsWith('gmail_')) return gmail.finish(req, res, url);
+    return auth.finish(req, res, url);
+  }
   if (path === '/auth/slack/callback' && req.method === 'GET') return slack.finish(req, res, url, auth.session(req));
   if (!path.startsWith('/api/')) return serveStatic(req, res, path);
   if (path === '/api/health' && req.method === 'GET') return reply(res, 200, { ok: true });
@@ -205,6 +211,13 @@ const server = createServer(async (req, res) => {
   const session = auth.session(req);
   if (!session) return reply(res, 401, { error: '请先使用 Google 登录' });
   if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+  if (path === '/api/gmail' && req.method === 'GET') return reply(res, 200, gmail.snapshot(session.user.id));
+  if (path === '/api/gmail/oauth/start' && req.method === 'GET') return gmail.begin(req, res, session);
+  if (path === '/api/gmail' && req.method === 'DELETE') {
+    gmail.disconnect(session.user.id);
+    publish();
+    return reply(res, 200, { ok: true });
+  }
   if (path === '/api/e2e/teams/activity' && req.method === 'POST' && auth.e2eAuthAvailable()) {
     let rawBody: Buffer;
     try { rawBody = await readBytes(req, 128 * 1024); }

@@ -17,6 +17,7 @@ import './pages.css';
 import { ComputerView } from './ComputerView.tsx';
 import { DotContextPanel } from './DotContextPanel.tsx';
 import { SlackSetupModal } from './SlackSetupModal.tsx';
+import { GmailSetup } from './GmailSetup.tsx';
 import { TeamsSetupModal } from './TeamsSetupModal.tsx';
 import { ScheduledView } from './ScheduledView.tsx';
 import { PagePane, PagesView, ScratchpadNavigationPane } from './Pages.tsx';
@@ -128,6 +129,21 @@ function App() {
       .then(setAuthContext).catch(() => setAuthContext(null)).finally(() => setAuthChecked(true));
     void appFetch('/api/auth/config').then(response => response.json()).then(data => { setGoogleConfigured(Boolean(data.googleConfigured)); setE2eAuthAvailable(Boolean(data.e2eAuthAvailable)); }).catch(() => { setGoogleConfigured(false); setE2eAuthAvailable(false); });
   }, []);
+
+  useEffect(() => {
+    if (!authContext) return;
+    const url = new URL(window.location.href);
+    const gmail = url.searchParams.get('gmail');
+    if (gmail) {
+      setView('profile');
+      url.searchParams.delete('gmail');
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      if (gmail === 'failed') setError('Gmail 连接失败，请检查 Google 授权后重试。');
+      else if (gmail === 'expired') setError('Gmail 连接已过期，请重新连接。');
+      else if (gmail === 'account_changed') setError('Google 账号已切换，请用当前 Coke Dots 账号重新连接 Gmail。');
+      else if (gmail === 'cancelled') setError('Gmail 连接已取消。');
+    }
+  }, [authContext?.user.id]);
 
   useEffect(() => {
     if (!authContext) return;
@@ -957,6 +973,7 @@ function Profile({ state, auth, onError, onSetDotPaused, onResetDot, onEditAppea
       <button className="primary" disabled={!['owner', 'admin'].includes(auth.tenant.role)} onClick={onManageComputerAccess}>更改电脑访问</button>
       {!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以更改此设置。</small>}
     </div>
+    <GmailSetup onError={onError} />
     <div className="section-heading model-heading"><h2>通知</h2><p>后台工作需要你处理或完成时，在这台 Mac 上提醒你。</p></div>
     <div className="profile-card model-card notification-card">
       <label className="notification-toggle"><input aria-label="桌面通知" type="checkbox" checked={desktopNotifications} disabled={notificationBusy} onChange={async event => { const enabled = event.currentTarget.checked; setNotificationBusy(true); setDesktopNotifications(enabled); try { await request('/preferences', 'PATCH', { desktopNotifications: enabled }); } catch (error) { setDesktopNotifications(!enabled); onError(String(error)); } finally { setNotificationBusy(false); } }} /><span><strong>桌面通知</strong><small>{desktopNotifications ? '此工作区已开启任务和网页监控提醒。' : '此工作区的提醒目前关闭。'}</small></span></label>

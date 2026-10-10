@@ -13,6 +13,8 @@ export interface WorkspaceInvitation { tenantId: string; tenantName?: string; em
 export interface TenantMemory { id: string; tenantId: string; note: string; createdBy: string; createdByName: string; createdAt: string; updatedAt: string }
 export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantSummary; expiresAt: string }
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
+export interface GmailOAuthFlow { stateHash: string; userId: string; codeVerifier: string; expiresAt: string; returnTo: string }
+export interface GmailConnection { userId: string; email: string; connectedAt: string; scopes: string[] }
 export interface SlackOAuthFlow { stateHash: string; tenantId: string; userId: string; expiresAt: string; returnTo: string }
 export interface SlackInstallation { tenantId: string; teamId: string; teamName: string; scopes: string[]; installedAt: string; contactEnabled: boolean }
 export interface SlackInboundMessage { eventId: string; teamId: string; slackUserId: string; sourceChannelId: string; replyChannelId: string; eventType: 'message.im' | 'app_mention' | 'message.channels'; text: string }
@@ -61,6 +63,13 @@ export class Store {
       );
       CREATE TABLE IF NOT EXISTS oauth_flows (
         state_hash TEXT PRIMARY KEY, nonce TEXT NOT NULL, code_verifier TEXT NOT NULL, expires_at TEXT NOT NULL, handoff_hash TEXT, return_to TEXT
+      );
+      CREATE TABLE IF NOT EXISTS gmail_oauth_flows (
+        state_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), code_verifier TEXT NOT NULL,
+        expires_at TEXT NOT NULL, return_to TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS gmail_connections (
+        user_id TEXT PRIMARY KEY REFERENCES users(id), email TEXT NOT NULL, connected_at TEXT NOT NULL, scopes_json TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS slack_oauth_flows (
         state_hash TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
@@ -323,6 +332,36 @@ export class Store {
     this.db.prepare('DELETE FROM oauth_flows WHERE state_hash=?').run(stateHash);
     if (!row || row.expires_at <= now) return null;
     return { nonce: row.nonce, codeVerifier: row.code_verifier, expiresAt: row.expires_at, handoffHash: row.handoff_hash, returnTo: row.return_to };
+  }
+
+  createGmailOAuthFlow(flow: GmailOAuthFlow) {
+    this.db.prepare('INSERT INTO gmail_oauth_flows(state_hash,user_id,code_verifier,expires_at,return_to) VALUES (?,?,?,?,?)')
+      .run(flow.stateHash, flow.userId, flow.codeVerifier, flow.expiresAt, flow.returnTo);
+  }
+
+  consumeGmailOAuthFlow(stateHash: string, now = new Date().toISOString()): Omit<GmailOAuthFlow, 'stateHash'> | null {
+    const row = this.db.prepare('SELECT user_id,code_verifier,expires_at,return_to FROM gmail_oauth_flows WHERE state_hash=?').get(stateHash) as
+      { user_id: string; code_verifier: string; expires_at: string; return_to: string } | undefined;
+    this.db.prepare('DELETE FROM gmail_oauth_flows WHERE state_hash=?').run(stateHash);
+    if (!row || row.expires_at <= now) return null;
+    return { userId: row.user_id, codeVerifier: row.code_verifier, expiresAt: row.expires_at, returnTo: row.return_to };
+  }
+
+  gmailConnection(userId: string): GmailConnection | null {
+    const row = this.db.prepare('SELECT user_id AS userId,email,connected_at AS connectedAt,scopes_json AS scopesJson FROM gmail_connections WHERE user_id=?').get(userId) as
+      { userId: string; email: string; connectedAt: string; scopesJson: string } | undefined;
+    return row ? { userId: row.userId, email: row.email, connectedAt: row.connectedAt, scopes: JSON.parse(row.scopesJson) as string[] } : null;
+  }
+
+  connectGmail(input: GmailConnection) {
+    this.db.prepare(`INSERT INTO gmail_connections(user_id,email,connected_at,scopes_json) VALUES (?,?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET email=excluded.email,connected_at=excluded.connected_at,scopes_json=excluded.scopes_json`)
+      .run(input.userId, input.email, input.connectedAt, JSON.stringify(input.scopes));
+  }
+
+  disconnectGmail(userId: string) {
+    this.db.prepare('DELETE FROM gmail_oauth_flows WHERE user_id=?').run(userId);
+    this.db.prepare('DELETE FROM gmail_connections WHERE user_id=?').run(userId);
   }
 
   createSlackOAuthFlow(flow: SlackOAuthFlow) {
@@ -1478,6 +1517,11 @@ export class Store {
   getTask(id: string, tenantId = 'legacy'): Task | null {
     const row = this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, id) as Record<string, unknown> | undefined;
     return row ? toTask(row) : null;
+  }
+
+  taskCreatorUserId(id: string, tenantId: string): string | null {
+    const row = this.db.prepare('SELECT created_by_user_id AS userId FROM tasks WHERE id=? AND tenant_id=?').get(id, tenantId) as { userId: string | null } | undefined;
+    return row?.userId || null;
   }
 
   dueTasks(now = new Date().toISOString(), pausedTenantIds: string[] = []): Task[] {

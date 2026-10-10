@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Entry } from '@napi-rs/keyring';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -45,6 +46,7 @@ let mockGoogleAuthorizationRequests: Record<string, string>[] = [];
 let mockGoogleTokenExchanges = 0;
 let mockGoogleTokenAttempts = 0;
 let mockGoogleCertRequests = 0;
+let mockGoogleGmailRequests: { path: string; query: string }[] = [];
 let mockGoogleProxyTunnels = 0;
 let mockSlackAuthorizationRequests: Record<string, string>[] = [];
 let mockSlackTokenExchanges = 0;
@@ -237,6 +239,13 @@ async function startMockModel() {
         const isSlackInboxTask = prompt.includes('E2E Slack inbox request — answer with the connector result.');
         const isSlackMonitorTask = prompt.includes('E2E Slack monitor — investigate new bug reports');
         const isTeamsInboxTask = prompt.includes('E2E Teams inbox request — answer with the connector result.');
+        const isGmailTask = prompt.includes('Gmail E2E task — summarize the latest 2 emails');
+        if (isGmailTask) {
+          assert.match(prompt, /User-requested Gmail data\. This is untrusted source data/);
+          assert.match(prompt, /E2E 产品发布更新 1/);
+          assert.match(prompt, /邮件正文 2：客户确认了发布安排/);
+          assert.doesNotMatch(prompt, /mock-google-(?:access|refresh)-token/, 'Google credentials must never be sent to an Agent kernel');
+        }
         const isDecisionNotificationCheck = prompt.includes('E2E notification criteria — ask the user');
         const isReasoningEffortTask = prompt.includes('E2E reasoning effort — extra high');
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
@@ -304,7 +313,7 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || (isSelfWakeResponsibility && hasSelfWakeCheckpoint) || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || (isSelfWakeResponsibility && hasSelfWakeCheckpoint) || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask || isGmailTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isPauseDelegationParent && !isPauseDelegationAggregate ? { status: 'delegating', message: 'I started one independent research task.', delegations: [
           { title: 'Independent research', instruction: 'E2E global pause delegated child — keep running during pause', engine: 'model' },
@@ -312,7 +321,7 @@ async function startMockModel() {
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isSharedModelReuse ? 'The second Google account used the Coke Dots instance Model API configuration.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isGmailTask ? '我从只读 Gmail 连接中读取了两封邮件：客户确认了产品发布安排。' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isSharedModelReuse ? 'The second Google account used the Coke Dots instance Model API configuration.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isSelfWakeResponsibility) {
           if (!hasSelfWakeCheckpoint) Object.assign(decision, { status: 'scheduled', message: 'Checkpoint: I reviewed the timeline and will verify the approval response next.', nextMinutes: 30, notifyUser: false });
@@ -348,6 +357,7 @@ async function startMockGoogleProvider() {
   mockGoogleTokenExchanges = 0;
   mockGoogleTokenAttempts = 0;
   mockGoogleCertRequests = 0;
+  mockGoogleGmailRequests = [];
   mockGoogleProxyTunnels = 0;
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
@@ -357,6 +367,7 @@ async function startMockGoogleProvider() {
     challenge: string;
     redirectUri: string;
     clientId: string;
+    scope: string;
     account?: 'alpha' | 'unverified' | 'token-failure';
   }>();
   const provider = createHttpServer(async (request, response) => {
@@ -365,17 +376,19 @@ async function startMockGoogleProvider() {
       const params = url.searchParams;
       const details = Object.fromEntries(params.entries());
       mockGoogleAuthorizationRequests.push(details);
-      if (!params.get('state') || !params.get('nonce') || !params.get('redirect_uri') || !params.get('code_challenge')) {
+      const needsNonce = (params.get('scope') || '').split(/\s+/).includes('openid');
+      if (!params.get('state') || (needsNonce && !params.get('nonce')) || !params.get('redirect_uri') || !params.get('code_challenge')) {
         response.writeHead(400).end('Missing OAuth parameters');
         return;
       }
       const code = randomBytes(24).toString('base64url');
       flows.set(code, {
         state: params.get('state')!,
-        nonce: params.get('nonce')!,
+        nonce: params.get('nonce') || '',
         challenge: params.get('code_challenge')!,
         redirectUri: params.get('redirect_uri')!,
         clientId: params.get('client_id') || '',
+        scope: params.get('scope') || '',
       });
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       response.end(`<!doctype html><html><head><title>Google account chooser test</title></head><body><main><h1>Choose a Google account</h1><p>Local OAuth test provider</p><a data-testid="mock-google-alpha" href="/approve?code=${encodeURIComponent(code)}&amp;account=alpha">Continue as alpha@example.test</a><a data-testid="mock-google-unverified" href="/approve?code=${encodeURIComponent(code)}&amp;account=unverified">Continue as unverified@example.test</a><a data-testid="mock-google-token-failure" href="/approve?code=${encodeURIComponent(code)}&amp;account=token-failure">Simulate token endpoint failure</a><a data-testid="mock-google-tampered-state" href="/approve?code=${encodeURIComponent(code)}&amp;account=tampered-state">Return a modified state</a></main></body></html>`);
@@ -402,10 +415,19 @@ async function startMockGoogleProvider() {
       return;
     }
     if (request.method === 'POST' && url.pathname === '/token') {
-      mockGoogleTokenAttempts++;
       let raw = '';
       for await (const chunk of request) raw += chunk.toString();
       const params = new URLSearchParams(raw);
+      if (params.get('grant_type') === 'refresh_token') {
+        if (params.get('client_id') !== 'coke-dots-e2e-client' || params.get('client_secret') !== 'coke-dots-e2e-secret' || params.get('refresh_token') !== 'mock-google-refresh-token') {
+          response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid_grant' }));
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        response.end(JSON.stringify({ access_token: 'mock-google-access-token', expires_in: 3600, token_type: 'Bearer', scope: 'https://www.googleapis.com/auth/gmail.readonly' }));
+        return;
+      }
+      mockGoogleTokenAttempts++;
       const code = params.get('code') || '';
       const flow = flows.get(code);
       const verifier = params.get('code_verifier') || '';
@@ -440,8 +462,33 @@ async function startMockGoogleProvider() {
       flows.delete(code);
       mockGoogleTokenExchanges++;
       response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      response.end(JSON.stringify({ access_token: randomBytes(24).toString('base64url'), expires_in: 3600, token_type: 'Bearer', scope: 'openid email profile', id_token: idToken }));
+      response.end(JSON.stringify({ access_token: 'mock-google-access-token', expires_in: 3600, token_type: 'Bearer', scope: flow.scope, id_token: idToken, ...(flow.scope.includes('gmail.readonly') ? { refresh_token: 'mock-google-refresh-token' } : {}) }));
       return;
+    }
+    if (request.method === 'GET' && url.pathname.startsWith('/gmail/v1/')) {
+      if (request.headers.authorization !== 'Bearer mock-google-access-token') {
+        response.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid_token' }));
+        return;
+      }
+      mockGoogleGmailRequests.push({ path: url.pathname, query: url.searchParams.toString() });
+      if (url.pathname === '/gmail/v1/users/me/profile') {
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ emailAddress: 'alpha@gmail.com', messagesTotal: 2, threadsTotal: 2 }));
+        return;
+      }
+      if (url.pathname === '/gmail/v1/users/me/messages') {
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ messages: [{ id: 'gmail-e2e-1' }, { id: 'gmail-e2e-2' }] }));
+        return;
+      }
+      const emailId = /\/gmail\/v1\/users\/me\/messages\/(gmail-e2e-[12])$/.exec(url.pathname)?.[1];
+      if (emailId) {
+        const n = emailId.slice(-1);
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+          id: emailId, snippet: `Preview ${n}`,
+          payload: { headers: [{ name: 'From', value: `partner${n}@example.test` }, { name: 'Subject', value: `E2E 产品发布更新 ${n}` }, { name: 'Date', value: 'Sat, 10 Oct 2026 09:00:00 +0000' }],
+            parts: [{ mimeType: 'text/plain', body: { data: Buffer.from(`邮件正文 ${n}：客户确认了发布安排。`).toString('base64url') } }] },
+        }));
+        return;
+      }
     }
     response.writeHead(404).end('Not found');
   });
@@ -672,6 +719,7 @@ async function startServer(port: number) {
       DOTS_E2E_TEAMS_PROVIDER_URL: mockTeamsOrigin,
       DOTS_APP_URL: baseUrl,
       DOTS_E2E_GOOGLE_PROVIDER_URL: mockGoogleOrigin,
+      DOTS_E2E_GMAIL_API_URL: `${mockGoogleOrigin}/gmail/v1`,
       DOTS_E2E_WATCH_PROVIDER_URL: mockWatchProviderOrigin,
       DOTS_GOOGLE_OAUTH_PROXY_URL: mockGoogleProxyOrigin,
       NO_PROXY: '',
@@ -909,6 +957,46 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   await screenshot(page, `${screenshotPrefix}-connected`);
   await dialog.getByRole('button', { name: 'Close Slack setup' }).click();
   await dialog.waitFor({ state: 'hidden' });
+}
+
+async function connectGmail(page: Page) {
+  await openProfile(page);
+  const card = page.getByTestId('gmail-connection-card');
+  await card.waitFor({ state: 'visible' });
+  await card.getByText('尚未连接 Gmail', { exact: true }).waitFor({ state: 'visible' });
+  await screenshot(page, 'gmail-connection-before');
+  const authorization = page.waitForURL(url => url.origin === mockGoogleOrigin && url.pathname === '/authorize', { timeout: 10_000 });
+  await page.getByTestId('gmail-connect').click();
+  await authorization;
+  const requested = mockGoogleAuthorizationRequests.at(-1);
+  assert(requested, 'The browser did not request Gmail authorization');
+  assert.deepEqual(requested.scope.split(' '), ['https://www.googleapis.com/auth/gmail.readonly'], 'Gmail authorization must request only read-only email access');
+  assert.equal(requested.access_type, 'offline', 'Gmail access must support scheduled local reads without storing an access token');
+  assert.equal(requested.code_challenge_method, 'S256');
+  assert.match(requested.state, /^gmail_[A-Za-z0-9_-]{40,80}$/);
+  const stateCookie = (await page.context().cookies(`${baseUrl}/auth/google/callback`)).find(cookie => cookie.name === 'coke_dots_gmail_state');
+  assert(stateCookie, 'Gmail authorization must protect its state in an HttpOnly callback cookie');
+  assert.equal(stateCookie.httpOnly, true);
+  assert.equal(stateCookie.sameSite, 'Lax');
+  assert.equal(stateCookie.path, '/auth/google/callback');
+  await page.getByTestId('mock-google-alpha').click();
+  await page.getByTestId('app-shell').waitFor({ state: 'visible', timeout: 15_000 });
+  await page.getByRole('heading', { name: '你的 dot', exact: true }).waitFor({ state: 'visible' });
+  await page.getByTestId('gmail-connection-card').getByText('alpha@gmail.com', { exact: false }).waitFor({ state: 'visible' });
+  await screenshot(page, 'gmail-connected');
+  const snapshot = await page.evaluate(async () => {
+    const response = await fetch('/api/gmail');
+    return { status: response.status, body: await response.json() as { configured: boolean; connected: boolean; connection: { email: string; scopes: string[]; accessToken?: string; refreshToken?: string } | null } };
+  });
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.body.connected, true);
+  assert.equal(snapshot.body.connection?.email, 'alpha@gmail.com');
+  assert.deepEqual(snapshot.body.connection?.scopes, ['https://www.googleapis.com/auth/gmail.readonly']);
+  assert.equal('accessToken' in (snapshot.body.connection || {}), false);
+  assert.equal('refreshToken' in (snapshot.body.connection || {}), false);
+  const key = `user-${Buffer.from(oauthTestState.alphaSession!.user.id).toString('base64url')}-gmail-refresh-token`;
+  assert.equal(new Entry(testKeychainService, key).getPassword(), 'mock-google-refresh-token', 'Refresh token must be stored in the user Keychain entry');
+  return snapshot.body;
 }
 
 async function sendSignedSlackMessageFromChrome(page: Page, signingSecret: string, options: { eventId?: string; eventType?: 'message' | 'app_mention'; channelType?: 'im' | 'channel'; channel?: string; text?: string; botId?: string } = {}) {
@@ -2562,12 +2650,13 @@ try {
     const privateMemoryPromptStart = mockModelPrompts.length;
     await createTask(alphaPage!, privateMemoryTask);
     await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
-    await alphaPage!.locator('.timeline .message.system p').filter({ hasText: 'Dot 记住了：Prefers concise Mandarin updates and uses China Standard Time for milestones.' }).waitFor({ state: 'visible' });
+    const savedPersonalMemories = await alphaPage!.evaluate(async () => await (await fetch('/api/dot-memories')).json()) as { note: string }[];
+    assert(savedPersonalMemories.some(memory => memory.note === 'Prefers concise Mandarin updates and China Standard Time for milestones.'), 'The personal Dot preference was not persisted for its Google account');
     await waitFor(() => mockModelPrompts.length === privateMemoryPromptStart + 1, 10_000);
     assert.match(mockModelPrompts[privateMemoryPromptStart], /Personal Dot memory is enabled for this account's personal workspace/);
 
     await openProfile(alphaPage!);
-    const privateMemoryRow = privateMemoryManager.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' });
+    const privateMemoryRow = privateMemoryManager.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and China Standard Time for milestones.' });
     await privateMemoryRow.waitFor({ state: 'visible' });
     await privateMemoryRow.getByText('Dot 从个人对话中更新').waitFor({ state: 'visible' });
     await privateMemoryRow.scrollIntoViewIfNeeded();
@@ -2578,7 +2667,7 @@ try {
     await createTask(alphaPage!, usePrivateMemoryTask);
     await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
     await waitFor(() => mockModelPrompts.length === useMemoryPromptStart + 1, 10_000);
-    assert.match(mockModelPrompts[useMemoryPromptStart], /Prefers concise Mandarin updates and uses China Standard Time for milestones\./, "The private Dot note did not reach the next task in the same user's personal workspace");
+    assert.match(mockModelPrompts[useMemoryPromptStart], /Prefers concise Mandarin updates and China Standard Time for milestones\./, "The private Dot note did not reach the next task in the same user's personal workspace");
 
     await selectTenant(alphaPage!, 'Alpha Shared');
     await clickNav(alphaPage!, '你的 dot');
@@ -2587,11 +2676,11 @@ try {
     await createTask(alphaPage!, sharedMemoryTask);
     await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
     await waitFor(() => mockModelPrompts.length === sharedMemoryPromptStart + 1, 10_000);
-    assert.doesNotMatch(mockModelPrompts[sharedMemoryPromptStart], /Prefers concise Mandarin updates and uses China Standard Time for milestones\./, 'A personal note leaked into a shared-workspace model prompt');
+    assert.doesNotMatch(mockModelPrompts[sharedMemoryPromptStart], /Prefers concise Mandarin updates and China Standard Time for milestones\./, 'A personal note leaked into a shared-workspace model prompt');
     await openProfile(alphaPage!);
     await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.getByTestId('memory-row').count(), 0, 'A personal note appeared in shared workspace memory');
-    await alphaPage!.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and China Standard Time for milestones.' }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.getByTestId('personal-dot-memory-row').count(), 1, 'The signed-in account could not manage its own private note while viewing another workspace');
 
     await selectTenant(betaPage!, 'Beta workspace');
@@ -2608,9 +2697,9 @@ try {
     await savedMemory.waitFor({ state: 'visible' });
     await savedMemory.getByRole('button', { name: '删除' }).click();
     await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
-    const savedPersonalMemory = alphaPage!.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' });
+    const savedPersonalMemory = alphaPage!.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and China Standard Time for milestones.' });
     await savedPersonalMemory.waitFor({ state: 'visible' });
-    await savedPersonalMemory.getByRole('button', { name: '删除私有记忆：Prefers concise Mandarin updates and uses China Standard Time for milestones.' }).click();
+    await savedPersonalMemory.getByRole('button', { name: '删除私有记忆：Prefers concise Mandarin updates and China Standard Time for milestones.' }).click();
     await alphaPage!.getByTestId('personal-dot-memory-manager').getByTestId('empty-personal-dot-memory-list').waitFor({ state: 'visible' });
   });
 
@@ -3367,6 +3456,63 @@ try {
     await card.getByText('The second Google account used the Coke Dots instance Model API configuration.', { exact: true }).waitFor({ state: 'visible' });
     await waitFor(() => mockModelPrompts.slice(promptCount).some(prompt => prompt.includes(instruction)), 10_000);
     await screenshot(betaPage!, 'model-api-shared-with-second-google-account');
+  });
+
+  await recordStep('Chrome connects Gmail with a separate read-only grant and the Dot summarizes requested mail', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await connectGmail(alphaPage!);
+    const betaGmail = await betaPage!.evaluate(async () => await (await fetch('/api/gmail')).json()) as { connected: boolean; connection: unknown };
+    assert.deepEqual(betaGmail, { configured: true, connected: false, connection: null }, 'A second Google account must not inherit Alpha’s personal Gmail authorization');
+    await alphaPage!.getByRole('button', { name: '新聊天', exact: true }).click();
+    const instruction = 'Gmail E2E task — summarize the latest 2 emails';
+    await createTask(alphaPage!, instruction);
+    await alphaPage!.getByText('我从只读 Gmail 连接中读取了两封邮件：客户确认了产品发布安排。', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+    const messagesRead = mockGoogleGmailRequests.filter(item => item.path === '/gmail/v1/users/me/messages');
+    const detailReads = mockGoogleGmailRequests.filter(item => /\/gmail\/v1\/users\/me\/messages\/gmail-e2e-[12]$/.test(item.path));
+    assert.equal(messagesRead.length, 1);
+    assert.equal(new URLSearchParams(messagesRead[0]!.query).get('q'), 'in:inbox');
+    assert.equal(new URLSearchParams(messagesRead[0]!.query).get('maxResults'), '2');
+    assert.equal(detailReads.length, 2, 'The authorized read should fetch only the two requested emails');
+    const database = new DatabaseSync(join(testDataDir, 'dots.db'));
+    try {
+      const connection = database.prepare('SELECT email,scopes_json FROM gmail_connections WHERE user_id=?').get(oauthTestState.alphaSession!.user.id) as { email: string; scopes_json: string } | undefined;
+      assert(connection);
+      assert.deepEqual({ email: connection.email, scopes_json: connection.scopes_json }, { email: 'alpha@gmail.com', scopes_json: '["https://www.googleapis.com/auth/gmail.readonly"]' });
+      assert.equal((database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('gmail_connections','gmail_oauth_flows')").get() as { count: number }).count, 2);
+      assert.doesNotMatch(JSON.stringify(connection), /mock-google-(?:access|refresh)-token/);
+    } finally { database.close(); }
+  });
+
+  await recordStep('Disconnecting Gmail removes its per-account authorization and blocks later reads', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('gmail-disconnect').click();
+    await alphaPage!.getByTestId('gmail-connection-card').getByText('尚未连接 Gmail', { exact: true }).waitFor({ state: 'visible' });
+    const disconnected = await alphaPage!.evaluate(async () => await (await fetch('/api/gmail')).json()) as { connected: boolean; connection: unknown };
+    assert.deepEqual(disconnected, { configured: true, connected: false, connection: null });
+    const userId = oauthTestState.alphaSession!.user.id;
+    const tenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    const verification = new DatabaseSync(join(testDataDir, 'dots.db'));
+    try {
+      const row = verification.prepare('SELECT count(*) AS count FROM gmail_connections WHERE user_id=?').get(userId) as { count: number };
+      assert.equal(row.count, 0, 'Disconnect must remove Gmail metadata as well as its Keychain refresh token');
+    } finally { verification.close(); }
+    const key = `user-${Buffer.from(userId).toString('base64url')}-gmail-refresh-token`;
+    assert.notEqual(new Entry(testKeychainService, key).getPassword(), 'mock-google-refresh-token', 'Disconnect must erase the per-user Keychain refresh token');
+    const gmailRequestCount = mockGoogleGmailRequests.length;
+    const modelPromptCount = mockModelPrompts.length;
+    await alphaPage!.getByRole('button', { name: '新聊天', exact: true }).click();
+    const instruction = 'Gmail E2E task — summarize the latest 2 emails after disconnect';
+    await createTask(alphaPage!, instruction);
+    await alphaPage!.getByText('要读取邮件，请先到“你的 dot”设置中连接 Gmail（只读），然后重试。', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 });
+    assert.equal(mockGoogleGmailRequests.length, gmailRequestCount, 'A disconnected task must not call the Gmail API');
+    assert.equal(mockModelPrompts.length, modelPromptCount, 'A disconnected task must wait before sending any prompt to an Agent');
+    assert(tenantId);
+    const state = new DatabaseSync(join(testDataDir, 'dots.db'));
+    try {
+      const task = state.prepare('SELECT status FROM tasks WHERE tenant_id=? AND instruction=? ORDER BY created_at DESC LIMIT 1').get(tenantId, instruction) as { status: string } | undefined;
+      assert.equal(task?.status, 'waiting');
+    } finally { state.close(); }
   });
 
   await recordStep('Pi researches a public page through its native tool and renders the result in Chrome', async () => {
