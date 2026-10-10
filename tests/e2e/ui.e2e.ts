@@ -272,17 +272,23 @@ async function waitForComputerScreenshot(page: Page) {
 
 async function clickComputerScreen(page: Page, x: number, y: number) {
   const image = page.getByAltText('独立浏览器画面');
-  await waitForComputerScreenshot(page);
-  const measurements = await image.evaluate(element => {
-    const box = element.getBoundingClientRect();
-    const screenshot = element as HTMLImageElement;
-    return { left: box.left, top: box.top, width: box.width, height: box.height, naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight };
-  });
-  assert(measurements.width > 0 && measurements.height > 0 && measurements.naturalWidth > 0 && measurements.naturalHeight > 0, 'Computer screenshot has no measurable image area');
-  const scale = Math.min(measurements.width / measurements.naturalWidth, measurements.height / measurements.naturalHeight);
-  const offsetX = (measurements.width - measurements.naturalWidth * scale) / 2;
-  const offsetY = (measurements.height - measurements.naturalHeight * scale) / 2;
-  await page.mouse.click(measurements.left + offsetX + x * scale, measurements.top + offsetY + y * scale);
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await waitForComputerScreenshot(page);
+    const measurements = await image.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const screenshot = element as HTMLImageElement;
+      return { left: box.left, top: box.top, width: box.width, height: box.height, naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight };
+    });
+    if (measurements.width > 0 && measurements.height > 0 && measurements.naturalWidth > 0 && measurements.naturalHeight > 0) {
+      const scale = Math.min(measurements.width / measurements.naturalWidth, measurements.height / measurements.naturalHeight);
+      const offsetX = (measurements.width - measurements.naturalWidth * scale) / 2;
+      const offsetY = (measurements.height - measurements.naturalHeight * scale) / 2;
+      await page.mouse.click(measurements.left + offsetX + x * scale, measurements.top + offsetY + y * scale);
+      return;
+    }
+    await page.waitForTimeout(100);
+  }
+  assert.fail('Computer screenshot stayed unmeasurable during its periodic refresh');
 }
 
 async function clickNav(page: Page, label: string) {
