@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
-import { configuredDesktopImage, desktopResourceIdentity, desktopResources, isPinnedDesktopImageReference, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
+import { configuredDesktopImage, desktopResourceIdentity, desktopResources, isPinnedDesktopImageReference, KubectlDesktopConnector, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
 
 test('Linux desktop resources isolate tenant namespaces and never publish CDP', () => {
   const alpha = desktopResourceIdentity('alpha-workspace');
@@ -56,6 +56,134 @@ test('production cloud computers reject mutable worker tags and expose the selec
   } finally {
     if (originalEnvironment === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = originalEnvironment;
     if (originalImage === undefined) delete process.env.DOTS_LINUX_DESKTOP_IMAGE; else process.env.DOTS_LINUX_DESKTOP_IMAGE = originalImage;
+  }
+});
+
+test('Kubernetes reconciliation reconnects only when the Deployment generation changes', async () => {
+  const envKeys = ['KUBERNETES_SERVICE_HOST', 'DOTS_LINUX_DESKTOP_FORCE_PORT_FORWARD', 'DOTS_LINUX_DESKTOP_TOKEN_SECRET'] as const;
+  const previousEnvironment = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+  process.env.KUBERNETES_SERVICE_HOST = 'kubernetes.default.svc';
+  delete process.env.DOTS_LINUX_DESKTOP_FORCE_PORT_FORWARD;
+  process.env.DOTS_LINUX_DESKTOP_TOKEN_SECRET = 'test-only-token-signing-key-that-is-long-enough';
+  let generation = 7;
+  let changeGenerationOnApply = false;
+  const calls: string[][] = [];
+  const connector = new KubectlDesktopConnector(async args => {
+    calls.push(args);
+    if (args.includes('get') && args.includes('deployment')) return String(generation);
+    if (args[0] === 'apply') {
+      if (changeGenerationOnApply) { generation += 1; changeGenerationOnApply = false; }
+      return 'deployment.apps/desktop configured';
+    }
+    return 'deployment/desktop successfully rolled out';
+  });
+
+  try {
+    await connector.connect('tenant-generation-test');
+    assert.equal(await connector.reconcile('tenant-generation-test'), false, 'Metadata-only apply output must not invalidate the worker connection');
+    changeGenerationOnApply = true;
+    assert.equal(await connector.reconcile('tenant-generation-test'), true, 'A changed Deployment generation must invalidate the cached connection');
+    assert.equal(calls.filter(args => args[0] === 'apply').length, 6);
+  } finally {
+    await connector.close();
+    for (const key of envKeys) {
+      const value = previousEnvironment[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('cached tenant desktop reconciles once and reconnects after a real generation change', async () => {
+  let generationChanged = false;
+  let connects = 0;
+  let reconciles = 0;
+  let closes = 0;
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ready: true, owner: 'agent', url: 'about:blank', title: `Generation ${connects}` }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const connector: DesktopConnector = {
+    async connect() {
+      connects += 1;
+      const url = new URL(`http://127.0.0.1:${address.port}/`);
+      return { workerUrl: url, novncUrl: url, agentUrl: url, workerToken: 'worker', agentToken: 'agent' };
+    },
+    async reconcile() { reconciles += 1; return generationChanged; },
+    async close() { closes += 1; },
+  };
+  const computer = new LinuxDesktopComputer('tenant-generation-cache', connector, 0);
+  try {
+    assert.equal((await computer.state()).title, 'Generation 1');
+    assert.equal((await computer.state()).title, 'Generation 1');
+    assert.equal(connects, 1, 'No Pod template change should keep the current worker connection');
+    assert.equal(reconciles, 1, 'Concurrent request paths should not reconcile twice for the same interval');
+
+    generationChanged = true;
+    assert.equal((await computer.state()).title, 'Generation 2');
+    assert.equal(connects, 2, 'A changed Pod template should close the stale connection and wait for rollout');
+    assert.equal(closes, 1);
+  } finally {
+    await computer.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('Linux desktop never replays a command after a port-forward transport failure', async () => {
+  let commandCount = 0;
+  const failedWorker = createServer((req, res) => {
+    if (req.url === '/v1/commands' && req.method === 'POST') {
+      commandCount += 1;
+      res.destroy();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ready: true, owner: 'agent', url: 'about:blank', title: 'Recovered desktop' }));
+  });
+  await new Promise<void>(resolve => failedWorker.listen(0, '127.0.0.1', resolve));
+  const firstAddress = failedWorker.address();
+  assert(firstAddress && typeof firstAddress !== 'string');
+
+  async function startRecoveredWorker() {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ready: true, owner: 'agent', url: 'about:blank', title: 'Recovered desktop' }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert(address && typeof address !== 'string');
+    return { server, port: address.port };
+  }
+
+  let workerPort = firstAddress.port;
+  let connectionCount = 0;
+  const connector: DesktopConnector = {
+    async connect() {
+      connectionCount += 1;
+      const workerUrl = new URL(`http://127.0.0.1:${workerPort}/`);
+      return { workerUrl, novncUrl: workerUrl, agentUrl: workerUrl, workerToken: 'worker', agentToken: 'agent' };
+    },
+    async close() {},
+  };
+  const computer = new LinuxDesktopComputer('tenant-no-replay', connector);
+  let recovered: Awaited<ReturnType<typeof startRecoveredWorker>> | null = null;
+  try {
+    await assert.rejects(computer.open('Dot'), /fetch failed/);
+    assert.equal(commandCount, 1, 'An open command with an unknown delivery result must never be replayed');
+    assert.equal(connectionCount, 1, 'Unsafe writes must not trigger an automatic retry');
+
+    await new Promise<void>((resolve, reject) => failedWorker.close(error => error ? reject(error) : resolve()));
+    recovered = await startRecoveredWorker();
+    workerPort = recovered.port;
+    assert.equal((await computer.state()).title, 'Recovered desktop');
+    assert.equal(connectionCount, 2, 'The next safe read can establish a new connection');
+  } finally {
+    await computer.close();
+    if (failedWorker.listening) await new Promise<void>(resolve => failedWorker.close(() => resolve()));
+    if (recovered?.server.listening) await new Promise<void>(resolve => recovered!.server.close(() => resolve()));
   }
 });
 

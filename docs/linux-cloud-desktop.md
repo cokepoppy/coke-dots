@@ -29,6 +29,8 @@ DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE=<namespace containing the Coke Dots service
 
 The connector applies only the tenant namespace and desktop resources, waits for the desktop Deployment, then creates loopback-only `kubectl port-forward` connections. For an in-cluster Coke Dots service, it uses the desktop Service DNS name instead. Keep the token secret in a local environment file or OS credential store; do not commit it.
 
+While a tenant desktop is in use, the control plane re-applies that tenant's declared resources at most once per minute. It compares the Kubernetes Deployment generation before and after apply; metadata-only updates keep the existing Pod and connection, while a changed Pod template closes the cached connection and waits for the replacement rollout. Transient reconciliation errors are logged with a tenant hash and retried after a short backoff without taking down a working desktop. A failed safe `GET` can rebuild a stale port-forward and retry once; browser commands and control-changing `POST`s are never replayed because their delivery may be unknown.
+
 The Service exposes noVNC (6080), the restricted browser Worker (8082), and the Agent runtime (8083). Chromium CDP (9222) is not exposed by the Service and listens on loopback inside the Pod. The Worker offers only navigation, click, type, key, screenshot, state, and control operations. Human input is enabled only after takeover.
 
 ## Agent kernel adapter contract
