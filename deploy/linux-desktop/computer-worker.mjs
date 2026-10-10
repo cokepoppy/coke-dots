@@ -4,7 +4,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
-import { createRendererHealthMonitor, RendererUnresponsiveError } from './renderer-health.mjs';
+import { BrowserContextUnavailableError, createRendererHealthMonitor, RendererUnresponsiveError, waitForDefaultBrowserContext } from './renderer-health.mjs';
 
 const exec = promisify(execFile);
 const token = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
@@ -12,6 +12,8 @@ const port = Number(process.env.COKE_DESKTOP_WORKER_PORT || 8082);
 const resolution = String(process.env.COKE_DESKTOP_RESOLUTION || '1440x900').split('x').map(Number);
 let owner = 'agent';
 let browser;
+let browserConnection;
+let pageInitialization;
 const rendererHealth = createRendererHealthMonitor();
 const rendererUnresponsiveMessage = new RendererUnresponsiveError(3_000).message;
 let rendererProbeFailures = 0;
@@ -19,11 +21,48 @@ let rendererRecovery = null;
 
 if (!token) throw new Error('LINUX_DESKTOP_WORKER_TOKEN is required');
 
+async function connectedBrowser() {
+  if (browser && !browser.isConnected()) {
+    browser = undefined;
+    rendererHealth.reset();
+  }
+  if (browser) return browser;
+  if (!browserConnection) {
+    const pending = chromium.connectOverCDP('http://127.0.0.1:9222').then(connected => {
+      browser = connected;
+      connected.on('disconnected', () => {
+        if (browser === connected) {
+          browser = undefined;
+          rendererHealth.reset();
+        }
+      });
+      return connected;
+    }).finally(() => {
+      if (browserConnection === pending) browserConnection = undefined;
+    });
+    browserConnection = pending;
+  }
+  return browserConnection;
+}
+
 async function page() {
-  if (browser && !browser.isConnected()) browser = undefined;
-  if (!browser) browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
-  const context = browser.contexts()[0];
-  return context.pages()[0] || context.newPage();
+  if (pageInitialization) return pageInitialization;
+  const pending = (async () => {
+    const connected = await connectedBrowser();
+    let context;
+    try { context = await waitForDefaultBrowserContext(connected); }
+    catch (error) {
+      if (error instanceof BrowserContextUnavailableError) {
+        rendererHealth.fail();
+        void recoverChromium();
+      }
+      throw error;
+    }
+    return context.pages()[0] || await context.newPage();
+  })();
+  pageInitialization = pending;
+  try { return await pending; }
+  finally { if (pageInitialization === pending) pageInitialization = undefined; }
 }
 
 async function rendererResponds() {
