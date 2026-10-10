@@ -409,6 +409,16 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
   const kernelAdapters = Object.fromEntries(agentEngines.split(',').filter(Boolean).map(engine => [engine, kernels[engine] || builtInAdapter]));
   const objects: Record<string, unknown>[] = [
     {
+      apiVersion: 'v1', kind: 'ResourceQuota', metadata: { name: 'desktop-resource-budget', namespace },
+      spec: {
+        hard: {
+          pods: '1',
+          'requests.cpu': '750m', 'requests.memory': '1408Mi',
+          'limits.cpu': '2', 'limits.memory': '2Gi',
+        },
+      },
+    },
+    {
       apiVersion: 'v1', kind: 'Secret', metadata: { name: 'desktop-runtime', namespace }, type: 'Opaque',
       stringData: { LINUX_DESKTOP_WORKER_TOKEN: workerToken, DOTS_AGENT_RUNTIME_TOKEN: agentToken },
     },
@@ -454,7 +464,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 startupProbe: { httpGet: { path: '/healthz', port: 'worker' }, periodSeconds: 5, timeoutSeconds: 5, failureThreshold: 36 },
                 readinessProbe: { httpGet: { path: '/readyz', port: 'worker' }, periodSeconds: 5, timeoutSeconds: 5, failureThreshold: 2 },
                 livenessProbe: { httpGet: { path: '/healthz', port: 'worker' }, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 3 },
-                resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
+                resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '1500m', memory: '1280Mi' } },
                 securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: ['ALL'] } },
                 volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'shm', mountPath: '/dev/shm' }, { name: 'tmp', mountPath: '/tmp' }],
               },
@@ -485,7 +495,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 ports: [{ name: 'agent', containerPort: 8083 }],
                 readinessProbe: { httpGet: { path: '/healthz', port: 'agent' }, initialDelaySeconds: 5, periodSeconds: 5, timeoutSeconds: 5, failureThreshold: 36 },
                 livenessProbe: { httpGet: { path: '/healthz', port: 'agent' }, initialDelaySeconds: 15, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 3 },
-                resources: { requests: { cpu: '250m', memory: '384Mi' }, limits: { cpu: '2', memory: '2Gi' } },
+                resources: { requests: { cpu: '250m', memory: '384Mi' }, limits: { cpu: '500m', memory: '768Mi' } },
                 securityContext: { runAsNonRoot: true, runAsUser: 1001, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
                 volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'agent-tmp', mountPath: '/tmp' }],
               },

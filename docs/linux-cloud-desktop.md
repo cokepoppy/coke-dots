@@ -33,6 +33,10 @@ Production refuses mutable tags such as `dev`, `latest`, or `test`. The generate
 
 The connector applies only the tenant namespace and desktop resources, waits for the desktop Deployment, then creates loopback-only `kubectl port-forward` connections. For an in-cluster Coke Dots service, it uses the desktop Service DNS name instead. Keep the token secret in a local environment file or OS credential store; do not commit it.
 
+## Per-tenant resource budget
+
+Each tenant namespace has a `ResourceQuota` for one Pod containing the visible desktop and isolated Agent runtime. Together they request 750m CPU and 1408Mi memory, with limits of 2 CPU and 2Gi memory. The desktop container is capped at 1500m CPU / 1280Mi memory; the Agent container at 500m / 768Mi. Three Dots tenants therefore have a combined maximum of 6 CPU and 6Gi memory on the 10 CPU / 7.75Gi K3D node measured during the 2026-10-10 outage. The quota bounds Dots workloads; it does not constrain the other namespaces or provide node isolation, so unrelated Pods still need realistic requests and limits for reliable scheduling.
+
 The Service exposes noVNC (6080), the restricted browser Worker (8082), and the Agent runtime (8083). Chromium CDP (9222) is not exposed by the Service and listens on loopback inside the Pod. The Worker offers only navigation, click, type, key, screenshot, state, and control operations. Human input is enabled only after takeover.
 
 ## Agent kernel runtime

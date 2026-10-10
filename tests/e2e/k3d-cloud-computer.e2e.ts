@@ -211,6 +211,16 @@ try {
       livenessProbe?: { httpGet?: { path?: string }; timeoutSeconds?: number; failureThreshold?: number };
     }[] } } };
   };
+  const resourceQuota = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'resourcequota', 'desktop-resource-budget', '-o', 'json'])) as {
+    spec: { hard: Record<string, string> };
+    status: { hard: Record<string, string>; used: Record<string, string> };
+  };
+  assert.deepEqual(resourceQuota.spec.hard, {
+    pods: '1',
+    'requests.cpu': '750m', 'requests.memory': '1408Mi',
+    'limits.cpu': '2', 'limits.memory': '2Gi',
+  }, 'Each live tenant must have a quota covering both desktop containers');
+  assert.equal(resourceQuota.status.used.pods, '1', 'The tenant quota must account for the provisioned desktop Pod');
   assert.equal(deployment.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage);
   assert.equal(deployment.spec.template.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage);
   assert.deepEqual(deployment.spec.template.spec.containers.map(container => ({ image: container.image, imagePullPolicy: container.imagePullPolicy })), [
