@@ -40,6 +40,8 @@ let page: Page | null = null;
 let appPort = 0;
 let kubectlNamespaceCreated = false;
 const logs: string[] = [];
+let e2ePhase = 'startup';
+const computerApiFailures: { phase: string; status: number; message: string }[] = [];
 
 async function configureLiveAgentKernels() {
   const sourceKeychainService = process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots';
@@ -166,7 +168,13 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 980 }, deviceScaleFactor: 1 });
   page = await context.newPage();
   page.on('pageerror', error => logs.push(`pageerror: ${error.message}`));
-  page.on('console', message => { if (message.type() === 'error') logs.push(`console: ${message.text()}`); });
+  page.on('console', message => { if (message.type() === 'error') logs.push(`console[${e2ePhase}]: ${message.text()}`); });
+  page.on('response', async response => {
+    if (response.status() < 500 || !new URL(response.url()).pathname.endsWith('/api/computer')) return;
+    const body = await response.text().catch(() => '');
+    computerApiFailures.push({ phase: e2ePhase, status: response.status(), message: body.slice(0, 240) });
+    logs.push(`response[${e2ePhase}]: GET /api/computer HTTP ${response.status()} ${body.slice(0, 240)}`);
+  });
   tenantId = await signIn(page);
   namespace = desktopResourceIdentity(tenantId).namespace;
   assertNamespaceIsNew(namespace);
@@ -183,7 +191,7 @@ try {
   });
   console.log(`Computer API returned HTTP ${computerStatus.status}${computerStatus.body.error ? ` (${computerStatus.body.error})` : ''}`);
   assert.equal(computerStatus.status, 200, 'The cloud computer API must connect to the tenant desktop');
-  const desktopPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
+  let desktopPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert(desktopPod, `The tenant namespace ${namespace} must contain its desktop Pod`);
   const desktopUid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'id', '-u']);
   const agentUid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'id', '-u']);
@@ -194,7 +202,14 @@ try {
   const expectedWorkerImage = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
   const deployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as {
     metadata: { annotations?: Record<string, string> };
-    spec: { template: { metadata: { annotations?: Record<string, string> }; spec: { containers: { name: string; image: string; imagePullPolicy: string }[] } } };
+    spec: { template: { metadata: { annotations?: Record<string, string> }; spec: { containers: {
+      name: string;
+      image: string;
+      imagePullPolicy: string;
+      startupProbe?: { httpGet?: { path?: string }; timeoutSeconds?: number; failureThreshold?: number };
+      readinessProbe?: { httpGet?: { path?: string }; timeoutSeconds?: number; failureThreshold?: number };
+      livenessProbe?: { httpGet?: { path?: string }; timeoutSeconds?: number; failureThreshold?: number };
+    }[] } } };
   };
   assert.equal(deployment.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage);
   assert.equal(deployment.spec.template.metadata.annotations?.['coke-dots.io/desktop-image'], expectedWorkerImage);
@@ -203,6 +218,18 @@ try {
     { image: expectedWorkerImage, imagePullPolicy: process.env.DOTS_LINUX_DESKTOP_IMAGE_PULL_POLICY || 'IfNotPresent' },
   ]);
   assert.deepEqual(deployment.spec.template.spec.containers.map(container => container.name), ['desktop', 'agent-runtime']);
+  const desktopContainer = deployment.spec.template.spec.containers.find(container => container.name === 'desktop');
+  const agentContainer = deployment.spec.template.spec.containers.find(container => container.name === 'agent-runtime');
+  assert.equal(desktopContainer?.startupProbe?.httpGet?.path, '/healthz');
+  assert.equal(desktopContainer?.startupProbe?.timeoutSeconds, 5, 'The live Deployment must use the intended Chromium startup probe timeout');
+  assert.equal(desktopContainer?.readinessProbe?.httpGet?.path, '/readyz');
+  assert.equal(desktopContainer?.readinessProbe?.timeoutSeconds, 5, 'The live Deployment must allow the bounded renderer probe to finish');
+  assert.equal(desktopContainer?.readinessProbe?.failureThreshold, 2, 'The live Deployment must remove an unresponsive renderer from endpoints promptly');
+  assert.equal(desktopContainer?.livenessProbe?.httpGet?.path, '/healthz');
+  assert.equal(desktopContainer?.livenessProbe?.timeoutSeconds, 5);
+  assert.equal(desktopContainer?.livenessProbe?.failureThreshold, 3);
+  assert.equal(agentContainer?.readinessProbe?.timeoutSeconds, 5, 'The live Agent probe must use the committed resource policy');
+  assert.equal(agentContainer?.livenessProbe?.timeoutSeconds, 5);
   const pod = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'pod', desktopPod, '-o', 'json'])) as {
     status: { containerStatuses: { name: string; imageID: string }[] };
   };
@@ -531,6 +558,7 @@ try {
     "socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: 'while (true) {}', awaitPromise: false } }));",
     "setTimeout(() => { socket.close(); process.exit(0); }, 150);",
   ].join('\n');
+  e2ePhase = 'renderer-hang-recovery';
   const originalChromiumPid = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'cat', '/tmp/dots-chrome.pid']);
   command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'desktop', '--', 'node', '--input-type=module', '-e', rendererHangScript]);
   console.log('Injected a renderer-only hang into the disposable E2E tenant');
@@ -576,17 +604,58 @@ try {
   assert.equal(agentHealth.body?.runtime, 'dots-agent-runtime', 'The Agent runtime must remain available during renderer recovery');
   console.log('Chromium renderer recovered in place; Agent runtime process and tenant workspace remained available');
 
+  // Simulate the production drift observed during the incident: a newer worker
+  // image running under an old one-second Kubernetes readiness probe. The
+  // API's safe GET must reconnect after the resulting Pod replacement, re-apply
+  // the authoritative tenant resources, and recover without losing its PVC.
+  e2ePhase = 'probe-drift-recovery';
+  command(['kubectl', '-n', namespace, 'patch', 'deployment', 'desktop', '--type=strategic', '--patch', JSON.stringify({
+    spec: { template: { spec: { containers: [{ name: 'desktop', readinessProbe: { timeoutSeconds: 1, failureThreshold: 36 } }] } } },
+  })]);
+  console.log('Injected the legacy one-second readiness probe into the disposable tenant');
+  const staleProbeDeployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as typeof deployment;
+  const staleDesktopContainer = staleProbeDeployment.spec.template.spec.containers.find(container => container.name === 'desktop');
+  assert.equal(staleDesktopContainer?.readinessProbe?.timeoutSeconds, 1, 'The isolated test must reproduce the stale one-second readiness probe');
+  assert.equal(staleDesktopContainer?.readinessProbe?.failureThreshold, 36);
+  console.log('Confirmed the tenant Deployment now contains the injected 1-second/36-failure probe');
+  command(['kubectl', '-n', namespace, 'rollout', 'status', 'deployment/desktop', '--timeout=180s']);
+  e2ePhase = 'safe-state-reconnect';
+  const beforeProbeReconcilePod = desktopPod;
+  const reconciledState = await page.evaluate(async () => {
+    const response = await fetch('/api/computer', { signal: AbortSignal.timeout(240_000) });
+    return { status: response.status, body: await response.json() as { backend?: string; error?: string; title?: string } };
+  });
+  console.log(`Safe computer-state GET after Pod replacement returned HTTP ${reconciledState.status}; title=${reconciledState.body.title || '(empty)'}${reconciledState.body.error ? `; error=${reconciledState.body.error}` : ''}`);
+  assert.equal(reconciledState.status, 200, `A safe state GET must recover after Pod replacement and re-provisioning: ${reconciledState.body.error || ''}`);
+  assert.equal(reconciledState.body.backend, 'linux-desktop');
+  assert.equal(reconciledState.body.title, 'Welcome back, Roger', 'The cloud computer must restore its page after manifest reconciliation');
+  desktopPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
+  assert.notEqual(desktopPod, beforeProbeReconcilePod, 'Re-applying the authoritative resource spec must replace the drifted Pod');
+  const reconciledDeployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as typeof deployment;
+  const reconciledDesktopContainer = reconciledDeployment.spec.template.spec.containers.find(container => container.name === 'desktop');
+  assert.equal(reconciledDesktopContainer?.readinessProbe?.timeoutSeconds, 5, 'A stale live probe must be reconciled to the 5-second source value');
+  assert.equal(reconciledDesktopContainer?.readinessProbe?.failureThreshold, 2);
+  const persistedAfterProbeReconcile = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]);
+  assert.equal(persistedAfterProbeReconcile, workspaceArtifact, 'Probe reconciliation must preserve the tenant workspace PVC');
+  await writeFile(join(artifacts, 'cloud-computer-probe-reconciliation.json'), `${JSON.stringify({
+    before: { pod: beforeProbeReconcilePod, readinessTimeoutSeconds: 1, readinessFailureThreshold: 36 },
+    after: { pod: desktopPod, readinessTimeoutSeconds: reconciledDesktopContainer?.readinessProbe?.timeoutSeconds, readinessFailureThreshold: reconciledDesktopContainer?.readinessProbe?.failureThreshold, stateStatus: reconciledState.status, title: reconciledState.body.title, persistedWorkspace: true },
+    computerApiFailures,
+  }, null, 2)}\n`);
+  console.log('A drifted one-second readiness probe was reconciled on the safe GET reconnect; the replacement desktop returned HTTP 200 and retained tenant workspace data');
+
   command(['kubectl', '-n', namespace, 'delete', 'pod', desktopPod, '--wait=true', '--timeout=90s']);
   command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', 'pod', '-l', 'app=desktop', '--timeout=120s']);
   const restartedPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive a cloud computer Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', 'Chromium renderer hang triggers Chromium-only restart', 'Agent runtime and workspace remain available during renderer recovery', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'live Kubernetes startup/readiness/liveness probe contract', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', 'Chromium renderer hang triggers Chromium-only restart', 'safe GET reconnect reconciles stale Kubernetes probes and preserves the workspace PVC', 'Agent runtime and workspace remain available during renderer recovery', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
   logs.push(`Failure diagnostics: appServerExit=${appServer?.exitCode ?? 'running'} health=${health} page=${page?.url() ?? 'unavailable'}`);
-  if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
+  if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true, timeout: 10_000 }).catch(() => undefined);
+  console.error(`K3D cloud-computer E2E failed: ${error instanceof Error ? error.message : String(error)}`);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
 } finally {
   agentPortForward?.kill('SIGTERM');
@@ -594,8 +663,17 @@ try {
   await page?.context().close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
   if (appServer && appServer.exitCode === null) {
+    const exited = new Promise<void>(resolvePromise => appServer!.once('exit', () => resolvePromise()));
     appServer.kill('SIGTERM');
-    await new Promise(resolvePromise => appServer!.once('exit', resolvePromise));
+    const gracefulShutdown = await Promise.race([
+      exited.then(() => true),
+      new Promise<boolean>(resolvePromise => setTimeout(() => resolvePromise(false), 10_000)),
+    ]);
+    if (!gracefulShutdown && appServer.exitCode === null) {
+      logs.push('Test server did not exit after SIGTERM; forcing exit to finish isolated E2E cleanup');
+      appServer.kill('SIGKILL');
+      await Promise.race([exited, new Promise<void>(resolvePromise => setTimeout(resolvePromise, 5_000))]);
+    }
   }
   if (namespace && (kubectlNamespaceCreated || process.env.DOTS_K3D_CLEANUP_FAILED === '1')) {
     spawnSync('kubectl', ['delete', 'namespace', namespace, '--wait=true', '--timeout=120s'], { cwd: projectRoot, stdio: 'ignore' });
