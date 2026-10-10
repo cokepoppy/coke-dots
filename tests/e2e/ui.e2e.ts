@@ -1340,6 +1340,34 @@ try {
     assert(alphaCalls.every(item => item.endedAt), 'Ending each call must persist its completion time');
     assert(alphaCalls.some(item => item.durationSeconds !== null && item.durationSeconds >= 1));
 
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => {
+      const timeline = document.querySelector('.timeline');
+      const composer = document.querySelector('.composer-wrap');
+      return Boolean(timeline && timeline.scrollHeight > timeline.clientHeight + 48 && timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 48 && composer && composer.getBoundingClientRect().bottom <= window.innerHeight + 1 && document.documentElement.scrollHeight <= window.innerHeight + 1);
+    }, null, { timeout: 5_000 });
+    const timelineTimes = await alphaPage!.locator('.timeline [data-testid="chat-timeline-item"]').evaluateAll(elements => elements.map(element => Date.parse(element.getAttribute('data-timestamp') || '')));
+    assert(timelineTimes.every((time, index) => index === 0 || timelineTimes[index - 1]! <= time), 'Conversation entries and ended-call chips must appear in chronological order');
+    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 2, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
+    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 2, 'The ended-call state should retain the optional label visible in the reference');
+    await screenshot(alphaPage!, 'voice-call-ended-in-conversation');
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => {
+      const timeline = document.querySelector('.timeline');
+      const composer = document.querySelector('.composer-wrap');
+      return Boolean(timeline && timeline.scrollHeight > timeline.clientHeight + 48 && timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 48 && composer && composer.getBoundingClientRect().bottom <= window.innerHeight + 1 && document.documentElement.scrollHeight <= window.innerHeight + 1);
+    }, null, { timeout: 5_000 });
+    await screenshot(alphaPage!, 'voice-call-ended-after-reload');
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 0, null, { timeout: 10_000 });
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 2, null, { timeout: 10_000 });
+
     await selectTenant(betaPage!, 'Alpha Shared');
     const betaSharedCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));
     assert.deepEqual(betaSharedCalls, [], 'Another workspace member must not read the call owner\'s history');
