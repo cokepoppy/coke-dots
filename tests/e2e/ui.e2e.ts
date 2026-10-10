@@ -991,15 +991,49 @@ async function signInGoogle(page: Page, account: 'alpha' | 'unverified' | 'token
 
 async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   const panel = page.getByTestId('dot-context-panel');
-  await panel.getByRole('button', { name: 'Slack' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Set up Slack' });
-  await dialog.waitFor({ state: 'visible' });
+  const shell = page.getByTestId('app-shell');
+  const preferredTheme = await shell.getAttribute('data-theme') || 'light';
+  const openDialog = async () => {
+    await panel.getByRole('button', { name: 'Slack' }).click();
+    const nextDialog = page.getByRole('dialog', { name: 'Set up Slack' });
+    await nextDialog.waitFor({ state: 'visible' });
+    return nextDialog;
+  };
+  const closeDialog = async (dialog: ReturnType<typeof page.getByRole>) => {
+    await dialog.getByRole('button', { name: 'Close Slack setup' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+  };
+  const setThemeAndCapture = async (dialog: ReturnType<typeof page.getByRole>, theme: 'light' | 'dark', name: string) => {
+    const currentTheme = await shell.getAttribute('data-theme');
+    if (currentTheme !== theme) {
+      await closeDialog(dialog);
+      await toggleAccountTheme(page);
+      await page.waitForFunction(expected => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-theme') === expected, theme);
+      dialog = await openDialog();
+    }
+    const expectedDialogBackground = theme === 'dark' ? 'rgb(7, 23, 14)' : 'rgb(255, 255, 255)';
+    const expectedButtonBackground = theme === 'dark' ? 'rgb(184, 232, 210)' : 'rgb(198, 240, 223)';
+    assert.equal(await shell.getAttribute('data-theme'), theme);
+    assert.equal(await dialog.evaluate(element => getComputedStyle(element).backgroundColor), expectedDialogBackground, `Slack setup dialog should follow the ${theme} theme`);
+    assert.equal(await dialog.getByRole('button', { name: 'Add to Slack', exact: true }).evaluate(element => getComputedStyle(element).backgroundColor), expectedButtonBackground, `Slack setup action should follow the ${theme} theme`);
+    await screenshot(page, name);
+    return dialog;
+  };
+  let dialog = await openDialog();
   await page.getByTestId('slack-connect').waitFor({ state: 'visible' });
-  assert.equal(await page.getByTestId('slack-connect').innerText(), 'Select a workspace', 'The unselected Slack state should expose the observed workspace action');
+  assert.equal(await page.getByTestId('slack-connect').innerText(), 'Add to Slack', 'The unselected Slack state should expose the video-observed action');
   const workspacePlaceholder = dialog.locator('.slack-current-workspace.is-placeholder');
   await workspacePlaceholder.waitFor({ state: 'visible' });
   assert.match(await workspacePlaceholder.innerText(), /^Workspace/);
-  await screenshot(page, `${screenshotPrefix}-setup`);
+  dialog = await setThemeAndCapture(dialog, preferredTheme === 'dark' ? 'dark' : 'light', `${screenshotPrefix}-setup`);
+  if (preferredTheme === 'light') {
+    dialog = await setThemeAndCapture(dialog, 'dark', `${screenshotPrefix}-setup-dark`);
+    dialog = await setThemeAndCapture(dialog, 'light', `${screenshotPrefix}-setup-light`);
+  } else {
+    dialog = await setThemeAndCapture(dialog, 'light', `${screenshotPrefix}-setup-light`);
+    dialog = await setThemeAndCapture(dialog, 'dark', `${screenshotPrefix}-setup-dark`);
+  }
+  await page.getByTestId('slack-connect').waitFor({ state: 'visible' });
   const authorizationPage = page.waitForURL(url => url.origin === mockSlackOrigin && url.pathname === '/oauth/v2/authorize', { timeout: 10_000 });
   await page.getByTestId('slack-connect').click();
   await authorizationPage;
@@ -1028,8 +1062,9 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   assert.equal(selectedResponse.status(), 200, 'The workspace selection should be saved to this tenant');
   await dialog.getByRole('status').filter({ hasText: 'ASPI' }).waitFor({ state: 'visible' });
   await screenshot(page, `${screenshotPrefix}-connected`);
-  await dialog.getByRole('button', { name: 'Close Slack setup' }).click();
-  await dialog.waitFor({ state: 'hidden' });
+  await closeDialog(dialog);
+  if (preferredTheme === 'light' && await shell.getAttribute('data-theme') === 'dark') await toggleAccountTheme(page);
+  if (preferredTheme === 'dark' && await shell.getAttribute('data-theme') === 'light') await toggleAccountTheme(page);
 }
 
 async function sendSignedSlackMessageFromChrome(page: Page, signingSecret: string, options: { eventId?: string; eventType?: 'message' | 'app_mention'; channelType?: 'im' | 'channel'; channel?: string; text?: string; botId?: string } = {}) {

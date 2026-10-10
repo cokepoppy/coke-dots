@@ -153,7 +153,7 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
           </div>
           <p className="slack-setup-description">Choose the workspace to add {dotName} to Slack</p>
         </div>
-        {state?.configured ? <button className="slack-setup-primary" data-testid="slack-connect" type="button" disabled={!canManage} onClick={onConnectSlack}>Select a workspace</button> : <div className="slack-setup-unavailable" role="status">Slack connection is not configured for this build.</div>}
+        {state?.configured ? <button className="slack-setup-primary" data-testid="slack-connect" type="button" disabled={!canManage} onClick={onConnectSlack}>Add to Slack</button> : <div className="slack-setup-unavailable" role="status">Slack connection is not configured for this build.</div>}
         {!canManage && <p className="slack-setup-readonly">Ask a workspace owner or admin to connect Slack.</p>}
       </>}
       {error && <p className="slack-setup-error" role="alert">{error}<button type="button" aria-label="Retry Slack workspace loading" onClick={() => void refresh()}>Retry</button></p>}
