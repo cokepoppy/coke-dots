@@ -12,6 +12,8 @@ export declare class BrowserContextUnavailableError extends RendererUnresponsive
   constructor(timeoutMs?: number);
 }
 
+export declare function isBrowserContextUnavailableError(error: unknown): error is BrowserContextUnavailableError;
+
 export interface CdpBrowserLike {
   isConnected(): boolean;
   contexts(): Array<unknown>;

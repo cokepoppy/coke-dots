@@ -4,7 +4,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
-import { BrowserContextUnavailableError, createRendererHealthMonitor, RendererUnresponsiveError, waitForDefaultBrowserContext } from './renderer-health.mjs';
+import { BrowserContextUnavailableError, createRendererHealthMonitor, isBrowserContextUnavailableError, RendererUnresponsiveError, waitForDefaultBrowserContext } from './renderer-health.mjs';
 import { computerWelcomePage } from './computer-home.mjs';
 import { fetchPublicPageHtml, isE2EBrowserResearchFixture, isE2EWebsiteSignInFixture, validatePublicHttpsUrl } from './public-web-policy.mjs';
 
@@ -60,7 +60,7 @@ async function page() {
     let context;
     try { context = await waitForDefaultBrowserContext(connected); }
     catch (error) {
-      if (!(error instanceof BrowserContextUnavailableError)) throw error;
+      if (!isBrowserContextUnavailableError(error)) throw error;
       rendererHealth.fail();
       void recoverChromium();
       throw error;
@@ -268,7 +268,7 @@ const server = http.createServer(async (req, res) => {
         if (!agent.ok) return send(res, 503, { ok: false });
         return send(res, 200, { ok: true });
       } catch (error) {
-        const contextUnavailable = error instanceof BrowserContextNotReadyError;
+        const contextUnavailable = isBrowserContextUnavailableError(error);
         return send(res, 503, { ok: false, ...(contextUnavailable ? { code: error.code, error: error.message } : {}) });
       }
     }

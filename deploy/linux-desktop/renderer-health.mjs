@@ -17,6 +17,10 @@ export class BrowserContextUnavailableError extends RendererUnresponsiveError {
   }
 }
 
+export function isBrowserContextUnavailableError(error) {
+  return error instanceof BrowserContextUnavailableError;
+}
+
 /** Chromium can accept CDP connections before its default page context is ready. */
 export async function waitForDefaultBrowserContext(browser, { timeoutMs = 2_000, pollIntervalMs = 50 } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error('Context timeout must be a positive integer');

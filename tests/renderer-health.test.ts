@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BrowserContextUnavailableError, createRendererHealthMonitor, RendererUnresponsiveError, waitForDefaultBrowserContext } from '../deploy/linux-desktop/renderer-health.mjs';
+import { BrowserContextUnavailableError, createRendererHealthMonitor, isBrowserContextUnavailableError, RendererUnresponsiveError, waitForDefaultBrowserContext } from '../deploy/linux-desktop/renderer-health.mjs';
+
+test('worker error classification uses the exported context error after a CDP context timeout', () => {
+  assert.equal(isBrowserContextUnavailableError(new BrowserContextUnavailableError()), true);
+  assert.equal(isBrowserContextUnavailableError(new Error('unrelated worker failure')), false);
+});
 
 test('CDP context startup races are waited out instead of dereferencing an absent context', async () => {
   const expectedContext = { pages: () => [] };
