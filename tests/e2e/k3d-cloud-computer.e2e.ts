@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { PNG } from 'pngjs';
 import { Entry } from '@napi-rs/keyring';
@@ -28,13 +29,31 @@ const runLiveAgentKernels = process.env.DOTS_K3D_LIVE_AGENT_KERNELS === '1';
 let liveModelConfig: { apiKey: string; baseUrl: string; model: string } | null = null;
 const tokenSecret = randomBytes(32).toString('base64url');
 const researchFixtureUrl = 'https://research-fixture.dots.test/launch';
+const signInFixtureUrl = 'https://login-fixture.dots.test/sign-in';
 process.env.NODE_ENV = 'test';
 process.env.DOTS_E2E_AUTH = '1';
 process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL = researchFixtureUrl;
-const agentAdapterSource = "const fs=require('node:fs');let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const task=JSON.parse(input);fs.writeFileSync('runtime-persistence.txt',task.taskId);console.log(JSON.stringify({status:'done',message:'Adapter completed: '+task.prompt+'; runtime token visible to child: '+Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)}))})";
+process.env.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL = signInFixtureUrl;
+const agentAdapterSource = [
+  "const fs=require('node:fs');",
+  "let input='';",
+  "process.stdin.on('data',chunk=>input+=chunk);",
+  "process.stdin.on('end',()=>{",
+  "const task=JSON.parse(input);",
+  "fs.writeFileSync('runtime-persistence.txt',task.taskId);",
+  "const prompt=String(task.prompt||'');",
+  "let result;",
+  "if(prompt.includes('User confirmed: website sign-in was completed in the tenant computer.')) result={status:'done',message:'云电脑中的演示网站登录已由用户确认完成。'};",
+  "else if(prompt.includes('Task: E2E K3D website sign-in')) result={status:'waiting',message:'演示网站需要你完成登录。',websiteSignInRequest:{url:'https://login-fixture.dots.test/sign-in',reason:'请在云电脑中完成演示网站登录。'}};",
+  "else result={status:'done',message:'Adapter completed: '+task.prompt+'; runtime token visible to child: '+Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)};",
+  "console.log(JSON.stringify(result));",
+  "});",
+].join('\n');
 let appServer: ChildProcess | null = null;
 let agentPortForward: ChildProcess | null = null;
 let workerPortForward: ChildProcess | null = null;
+let computerCdpPortForward: ChildProcess | null = null;
+let computerCdpBrowser: Browser | null = null;
 let browser: Browser | null = null;
 let page: Page | null = null;
 let appPort = 0;
@@ -84,7 +103,7 @@ async function startApp(): Promise<ChildProcess> {
     cwd: projectRoot,
     env: {
       ...process.env,
-      NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL: researchFixtureUrl, DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(appPort),
+      NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL: researchFixtureUrl, DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL: signInFixtureUrl, DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(appPort),
       DOTS_KEYCHAIN_SERVICE: testKeychainService,
       DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_LINUX_DESKTOP_TOKEN_SECRET: tokenSecret,
       DOTS_LINUX_DESKTOP_IMAGE: process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev',
@@ -93,7 +112,7 @@ async function startApp(): Promise<ChildProcess> {
       DOTS_LINUX_DESKTOP_TEST_WORKER_URL: '', DOTS_LINUX_DESKTOP_TEST_NOVNC_URL: '', DOTS_LINUX_DESKTOP_TEST_AGENT_URL: '',
       DOTS_DESKTOP_AGENT_ADAPTERS: runLiveAgentKernels ? 'pi,dsh' : 'dsh',
       DOTS_AGENT_KERNELS_JSON: runLiveAgentKernels ? '{}' : JSON.stringify({ dsh: { command: 'node', args: ['-e', agentAdapterSource] } }),
-      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: '', DOTS_MODEL_API_KEY: '', DOTS_MODEL: '', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
+      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://k3d-e2e-model.invalid/v1', DOTS_MODEL_API_KEY: 'k3d-e2e-no-network-placeholder', DOTS_MODEL: 'k3d-e2e-no-network', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -504,13 +523,150 @@ try {
   workerPortForward = null;
   console.log('Live Debian browser displayed the sanitized public-page fixture through its authenticated research endpoint');
 
+  const signInInstruction = 'E2E K3D website sign-in';
+  await page.getByRole('button', { name: '你的 dot' }).click();
+  const computerChoice = page.getByTestId('computer-choice');
+  if (await computerChoice.isVisible()) {
+    await computerChoice.getByLabel('Your local computer').uncheck();
+    await computerChoice.getByRole('button', { name: 'Continue' }).click();
+    await computerChoice.waitFor({ state: 'hidden' });
+  }
+  const seedInstruction = 'E2E 初始化会话：只回复“已就绪”，不要访问网页。';
+  const seedTask = await page.evaluate(async instruction => {
+    const response = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ instruction, engine: 'dsh', scheduleSpec: null, attachmentIds: [] }),
+    });
+    return { status: response.status, task: await response.json() as { id?: string } };
+  }, seedInstruction);
+  assert.equal(seedTask.status, 201, 'Create a harmless remote task to enter the established conversation state');
+  assert(seedTask.task.id, 'The setup task must have a persistent ID');
+  await page.waitForFunction(async taskId => {
+    const state = await (await fetch('/api/state')).json() as { tasks: { id: string; status: string }[] };
+    return state.tasks.find(task => task.id === taskId)?.status === 'done';
+  }, seedTask.task.id, { timeout: 30_000 });
+  await page.locator('.timeline .message.user p').filter({ hasText: seedInstruction }).waitFor({ state: 'visible' });
+  await page.locator('.composer-bottom select').waitFor({ state: 'visible' });
+  await page.locator('.composer-bottom select').selectOption('dsh');
+  await page.getByTestId('task-composer').fill(signInInstruction);
+  await page.locator('button.send').click();
+  await page.locator('.timeline .message.user p').filter({ hasText: signInInstruction }).waitFor({ state: 'visible', timeout: 10_000 });
+  const signInTaskId = await page.evaluate(async instruction => {
+    const state = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction)?.id || '';
+  }, signInInstruction);
+  assert(signInTaskId, 'The cloud sign-in task must be created through the Chrome composer');
+  const signInCard = page.getByTestId('website-sign-in');
+  await signInCard.waitFor({ state: 'visible', timeout: 120_000 });
+  assert.match(await signInCard.innerText(), /login-fixture\.dots\.test/);
+  const waitingTask = await page.evaluate(async id => {
+    const state = await (await fetch('/api/state')).json() as { tasks: { id: string; status: string }[] };
+    return state.tasks.find(task => task.id === id)?.status || '';
+  }, signInTaskId);
+  assert.equal(waitingTask, 'waiting', 'The cloud Agent must pause and ask the user before website authentication');
+
+  const account = 'cloud-e2e-account@example.test';
+  const password = 'cloud-e2e-private-password-5842';
+  assert.equal(await signInCard.getByLabel('保存到密码').count(), 0, 'Shared workspaces must not expose the personal saved-password feature');
+  await signInCard.getByLabel('登录账号或邮箱').fill(account);
+  await signInCard.getByLabel('网站密码').fill(password);
+  await signInCard.getByRole('button', { name: '安全填入并打开电脑' }).click();
+  await page.locator('.computer-view').waitFor({ state: 'visible' });
+  await page.getByTestId('linux-desktop-view').waitFor({ state: 'visible', timeout: 60_000 });
+  await page.getByRole('button', { name: 'Return control' }).waitFor({ state: 'visible', timeout: 60_000 });
+  const signInComputerState = await page.evaluate(async () => await (await fetch('/api/computer')).json()) as { url: string; owner: string; title: string };
+  assert.equal(signInComputerState.url, signInFixtureUrl);
+  assert.equal(signInComputerState.owner, 'user', 'Filling the private form must hand control to the user');
+  assert.equal(signInComputerState.title, 'Demo service sign in', 'Entering credentials must not submit the website form');
+
+  const cdpPort = await freePort();
+  computerCdpPortForward = spawn('kubectl', ['-n', namespace, 'port-forward', '--address', '127.0.0.1', 'pod/' + desktopPod, cdpPort + ':9222'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let cdpPortForwardOutput = '';
+  computerCdpPortForward.stdout?.on('data', chunk => { cdpPortForwardOutput += String(chunk); });
+  computerCdpPortForward.stderr?.on('data', chunk => { cdpPortForwardOutput += String(chunk); });
+  const cdpForwardDeadline = Date.now() + 15_000;
+  while (!cdpPortForwardOutput.includes('127.0.0.1:' + cdpPort) && Date.now() < cdpForwardDeadline) {
+    if (computerCdpPortForward.exitCode !== null) throw new Error('Isolated test-only CDP port-forward exited early: ' + cdpPortForwardOutput);
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+  }
+  assert(cdpPortForwardOutput.includes('127.0.0.1:' + cdpPort), 'Isolated test-only CDP port-forward did not become ready: ' + cdpPortForwardOutput);
+  computerCdpBrowser = await chromium.connectOverCDP('http://127.0.0.1:' + cdpPort);
+  const desktopContext = computerCdpBrowser.contexts()[0];
+  assert(desktopContext, 'The test-only CDP connection must see the tenant Chromium context');
+  const desktopPage = desktopContext.pages()[0];
+  assert(desktopPage, 'The tenant Chromium page must be available for test assertions');
+  await desktopPage.locator('input[name="username"]').waitFor({ state: 'visible', timeout: 15_000 });
+  assert.equal(await desktopPage.locator('input[name="username"]').inputValue(), account);
+  assert.equal(await desktopPage.locator('input[name="password"]').inputValue(), password);
+  assert.equal(await desktopPage.locator('#status').innerText(), '', 'The website must still be waiting for the user click');
+
+  const signInButtonPoint = await desktopPage.getByRole('button', { name: 'Sign in' }).evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return {
+      x: window.screenX + (window.outerWidth - window.innerWidth) / 2 + rect.x + rect.width / 2,
+      y: window.screenY + (window.outerHeight - window.innerHeight) + rect.y + rect.height / 2,
+    };
+  });
+  assert(signInButtonPoint.x > 0 && signInButtonPoint.x < 1440 && signInButtonPoint.y > 0 && signInButtonPoint.y < 1080, 'The remote Sign in button must fit the 1440x1080 desktop: ' + JSON.stringify(signInButtonPoint));
+  const signInCanvasBounds = await page.getByTestId('linux-desktop-view').boundingBox();
+  assert(signInCanvasBounds, 'The noVNC iframe must remain visible for a real user click');
+  const signInPointer = {
+    x: signInCanvasBounds.x + signInButtonPoint.x * signInCanvasBounds.width / 1440,
+    y: signInCanvasBounds.y + signInButtonPoint.y * signInCanvasBounds.height / 1080,
+  };
+  const pointerTarget = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.getAttribute('data-testid') || '', signInPointer);
+  assert.equal(pointerTarget, 'linux-desktop-view', `The sign-in click must target the visible noVNC iframe at ${JSON.stringify(signInPointer)}`);
+  await writeFile(join(artifacts, '06-website-sign-in-before-user-click.png'), await vncCanvas.screenshot());
+  await page.mouse.click(signInPointer.x, signInPointer.y);
+  await desktopPage.waitForFunction(() => document.title === 'Login received' && document.querySelector('#status')?.textContent === 'Signed in in the Dot computer', null, { timeout: 15_000 });
+  await writeFile(join(artifacts, '07-website-sign-in-after-user-click.png'), await vncCanvas.screenshot());
+  await page.screenshot({ path: join(artifacts, '07-website-sign-in-user-control.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Return control' }).click();
+  await page.getByRole('status').filter({ hasText: 'Roger has control' }).waitFor({ state: 'visible' });
+  await page.waitForFunction(async () => {
+    const response = await fetch('/api/computer');
+    const state = await response.json() as { owner?: string };
+    return response.ok && state.owner === 'agent';
+  }, null, { timeout: 15_000 });
+  assert.equal(await desktopPage.locator('input[name="username"]').inputValue(), '', 'Returning computer control must clear the username field');
+  assert.equal(await desktopPage.locator('input[name="password"]').inputValue(), '', 'Returning computer control must clear the password field');
+
+  await page.locator('.task-links button').filter({ hasText: signInInstruction }).click();
+  const submittedSignInCard = page.getByTestId('website-sign-in');
+  await submittedSignInCard.waitFor({ state: 'visible' });
+  assert.match(await submittedSignInCard.innerText(), /登录信息已填入电脑/);
+  await submittedSignInCard.getByRole('button', { name: '我已完成登录，继续工作' }).click();
+  await page.waitForFunction(async taskId => {
+    const state = await (await fetch('/api/state')).json() as { tasks: { id: string; status: string }[] };
+    return state.tasks.find(task => task.id === taskId)?.status === 'done';
+  }, signInTaskId, { timeout: 60_000 });
+
+  const browserStateJson = JSON.stringify(await page.evaluate(async () => await (await fetch('/api/state')).json()));
+  assert(!browserStateJson.includes(account) && !browserStateJson.includes(password), 'Cloud sign-in credentials must not enter the browser-visible task state');
+  const database = new DatabaseSync(join(dataDirectory, 'dots.db'), { readOnly: true });
+  let persistedSignInData = '';
+  try {
+    persistedSignInData = JSON.stringify({
+      task: database.prepare('SELECT instruction,result,error FROM tasks WHERE id=?').get(signInTaskId),
+      entries: database.prepare('SELECT body FROM entries WHERE task_id=?').all(signInTaskId),
+      signIn: database.prepare('SELECT url,hostname,reason,status FROM website_sign_in_requests WHERE task_id=?').all(signInTaskId),
+    });
+  } finally { database.close(); }
+  assert(!persistedSignInData.includes(account) && !persistedSignInData.includes(password), 'Cloud sign-in credentials must not enter SQLite task or sign-in records');
+  await computerCdpBrowser.close();
+  computerCdpBrowser = null;
+  computerCdpPortForward.kill('SIGTERM');
+  computerCdpPortForward = null;
+  console.log('Cloud Agent requested sign-in, user submitted through noVNC, returned control, cleared credentials, and resumed the task');
+
   command(['kubectl', '-n', namespace, 'delete', 'pod', desktopPod, '--wait=true', '--timeout=90s']);
   command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', 'pod', '-l', 'app=desktop', '--timeout=120s']);
   const restartedPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive a cloud computer Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', 'cloud Agent website sign-in request, user submission through noVNC, credential clearing, and task continuation', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
   logs.push(`Failure diagnostics: appServerExit=${appServer?.exitCode ?? 'running'} health=${health} page=${page?.url() ?? 'unavailable'}`);
@@ -519,6 +675,8 @@ try {
 } finally {
   agentPortForward?.kill('SIGTERM');
   workerPortForward?.kill('SIGTERM');
+  computerCdpPortForward?.kill('SIGTERM');
+  await computerCdpBrowser?.close().catch(() => undefined);
   await page?.context().close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
   if (appServer && appServer.exitCode === null) {

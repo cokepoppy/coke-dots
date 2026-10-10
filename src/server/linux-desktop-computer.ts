@@ -392,10 +392,15 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 name, image, imagePullPolicy: pullPolicy,
                 env: [
                   { name: 'LINUX_DESKTOP_WORKER_TOKEN', valueFrom: { secretKeyRef: { name: 'desktop-runtime', key: 'LINUX_DESKTOP_WORKER_TOKEN' } } },
-                  ...(process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1' && process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL ? [
+                  ...(process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1' ? [
                     { name: 'NODE_ENV', value: 'test' },
                     { name: 'DOTS_E2E_AUTH', value: '1' },
-                    { name: 'DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL },
+                    ...(process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL ? [
+                      { name: 'DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL },
+                    ] : []),
+                    ...(process.env.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL ? [
+                      { name: 'DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL', value: process.env.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL },
+                    ] : []),
                   ] : []),
                   { name: 'COKE_DESKTOP_RESOLUTION', value: '1440x1080' },
                   { name: 'COKE_DESKTOP_VNC_AUTH_MODE', value: 'gateway' },

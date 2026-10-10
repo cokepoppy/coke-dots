@@ -40,6 +40,44 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(runtimeEnv.includes('LINUX_DESKTOP_WORKER_TOKEN'), true);
 });
 
+test('the sign-in fixture URL is confined to test-auth desktop workers', () => {
+  const keys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL', 'DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL', 'DOTS_LINUX_DESKTOP_IMAGE'] as const;
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL = '';
+  process.env.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL = 'https://login-fixture.dots.test/sign-in';
+  process.env.DOTS_LINUX_DESKTOP_IMAGE = 'coke-dots-linux-desktop:sha-0123456789abcdef0123456789abcdef01234567';
+  const desktopContainers = () => {
+    const resources = desktopResources('sign-in-fixture-tenant', 'worker-secret', 'agent-secret')[1] as { items: Record<string, any>[] };
+    const deployment = resources.items.find(item => item.kind === 'Deployment') as {
+      spec: { template: { spec: { containers: { name: string; env: { name: string; value?: string }[] }[] } } };
+    };
+    return deployment.spec.template.spec.containers;
+  };
+
+  try {
+    process.env.NODE_ENV = 'test';
+    process.env.DOTS_E2E_AUTH = '1';
+    let [desktop, runtime] = desktopContainers();
+    const desktopEnv = Object.fromEntries(desktop.env.filter(item => item.value !== undefined).map(item => [item.name, item.value]));
+    const runtimeEnv = Object.fromEntries(runtime.env.filter(item => item.value !== undefined).map(item => [item.name, item.value]));
+    assert.equal(desktopEnv.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL, 'https://login-fixture.dots.test/sign-in');
+    assert.equal(runtimeEnv.DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL, undefined, 'Website login fixtures belong only to the visible browser worker');
+
+    process.env.NODE_ENV = 'production';
+    process.env.DOTS_E2E_AUTH = '1';
+    [desktop, runtime] = desktopContainers();
+    assert.equal(desktop.env.some(item => item.name === 'DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL'), false, 'Production must never receive the E2E sign-in fixture URL');
+    assert.equal(desktop.env.some(item => item.name === 'DOTS_E2E_AUTH'), false, 'Production must not enable E2E auth in the desktop worker');
+    assert.equal(runtime.env.some(item => item.name === 'DOTS_E2E_COMPUTER_SIGNIN_FIXTURE_URL'), false);
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('production cloud computers reject mutable worker tags and expose the selected release image', () => {
   const commit = '0123456789abcdef0123456789abcdef01234567';
   const commitImage = `coke-dots-linux-desktop:sha-${commit}`;
