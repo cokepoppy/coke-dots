@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
-import { configuredDesktopAgentEngines, configuredDesktopImage, desktopResourceIdentity, desktopResources, isPinnedDesktopImageReference, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
+import { configuredDesktopAgentEngines, configuredDesktopImage, desktopResourceIdentity, desktopResources, isPinnedDesktopImageReference, KubectlDesktopConnector, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
 
 test('Linux desktop resources isolate tenant namespaces and never publish CDP', () => {
   const alpha = desktopResourceIdentity('alpha-workspace');
@@ -370,6 +370,41 @@ test('Linux desktop reconciles tenant resources while its cached worker connecti
   } finally {
     await computer.close();
     if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('Kubernetes desktop reconciliation only reconnects when the Deployment generation changes', async () => {
+  const envKeys = ['KUBERNETES_SERVICE_HOST', 'DOTS_LINUX_DESKTOP_FORCE_PORT_FORWARD', 'DOTS_LINUX_DESKTOP_TOKEN_SECRET'] as const;
+  const previousEnvironment = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+  process.env.KUBERNETES_SERVICE_HOST = 'kubernetes.default.svc';
+  delete process.env.DOTS_LINUX_DESKTOP_FORCE_PORT_FORWARD;
+  process.env.DOTS_LINUX_DESKTOP_TOKEN_SECRET = 'test-only-token-signing-key-that-is-long-enough';
+  let generation = 7;
+  let changeGenerationOnApply = false;
+  const calls: string[][] = [];
+  const connector = new KubectlDesktopConnector(async args => {
+    calls.push(args);
+    if (args.includes('get') && args.includes('deployment')) return String(generation);
+    if (args[0] === 'apply') {
+      if (changeGenerationOnApply) { generation += 1; changeGenerationOnApply = false; }
+      return 'deployment.apps/desktop configured';
+    }
+    return 'deployment/desktop successfully rolled out';
+  });
+
+  try {
+    await connector.connect('tenant-generation-test');
+    assert.equal(await connector.reconcile('tenant-generation-test'), false, 'Apply output such as "configured" must not trigger a reconnect when the Pod template generation is unchanged');
+    changeGenerationOnApply = true;
+    assert.equal(await connector.reconcile('tenant-generation-test'), true, 'A changed Deployment generation must invalidate the cached worker connection');
+    assert.equal(calls.filter(args => args[0] === 'apply').length, 6, 'Both authoritative resource documents should be applied on connect and each reconcile');
+  } finally {
+    await connector.close();
+    for (const key of envKeys) {
+      const value = previousEnvironment[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

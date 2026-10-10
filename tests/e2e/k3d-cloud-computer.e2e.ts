@@ -604,6 +604,30 @@ try {
   assert.equal(agentHealth.body?.runtime, 'dots-agent-runtime', 'The Agent runtime must remain available during renderer recovery');
   console.log('Chromium renderer recovered in place; Agent runtime process and tenant workspace remained available');
 
+  // A tenant metadata correction may make kubectl apply report "configured"
+  // without changing the desktop Pod template. It must not close the live
+  // browser tunnel or force the tenant to reconnect.
+  e2ePhase = 'metadata-drift-no-reconnect';
+  const beforeMetadataReconcileDeployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as { metadata?: { generation?: number } };
+  const beforeMetadataReconcilePod = desktopPod;
+  const reconnectEventsBefore = logs.join('').split('"event":"cloud_desktop_resource_reconnect"').length - 1;
+  command(['kubectl', 'patch', 'namespace', namespace, '--type=merge', '--patch', JSON.stringify({ metadata: { labels: { 'coke-dots.io/tenant-hash': 'stale-e2e-label' } } })]);
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 15_100));
+  const metadataReconciledState = await page.evaluate(async () => {
+    const response = await fetch('/api/computer', { signal: AbortSignal.timeout(30_000) });
+    return { status: response.status, body: await response.json() as { backend?: string; error?: string; title?: string } };
+  });
+  assert.equal(metadataReconciledState.status, 200, `Metadata-only resource reconciliation must keep the computer API available: ${metadataReconciledState.body.error || ''}`);
+  assert.equal(metadataReconciledState.body.backend, 'linux-desktop');
+  const afterMetadataReconcileDeployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as { metadata?: { generation?: number } };
+  assert.equal(afterMetadataReconcileDeployment.metadata?.generation, beforeMetadataReconcileDeployment.metadata?.generation, 'Changing namespace metadata must not change the Pod template generation');
+  const reconciledNamespace = JSON.parse(command(['kubectl', 'get', 'namespace', namespace, '-o', 'json'])) as { metadata?: { labels?: Record<string, string> } };
+  assert.equal(reconciledNamespace.metadata?.labels?.['coke-dots.io/tenant-hash'], desktopResourceIdentity(tenantId).tenantHash, 'The authoritative namespace ownership label must be restored');
+  assert.equal(command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']), beforeMetadataReconcilePod, 'Metadata-only drift must not replace the tenant desktop Pod');
+  const reconnectEventsAfter = logs.join('').split('"event":"cloud_desktop_resource_reconnect"').length - 1;
+  assert.equal(reconnectEventsAfter, reconnectEventsBefore, 'Metadata-only drift must not invalidate the worker tunnel');
+  console.log('A tenant namespace metadata correction kept the same Pod and cached worker tunnel');
+
   // Simulate the production drift observed during the incident: a newer worker
   // image running under an old one-second Kubernetes readiness probe. The
   // API state reads periodically re-apply authoritative tenant resources, even
@@ -652,7 +676,7 @@ try {
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive a cloud computer Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'live Kubernetes startup/readiness/liveness probe contract', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', 'Chromium renderer hang triggers Chromium-only restart', 'safe GET reconnect reconciles stale Kubernetes probes and preserves the workspace PVC', 'Agent runtime and workspace remain available during renderer recovery', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'live Kubernetes startup/readiness/liveness probe contract', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', 'Chromium renderer hang triggers Chromium-only restart', 'metadata-only reconciliation preserves the Pod and cached worker tunnel', 'safe GET reconnect reconciles stale Kubernetes probes and preserves the workspace PVC', 'Agent runtime and workspace remain available during renderer recovery', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
   logs.push(`Failure diagnostics: appServerExit=${appServer?.exitCode ?? 'running'} health=${health} page=${page?.url() ?? 'unavailable'}`);
