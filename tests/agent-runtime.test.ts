@@ -69,8 +69,8 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
         DOTS_AGENT_RUNTIME_TOKEN: 'agent-test-token-never-print',
         DOTS_AGENT_RUNTIME_PORT: String(runtimePort),
         DOTS_AGENT_WORKSPACE: workspace,
-        DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: process.execPath, args: [adapterPath] } }),
-        DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
+        DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: process.execPath, args: [adapterPath] }, claude: { command: '/bin/false', args: [] } }),
+        DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh,claude',
         DOTS_TEST_MARKER: markerPath,
         LINUX_DESKTOP_WORKER_PORT: String(workerPort),
         LINUX_DESKTOP_WORKER_TOKEN: 'worker-test-token',
@@ -83,7 +83,15 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     await waitFor(async () => {
       try { return (await fetch(`${runtimeUrl}/healthz`)).ok; } catch { return false; }
     });
-
+    const health = await fetch(`${runtimeUrl}/healthz`).then(response => response.json()) as { adapters?: string[] };
+    assert.deepEqual(health.adapters, ['dsh'], 'Legacy Claude configuration must not be advertised as an installed kernel');
+    const disabled = await fetch(`${runtimeUrl}/v1/tasks/run`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer agent-test-token-never-print', 'content-type': 'application/json' },
+      body: JSON.stringify({ engine: 'claude', taskId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', prompt: 'legacy attempt', cwd: 'tasks/legacy', sessionId: null }),
+    });
+    assert.equal(disabled.status, 400, 'The cloud runtime must reject Claude Code even if an old environment still lists it');
+    assert.match((await disabled.json() as { error?: string }).error || '', /not enabled for this workspace/);
     const submit = async (taskId: string, prompt: string) => {
       const response = await fetch(`${runtimeUrl}/v1/tasks/run`, {
         method: 'POST',

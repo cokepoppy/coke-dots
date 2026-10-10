@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { adapters, parseDecision } from '../src/server/adapters.ts';
 import { Store } from '../src/server/store.ts';
+import { Worker } from '../src/server/worker.ts';
 
 test('agent output must specify a real task state', () => {
   assert.equal(parseDecision('{"status":"waiting","message":"Need access"}').status, 'waiting');
@@ -31,56 +32,48 @@ test('agent can create at most three bounded delegated tasks and children cannot
   ] }));
   assert.equal(decision.status, 'delegating');
   assert.equal(decision.delegations?.length, 2);
-  const routed = parseDecision(JSON.stringify({ status: 'delegating', message: 'Route code review to Claude.', delegations: [{ title: 'Code review', instruction: 'Review the local changes.', engine: 'claude' }] }), undefined, { availableEngines: ['model', 'claude'] });
-  assert.equal(routed.delegations?.[0].engine, 'claude');
+  const routed = parseDecision(JSON.stringify({ status: 'delegating', message: 'Route cloud execution to DeepSeek Harness.', delegations: [{ title: 'Cloud task', instruction: 'Use the tenant cloud computer.', engine: 'dsh' }] }), undefined, { availableEngines: ['model', 'pi', 'dsh'] });
+  assert.equal(routed.delegations?.[0].engine, 'dsh');
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Route to an unsupported engine.', delegations: [{ title: 'Review', instruction: 'Review the local changes.', engine: 'claude' }] })), /不可用的内核/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Route to Pi.', delegations: [{ title: 'Review', instruction: 'Review the task.', engine: 'pi' }] }), undefined, { availableEngines: ['model'] }), /不可用的内核/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Too many', delegations: Array.from({ length: 4 }, (_, index) => ({ title: `Child ${index}`, instruction: 'Work independently.' })) })), /数量无效/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Invalid child', delegations: [{ title: 'Child', instruction: 'x'.repeat(5001) }] })), /内容无效/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Recursive', delegations: [{ title: 'Child', instruction: 'Run recursively.' }] }), undefined, { allowDelegation: false }), /不能继续委派/);
 });
 
-test('selected engine is durable per task', () => {
+test('Pi selection persists and historical Claude tasks remain readable but are not selectable', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-engines-'));
   try {
     let store = new Store(directory);
-    const task = store.createTask('Review code', null, 'claude');
+    const task = store.createTask('Review code', null, 'pi');
+    store.db.prepare('UPDATE tasks SET engine=? WHERE id=?').run('claude', task.id);
     store.close();
     store = new Store(directory);
     assert.equal(store.getTask(task.id)?.engine, 'claude');
+    assert.deepEqual(Object.keys(adapters), ['model', 'pi', 'dsh']);
+    assert.throws(() => store.createTask('Use a disabled engine', null, 'claude' as never), /任务内核无效/);
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('Claude adapter uses restricted tools and records a resumable session ID', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-claude-'));
-  const script = join(directory, 'mock-claude.js');
-  const argsFile = join(directory, 'args.json');
-  writeFileSync(script, 'const fs=require("fs");fs.writeFileSync(process.env.DOTS_TEST_ARGS,JSON.stringify(process.argv.slice(2)));console.log(JSON.stringify({status:"done",message:"Reviewed supplied text"}));');
-  process.env.DOTS_CLAUDE_BIN = script;
-  process.env.DOTS_TEST_ARGS = argsFile;
+test('a queued historical Claude task fails clearly without losing its history', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-legacy-engine-'));
+  const store = new Store(directory);
+  const task = store.createTask('Legacy task', null, 'pi');
+  store.db.prepare('UPDATE tasks SET engine=? WHERE id=?').run('claude', task.id);
+  const worker = new Worker(store, () => {});
   try {
-    assert.equal(adapters.claude.available(), true);
-    const result = await adapters.claude.run({ prompt: 'Review supplied text', priorResult: null, sessionId: null, workspace: directory, onEvent: () => {} });
-    assert.equal(result.message, 'Reviewed supplied text');
-    assert.ok(result.sessionId);
-    const args = JSON.parse(readFileSync(argsFile, 'utf8')) as string[];
-    assert.ok(args.includes('--session-id'));
-    assert.ok(args.includes('Read,Glob,Grep,WebSearch,WebFetch'));
-    assert.ok(args.includes('mcp__*'));
-    assert.equal(args.includes('--dangerously-skip-permissions'), false);
-  } finally { delete process.env.DOTS_CLAUDE_BIN; delete process.env.DOTS_TEST_ARGS; rmSync(directory, { recursive: true, force: true }); }
-});
-
-test('Claude adapter terminates its child process when Activity stops the task', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-claude-stop-'));
-  const script = join(directory, 'mock-claude.js');
-  writeFileSync(script, 'setTimeout(() => console.log(JSON.stringify({status:"done",message:"Late result"})), 30000);');
-  process.env.DOTS_CLAUDE_BIN = script;
-  const controller = new AbortController();
-  try {
-    const running = adapters.claude.run({ prompt: 'Wait for a result', priorResult: null, sessionId: null, workspace: directory, onEvent: () => {}, signal: controller.signal });
-    await new Promise(resolve => setTimeout(resolve, 100));
-    controller.abort();
-    await assert.rejects(running, /任务已停止/);
-  } finally { delete process.env.DOTS_CLAUDE_BIN; rmSync(directory, { recursive: true, force: true }); }
+    await worker.tick();
+    const deadline = Date.now() + 2_000;
+    while (store.getTask(task.id)?.status !== 'failed' && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    const failed = store.getTask(task.id);
+    assert.equal(failed?.status, 'failed');
+    assert.match(failed?.error || '', /Claude Code 内核已停用/);
+    assert.equal(failed?.engine, 'claude', 'The historical kernel identity should remain visible for audit');
+    assert.match(store.snapshot(false, [], undefined, task.tenantId).entries.filter(entry => entry.taskId === task.id).map(entry => entry.body).join('\n'), /原任务历史已保留/);
+  } finally {
+    worker.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

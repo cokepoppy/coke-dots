@@ -108,10 +108,10 @@ test('delegated tasks persist, recover after restart, and aggregate only inside 
     store.updateTask(parent.id, { status: 'working' }, owner.tenant.id);
     const children = store.createDelegatedTasks(parent.id, owner.tenant.id, [
       { title: 'Market sizing', instruction: 'Estimate market size from supplied material.' },
-      { title: 'Competitor review', instruction: 'Compare the named competitors.', engine: 'claude' },
+      { title: 'Competitor review', instruction: 'Compare the named competitors.', engine: 'dsh' },
       { title: 'Risk list', instruction: 'Identify the main risks.' },
     ], 'I split the research into three parallel questions.');
-    assert.deepEqual(children.map(task => task.engine), ['model', 'claude', 'model'], 'Children must retain a selected engine or inherit the parent engine');
+    assert.deepEqual(children.map(task => task.engine), ['model', 'dsh', 'model'], 'Children must retain a selected engine or inherit the parent engine');
     assert.throws(() => store.createDelegatedTasks(parent.id, owner.tenant.id, [{ title: 'Invalid engine', instruction: 'Do not insert this task.', engine: 'unknown' as never }], 'Invalid engine test'), /内核无效/);
     assert.equal(store.getTask(parent.id, owner.tenant.id)?.status, 'delegating');
     assert.equal(store.getTask(children[0].id, other.tenant.id), null, 'A different tenant read a child task by guessing its ID');

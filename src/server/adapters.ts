@@ -1,14 +1,12 @@
-import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { accessSync, constants } from 'node:fs';
 import { createRequire } from 'node:module';
-import { join, resolve } from 'node:path';
-import type { ScratchpadPageAction, TenantActionRule } from '../shared/types.ts';
+import { isEngine, type Engine, type ScratchpadPageAction, type TenantActionRule } from '../shared/types.ts';
 import { effectiveModelConfig } from './model-settings.ts';
+
+export type { Engine } from '../shared/types.ts';
 
 const require = createRequire(import.meta.url);
 
-export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
 export interface AgentRequest {
   tenantId?: string;
   prompt: string;
@@ -29,7 +27,7 @@ export interface AgentDelegation { title: string; instruction: string; engine?: 
 export interface AgentDecision { status: 'done' | 'waiting' | 'scheduled' | 'delegating'; message: string; nextMinutes?: number; sessionId?: string; pageAction?: AgentPageAction; delegations?: AgentDelegation[] }
 export interface AgentAdapter { id: Engine; available(tenantId?: string): boolean; run(input: AgentRequest): Promise<AgentDecision> }
 
-const instruction = 'You are a personal agent. Finish with one JSON object only: {"status":"done|waiting|scheduled|delegating","message":"...","nextMinutes":15,"delegations":[{"title":"...","instruction":"...","engine":"model|claude|pi|dsh (optional)"}]}. Use status delegating only when independent bounded work streams would materially improve the result; create at most 3 children. A child task cannot delegate or schedule more work. Do not split a request into children that need shared mutable state or an ordered handoff. When child results are supplied, synthesize them and finish without creating more children. When a Scratchpad page operation is allowed by the active tenant rule and relevant to the task, create it with "pageAction":{"action":"create","title":"...","content":"..."}; update an existing listed page with "pageAction":{"action":"update","pageId":"...","title":"...","content":"..."}. Use only listed page IDs. Page actions write only to this tenant-scoped local Scratchpad. Do not claim external actions you did not perform. Do not send messages, change external accounts, or edit files. If an action would require that access, choose waiting and explain the needed permission. For an ongoing check, choose scheduled. When the user asks for automation ideas, keep them as inactive proposals and choose done; do not schedule them unless the user chooses an idea and asks to set it up with its sources, timing, and review requirements. Use the user language.';
+const instruction = 'You are a personal agent. Finish with one JSON object only: {"status":"done|waiting|scheduled|delegating","message":"...","nextMinutes":15,"delegations":[{"title":"...","instruction":"...","engine":"model|pi|dsh (optional)"}]}. Use status delegating only when independent bounded work streams would materially improve the result; create at most 3 children. A child task cannot delegate or schedule more work. Do not split a request into children that need shared mutable state or an ordered handoff. When child results are supplied, synthesize them and finish without creating more children. When a Scratchpad page operation is allowed by the active tenant rule and relevant to the task, create it with "pageAction":{"action":"create","title":"...","content":"..."}; update an existing listed page with "pageAction":{"action":"update","pageId":"...","title":"...","content":"..."}. Use only listed page IDs. Page actions write only to this tenant-scoped local Scratchpad. Do not claim external actions you did not perform. Do not send messages, change external accounts, or edit files. If an action would require that access, choose waiting and explain the needed permission. For an ongoing check, choose scheduled. When the user asks for automation ideas, keep them as inactive proposals and choose done; do not schedule them unless the user chooses an idea and asks to set it up with its sources, timing, and review requirements. Use the user language.';
 const actionRuleText = (rule: TenantActionRule | null | undefined) => {
   if (!rule) return '\n\nScratchpad permission: take action when the user explicitly asks to create or update a Scratchpad page. Never infer approval for a page write.';
   const mode = {
@@ -56,7 +54,7 @@ export function parseDecision(raw: string, sessionId?: string, options: { allowD
       const title = typeof child.title === 'string' ? child.title.trim() : '';
       const instruction = typeof child.instruction === 'string' ? child.instruction.trim() : '';
       if (!title || title.length > 120 || !instruction || instruction.length > 5000) throw new Error('代理子任务内容无效');
-      if (child.engine !== undefined && (!['model', 'claude', 'pi', 'dsh'].includes(child.engine) || (options.availableEngines && !options.availableEngines.includes(child.engine)))) throw new Error('代理子任务选择了不可用的内核');
+      if (child.engine !== undefined && (!isEngine(child.engine) || (options.availableEngines && !options.availableEngines.includes(child.engine)))) throw new Error('代理子任务选择了不可用的内核');
       return { title, instruction, ...(child.engine ? { engine: child.engine } : {}) };
     });
   } else if (value.delegations !== undefined && (!Array.isArray(value.delegations) || value.delegations.length > 0)) throw new Error('非委派状态不能包含子任务');
@@ -95,22 +93,6 @@ export const adapters: Record<Engine, AgentAdapter> = {
         if (!data.choices?.[0]?.message?.content) throw new Error('模型没有返回内容');
         return parseDecision(data.choices[0].message.content, undefined, { allowDelegation: input.allowDelegation !== false, availableEngines: input.availableEngines });
       } finally { clearTimeout(timeout); }
-    },
-  },
-  claude: {
-    id: 'claude',
-    available: () => Boolean(resolveExecutable(claudeBin())),
-    async run(input) {
-      const bin = claudeBin();
-      const command = bin.endsWith('.js') ? 'node' : bin;
-      const prefix = bin.endsWith('.js') ? [bin] : [];
-      const sessionId = input.sessionId || randomUUID();
-      const args = [...prefix, '--print', '--output-format', 'text', '--permission-mode', 'plan', '--tools', 'Read,Glob,Grep,WebSearch,WebFetch', '--disallowedTools', 'mcp__*', '--max-turns', '4'];
-      if (input.sessionId) args.push('--resume', sessionId);
-      else args.push('--session-id', sessionId);
-      args.push(formatAgentPrompt(input));
-      const output = await runCommand(command, args, input.workspace, input.onEvent, input.signal);
-      return parseDecision(output, sessionId, { allowDelegation: input.allowDelegation !== false, availableEngines: input.availableEngines });
     },
   },
   pi: {
@@ -165,45 +147,6 @@ export const adapters: Record<Engine, AgentAdapter> = {
       } finally { input.signal?.removeEventListener('abort', abortHarness); await closeHarness(); }
     },
   },
-};
-
-function resolveExecutable(bin: string): string | null {
-  if (bin.includes('/')) { try { accessSync(bin, constants.R_OK); return bin; } catch { return null; } }
-  for (const dir of (process.env.PATH || '').split(':')) {
-    const path = join(dir, bin);
-    try { accessSync(path, constants.X_OK); return path; } catch { /* keep searching */ }
-  }
-  return null;
-}
+} satisfies Record<Engine, AgentAdapter>;
 
 function packageAvailable(name: string) { try { require.resolve(name); return true; } catch { return false; } }
-
-function claudeBin() {
-  if (process.env.DOTS_CLAUDE_BIN) return process.env.DOTS_CLAUDE_BIN;
-  const nearby = resolve(process.cwd(), '../coke-codex-app/vendor/claude-code/cli.js');
-  return resolveExecutable(nearby) || 'claude';
-}
-
-async function runCommand(command: string, args: string[], cwd: string, onEvent: (message: string) => void, signal?: AbortSignal): Promise<string> {
-  return await new Promise((resolvePromise, reject) => {
-    if (signal?.aborted) { reject(new Error('任务已停止')); return; }
-    const child = spawn(command, args, { cwd: resolve(cwd), env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let output = ''; let error = '';
-    const timeout = setTimeout(() => child.kill('SIGTERM'), 5 * 60_000);
-    let forceKill: NodeJS.Timeout | null = null;
-    const abort = () => {
-      child.kill('SIGTERM');
-      forceKill = setTimeout(() => child.kill('SIGKILL'), 2_000);
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      if (forceKill) clearTimeout(forceKill);
-      signal?.removeEventListener('abort', abort);
-    };
-    signal?.addEventListener('abort', abort, { once: true });
-    child.stdout.on('data', chunk => { output += chunk.toString(); if (output.length > 1_000_000) child.kill('SIGTERM'); });
-    child.stderr.on('data', chunk => { error += chunk.toString(); if (error.length > 100_000) child.kill('SIGTERM'); });
-    child.on('error', error => { cleanup(); reject(error); });
-    child.on('close', code => { cleanup(); if (signal?.aborted) reject(new Error('任务已停止')); else if (code === 0) { onEvent('Claude Code 已返回结果。'); resolvePromise(output); } else reject(new Error(`Claude Code 退出码 ${code}: ${error.slice(-500)}`)); });
-  });
-}
