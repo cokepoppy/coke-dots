@@ -1521,6 +1521,11 @@ try {
     assert.equal(clarificationPrompts.length, 2, 'The original voice task and its spoken reply should use one task lifecycle');
     assert.match(clarificationPrompts[1] || '', /Task: E2E voice clarification — ask which launch date to use\n\nUser reply: Use Friday\./);
 
+    let voiceStatePollingRequests = 0;
+    const countVoiceStatePolling = (request: { url(): string }) => {
+      if (new URL(request.url()).pathname === '/api/state') voiceStatePollingRequests += 1;
+    };
+    alphaPage!.on('request', countVoiceStatePolling);
     const instruction = 'E2E voice request — finish after the call ends';
     await alphaPage!.evaluate((text: string) => {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
@@ -1529,6 +1534,7 @@ try {
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: instruction }).waitFor({ state: 'visible' });
     await waitFor(() => Boolean(heldVoiceModelRelease), 10_000);
     await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
+    await waitFor(async () => (await call.getByTestId('voice-call-transcript').getAttribute('data-task-status'))?.includes('Dot 正在处理') || false, 10_000);
     await screenshot(alphaPage!, 'voice-call-task-running');
     speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
     assert(speechOutput.includes('收到，已加入工作队列。'), 'The call should speak its queue acknowledgement when speaker output is enabled');
@@ -1543,6 +1549,8 @@ try {
       return speechOutput.includes('Voice response returned from the model.');
     }, 10_000);
     assert(speechOutput.includes('Voice response returned from the model.'), 'The call should speak the completed task result, not only acknowledge receipt');
+    assert.equal(voiceStatePollingRequests, 0, 'Voice task progress should arrive on the authenticated event stream instead of polling /api/state');
+    alphaPage!.off('request', countVoiceStatePolling);
     const composer = alphaPage!.getByTestId('task-composer');
     await composer.fill('Typed while the voice call is active');
     assert.equal(await composer.inputValue(), 'Typed while the voice call is active');

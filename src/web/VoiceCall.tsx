@@ -56,6 +56,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   const startedAtRef = useRef(Date.now());
   const onTranscriptRef = useRef(onTranscript);
   const waitingTaskIdRef = useRef<string | null>(null);
+  const taskFollowStopsRef = useRef(new Set<() => void>());
   onTranscriptRef.current = onTranscript;
   mutedRef.current = muted;
   speakerRef.current = speakerOn;
@@ -126,26 +127,41 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       window.speechSynthesis.speak(utterance);
     }
 
-    const followTask = async (submittedTask: Task) => {
-      for (let attempt = 0; attempt < 1200 && activeRef.current; attempt += 1) {
-        const response = await appFetch('/api/state');
-        if (!activeRef.current) return;
-        if (!response.ok) throw new Error('读取任务进度失败：HTTP ' + response.status);
-        const snapshot = await response.json() as Snapshot;
-        if (!activeRef.current) return;
+    const followTask = (submittedTask: Task) => new Promise<void>((resolve, reject) => {
+      let stream: EventSource | null = null;
+      let fallbackTimer: number | null = null;
+      let fallbackBusy = false;
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (fallbackTimer !== null) window.clearInterval(fallbackTimer);
+        window.clearTimeout(timeout);
+        stream?.close();
+        taskFollowStopsRef.current.delete(finish);
+        if (error) reject(error); else resolve();
+      };
+      const timeout = window.setTimeout(() => {
+        if (activeRef.current) setTaskStatus('仍在后台运行；你可以结束通话。');
+        finish();
+      }, 15 * 60 * 1000);
+      const reconcile = (snapshot: Snapshot) => {
+        if (!activeRef.current) { finish(); return; }
         const task = snapshot.tasks.find(candidate => candidate.id === submittedTask.id);
-        if (!task) throw new Error('找不到刚提交的任务');
+        if (!task) { finish(new Error('找不到刚提交的任务')); return; }
         const latestDotMessage = [...snapshot.entries].reverse().find(entry => entry.taskId === task.id && entry.kind === 'dot')?.body || '';
         if (task.status === 'done') {
           if (waitingTaskIdRef.current === task.id) waitingTaskIdRef.current = null;
           setTaskStatus('已完成：' + task.title);
           speak(task.result || latestDotMessage || '任务已完成。');
+          finish();
           return;
         }
         if (task.status === 'waiting') {
           waitingTaskIdRef.current = task.id;
           setTaskStatus('等待你的回复');
           if (latestDotMessage) speak(latestDotMessage);
+          finish();
           return;
         }
         if (task.status === 'failed' || task.status === 'stopped' || task.status === 'paused') {
@@ -153,12 +169,40 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
           const message = task.error || (task.status === 'failed' ? '任务执行失败。' : task.status === 'stopped' ? '任务已停止。' : '任务已暂停。');
           setTaskStatus(message);
           speak(message);
+          finish();
           return;
         }
         setTaskStatus(task.status === 'working' || task.status === 'delegating' ? 'Dot 正在处理：' + task.title : '任务排队中：' + task.title);
-        await new Promise(resolve => window.setTimeout(resolve, 750));
+      };
+      const refreshSnapshot = async () => {
+        if (fallbackBusy || settled || !activeRef.current) return;
+        fallbackBusy = true;
+        try {
+          const response = await appFetch('/api/state');
+          if (response.ok) reconcile(await response.json() as Snapshot);
+        } catch { /* EventSource reconnects automatically; this is only a recovery probe. */ }
+        finally { fallbackBusy = false; }
+      };
+
+      taskFollowStopsRef.current.add(finish);
+      if (typeof EventSource === 'undefined') {
+        void refreshSnapshot();
+        fallbackTimer = window.setInterval(() => void refreshSnapshot(), 1000);
+        return;
       }
-      if (activeRef.current) setTaskStatus('仍在后台运行；你可以结束通话。');
+      stream = new EventSource('/api/events');
+      stream.onmessage = event => {
+        if (fallbackTimer !== null) { window.clearInterval(fallbackTimer); fallbackTimer = null; }
+        try { reconcile(JSON.parse(event.data) as Snapshot); }
+        catch (error) { finish(error instanceof Error ? error : new Error('任务进度事件无效')); }
+      };
+      stream.onerror = () => {
+        if (fallbackTimer === null) fallbackTimer = window.setInterval(() => void refreshSnapshot(), 5000);
+      };
+    });
+
+    const stopTaskFollowers = () => {
+      for (const stop of [...taskFollowStopsRef.current]) stop();
     };
 
     const processTranscript = (rawText: string) => {
@@ -367,6 +411,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       window.clearInterval(timer);
       recognitionRef.current?.abort();
       recognitionRef.current = null;
+      stopTaskFollowers();
       stopRealtimeTransport();
       speakingRef.current = false;
       speechGenerationRef.current += 1;
@@ -411,6 +456,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     endedRef.current = true;
     activeRef.current = false;
     recognitionRef.current?.abort();
+    for (const stop of [...taskFollowStopsRef.current]) stop();
     stopRealtimeTransport();
     speakingRef.current = false;
     speechGenerationRef.current += 1;
