@@ -193,6 +193,7 @@ async function clickAgentInformationLink(input) {
   }));
   const desktopWindow = windows.filter(window => window && window.width >= 400 && window.height >= 300).sort((left, right) => right.width * right.height - left.width * left.height)[0];
   if (!desktopWindow) throw new Error('The Chromium desktop window could not be located');
+  const chromiumWindowIds = new Set(windowIds.map(Number));
   const pageMetrics = await browserPage.evaluate(() => ({
     screenX: window.screenX,
     screenY: window.screenY,
@@ -215,8 +216,20 @@ async function clickAgentInformationLink(input) {
   const pointerLocation = await exec('xdotool', ['getmouselocation', '--shell'], { timeout: 5000 }).then(result => result.stdout);
   const pointerWindow = Number(pointerLocation.match(/^WINDOW=(\d+)$/m)?.[1]);
   if (!Number.isInteger(pointerWindow)) throw new Error(`Could not verify the window under the target point (${x},${y})`);
-  const pointerClass = await exec('xdotool', ['getwindowclassname', String(pointerWindow)], { timeout: 5000 }).then(result => result.stdout.trim()).catch(() => 'unknown');
-  if (!/chromium/i.test(pointerClass)) throw new Error(`The target point ${x},${y} is covered by ${pointerClass}; refusing to click another desktop app`);
+  const pointerWindowChain = [];
+  let ancestor = pointerWindow;
+  for (let depth = 0; depth < 16 && Number.isInteger(ancestor) && ancestor > 0; depth++) {
+    pointerWindowChain.push(ancestor);
+    if (chromiumWindowIds.has(ancestor)) break;
+    const tree = await exec('xwininfo', ['-id', String(ancestor)], { timeout: 5000 }).then(result => result.stdout).catch(() => '');
+    const parentValue = tree.match(/^\s*Parent window id:\s*(0x[\da-f]+|\d+)/im)?.[1] || '';
+    const parent = parentValue ? Number.parseInt(parentValue, parentValue.startsWith('0x') ? 16 : 10) : Number.NaN;
+    if (!Number.isInteger(parent) || parent <= 0 || parent === ancestor) break;
+    ancestor = parent;
+  }
+  if (!pointerWindowChain.some(id => chromiumWindowIds.has(id))) {
+    throw new Error(`The target point ${x},${y} is not inside a Chromium window (pointer ${pointerLocation.trim()}; window chain ${pointerWindowChain.join('>')}); refusing to click another desktop app`);
+  }
   await exec('xdotool', ['click', '1'], { timeout: 5000 });
   await browserPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => undefined);
   if (owner !== 'agent') throw new Error('The user took control during the browser click');
