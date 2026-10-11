@@ -194,6 +194,7 @@ const server = createServer(async (req, res) => {
     }
 
     const realtimeVoiceMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)\/realtime-session$/);
+    const voiceTurnMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)\/turns$/);
     const body = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT'
       ? await readJson(req, realtimeVoiceMatch ? 100_000 : 32_000)
       : {};
@@ -213,6 +214,32 @@ const server = createServer(async (req, res) => {
       } catch (error) {
         if (error instanceof VoiceProviderError) return reply(res, error.status, { error: error.message });
         return reply(res, 502, { error: 'Qwen 实时语音协商失败' });
+      }
+    }
+    if (voiceTurnMatch && req.method === 'POST') {
+      const call = store.getVoiceCall(session.tenant.id, session.user.id, voiceTurnMatch[1]);
+      if (!call) return reply(res, 404, { error: '语音通话不存在' });
+      const turnId = typeof body.turnId === 'string' ? body.turnId : '';
+      const transcript = typeof body.transcript === 'string' ? body.transcript : '';
+      const waitingTaskId = body.waitingTaskId === undefined || body.waitingTaskId === null ? undefined : body.waitingTaskId;
+      const requestedEngine = body.engine || 'model';
+      if (typeof waitingTaskId !== 'undefined' && (typeof waitingTaskId !== 'string' || !/^[a-f0-9-]{36}$/i.test(waitingTaskId))) {
+        return reply(res, 400, { error: '等待回复的任务 ID 无效' });
+      }
+      if (typeof requestedEngine !== 'string' || !isEngine(requestedEngine)) return reply(res, 400, { error: '任务内核无效' });
+      if (!turnId || turnId.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(turnId)) return reply(res, 400, { error: '语音轮次 ID 无效' });
+      if (!transcript.trim() || transcript.trim().length > 5000) return reply(res, 400, { error: '语音内容需为 1–5000 个字符' });
+      try {
+        const result = store.submitVoiceTurn({
+          tenantId: session.tenant.id, userId: session.user.id, callId: call.id, turnId,
+          transcript, engine: requestedEngine, ...(waitingTaskId ? { waitingTaskId } : {}),
+        });
+        publish();
+        void worker.tick();
+        return reply(res, result.duplicate ? 200 : 201, result.task);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '无法创建语音任务';
+        return reply(res, message === '语音通话已结束' ? 409 : 400, { error: message });
       }
     }
     const voiceCallMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)$/);

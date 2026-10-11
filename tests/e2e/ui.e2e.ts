@@ -2168,17 +2168,46 @@ try {
     assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), false, 'Mute must disable the live microphone track');
     await call.getByRole('button', { name: '取消静音' }).click();
     assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), true, 'Unmute must re-enable the live microphone track');
-    await alphaPage!.evaluate(() => {
+    const voiceTurnTranscript = 'E2E voice response — speak actual task result';
+    const voiceTurnId = 'item-e2e-qwen-voice-turn-001';
+    await alphaPage!.evaluate(({ transcript, turnId }) => {
       const view = window as unknown as { __dotsQwenEventChannel: { emit(event: unknown): void } };
       view.__dotsQwenEventChannel.emit({ type: 'input_audio_buffer.speech_started' });
-      view.__dotsQwenEventChannel.emit({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'E2E voice response — speak actual task result' });
+      const completed = { type: 'conversation.item.input_audio_transcription.completed', event_id: 'event-e2e-qwen-voice-turn-001', item_id: turnId, transcript };
+      view.__dotsQwenEventChannel.emit(completed);
+      view.__dotsQwenEventChannel.emit(completed);
       view.__dotsQwenEventChannel.emit({ type: 'response.created' });
       window.setTimeout(() => view.__dotsQwenEventChannel.emit({ type: 'response.done' }), 700);
-    });
+    }, { transcript: voiceTurnTranscript, turnId: voiceTurnId });
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 20_000 });
     await alphaPage!.waitForFunction(() => (window as unknown as { __dotsQwenSentEvents?: { type: string; item?: { content?: { text?: string }[] } }[] }).__dotsQwenSentEvents?.some(event => event.type === 'conversation.item.create' && event.item?.content?.some(part => part.text?.includes('Voice response returned from the model.'))) === true, null, { timeout: 10_000 });
     const agentPrompt = mockModelPrompts.find(prompt => prompt.includes('E2E voice response — speak actual task result')) || '';
     assert(agentPrompt, 'The recognized Chinese speech was not dispatched through the tenant Agent task path');
+    const turnResult = await alphaPage!.evaluate(async ({ transcript, turnId }) => {
+      const callResponse = await fetch('/api/voice-calls');
+      const calls = await callResponse.json() as { id: string; startedAt: string; endedAt: string | null }[];
+      const activeCall = calls.find(candidate => !candidate.endedAt);
+      if (!activeCall) throw new Error('No active call was recorded for the voice turn');
+      const response = await fetch(`/api/voice-calls/${activeCall.id}/turns`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ transcript, turnId, engine: 'pi' }),
+      });
+      return { status: response.status, callId: activeCall.id, callStartedAt: activeCall.startedAt, task: await response.json() as { id: string } };
+    }, { transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    assert.equal(turnResult.status, 200, 'A replayed transcript turn should return the original task');
+    const crossTenantTurnStatus = await betaPage!.evaluate(async ({ callId, transcript, turnId }) => (await fetch(`/api/voice-calls/${callId}/turns`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ transcript, turnId, engine: 'pi' }),
+    })).status, { callId: turnResult.callId, transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    assert.equal(crossTenantTurnStatus, 404, 'A different tenant cannot inspect or replay another user’s voice turn');
+    const voiceTaskCheck = await alphaPage!.evaluate(async ({ transcript, callStartedAt }) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; createdAt: string }[] };
+      const tasks = state.tasks.filter(task => task.instruction === transcript && Date.parse(task.createdAt) >= Date.parse(callStartedAt));
+      return { count: tasks.length, taskId: tasks[0]?.id };
+    }, { transcript: voiceTurnTranscript, callStartedAt: turnResult.callStartedAt });
+    assert.equal(voiceTaskCheck.taskId, turnResult.task.id, 'The replay response must reference the task started for this call');
+    const voiceTaskCount = voiceTaskCheck.count;
+    assert.equal(voiceTaskCount, 1, 'Repeated WebRTC transcript delivery must not start a second Agent task');
     await screenshot(alphaPage!, 'qwen-realtime-call-agent-result');
     await call.getByRole('button', { name: '结束通话' }).click();
     assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { stopped: boolean } }).__dotsQwenFakeTrack.stopped), true, 'Ending the call must stop the microphone track');

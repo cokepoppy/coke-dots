@@ -24,7 +24,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   dotName: string;
   appearance: DotAppearance;
   displayMode: 'desktop' | 'handset';
-  onTranscript: (text: string, waitingTaskId?: string) => Promise<Task>;
+  onTranscript: (text: string, waitingTaskId: string | undefined, callId: string, turnId: string) => Promise<Task>;
   onClose: () => void;
 }) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -88,6 +88,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     recognitionConstructorRef.current = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition || null;
     let qwenResponseActive = false;
     const qwenSpeechQueue: string[] = [];
+    const processedVoiceTurns = new Set<string>();
 
     const sendQwenText = (text: string) => {
       const channel = realtimeSendChannelRef.current;
@@ -205,9 +206,14 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       for (const stop of [...taskFollowStopsRef.current]) stop();
     };
 
-    const processTranscript = (rawText: string) => {
+    const processTranscript = (rawText: string, sourceTurnId?: string) => {
       const text = rawText.trim().slice(0, 5000);
       if (!text || !activeRef.current) return;
+      const callId = sessionRef.current?.id;
+      if (!callId) return;
+      const turnId = sourceTurnId && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(sourceTurnId) ? sourceTurnId : crypto.randomUUID();
+      if (processedVoiceTurns.has(turnId)) return;
+      processedVoiceTurns.add(turnId);
       setTranscript(text);
       setTaskStatus('正在交给 Dot…');
       const waitingTaskId = waitingTaskIdRef.current;
@@ -215,13 +221,14 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       void (async () => {
         let accepted = false;
         try {
-          const task = await onTranscriptRef.current(text, waitingTaskId || undefined);
+          const task = await onTranscriptRef.current(text, waitingTaskId || undefined, callId, turnId);
           accepted = true;
           if (!activeRef.current) return;
           setTaskStatus(waitingTaskId ? '已回复并继续：' + task.title : '已加入工作队列：' + task.title);
           if (providerRef.current === 'browser') speak(waitingTaskId ? '收到，我会接着处理。' : '收到，已加入工作队列。');
           await followTask(task);
         } catch (error) {
+          processedVoiceTurns.delete(turnId);
           if (!accepted && waitingTaskId && !waitingTaskIdRef.current) waitingTaskIdRef.current = waitingTaskId;
           if (activeRef.current) setTaskStatus(error instanceof Error ? error.message : '任务创建失败');
         }
@@ -229,7 +236,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     };
 
     const handleQwenEvent = (raw: string) => {
-      let event: { type?: string; text?: string; stash?: string; transcript?: string; error?: { message?: string } };
+      let event: { type?: string; event_id?: string; item_id?: string; text?: string; stash?: string; transcript?: string; error?: { message?: string } };
       try { event = JSON.parse(raw) as typeof event; } catch { return; }
       if (event.type === 'session.created') {
         realtimeSendChannelRef.current?.readyState === 'open' && realtimeSendChannelRef.current.send(JSON.stringify({
@@ -249,7 +256,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
         return;
       }
       if (event.type === 'conversation.item.input_audio_transcription.completed') {
-        if (event.transcript) processTranscript(event.transcript);
+        if (event.transcript) processTranscript(event.transcript, event.item_id || event.event_id);
         return;
       }
       if (event.type === 'conversation.item.input_audio_transcription.failed' || event.type === 'error') {
