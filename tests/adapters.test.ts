@@ -25,6 +25,8 @@ test('proactive research accepts only an explicit read-only finding decision', (
   const prompt = formatAgentPrompt({ executionMode: 'proactive-research', prompt: '{"sourceTask":{"result":"October 22"}}', priorResult: null, sessionId: null, workspace: '/tmp/review', onEvent: () => {} });
   assert.match(prompt, /Proactive research constraints/);
   assert.match(prompt, /Do not browse, control a computer, read or modify files/);
+  assert.match(prompt, /do not infer or recalculate weekdays or time zones/);
+  assert.match(prompt, /explicitly state that you made no changes and did not send or publish anything/);
   assert.match(prompt, /October 22/);
 });
 
