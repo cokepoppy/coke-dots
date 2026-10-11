@@ -144,7 +144,7 @@ export function ScheduledView({ tasks, watches, gmail, eventTriggerEngines, onCa
           {gmail.connection.error && <p className="scheduled-watch-error" role="alert">{gmail.connection.error}</p>}
           {gmail.connection.lastSyncedAt && <small>上次检查 {new Date(gmail.connection.lastSyncedAt).toLocaleString()}</small>}
           <div className="gmail-mailbox-actions"><button type="button" onClick={() => { window.location.assign(appPath('/api/gmail/oauth/start')); }} disabled={!gmail.configured}>重新授权</button><button type="button" onClick={() => void disconnectGmail()} disabled={gmailBusy}>断开</button></div>
-          <p className="gmail-poll-note">每 {gmail.pollIntervalSeconds} 秒检查一次。此邮箱及其触发任务仅对你的账号可见。</p>
+          <p className="gmail-poll-note">每 {gmail.pollIntervalSeconds} 秒检查一次收件箱中的新邮件。此邮箱及其触发任务仅对你的账号可见。</p>
           {gmail.connection.status === 'connected' && <button className="scheduled-add-watch" data-testid="add-gmail-trigger" onClick={() => { setShowGmailForm(value => !value); setShowWatchForm(false); setGmailError(''); }} aria-expanded={showGmailForm}>＋ 新建邮件触发任务</button>}
         </> : <>
           <p className="gmail-poll-note">连接 Gmail 后，可按发件人和主题条件触发只读任务。需要单独授权 Gmail 只读访问。</p>
@@ -164,7 +164,7 @@ export function ScheduledView({ tasks, watches, gmail, eventTriggerEngines, onCa
       </form>}
       {showGmailForm && <form className="scheduled-watch-form gmail-trigger-form" data-testid="gmail-trigger-form" onSubmit={event => { event.preventDefault(); void submitGmailTrigger(); }}>
         <div className="scheduled-watch-form-heading"><strong>新邮件触发任务</strong><button type="button" aria-label="关闭 Gmail 触发器表单" onClick={() => { setShowGmailForm(false); setGmailError(''); }}>×</button></div>
-        <p className="scheduled-trigger-note">仅当新邮件匹配筛选条件时启动。邮件内容视为不可信输入；任务只分析匹配摘要，不会发送、归档或修改邮件。</p>
+        <p className="scheduled-trigger-note">仅监控新进入收件箱且匹配筛选条件的邮件。邮件内容视为不可信输入；任务只分析匹配摘要，不会发送、归档或修改邮件。</p>
         <label>发件人包含<input aria-label="Gmail sender filter" maxLength={254} value={gmailFromFilter} onChange={event => setGmailFromFilter(event.target.value)} placeholder="alerts@example.com" /></label>
         <label>主题包含<input aria-label="Gmail subject filter" maxLength={160} value={gmailSubjectFilter} onChange={event => setGmailSubjectFilter(event.target.value)} placeholder="订单更新" /></label>
         <label>触发条件<textarea aria-label="Gmail trigger condition" value={gmailCondition} onChange={event => setGmailCondition(event.target.value)} maxLength={500} placeholder="例如：主题包含订单更新且发件人是商家" required /></label>

@@ -618,6 +618,7 @@ async function runGmailChromeFlow() {
   await clickNav(alphaPage, 'Scheduled');
   await alphaPage.getByTestId('add-gmail-trigger').click();
   const form = alphaPage.getByTestId('gmail-trigger-form');
+  await form.getByText('仅监控新进入收件箱且匹配筛选条件的邮件。').waitFor({ state: 'visible' });
   await form.getByLabel('Gmail sender filter').fill('alerts@example.test');
   await form.getByLabel('Gmail subject filter').fill('订单状态更新');
   await form.getByLabel('Gmail trigger condition').fill('主题是订单状态更新时，提取订单号和发货状态。');
