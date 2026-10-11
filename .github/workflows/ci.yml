@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Playwright video encoder
+        run: npx playwright-core install ffmpeg
+
       - name: Run unit tests
         run: npm test
 
