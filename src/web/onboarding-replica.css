@@ -47,7 +47,7 @@
 .dot-onboarding-mode .composer{min-height:54px;padding:9px 13px 7px;border-radius:28px}
 .dot-onboarding-mode .composer textarea{height:25px;min-height:25px;resize:none;font-size:12px}
 .dot-onboarding-mode .composer-bottom{justify-content:flex-end}
-.dot-onboarding-mode .composer-bottom label,.dot-onboarding-mode .hint{display:none}
+.dot-onboarding-mode .composer-bottom .schedule-toggle,.dot-onboarding-mode .hint{display:none}
 .dot-onboarding-mode .send{width:28px;height:28px;background:#77777d;color:#fff;font-size:18px}
 .dots-dark .dot-conversation-identity{color:#efedf1}
 .dots-dark .dot-onboarding-messages .message{background:#10261b}
