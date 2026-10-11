@@ -8,6 +8,7 @@ interface SlackState { configured: boolean; installations: SlackInstallation[] }
 export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }: { dotName: string; canManage: boolean; onClose: () => void; onConnectSlack: () => void }) {
   const [state, setState] = useState<SlackState | null>(null);
   const [selectedTeamId, setSelectedTeamId] = useState('');
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -20,7 +21,7 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
       if (!response.ok) throw new Error('Unable to load Slack workspaces');
       const next = await response.json() as SlackState;
       setState(next);
-      setSelectedTeamId(current => current || next.installations.find(item => item.contactEnabled)?.teamId || next.installations[0]?.teamId || '');
+      setSelectedTeamId(current => current || next.installations.find(item => item.contactEnabled)?.teamId || '');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to load Slack workspaces'); }
     finally { setLoading(false); }
   }
@@ -33,7 +34,7 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
       if (state?.configured) onConnectSlack();
       return;
     }
-    if (!selectedTeamId) return;
+    if (!selectedTeamId) { setWorkspacePickerOpen(true); return; }
     setSaving(true); setError('');
     try {
       const response = await appFetch('/api/slack/contact', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ teamId: selectedTeamId }) });
@@ -53,19 +54,25 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
         <div className="slack-setup-workspace-card">
           <div className="slack-setup-picker">
             <span>Your dot in</span>
-            {state?.installations.length ? <label className="slack-current-workspace">
-              <span className="slack-workspace-icon" aria-hidden="true"><i /><i /><i /><i /></span>
-              <select aria-label="Slack workspace" value={selectedTeamId} disabled={!canManage} onChange={event => { setSelectedTeamId(event.target.value); setNotice(''); }}>
-                {state.installations.map(workspace => <option key={workspace.teamId} value={workspace.teamId}>{workspace.teamName}</option>)}
-              </select>
-              <span className="slack-workspace-chevron" aria-hidden="true">⌄</span>
-            </label> : <span className="slack-current-workspace is-placeholder"><span className="slack-workspace-icon" aria-hidden="true"><i /><i /><i /><i /></span>Workspace<span className="slack-workspace-chevron" aria-hidden="true">⌄</span></span>}
+            {state?.installations.length ? <div className="slack-current-workspace-anchor">
+              <button className="slack-current-workspace" type="button" aria-label="Slack workspace" aria-haspopup="listbox" aria-expanded={workspacePickerOpen} disabled={!canManage} onClick={() => setWorkspacePickerOpen(open => !open)}>
+                <span className="slack-workspace-icon" aria-hidden="true"><i /><i /><i /><i /></span>
+                <span>{state.installations.find(workspace => workspace.teamId === selectedTeamId)?.teamName || 'Workspace'}</span>
+                <span className="slack-workspace-chevron" aria-hidden="true">⌄</span>
+              </button>
+              {workspacePickerOpen && <div className="slack-workspace-menu" role="listbox" aria-label="Choose a Slack workspace">
+                <button className="slack-workspace-option" type="button" role="option" aria-selected={!selectedTeamId} onClick={() => { setSelectedTeamId(''); setWorkspacePickerOpen(false); setNotice(''); }}><span aria-hidden="true">{!selectedTeamId ? '✓' : ''}</span>Choose a workspace</button>
+                {state.installations.map(workspace => <button className="slack-workspace-option" type="button" role="option" aria-selected={workspace.teamId === selectedTeamId} key={workspace.teamId} onClick={() => { setSelectedTeamId(workspace.teamId); setWorkspacePickerOpen(false); setNotice(''); }}><span aria-hidden="true">{workspace.teamId === selectedTeamId ? '✓' : ''}</span>{workspace.teamName}</button>)}
+                <div className="slack-workspace-menu-divider" />
+                <button className="slack-workspace-option is-secondary" type="button" role="option" aria-selected="false" onClick={() => { setWorkspacePickerOpen(false); onConnectSlack(); }}><span aria-hidden="true" />Select another</button>
+              </div>}
+            </div> : <span className="slack-current-workspace is-placeholder"><span className="slack-workspace-icon" aria-hidden="true"><i /><i /><i /><i /></span>Workspace<span className="slack-workspace-chevron" aria-hidden="true">⌄</span></span>}
           </div>
           <p className="slack-setup-description">Choose the workspace to add {dotName} to Slack</p>
         </div>
         {state?.installations.find(item => item.teamId === selectedTeamId)?.contactEnabled && <span className="sr-only" role="status">Workspace selected</span>}
         {!canManage && <p className="slack-setup-readonly">Ask a workspace owner or admin to connect Slack.</p>}
-        <button className="slack-setup-primary" data-testid="slack-connect" type="button" disabled={!canManage || saving || (!state?.configured && !state?.installations.length)} onClick={() => void addToSlack()}>{saving ? 'Adding…' : state?.installations.length ? 'Add to Slack' : 'Select a workspace'}</button>
+        <button className="slack-setup-primary" data-testid="slack-connect" type="button" disabled={!canManage || saving || (!state?.configured && !state?.installations.length)} onClick={() => void addToSlack()}>{saving ? 'Adding…' : state?.installations.length && selectedTeamId ? 'Add to Slack' : 'Select a workspace'}</button>
         {state && !state.configured && state.installations.length === 0 && <p className="slack-setup-unavailable" role="status">Slack connection is not configured for this build.</p>}
       </>}
       {error && <p className="slack-setup-error" role="alert">{error}<button type="button" aria-label="Retry Slack workspace loading" onClick={() => void refresh()}>Retry</button></p>}

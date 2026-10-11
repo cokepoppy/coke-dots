@@ -870,6 +870,11 @@ try {
     await darkModal.waitFor({ state: 'visible' });
     assert.equal(await darkModal.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(7, 23, 14)');
     assert.equal(await darkModal.locator('.slack-setup-workspace-card').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(11, 33, 21)');
+    const darkModalBounds = await darkModal.boundingBox();
+    const slackViewport = alphaPage!.viewportSize();
+    assert(darkModalBounds && slackViewport, 'Slack dialog and viewport bounds must be available');
+    assert(Math.abs(darkModalBounds.x - Math.max(20, slackViewport.width * 0.0135)) <= 1, 'Slack dialog should use the observed left inset');
+    assert(Math.abs(darkModalBounds.y - Math.max(20, slackViewport.height * 0.22)) <= 1, 'Slack dialog should use the observed top placement');
     await screenshot(alphaPage!, 'slack-setup-empty-workspace-dark');
     await darkModal.getByRole('button', { name: 'Close Slack setup' }).click();
     await darkModal.waitFor({ state: 'hidden' });
@@ -892,10 +897,19 @@ try {
 
     const connectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
-    const workspace = connectedModal.getByLabel('Slack workspace');
+    const workspace = connectedModal.getByRole('button', { name: 'Slack workspace' });
     await workspace.waitFor({ state: 'visible' });
-    assert.equal(await workspace.inputValue(), 'TASPIE2E');
-    assert.deepEqual(await workspace.locator('option').allTextContents(), ['ASPI']);
+    assert.match(await workspace.innerText(), /Workspace/);
+    assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
+    await screenshot(alphaPage!, 'slack-workspace-available');
+    await workspace.click();
+    const workspaceMenu = connectedModal.getByRole('listbox', { name: 'Choose a Slack workspace' });
+    await workspaceMenu.waitFor({ state: 'visible' });
+    assert.deepEqual((await workspaceMenu.getByRole('option').allTextContents()).map(text => text.replace(/^✓/, '')), ['Choose a workspace', 'ASPI', 'Select another']);
+    await workspaceMenu.getByRole('option', { name: 'ASPI' }).hover();
+    await screenshot(alphaPage!, 'slack-workspace-menu-open');
+    await workspaceMenu.getByRole('option', { name: 'ASPI' }).click();
+    assert.match(await workspace.innerText(), /ASPI/);
     assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Add to Slack');
     await screenshot(alphaPage!, 'slack-workspace-installed');
 
