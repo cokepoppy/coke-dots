@@ -179,9 +179,22 @@ async function clickAgentInformationLink(input) {
   }));
   const desktopWindow = windows.filter(window => window && window.width >= 400 && window.height >= 300).sort((left, right) => right.width * right.height - left.width * left.height)[0];
   if (!desktopWindow) throw new Error('The Chromium desktop window could not be located');
-  const chromeHeight = await browserPage.evaluate(() => window.outerHeight - window.innerHeight);
-  const x = Math.round(desktopWindow.x + bounds.x + bounds.width / 2);
-  const y = Math.round(desktopWindow.y + chromeHeight + bounds.y + bounds.height / 2);
+  const pageMetrics = await browserPage.evaluate(() => ({
+    screenX: window.screenX,
+    screenY: window.screenY,
+    outerHeight: window.outerHeight,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio,
+  }));
+  const point = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  if (point.x < 0 || point.y < 0 || point.x >= pageMetrics.innerWidth || point.y >= pageMetrics.innerHeight) {
+    throw new Error(`The information link is outside the browser viewport after scrolling (point ${JSON.stringify(point)}; viewport ${pageMetrics.innerWidth}x${pageMetrics.innerHeight}; bounds ${JSON.stringify(bounds)})`);
+  }
+  const scale = Number.isFinite(pageMetrics.devicePixelRatio) && pageMetrics.devicePixelRatio > 0 ? pageMetrics.devicePixelRatio : 1;
+  const chromeHeight = pageMetrics.outerHeight - pageMetrics.innerHeight;
+  const x = Math.round((pageMetrics.screenX + point.x) * scale);
+  const y = Math.round((pageMetrics.screenY + chromeHeight + point.y) * scale);
   if (x < 0 || y < 0 || x > resolution[0] || y > resolution[1]) throw new Error('The information link is outside the visible desktop');
   await exec('xdotool', ['mousemove', String(x), String(y)], { timeout: 5000 });
   await new Promise(resolve => setTimeout(resolve, 180));
@@ -190,9 +203,15 @@ async function clickAgentInformationLink(input) {
   if (owner !== 'agent') throw new Error('The user took control during the browser click');
   const after = await publicHttpsUrl(browserPage.url());
   if (after.href !== destination.href) {
-    throw new Error(`The browser did not open the inspected information link (actual ${after.href}; expected ${destination.href}; click ${x},${y}; window ${desktopWindow.x},${desktopWindow.y} ${desktopWindow.width}x${desktopWindow.height}; link ${JSON.stringify({ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height })})`);
+    const hit = await browserPage.evaluate(({ x, y }) => {
+      const element = document.elementFromPoint(x, y);
+      return element ? { tag: element.tagName, text: (element.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 120) } : null;
+    }, point);
+    const pointer = await exec('xdotool', ['getmouselocation', '--shell'], { timeout: 5000 }).then(result => result.stdout.trim()).catch(() => 'unavailable');
+    const focused = await exec('xdotool', ['getwindowfocus', 'getwindowname'], { timeout: 5000 }).then(result => result.stdout.trim()).catch(() => 'unavailable');
+    throw new Error(`The browser did not open the inspected information link (actual ${after.href}; expected ${destination.href}; click ${x},${y}; window ${desktopWindow.x},${desktopWindow.y} ${desktopWindow.width}x${desktopWindow.height}; page ${JSON.stringify(pageMetrics)}; hit ${JSON.stringify(hit)}; pointer ${pointer}; focused ${focused}; link ${JSON.stringify(bounds)})`);
   }
-  return { ...await inspectAgentBrowserUi(), click: { name, x, y, window: { x: desktopWindow.x, y: desktopWindow.y, width: desktopWindow.width, height: desktopWindow.height }, destination: destination.href } };
+  return { ...await inspectAgentBrowserUi(), click: { name, x, y, window: { x: desktopWindow.x, y: desktopWindow.y, width: desktopWindow.width, height: desktopWindow.height }, page: pageMetrics, destination: destination.href } };
 }
 
 async function command(input) {

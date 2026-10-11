@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
@@ -154,7 +154,15 @@ async function executeKernel(input, requestSignal, slot) {
   } finally {
     clearTimeout(timer); clearInterval(controlPoll);
     requestSignal?.removeEventListener('abort', onRequestAbort);
-    await computerUiBridge?.close();
+    if (computerUiBridge) {
+      try {
+        const auditPath = path.join(cwd, '.coke-dots', 'computer-ui-audit.json');
+        await mkdir(path.dirname(auditPath), { recursive: true, mode: 0o700 });
+        await writeFile(auditPath, `${JSON.stringify(computerUiBridge.audit(), null, 2)}\n`, { mode: 0o600 });
+      } finally {
+        await computerUiBridge.close();
+      }
+    }
     slot.child = null; slot.abort = null;
   }
 }

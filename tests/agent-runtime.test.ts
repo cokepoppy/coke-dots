@@ -166,6 +166,9 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       lastClick: { name: 'More information', x: 620, y: 450, destination: 'https://iana.org/help/example-domains' },
       lastClickError: null,
     }, 'The runtime audit must preserve a real click and clear a failed-click error only after a successful retry.');
+    const auditPath = join(workspace, 'tasks', '77777777-7777-4777-8777-777777777777', '.coke-dots', 'computer-ui-audit.json');
+    assert.deepEqual(JSON.parse(await readFile(auditPath, 'utf8')), computerTask.body.computerUiAudit, 'The task-local audit must survive the runtime response for independent verification.');
+    assert.equal((await stat(auditPath)).mode & 0o777, 0o600, 'The computer interaction audit must be private to the tenant workspace.');
     const rejectedPi = await submit('55555555-5555-4555-8555-555555555555', 'bad config', 'proactive-research', 'pi', { apiKey: testModelKey, model: 'deepseek-chat', baseUrl: 'file:///etc/passwd' });
     assert.equal(rejectedPi.status, 400);
     assert.match(rejectedPi.body.error || '', /configuration is invalid/);
