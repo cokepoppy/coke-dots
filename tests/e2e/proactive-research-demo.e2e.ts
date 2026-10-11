@@ -287,6 +287,12 @@ try {
     const existing = spawnSync('kubectl', ['get', 'namespace', tenantNamespace, '-o', 'name'], { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     assert.notEqual(existing.status, 0, `Refusing to reuse pre-existing tenant namespace ${tenantNamespace}`);
     assert.match(existing.stderr, /NotFound/i, `Could not prove the tenant namespace is unused: ${(existing.stderr || existing.stdout).slice(-800)}`);
+    await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+    await page.getByTestId('computer-choice').waitFor({ state: 'visible' });
+    await page.getByRole('switch', { name: 'Your local computer' }).uncheck();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await page.getByTestId('dot-onboarding').waitFor({ state: 'visible' });
+    await page.getByTestId('engine-select').waitFor({ state: 'visible' });
     await page.locator('.composer-bottom select').selectOption('pi');
     const engines = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[] };
     assert(engines.availableEngines.includes('pi') && engines.remoteEngines.includes('pi'), 'Pi must be selected as the tenant cloud-computer kernel.');
