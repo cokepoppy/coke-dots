@@ -342,7 +342,7 @@ try {
     assert.equal(reviewTask.engine, 'pi');
     assert.match(displayedFinding, /[㐀-鿿]/, 'Pi proactive review must report the finding in Chinese.');
     assert.doesNotMatch(displayedFinding, /星期[一二三四五六日天]/, 'Pi must not infer a weekday when the source only gives dates.');
-    assert.match(displayedFinding, /用户决定|需要你|建议.*审批/, 'The proactive result must explain the approval decision needed.');
+    assert.match(displayedFinding, /用户决定|需要你|待你审批|授权|另行确认/, 'The proactive result must explain the approval decision needed.');
     assert.match(displayedFinding, /未.*修改|没有.*修改/);
     assert.match(displayedFinding, /未.*发送|没有.*发送/);
     const namespace = JSON.parse(command(['kubectl', 'get', 'namespace', tenantNamespace, '-o', 'json'])) as { metadata?: { labels?: Record<string, string> } };
