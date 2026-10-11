@@ -30,13 +30,19 @@ const pageErrors: string[] = [];
 let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockSlackServer: Server | null = null;
+let mockQwenSignalingServer: Server | null = null;
 let mockSlackProviderOrigin = '';
+let mockQwenSignalingUrl = '';
+let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp: string }[] = [];
 let mockSlackCodeExchanges = 0;
 let mockSlackMessages: { channel: string; thread_ts?: string; text: string }[] = [];
 let mockSlackOpenedDms: string[] = [];
 const slackSigningSecret = 'coke-dots-slack-e2e-signing-secret';
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
+let mockModelRequests: { prompt: string; authorization: string }[] = [];
+let priorE2ESharedModelKey: string | null = null;
+const e2eSharedModelKeyEntry = new Entry('com.cokepoppy.coke-dots.e2e', 'shared-model-api-key');
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
 let pauseModelHeld = false;
@@ -85,6 +91,7 @@ async function reservePort() {
 
 async function startMockModel() {
   mockModelPrompts = [];
+  mockModelRequests = [];
   mockModelServer = createHttpServer((request, response) => {
     let raw = '';
     request.setEncoding('utf8');
@@ -96,6 +103,7 @@ async function startMockModel() {
         const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
         const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
         mockModelPrompts.push(prompt);
+        mockModelRequests.push({ prompt, authorization: String(request.headers.authorization || '') });
         const hasReply = prompt.includes('User reply: Use Friday.');
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
@@ -110,6 +118,7 @@ async function startMockModel() {
         const isParallelTask = prompt.includes('E2E parallel work —');
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
         const isDelegationAggregate = prompt.includes('E2E delegation goal — build a launch packet') && prompt.includes('Delegated task results:');
+        const isSharedModelTask = prompt.includes('E2E shared model call from Beta account');
         const delegatedChild = ['Market scan', 'Competitor scan', 'Launch risks'].find(title => prompt.includes(`E2E delegated child — ${title.toLowerCase()}`));
         if (isPauseTask && !pauseModelHeld) {
           pauseModelHeld = true;
@@ -137,13 +146,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isSlackTask || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isSlackTask || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isSlackTask ? 'Slack 任务已完成：发布风险摘要已整理。' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isSlackTask ? 'Slack 任务已完成：发布风险摘要已整理。' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -259,6 +268,28 @@ async function sendSlackEvent(payload: object, timestamp = String(Math.floor(Dat
     'content-type': 'application/json', 'x-slack-request-timestamp': timestamp, 'x-slack-signature': signature,
   }, body: raw });
 }
+async function startMockQwenSignaling() {
+  mockQwenSignalingRequests = [];
+  mockQwenSignalingServer = createHttpServer((request, response) => {
+    let raw = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => { raw += chunk; });
+    request.on('end', () => {
+      mockQwenSignalingRequests.push({ authorization: request.headers.authorization || '', contentType: request.headers['content-type'] || '', sdp: raw });
+      if (request.method !== 'POST' || request.url !== '/realtime?model=qwen3.8-omni-flash-realtime' || request.headers.authorization !== 'Bearer e2e-qwen-secret' || request.headers['content-type'] !== 'application/sdp' || !raw.startsWith('v=0')) {
+        response.writeHead(400, { 'content-type': 'text/plain' });
+        response.end('Invalid mock Qwen request');
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/sdp' });
+      response.end(['v=0', 'o=- 2 2 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)));
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => mockQwenSignalingServer!.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  const address = mockQwenSignalingServer.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}/realtime?model=qwen3.8-omni-flash-realtime`;
+}
 
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
@@ -268,7 +299,7 @@ function captureServerOutput(child: ChildProcess) {
   });
 }
 
-async function startServer(port: number) {
+async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/server/index.ts'], {
     cwd: projectRoot,
     env: {
@@ -281,9 +312,9 @@ async function startServer(port: number) {
       DOTS_CHROME_BIN: chromePath,
       GOOGLE_CLIENT_ID: '',
       GOOGLE_CLIENT_SECRET: '',
-      DOTS_MODEL_BASE_URL: testModelBaseUrl,
-      DOTS_MODEL_API_KEY: testModelApiKey,
-      DOTS_MODEL: testModelName,
+      DOTS_MODEL_BASE_URL: '',
+      DOTS_MODEL_API_KEY: '',
+      DOTS_MODEL: '',
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
       DOTS_KEYCHAIN_SERVICE: 'com.cokepoppy.coke-dots.e2e',
@@ -293,6 +324,12 @@ async function startServer(port: number) {
       SLACK_SIGNING_SECRET: slackSigningSecret,
       DOTS_APP_URL: baseUrl,
       DOTS_E2E_SLACK_PROVIDER_URL: mockSlackProviderOrigin,
+      DOTS_VOICE_PROVIDER: '',
+      DOTS_QWEN_API_KEY: '',
+      DOTS_QWEN_WORKSPACE_ID: '',
+      DOTS_QWEN_REGION: '',
+      DASHSCOPE_API_KEY: '',
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -472,6 +509,11 @@ async function restartService() {
 try {
   e2ePort = await reservePort();
   baseUrl = `http://127.0.0.1:${e2ePort}`;
+  try { priorE2ESharedModelKey = e2eSharedModelKeyEntry.getPassword() || null; } catch { priorE2ESharedModelKey = null; }
+  try { e2eSharedModelKeyEntry.deletePassword(); } catch { /* The isolated E2E service may be empty. */ }
+  testModelBaseUrl = await startMockModel();
+  testModelApiKey = 'e2e-shared-model-key';
+  testModelName = 'e2e-shared-model';
   mockSlackProviderOrigin = await startMockSlackProvider();
   server = await startServer(e2ePort);
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
@@ -1112,6 +1154,60 @@ try {
     await weeklyDetail.getByRole('button', { name: 'Cancel schedule' }).click();
   });
 
+  await recordStep('Alpha configures one shared Model API and Beta can read but cannot edit it', async () => {
+    await openProfile(alphaPage!);
+    await alphaPage!.getByLabel('共享模型 API 地址').fill(testModelBaseUrl);
+    await alphaPage!.getByLabel('共享模型名称').fill(testModelName);
+    await alphaPage!.getByLabel('共享模型 API 密钥').fill(testModelApiKey);
+    await alphaPage!.getByRole('button', { name: '保存共享模型设置' }).click();
+    const alphaState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    const alphaTenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    assert.equal(alphaState.modelSettings.baseUrl, testModelBaseUrl);
+    assert.equal(alphaState.modelSettings.model, testModelName);
+    assert.equal(alphaState.modelSettings.hasKey, true);
+    assert.equal(alphaState.modelSettings.adminTenantId, alphaTenantId);
+    assert(alphaState.availableEngines.includes('model'), 'Saving the shared API must enable Model API tasks in the admin workspace');
+    assert.equal(JSON.stringify(alphaState).includes(testModelApiKey), false, 'The API key must never be returned by the state endpoint');
+    await screenshot(alphaPage!, 'shared-model-settings-admin');
+
+    const betaTenantId = await betaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    const betaState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    assert.equal(betaState.modelSettings.hasKey, true, 'A second Google account must see that the instance Model API is configured');
+    assert.equal(betaState.modelSettings.baseUrl, testModelBaseUrl);
+    assert.equal(betaState.modelSettings.model, testModelName);
+    assert.notEqual(betaState.modelSettings.adminTenantId, betaTenantId, 'The second account must not become the model administrator');
+    assert(betaState.availableEngines.includes('model'), 'A fresh tenant must inherit the instance Model API availability');
+    await openProfile(betaPage!);
+    await betaPage!.getByTestId('shared-model-settings-readonly').waitFor({ state: 'visible' });
+    const deniedModelWrite = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/model-settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://attacker.example/v1', model: 'other-model', apiKey: '' }) });
+      return { status: response.status, body: await response.json() as { error?: string } };
+    });
+    assert.equal(deniedModelWrite.status, 403, 'A different account must not be allowed to change the shared instance model');
+    await clickNav(betaPage!, '你的 dot');
+
+    const betaComputerChoice = betaPage!.getByTestId('computer-choice');
+    if (await betaComputerChoice.isVisible()) {
+      await betaComputerChoice.getByRole('button', { name: 'Continue' }).click();
+      await betaPage!.getByTestId('dot-onboarding').waitFor({ state: 'visible' });
+      await clickNav(betaPage!, 'Activity');
+      await clickNav(betaPage!, '新聊天');
+    }
+
+    const sharedModelInstruction = 'E2E shared model call from Beta account — 用中文确认模型调用成功';
+    const requestStart = mockModelRequests.length;
+    await createTask(betaPage!, sharedModelInstruction);
+    await betaPage!.waitForFunction(async (instruction: string) => {
+      const snapshot = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; result: string | null; engine: string }[] };
+      const task = snapshot.tasks.find(candidate => candidate.instruction === instruction);
+      return task?.engine === 'model' && task.status === 'done' && task.result?.includes('共享模型 API 已在第二个 Google 账号中成功调用。');
+    }, sharedModelInstruction, { timeout: 20_000 });
+    await waitFor(() => mockModelRequests.slice(requestStart).some(request => request.prompt.includes(sharedModelInstruction)), 5_000);
+    const betaModelRequest = mockModelRequests.slice(requestStart).find(request => request.prompt.includes(sharedModelInstruction));
+    assert.equal(betaModelRequest?.authorization, `Bearer ${testModelApiKey}`, 'Beta must execute a real authenticated model HTTP request with the instance-shared credential');
+    await screenshot(betaPage!, 'shared-model-task-from-beta');
+  });
+
   await recordStep('Dot appearance changes persist within Alpha personal workspace', async () => {
     await openProfile(alphaPage!);
     await alphaPage!.getByLabel('桌面通知').check();
@@ -1183,7 +1279,8 @@ try {
     assert.equal(await gammaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).count(), 0, 'A pending invitation exposed the workspace before acceptance');
     await screenshot(gammaPage!, '10b-gamma-pending-invitation');
     await gammaPage!.getByRole('button', { name: '接受并打开工作区' }).click();
-    await (await taskNavigationItem(gammaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
+    await clickNav(gammaPage!, 'Activity');
+    await gammaPage!.locator('.task-card').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
     assert.equal(await gammaPage!.locator('.profile-link strong').innerText(), 'Shared Dot');
     await openProfile(gammaPage!);
     await gammaPage!.locator('.member-row').filter({ hasText: 'gamma@example.test' }).waitFor({ state: 'visible' });
@@ -1213,20 +1310,18 @@ try {
     await selectTenant(betaPage!, 'Beta workspace');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
     await assertNoVisibleText(betaPage!, 'E2E shared workspace task — prepare the team review');
-    assert.equal(await betaPage!.locator('.task-links button').count(), 0);
+    await (await taskNavigationItem(betaPage!, 'E2E shared model call from Beta account')).waitFor({ state: 'visible' });
+    assert.equal(await betaPage!.locator('.task-links button').count(), 1, 'Beta should retain its own shared-model test task while Alpha workspace tasks remain isolated');
     await screenshot(betaPage!, '11-beta-personal-isolation');
     await clickNav(betaPage!, 'Activity');
     const activityFeed = betaPage!.getByTestId('activity-feed');
     await activityFeed.waitFor({ state: 'visible' });
-    await activityFeed.getByText('还没有活动记录。', { exact: true }).waitFor({ state: 'visible' });
+    await activityFeed.getByTestId('activity-entry').filter({ hasText: 'E2E shared model call from Beta account' }).first().waitFor({ state: 'visible' });
     assert.equal(await activityFeed.getByTestId('activity-entry').filter({ hasText: alphaPrivateTask }).count(), 0, 'Beta received an Alpha activity entry');
     await screenshot(betaPage!, '11b-beta-private-activity');
   });
 
   await recordStep('Restart the local service and recover both authenticated tenant sessions and task data', async () => {
-    testModelBaseUrl = await startMockModel();
-    testModelApiKey = 'e2e-local-only';
-    testModelName = 'e2e-model';
     await restartService();
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await betaPage!.reload({ waitUntil: 'domcontentloaded' });
@@ -1247,6 +1342,11 @@ try {
     await screenshot(alphaPage!, '12-alpha-after-service-restart');
     await screenshot(betaPage!, '13-beta-after-service-restart');
     await selectTenant(betaPage!, 'Beta workspace');
+    const betaModelState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    assert.equal(betaModelState.modelSettings.baseUrl, testModelBaseUrl, 'Shared model endpoint did not survive restart');
+    assert.equal(betaModelState.modelSettings.model, testModelName, 'Shared model name did not survive restart');
+    assert.equal(betaModelState.modelSettings.hasKey, true, 'Shared model Keychain credential did not survive restart');
+    assert(betaModelState.availableEngines.includes('model'), 'Beta lost access to the instance model after restart');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
   });
 
@@ -1433,6 +1533,15 @@ try {
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     const profileCall = alphaPage!.getByTestId('voice-call');
     await profileCall.waitFor({ state: 'visible' });
+    const voiceProviderConfig = await alphaPage!.evaluate(async () => await (await fetch('/api/voice/provider')).json()) as { provider: string; configured: boolean; apiKey?: string };
+    assert.deepEqual(voiceProviderConfig, { provider: 'browser', configured: true }, 'The browser fallback must be explicit and must not expose provider credentials');
+    const activeCall = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null }[];
+    const activeCallId = activeCall.find(item => !item.endedAt)?.id;
+    assert(activeCallId, 'The call UI must create its owner-scoped call record before starting its voice transport');
+    const unsupportedRealtimeStatus = await alphaPage!.evaluate(async (id: string) => (await fetch(`/api/voice-calls/${id}/realtime-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'v=0' }) })).status, activeCallId);
+    assert.equal(unsupportedRealtimeStatus, 409, 'The browser provider must not be silently treated as a realtime model session');
+    const crossTenantRealtimeStatus = await betaPage!.evaluate(async (id: string) => (await fetch(`/api/voice-calls/${id}/realtime-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'v=0' }) })).status, activeCallId);
+    assert.equal(crossTenantRealtimeStatus, 404, 'A different tenant cannot negotiate against another user’s active call');
     assert.equal(await profileCall.getAttribute('data-variant'), 'handset');
     assert.equal(await profileCall.locator('.voice-call-person > strong').innerText(), 'dot', 'The pixel-comparison frame must use the same visible Dot name as the reference video');
     const handsetBox = await profileCall.boundingBox();
@@ -1667,6 +1776,11 @@ try {
     assert.equal(clarificationPrompts.length, 2, 'The original voice task and its spoken reply should use one task lifecycle');
     assert.match(clarificationPrompts[1] || '', /Task: E2E voice clarification — ask which launch date to use\n\nUser reply: Use Friday\./);
 
+    let voiceStatePollingRequests = 0;
+    const countVoiceStatePolling = (request: { url(): string }) => {
+      if (new URL(request.url()).pathname === '/api/state') voiceStatePollingRequests += 1;
+    };
+    alphaPage!.on('request', countVoiceStatePolling);
     const instruction = 'E2E voice request — finish after the call ends';
     await alphaPage!.evaluate((text: string) => {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
@@ -1675,6 +1789,7 @@ try {
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: instruction }).waitFor({ state: 'visible' });
     await waitFor(() => Boolean(heldVoiceModelRelease), 10_000);
     await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
+    await waitFor(async () => (await call.getByTestId('voice-call-transcript').getAttribute('data-task-status'))?.includes('Dot 正在处理') || false, 10_000);
     await screenshot(alphaPage!, 'voice-call-task-running');
     speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
     assert(speechOutput.includes('收到，已加入工作队列。'), 'The call should speak its queue acknowledgement when speaker output is enabled');
@@ -1689,6 +1804,8 @@ try {
       return speechOutput.includes('Voice response returned from the model.');
     }, 10_000);
     assert(speechOutput.includes('Voice response returned from the model.'), 'The call should speak the completed task result, not only acknowledge receipt');
+    assert.equal(voiceStatePollingRequests, 0, 'Voice task progress should arrive on the authenticated event stream instead of polling /api/state');
+    alphaPage!.off('request', countVoiceStatePolling);
     const composer = alphaPage!.getByTestId('task-composer');
     await composer.fill('Typed while the voice call is active');
     assert.equal(await composer.inputValue(), 'Typed while the voice call is active');
@@ -2233,6 +2350,173 @@ try {
     await screenshot(alphaPage!, '16-computer-returned');
   });
 
+  await recordStep('Qwen WebRTC call sends Chinese speech to the tenant Agent and speaks its real task result', async () => {
+    mockQwenSignalingUrl = await startMockQwenSignaling();
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'qwen',
+      DOTS_QWEN_API_KEY: '',
+      DOTS_QWEN_WORKSPACE_ID: '',
+      DOTS_QWEN_REGION: '',
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const unconfiguredCall = alphaPage!.getByTestId('voice-call');
+    await unconfiguredCall.getByRole('alert').filter({ hasText: '百炼 API Key 和工作空间 ID；地域默认使用北京' }).waitFor({ state: 'visible' });
+    await unconfiguredCall.getByRole('button', { name: '结束通话' }).click();
+
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'qwen',
+      DOTS_QWEN_API_KEY: 'e2e-qwen-secret',
+      DOTS_QWEN_WORKSPACE_ID: 'e2e-workspace',
+      DOTS_QWEN_REGION: 'beijing',
+      DOTS_E2E_QWEN_SIGNALING_URL: mockQwenSignalingUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    const rtcMockScript = String.raw`(() => {
+      const view = window;
+      view.__dotsQwenSentEvents = [];
+      const track = { kind: 'audio', enabled: true, stopped: false, stop() { this.stopped = true; } };
+      view.__dotsQwenFakeTrack = track;
+      view.__dotsQwenFakeSender = null;
+      class FakeDataChannel {
+        constructor(label) { this.label = label; this.readyState = 'connecting'; this.onopen = null; this.onmessage = null; this.onerror = null; }
+        send(raw) {
+          const event = JSON.parse(raw);
+          view.__dotsQwenSentEvents.push(event);
+          if (event.type === 'response.create') {
+            view.__dotsQwenEventChannel?.emit({ type: 'response.created' });
+            window.setTimeout(() => view.__dotsQwenEventChannel?.emit({ type: 'response.done' }), 60);
+          }
+        }
+        emit(event) { this.onmessage?.({ data: JSON.stringify(event) }); }
+        close() { this.readyState = 'closed'; }
+      }
+      class FakePeerConnection {
+        constructor() { this.iceGatheringState = 'complete'; this.connectionState = 'new'; this.localDescription = null; this.ondatachannel = null; this.ontrack = null; this.onconnectionstatechange = null; this.sendChannel = null; }
+        addTransceiver(kind, options) {
+          if (kind !== 'audio' || options?.direction !== 'sendrecv') throw new Error('Voice call must reserve bidirectional audio before SDP offer');
+          const sender = { track: null, async replaceTrack(nextTrack) { this.track = nextTrack; } };
+          view.__dotsQwenFakeSender = sender;
+          return { sender };
+        }
+        createDataChannel(label) { this.sendChannel = new FakeDataChannel(label); return this.sendChannel; }
+        async createOffer() { return { type: 'offer', sdp: ['v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)) }; }
+        async setLocalDescription(description) { this.localDescription = description; }
+        async setRemoteDescription(description) {
+          if (!description?.sdp?.startsWith('v=0')) throw new Error('Qwen answer SDP was not returned to the browser');
+          const remote = new FakeDataChannel('txt');
+          remote.readyState = 'open';
+          view.__dotsQwenEventChannel = remote;
+          this.ondatachannel?.({ channel: remote });
+          remote.emit({ type: 'session.created' });
+          this.sendChannel.readyState = 'open';
+          this.sendChannel.onopen?.();
+          view.__dotsQwenConfirmSession = () => remote.emit({ type: 'session.updated' });
+        }
+        close() { this.connectionState = 'closed'; }
+      }
+      Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: FakePeerConnection });
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async () => ({ getAudioTracks: () => [track], getTracks: () => [track] }) } });
+    })()`;
+    await alphaPage!.evaluate((script: string) => window.eval(script), rtcMockScript);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-provider') === 'qwen');
+    await alphaPage!.waitForFunction(() => (window as unknown as { __dotsQwenSentEvents?: { type: string }[] }).__dotsQwenSentEvents?.some(event => event.type === 'session.update') === true, null, { timeout: 10_000 });
+    assert.match(await call.locator('[data-testid="voice-call-transcript"]').innerText(), /正在初始化语音模型/, 'The UI must not report listening before model setup is acknowledged');
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeSender: { track: unknown } }).__dotsQwenFakeSender.track), null, 'The microphone must remain detached until session.updated');
+    await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenConfirmSession: () => void }).__dotsQwenConfirmSession());
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 10_000 });
+    const microphoneAttachedAfterSetup = await alphaPage!.evaluate(() => {
+      const view = window as unknown as { __dotsQwenFakeSender: { track: unknown }; __dotsQwenFakeTrack: unknown };
+      return view.__dotsQwenFakeSender.track === view.__dotsQwenFakeTrack;
+    });
+    assert.equal(microphoneAttachedAfterSetup, true, 'The microphone should attach only after model configuration is acknowledged');
+    const config = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as { provider: string; configured: boolean; apiKey?: string };
+    assert.deepEqual(config, { provider: 'qwen', configured: true, model: 'qwen3.8-omni-flash-realtime' });
+    assert.equal(mockQwenSignalingRequests.length, 1, 'The browser must complete server-side Qwen SDP negotiation before listening');
+    assert.deepEqual(mockQwenSignalingRequests[0], {
+      authorization: 'Bearer e2e-qwen-secret', contentType: 'application/sdp',
+      sdp: ['v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)),
+    });
+    const sessionUpdate = await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenSentEvents: { type: string; session?: { input_audio_transcription?: { model?: string }; turn_detection?: { type?: string } } }[] }).__dotsQwenSentEvents.find(event => event.type === 'session.update'));
+    assert.equal(sessionUpdate?.session?.input_audio_transcription?.model, 'qwen3-asr-flash-realtime');
+    assert.equal(sessionUpdate?.session?.turn_detection?.type, 'server_vad');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), false, 'Mute must disable the live microphone track');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), true, 'Unmute must re-enable the live microphone track');
+    const voiceTurnTranscript = 'E2E voice response — speak actual task result';
+    const voiceTurnId = 'item-e2e-qwen-voice-turn-001';
+    await alphaPage!.evaluate(({ transcript, turnId }) => {
+      const view = window as unknown as { __dotsQwenEventChannel: { emit(event: unknown): void } };
+      view.__dotsQwenEventChannel.emit({ type: 'input_audio_buffer.speech_started' });
+      const completed = { type: 'conversation.item.input_audio_transcription.completed', event_id: 'event-e2e-qwen-voice-turn-001', item_id: turnId, transcript };
+      view.__dotsQwenEventChannel.emit(completed);
+      view.__dotsQwenEventChannel.emit(completed);
+      view.__dotsQwenEventChannel.emit({ type: 'response.created' });
+      window.setTimeout(() => view.__dotsQwenEventChannel.emit({ type: 'response.done' }), 700);
+    }, { transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 20_000 });
+    await alphaPage!.waitForFunction(() => (window as unknown as { __dotsQwenSentEvents?: { type: string; item?: { content?: { text?: string }[] } }[] }).__dotsQwenSentEvents?.some(event => event.type === 'conversation.item.create' && event.item?.content?.some(part => part.text?.includes('Voice response returned from the model.'))) === true, null, { timeout: 10_000 });
+    const agentPrompt = mockModelPrompts.find(prompt => prompt.includes('E2E voice response — speak actual task result')) || '';
+    assert(agentPrompt, 'The recognized Chinese speech was not dispatched through the tenant Agent task path');
+    const turnResult = await alphaPage!.evaluate(async ({ transcript, turnId }) => {
+      const callResponse = await fetch('/api/voice-calls');
+      const calls = await callResponse.json() as { id: string; startedAt: string; endedAt: string | null }[];
+      const activeCall = calls.find(candidate => !candidate.endedAt);
+      if (!activeCall) throw new Error('No active call was recorded for the voice turn');
+      const response = await fetch(`/api/voice-calls/${activeCall.id}/turns`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ transcript, turnId, engine: 'pi' }),
+      });
+      return { status: response.status, callId: activeCall.id, callStartedAt: activeCall.startedAt, task: await response.json() as { id: string } };
+    }, { transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    assert.equal(turnResult.status, 200, 'A replayed transcript turn should return the original task');
+    const crossTenantTurnStatus = await betaPage!.evaluate(async ({ callId, transcript, turnId }) => (await fetch(`/api/voice-calls/${callId}/turns`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ transcript, turnId, engine: 'pi' }),
+    })).status, { callId: turnResult.callId, transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    assert.equal(crossTenantTurnStatus, 404, 'A different tenant cannot inspect or replay another user’s voice turn');
+    const voiceTaskCheck = await alphaPage!.evaluate(async ({ transcript, callStartedAt }) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; createdAt: string }[] };
+      const tasks = state.tasks.filter(task => task.instruction === transcript && Date.parse(task.createdAt) >= Date.parse(callStartedAt));
+      return { count: tasks.length, taskId: tasks[0]?.id };
+    }, { transcript: voiceTurnTranscript, callStartedAt: turnResult.callStartedAt });
+    assert.equal(voiceTaskCheck.taskId, turnResult.task.id, 'The replay response must reference the task started for this call');
+    const voiceTaskCount = voiceTaskCheck.count;
+    assert.equal(voiceTaskCount, 1, 'Repeated WebRTC transcript delivery must not start a second Agent task');
+    await screenshot(alphaPage!, 'qwen-realtime-call-agent-result');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { stopped: boolean } }).__dotsQwenFakeTrack.stopped), true, 'Ending the call must stop the microphone track');
+    const callHistory = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { endedAt: string | null }[];
+    assert(callHistory.some(item => item.endedAt), 'The Qwen call should be durably recorded when it ends');
+
+    await alphaPage!.evaluate("Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async function () { throw new Error('E2E microphone permission denied'); } } })");
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const failedCall = alphaPage!.getByTestId('voice-call');
+    await failedCall.waitFor({ state: 'visible' });
+    await failedCall.getByRole('alert').filter({ hasText: 'E2E microphone permission denied' }).waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(async () => {
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { endedAt: string | null }[];
+      return Boolean(calls[0]?.endedAt);
+    }, null, { timeout: 10_000 });
+    const failedCallHistory = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { endedAt: string | null }[];
+    assert(failedCallHistory[0]?.endedAt, 'A Qwen call that fails during microphone startup must not remain active in call history');
+    await failedCall.getByRole('button', { name: '结束通话' }).click();
+    await failedCall.waitFor({ state: 'detached' });
+  });
+
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
 } catch (error) {
   failure = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
@@ -2255,7 +2539,12 @@ try {
   await browser?.close().catch(() => undefined);
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
+  try {
+    if (priorE2ESharedModelKey) e2eSharedModelKeyEntry.setPassword(priorE2ESharedModelKey);
+    else e2eSharedModelKeyEntry.deletePassword();
+  } catch { /* Restore only the isolated E2E Keychain service. */ }
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
+  if (mockQwenSignalingServer) await new Promise<void>(resolvePromise => mockQwenSignalingServer!.close(() => resolvePromise()));
   if (e2eSlackTokenAccount) {
     try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
   }
