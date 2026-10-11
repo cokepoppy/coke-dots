@@ -57,7 +57,11 @@ export class Worker {
       this.onChange();
       return;
     }
-    loadModelSettings(this.store.getSetting('modelBaseUrl', task.tenantId), this.store.getSetting('modelName', task.tenantId), task.tenantId);
+    loadModelSettings(
+      this.store.getAppSetting('modelBaseUrl'),
+      this.store.getAppSetting('modelName'),
+      this.store.getAppSetting('modelSettingsAdminTenantId'),
+    );
     const adapter = adapters[task.engine];
     const computer = this.computerFor?.(task.tenantId);
     const remoteEngines = parseRemoteEngines();
