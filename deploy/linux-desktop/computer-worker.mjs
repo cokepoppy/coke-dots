@@ -162,6 +162,8 @@ async function clickAgentInformationLink(input) {
   if ((await browserPage.context().cookies(before.href)).length) throw new Error('Only public pages without an active login can be used');
   const link = browserPage.getByRole('link', { name, exact: true });
   if (await link.count() !== 1 || !(await link.isVisible())) throw new Error('The requested visible information link was not found exactly once');
+  await link.scrollIntoViewIfNeeded({ timeout: 5000 });
+  await browserPage.waitForTimeout(150);
   const attributes = await link.evaluate(element => ({ href: element.href, target: element.target, download: element.hasAttribute('download') }));
   const destination = await publicHttpsUrl(attributes.href);
   if (attributes.target && attributes.target !== '_self' || attributes.download) throw new Error('New-window links and downloads are not allowed');

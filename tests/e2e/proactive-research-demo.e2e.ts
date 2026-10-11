@@ -19,7 +19,7 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const sourceDraft = '请先起草一份新品发布公告，发布时间写 10 月 21 日。先保持草稿状态，等我审批后再发送。';
 const sourceDecision = '发布团队今天确认发布时间改为 10 月 22 日。请用中文总结这项决定。';
 const finding = '我发现一处需要你决定的冲突：最新决定将发布时间改为 10 月 22 日，但待审批的公告草稿仍写着 10 月 21 日。要我更新草稿吗？我没有修改或发送。';
-const cloudComputerInstruction = '请在你的云电脑里打开 https://example.com，检查页面显示什么，再用鼠标点击页面上的“More information...”链接。完成后用中文告诉我打开了什么，以及点击后出现了什么。只浏览公开网页，不登录、不输入或提交内容、不下载、不修改文件。';
+const cloudComputerInstruction = '请在你的云电脑里打开 https://example.com，检查页面显示什么，再找到页面中的信息链接（例如 Learn more 或 More information）。如果链接在屏幕下方，先让它出现在可见区域，再通过云电脑实际点击。完成后用中文告诉我打开了什么，以及点击后出现了什么。只浏览公开网页，不登录、不输入或提交内容、不下载、不修改文件。';
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-proactive-demo-'));
 const livePi = process.env.DOTS_PROACTIVE_DEMO_LIVE_PI === '1';
 const cloudComputerUiDemo = process.env.DOTS_CLOUD_COMPUTER_UI_DEMO === '1';
@@ -338,6 +338,7 @@ try {
     assert.match(liveState.computer.url || '', /^https:\/\/(?:www\.)?iana\.org\//, `Pi should have clicked the public information link; actual browser URL: ${liveState.computer.url}`);
     assert.match(demoTask.result || '', /[㐀-鿿]/, 'The Pi result must be in Chinese.');
     assert.match(demoTask.result || '', /example\.com|Example Domain|示例域名/i);
+    assert.doesNotMatch(demoTask.result || '', /无法点击|未能点击|点击失败|could not click|unable to click/i, 'The reply must not describe a failed click as completed work.');
     await page.waitForFunction(async () => {
       const image = document.querySelector<HTMLImageElement>('.computer-stage img');
       return Boolean(image?.complete && image.naturalWidth > 100);
@@ -366,6 +367,13 @@ try {
     assert.match(osRelease, /^VERSION_ID="13"$/m);
     const sessionFiles = command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'find', `/workspace/tasks/${demoTask.id}/.coke-dots/pi-sessions`, '-type', 'f', '-printf', '%P\\n']);
     assert(sessionFiles, 'Pi session must persist inside the task directory on the tenant Debian computer.');
+    const taskRuntimeHash = createHash('sha256').update(demoTask.id).digest('hex');
+    const runtimeRecord = JSON.parse(command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'cat', `/workspace/.coke-dots-agent-runtime-state/${taskRuntimeHash}.json`])) as { result?: { computerUiAudit?: { inspections?: number; navigations?: number; informationClicks?: number } } };
+    assert(runtimeRecord.result?.computerUiAudit, 'The runtime must persist its per-task cloud-computer interaction audit.');
+    assert((runtimeRecord.result.computerUiAudit.inspections || 0) >= 1, 'Pi must inspect the page before the action.');
+    assert.equal(runtimeRecord.result.computerUiAudit.navigations, 1, 'The test must navigate once to the requested public page.');
+    assert.equal(runtimeRecord.result.computerUiAudit.informationClicks, 1, 'The demonstration only passes after the visible information link was actually clicked by the cloud computer.');
+    await writeFile(join(outputRoot, 'computer-ui-audit.json'), JSON.stringify(runtimeRecord.result.computerUiAudit, null, 2) + '\n');
     assert.deepEqual(browserErrors, [], `Browser runtime errors: ${browserErrors.join('; ')}`);
     console.log(`Pi 云电脑 UI 演示端到端测试通过：${tenantNamespace}`);
   } else {
@@ -528,6 +536,7 @@ await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
     : ['screenshots/00-dot-ready.png', 'screenshots/01-launch-draft-waiting.png', 'screenshots/02-proactive-finding-in-activity.png', 'screenshots/03-proactive-finding-detail.png'],
   webp: { width: playbackMetadata.width, height: playbackMetadata.height, frames: playbackMetadata.pages, durationSeconds: playbackDuration },
   webpPlayback,
+  ...(cloudComputerUiDemo ? { computerUiAudit: 'computer-ui-audit.json' } : {}),
   modelCalls: livePi ? undefined : modelRequests.length,
   model: livePi ? `Pi in Debian; shared provider model ${liveModelName}` : 'Deterministic local E2E fixture; no live provider request',
   trimmedWaitIntervals: liveWaitIntervals,

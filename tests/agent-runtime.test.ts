@@ -110,7 +110,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
         headers: { authorization: 'Bearer agent-test-token-never-print', 'content-type': 'application/json' },
         body: JSON.stringify({ engine, taskId, prompt, executionMode, cwd: `tasks/${taskId}`, sessionId: null, ...(modelConfig ? { modelConfig } : {}) }),
       });
-      return { status: response.status, body: await response.json() as { status?: string; message?: string; error?: string; proactiveFinding?: boolean } };
+      return { status: response.status, body: await response.json() as { status?: string; message?: string; error?: string; proactiveFinding?: boolean; computerUiAudit?: { inspections: number; navigations: number; informationClicks: number } } };
     };
 
     const firstId = '11111111-1111-4111-8111-111111111111';
@@ -150,6 +150,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       malformed: 400,
       allowed: 200,
     });
+    assert.deepEqual(computerTask.body.computerUiAudit, { inspections: 1, navigations: 0, informationClicks: 0 }, 'A successful bridge response must be counted in the per-task runtime audit.');
     const rejectedPi = await submit('55555555-5555-4555-8555-555555555555', 'bad config', 'proactive-research', 'pi', { apiKey: testModelKey, model: 'deepseek-chat', baseUrl: 'file:///etc/passwd' });
     assert.equal(rejectedPi.status, 400);
     assert.match(rejectedPi.body.error || '', /configuration is invalid/);

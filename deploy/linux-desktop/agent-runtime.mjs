@@ -147,7 +147,10 @@ async function executeKernel(input, requestSignal, slot) {
     if (executionMode === 'proactive-research' && (result.status !== 'done' || typeof result.proactiveFinding !== 'boolean' || result.pageAction !== undefined || result.delegations !== undefined || result.nextMinutes !== undefined)) throw new Error('Proactive research adapter returned an invalid or actionable decision');
     if (executionMode !== 'proactive-research' && result.proactiveFinding !== undefined) throw new Error('Standard Agent adapter must not return a proactive research finding');
     if (result.notifyUser !== undefined && typeof result.notifyUser !== 'boolean') throw new Error('Agent adapter returned an invalid notification preference');
-    return { taskId, ...result, engine, message: result.message.slice(0, 20_000), sessionId: typeof result.sessionId === 'string' ? result.sessionId : null };
+    return {
+      taskId, ...result, engine, message: result.message.slice(0, 20_000), sessionId: typeof result.sessionId === 'string' ? result.sessionId : null,
+      ...(computerUiBridge ? { computerUiAudit: computerUiBridge.audit() } : {}),
+    };
   } finally {
     clearTimeout(timer); clearInterval(controlPoll);
     requestSignal?.removeEventListener('abort', onRequestAbort);
@@ -160,6 +163,7 @@ async function startComputerUiBridge() {
   const bridgeToken = randomBytes(32).toString('base64url');
   const workerToken = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
   if (!workerToken) throw new Error('Cloud computer UI is unavailable');
+  const audit = { inspections: 0, navigations: 0, informationClicks: 0 };
   const routes = new Map([
     ['/inspect', { workerPath: '/v1/agent-ui/inspect', keys: [] }],
     ['/navigate', { workerPath: '/v1/agent-ui/navigate', keys: ['url'] }],
@@ -184,6 +188,11 @@ async function startComputerUiBridge() {
         signal: AbortSignal.timeout(30000),
       });
       const value = await response.json().catch(() => ({}));
+      if (response.ok) {
+        if (req.url === '/inspect') audit.inspections++;
+        else if (req.url === '/navigate') { audit.navigations++; audit.inspections++; }
+        else if (req.url === '/click-information-link') audit.informationClicks++;
+      }
       return send(res, response.status, value);
     } catch (error) {
       return send(res, 502, { error: error instanceof Error ? error.message.slice(0, 300) : 'computer UI operation failed' });
@@ -195,6 +204,7 @@ async function startComputerUiBridge() {
   return {
     url: `http://127.0.0.1:${address.port}`,
     token: bridgeToken,
+    audit: () => ({ ...audit }),
     close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
   };
 }
