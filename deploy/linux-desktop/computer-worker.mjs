@@ -199,7 +199,6 @@ async function clickAgentInformationLink(input) {
   if (point.x < 0 || point.y < 0 || point.x >= pageMetrics.innerWidth || point.y >= pageMetrics.innerHeight) {
     throw new Error(`The information link is outside the browser viewport after scrolling (point ${JSON.stringify(point)}; viewport ${pageMetrics.innerWidth}x${pageMetrics.innerHeight}; bounds ${JSON.stringify(bounds)})`);
   }
-  if (point.y > pageMetrics.innerHeight - 140) throw new Error(`The information link remains in the desktop dock area after scrolling (viewport point ${Math.round(point.x)},${Math.round(point.y)}; viewport height ${pageMetrics.innerHeight})`);
   const scale = Number.isFinite(pageMetrics.devicePixelRatio) && pageMetrics.devicePixelRatio > 0 ? pageMetrics.devicePixelRatio : 1;
   const chromeHeight = pageMetrics.outerHeight - pageMetrics.innerHeight;
   const x = Math.round((pageMetrics.screenX + point.x) * scale);
@@ -207,6 +206,11 @@ async function clickAgentInformationLink(input) {
   if (x < 0 || y < 0 || x > resolution[0] || y > resolution[1]) throw new Error('The information link is outside the visible desktop');
   await exec('xdotool', ['mousemove', String(x), String(y)], { timeout: 5000 });
   await new Promise(resolve => setTimeout(resolve, 180));
+  const pointerLocation = await exec('xdotool', ['getmouselocation', '--shell'], { timeout: 5000 }).then(result => result.stdout);
+  const pointerWindow = Number(pointerLocation.match(/^WINDOW=(\d+)$/m)?.[1]);
+  if (!Number.isInteger(pointerWindow)) throw new Error(`Could not verify the window under the target point (${x},${y})`);
+  const pointerClass = await exec('xdotool', ['getwindowclassname', String(pointerWindow)], { timeout: 5000 }).then(result => result.stdout.trim()).catch(() => 'unknown');
+  if (!/chromium/i.test(pointerClass)) throw new Error(`The target point ${x},${y} is covered by ${pointerClass}; refusing to click another desktop app`);
   await exec('xdotool', ['click', '1'], { timeout: 5000 });
   await browserPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => undefined);
   if (owner !== 'agent') throw new Error('The user took control during the browser click');
