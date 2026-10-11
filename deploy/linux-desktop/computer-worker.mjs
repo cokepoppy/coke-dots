@@ -162,8 +162,8 @@ async function clickAgentInformationLink(input) {
   if ((await browserPage.context().cookies(before.href)).length) throw new Error('Only public pages without an active login can be used');
   const link = browserPage.getByRole('link', { name, exact: true });
   if (await link.count() !== 1 || !(await link.isVisible())) throw new Error('The requested visible information link was not found exactly once');
-  await link.scrollIntoViewIfNeeded({ timeout: 5000 });
-  await browserPage.waitForTimeout(150);
+  await link.evaluate(element => element.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }));
+  await browserPage.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const attributes = await link.evaluate(element => ({ href: element.href, target: element.target, download: element.hasAttribute('download') }));
   const destination = await publicHttpsUrl(attributes.href);
   if (attributes.target && attributes.target !== '_self' || attributes.download) throw new Error('New-window links and downloads are not allowed');
@@ -189,7 +189,9 @@ async function clickAgentInformationLink(input) {
   await browserPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => undefined);
   if (owner !== 'agent') throw new Error('The user took control during the browser click');
   const after = await publicHttpsUrl(browserPage.url());
-  if (after.href !== destination.href) throw new Error('The browser did not open the inspected information link');
+  if (after.href !== destination.href) {
+    throw new Error(`The browser did not open the inspected information link (actual ${after.href}; expected ${destination.href}; click ${x},${y}; window ${desktopWindow.x},${desktopWindow.y} ${desktopWindow.width}x${desktopWindow.height}; link ${JSON.stringify({ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height })})`);
+  }
   return { ...await inspectAgentBrowserUi(), click: { name, x, y, window: { x: desktopWindow.x, y: desktopWindow.y, width: desktopWindow.width, height: desktopWindow.height }, destination: destination.href } };
 }
 

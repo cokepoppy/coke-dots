@@ -39,6 +39,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
   const adapterPath = join(temporary, 'adapter.mjs');
   const markerPath = join(temporary, 'adapter-events.log');
   let owner: 'agent' | 'user' = 'agent';
+  let clickAttempts = 0;
   let child: ChildProcess | null = null;
   const worker = createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/v1/control') {
@@ -48,8 +49,13 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     }
     if (req.method === 'POST' && req.url?.startsWith('/v1/agent-ui/')) {
       assert.equal(req.headers.authorization, 'Bearer worker-test-token', 'Only the runtime bridge should hold the worker credential');
+      if (req.url === '/v1/agent-ui/click-information-link' && ++clickAttempts === 1) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'The browser did not open the inspected information link' }));
+        return;
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ url: 'https://example.com/', title: 'Example Domain', text: 'More information...', links: [] }));
+      res.end(JSON.stringify({ url: 'https://example.com/', title: 'Example Domain', text: 'More information...', links: [], ...(req.url === '/v1/agent-ui/click-information-link' ? { click: { name: 'More information', x: 620, y: 450, destination: 'https://iana.org/help/example-domains' } } : {}) }));
       return;
     }
     res.writeHead(404); res.end();
@@ -67,7 +73,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       'await new Promise(resolve => setTimeout(resolve, 80));',
       "await appendFile(process.env.DOTS_TEST_MARKER, `end ${input.taskId}\\n`);",
       "if (input.executionMode === 'proactive-research') await appendFile(process.env.DOTS_TEST_MARKER, `review ${JSON.stringify({ cwd: input.cwd, workspace: input.workspace, computer: input.computer, workerToken: Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN) })}\\n`);",
-      "if (input.prompt === 'computer-ui-bridge') { const computer = input.computer; const request = async (path, token, body = {}) => { const response = await fetch(`${computer.computerUiUrl}${path}`, { method: 'POST', headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), 'content-type': 'application/json' }, body: JSON.stringify(body) }); return response.status; }; const checks = { capability: Boolean(computer?.computerUiToken), workerTokenInInput: Boolean(computer?.workerToken), workerTokenInEnv: Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN), unauthenticated: await request('/inspect'), forbiddenRoute: await request('/commands', computer.computerUiToken), malformed: await request('/inspect', computer.computerUiToken, { arbitrary: true }), allowed: await request('/inspect', computer.computerUiToken) }; await appendFile(process.env.DOTS_TEST_MARKER, `computer-ui ${JSON.stringify(checks)}\\n`); }",
+      "if (input.prompt === 'computer-ui-bridge') { const computer = input.computer; const request = async (path, token, body = {}) => { const response = await fetch(`${computer.computerUiUrl}${path}`, { method: 'POST', headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), 'content-type': 'application/json' }, body: JSON.stringify(body) }); return response.status; }; const checks = { capability: Boolean(computer?.computerUiToken), workerTokenInInput: Boolean(computer?.workerToken), workerTokenInEnv: Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN), unauthenticated: await request('/inspect'), forbiddenRoute: await request('/commands', computer.computerUiToken), malformed: await request('/inspect', computer.computerUiToken, { arbitrary: true }), allowed: await request('/inspect', computer.computerUiToken), clickFailure: await request('/click-information-link', computer.computerUiToken, { name: 'More information' }), clickSuccess: await request('/click-information-link', computer.computerUiToken, { name: 'More information' }) }; await appendFile(process.env.DOTS_TEST_MARKER, `computer-ui ${JSON.stringify(checks)}\\n`); }",
       "if (input.engine === 'pi') await appendFile(process.env.DOTS_TEST_MARKER, `pi-config ${JSON.stringify({ present: Boolean(input.modelConfig?.apiKey), model: input.modelConfig?.model, keyCopiedToEnv: process.env.DOTS_MODEL_API_KEY === input.modelConfig?.apiKey })}\\n`);",
       "process.stdout.write(JSON.stringify(input.executionMode === 'proactive-research' ? { status: 'done', message: 'A bounded finding.', proactiveFinding: true } : { status: 'done', message: `runtime ${process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'token leaked' : 'token isolated'}; computer ${process.env.LINUX_DESKTOP_WORKER_TOKEN ? 'token leaked' : 'token isolated'}` }));",
       '',
@@ -110,7 +116,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
         headers: { authorization: 'Bearer agent-test-token-never-print', 'content-type': 'application/json' },
         body: JSON.stringify({ engine, taskId, prompt, executionMode, cwd: `tasks/${taskId}`, sessionId: null, ...(modelConfig ? { modelConfig } : {}) }),
       });
-      return { status: response.status, body: await response.json() as { status?: string; message?: string; error?: string; proactiveFinding?: boolean; computerUiAudit?: { inspections: number; navigations: number; informationClicks: number; lastClick: unknown } } };
+      return { status: response.status, body: await response.json() as { status?: string; message?: string; error?: string; proactiveFinding?: boolean; computerUiAudit?: { inspections: number; navigations: number; informationClicks: number; clickAttempts: number; lastClick: unknown; lastClickError: unknown } } };
     };
 
     const firstId = '11111111-1111-4111-8111-111111111111';
@@ -149,8 +155,17 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       forbiddenRoute: 404,
       malformed: 400,
       allowed: 200,
+      clickFailure: 500,
+      clickSuccess: 200,
     });
-    assert.deepEqual(computerTask.body.computerUiAudit, { inspections: 1, navigations: 0, informationClicks: 0, lastClick: null }, 'A successful bridge response must be counted in the per-task runtime audit.');
+    assert.deepEqual(computerTask.body.computerUiAudit, {
+      inspections: 1,
+      navigations: 0,
+      informationClicks: 1,
+      clickAttempts: 2,
+      lastClick: { name: 'More information', x: 620, y: 450, destination: 'https://iana.org/help/example-domains' },
+      lastClickError: null,
+    }, 'The runtime audit must preserve a real click and clear a failed-click error only after a successful retry.');
     const rejectedPi = await submit('55555555-5555-4555-8555-555555555555', 'bad config', 'proactive-research', 'pi', { apiKey: testModelKey, model: 'deepseek-chat', baseUrl: 'file:///etc/passwd' });
     assert.equal(rejectedPi.status, 400);
     assert.match(rejectedPi.body.error || '', /configuration is invalid/);

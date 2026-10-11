@@ -102,7 +102,8 @@ try {
 function computerUiTool(computer) {
   if (!computer?.computerUiUrl || !computer?.computerUiToken) return null;
   let inspectedUrl = '';
-  let clicks = 0;
+  let clickAttempts = 0;
+  let informationClickSucceeded = false;
   return {
     name: 'computer_ui',
     label: 'Use Dot computer browser',
@@ -131,10 +132,10 @@ function computerUiTool(computer) {
         if (params.url !== undefined || params.linkName !== undefined) throw new Error('Inspect does not accept parameters');
         route = '/inspect';
       } else {
-        if (params.url !== undefined || !params.linkName || clicks >= 1 || !inspectedUrl) throw new Error('Inspect the page first and choose at most one information link');
+        if (params.url !== undefined || !params.linkName || clickAttempts >= 3 || informationClickSucceeded || !inspectedUrl) throw new Error('Inspect the page first and choose one information link; failed attempts are limited to three');
         route = '/click-information-link';
         body = { name: params.linkName };
-        clicks++;
+        clickAttempts++;
       }
       const response = await fetch(`${computer.computerUiUrl}${route}`, {
         method: 'POST',
@@ -144,6 +145,7 @@ function computerUiTool(computer) {
       });
       const value = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof value.error === 'string' ? value.error : 'Cloud computer UI operation failed');
+      if (params.action === 'click_information_link') informationClickSucceeded = true;
       if (typeof value.url === 'string') inspectedUrl = value.url;
       return { content: [{ type: 'text', text: JSON.stringify(value) }], details: { action: params.action, url: value.url || inspectedUrl } };
     },

@@ -322,7 +322,7 @@ try {
     }, { timeout: 60_000 });
     await page.screenshot({ path: join(outputRoot, 'screenshots', '01-cloud-computer-running.png') });
     const startingComputerImage = await page.locator('.computer-stage img').getAttribute('src');
-    await waitForTask(page, `task.instruction === ${JSON.stringify(cloudComputerInstruction)} && ['done','failed'].includes(task.status)`, 240_000);
+    await waitForTask(page, `task.instruction === ${JSON.stringify(cloudComputerInstruction)} && ['done','failed','waiting'].includes(task.status)`, 180_000);
     const liveState = await page.evaluate(async () => {
       const [computerResponse, stateResponse] = await Promise.all([fetch('/api/computer', { cache: 'no-store' }), fetch('/api/state', { cache: 'no-store' })]);
       return { computer: await computerResponse.json(), state: await stateResponse.json() };
@@ -332,33 +332,16 @@ try {
     };
     const demoTask = liveState.state.tasks.find(task => task.instruction === cloudComputerInstruction);
     assert(demoTask, 'The browser-recorded cloud-computer task should persist in Activity.');
-    assert.equal(demoTask.status, 'done', `Pi cloud-computer task failed: ${demoTask.error || demoTask.result || ''}`);
     assert.equal(demoTask.engine, 'pi');
     assert.equal(liveState.computer.backend, 'linux-desktop');
     assert.equal(liveState.computer.owner, 'agent', 'The cloud desktop must remain agent controlled during the demonstration.');
-    assert.match(demoTask.result || '', /[㐀-鿿]/, 'The Pi result must be in Chinese.');
-    assert.match(demoTask.result || '', /example\.com|Example Domain|示例域名/i);
-    await page.waitForFunction(async initialSrc => {
-      const response = await fetch('/api/computer', { cache: 'no-store' });
-      if (!response.ok) return false;
-      const state = await response.json() as { url?: string };
+    await page.waitForFunction(initialSrc => {
       const image = document.querySelector<HTMLImageElement>('.computer-stage img');
-      return /^https:\/\/(?:www\.)?iana\.org\//.test(state.url || '') && Boolean(image?.complete && image.naturalWidth > 100 && image.getAttribute('src') !== initialSrc);
-    }, startingComputerImage, { timeout: 60_000 });
+      return Boolean(image?.complete && image.naturalWidth > 100 && image.getAttribute('src') !== initialSrc);
+    }, startingComputerImage, { timeout: 20_000 }).catch(() => undefined);
     await page.screenshot({ path: join(outputRoot, 'screenshots', '02-cloud-browser-click-result.png') });
     const desktopScreenshot = Buffer.from(await page.evaluate(async () => Array.from(new Uint8Array(await (await fetch('/api/computer/screenshot', { cache: 'no-store' })).arrayBuffer()))));
     await writeFile(join(outputRoot, 'screenshots', '02-cloud-desktop-after-click.png'), desktopScreenshot);
-
-    await page.getByRole('button', { name: 'Activity', exact: true }).click();
-    const taskCard = page.getByTestId(`task-card-${demoTask.id}`);
-    await taskCard.waitFor({ state: 'visible' });
-    await taskCard.getByText(demoTask.result || '', { exact: true }).waitFor({ state: 'visible' });
-    await page.screenshot({ path: join(outputRoot, 'screenshots', '03-computer-task-in-activity.png') });
-    await page.waitForTimeout(2_500);
-    await taskCard.getByRole('button', { name: /查看详情/ }).click();
-    await page.locator('.timeline .message.dot p').filter({ hasText: demoTask.result || '' }).waitFor({ state: 'visible' });
-    await page.screenshot({ path: join(outputRoot, 'screenshots', '04-computer-task-result-detail.png') });
-    await page.waitForTimeout(2_000);
 
     const namespace = JSON.parse(command(['kubectl', 'get', 'namespace', tenantNamespace, '-o', 'json'])) as { metadata?: { labels?: Record<string, string> } };
     assert.equal(namespace.metadata?.labels?.['coke-dots.io/managed-by'], 'coke-dots');
@@ -371,12 +354,17 @@ try {
     const sessionFiles = command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'find', `/workspace/tasks/${demoTask.id}/.coke-dots/pi-sessions`, '-type', 'f', '-printf', '%P\\n']);
     assert(sessionFiles, 'Pi session must persist inside the task directory on the tenant Debian computer.');
     const taskRuntimeHash = createHash('sha256').update(demoTask.id).digest('hex');
-    const runtimeRecord = JSON.parse(command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'cat', `/workspace/.coke-dots-agent-runtime-state/${taskRuntimeHash}.json`])) as { result?: { computerUiAudit?: { inspections?: number; navigations?: number; informationClicks?: number; lastClick?: { name?: string; x?: number; y?: number; destination?: string } | null } } };
+    const runtimeRecord = JSON.parse(command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'cat', `/workspace/.coke-dots-agent-runtime-state/${taskRuntimeHash}.json`])) as { result?: { computerUiAudit?: { inspections?: number; navigations?: number; informationClicks?: number; clickAttempts?: number; lastClick?: { name?: string; x?: number; y?: number; destination?: string } | null; lastClickError?: string | null } } };
     assert(runtimeRecord.result?.computerUiAudit, 'The runtime must persist its per-task cloud-computer interaction audit.');
     await writeFile(join(outputRoot, 'interaction-proof.json'), JSON.stringify({ taskStatus: demoTask.status, taskResult: demoTask.result, computer: liveState.computer, audit: runtimeRecord.result.computerUiAudit }, null, 2) + '\n');
+    assert.equal(demoTask.status, 'done', `Pi cloud-computer task did not complete: ${demoTask.error || demoTask.result || ''}; audit=${JSON.stringify(runtimeRecord.result.computerUiAudit)}`);
+    assert.match(demoTask.result || '', /[㐀-鿿]/, 'The Pi result must be in Chinese.');
+    assert.match(demoTask.result || '', /example\.com|Example Domain|示例域名/i);
     assert((runtimeRecord.result.computerUiAudit.inspections || 0) >= 1, 'Pi must inspect the page before the action.');
     assert.equal(runtimeRecord.result.computerUiAudit.navigations, 1, 'The test must navigate once to the requested public page.');
+    assert.equal(runtimeRecord.result.computerUiAudit.clickAttempts, 1, 'The demo must reach the information link with one accurate desktop click.');
     assert.equal(runtimeRecord.result.computerUiAudit.informationClicks, 1, 'The demonstration only passes after the visible information link was actually clicked by the cloud computer.');
+    assert.equal(runtimeRecord.result.computerUiAudit.lastClickError, null, 'The successful computer action must not hide an earlier misclick.');
     const lastClick = runtimeRecord.result.computerUiAudit.lastClick;
     assert(lastClick && typeof lastClick.name === 'string' && typeof lastClick.destination === 'string' && typeof lastClick.x === 'number' && typeof lastClick.y === 'number', 'The runtime must record the clicked link and position.');
     assert(lastClick.x >= 0 && lastClick.x < 1440 && lastClick.y >= 0 && lastClick.y < 900, 'The audit must record a real click position inside the Debian desktop.');
@@ -386,6 +374,16 @@ try {
     assert.doesNotMatch(demoTask.result || '', /无法点击|未能点击|点击失败|could not click|unable to click/i, 'The reply must not describe a failed click as completed work.');
     await writeFile(join(outputRoot, 'computer-ui-audit.json'), JSON.stringify(runtimeRecord.result.computerUiAudit, null, 2) + '\n');
     console.log(`步骤：Pi 已在 Debian 云电脑中点击 ${lastClick.name}（${lastClick.x}, ${lastClick.y}），浏览器停留在 ${liveState.computer.url}`);
+    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    const taskCard = page.getByTestId(`task-card-${demoTask.id}`);
+    await taskCard.waitFor({ state: 'visible' });
+    await taskCard.getByText(demoTask.result || '', { exact: true }).waitFor({ state: 'visible' });
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '03-computer-task-in-activity.png') });
+    await page.waitForTimeout(2_500);
+    await taskCard.getByRole('button', { name: /查看详情/ }).click();
+    await page.locator('.timeline .message.dot p').filter({ hasText: demoTask.result || '' }).waitFor({ state: 'visible' });
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '04-computer-task-result-detail.png') });
+    await page.waitForTimeout(2_000);
     assert.deepEqual(browserErrors, [], `Browser runtime errors: ${browserErrors.join('; ')}`);
     console.log(`Pi 云电脑 UI 演示端到端测试通过：${tenantNamespace}`);
   } else {
@@ -548,7 +546,7 @@ await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
     : ['screenshots/00-dot-ready.png', 'screenshots/01-launch-draft-waiting.png', 'screenshots/02-proactive-finding-in-activity.png', 'screenshots/03-proactive-finding-detail.png'],
   webp: { width: playbackMetadata.width, height: playbackMetadata.height, frames: playbackMetadata.pages, durationSeconds: playbackDuration },
   webpPlayback,
-  ...(cloudComputerUiDemo ? { computerUiAudit: 'computer-ui-audit.json' } : {}),
+  ...(cloudComputerUiDemo ? { computerUiAudit: 'computer-ui-audit.json', interactionProof: 'interaction-proof.json' } : {}),
   modelCalls: livePi ? undefined : modelRequests.length,
   model: livePi ? `Pi in Debian; shared provider model ${liveModelName}` : 'Deterministic local E2E fixture; no live provider request',
   trimmedWaitIntervals: liveWaitIntervals,
