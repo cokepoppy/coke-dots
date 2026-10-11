@@ -14,17 +14,26 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   const documents = desktopResources('alpha-workspace', 'worker-secret', 'agent-secret');
   assert.equal(documents[0].kind, 'Namespace');
   const list = documents[1] as { items: Record<string, unknown>[] };
+  const quota = list.items.find(item => item.kind === 'ResourceQuota') as { metadata: { name: string }; spec: { hard: Record<string, string> } };
+  assert.equal(quota.metadata.name, 'desktop-resource-budget');
+  assert.deepEqual(quota.spec.hard, {
+    pods: '1',
+    'requests.cpu': '750m', 'requests.memory': '1408Mi',
+    'limits.cpu': '2', 'limits.memory': '2Gi',
+  }, 'The per-tenant quota must bound both the desktop and its Agent runtime');
   const service = list.items.find(item => item.kind === 'Service') as { spec: { ports: { port: number }[] } };
   assert.deepEqual(service.spec.ports.map(port => port.port), [6080, 8082, 8083]);
   assert.equal(service.spec.ports.some(port => port.port === 9222), false, 'Raw Chromium CDP must stay inside the Pod');
   const secret = list.items.find(item => item.kind === 'Secret') as { stringData: Record<string, string> };
   assert.deepEqual(secret.stringData, { LINUX_DESKTOP_WORKER_TOKEN: 'worker-secret', DOTS_AGENT_RUNTIME_TOKEN: 'agent-secret' });
-  const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { automountServiceAccountToken: boolean; shareProcessNamespace?: boolean; containers: { name: string; env: { name: string; value?: string; valueFrom?: unknown }[]; startupProbe?: { timeoutSeconds?: number }; readinessProbe?: { timeoutSeconds?: number; failureThreshold?: number }; livenessProbe?: { timeoutSeconds?: number; failureThreshold?: number }; securityContext: { runAsNonRoot: boolean; runAsUser: number; allowPrivilegeEscalation: boolean; readOnlyRootFilesystem: boolean } }[] } } } };
+  const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { automountServiceAccountToken: boolean; shareProcessNamespace?: boolean; containers: { name: string; env: { name: string; value?: string; valueFrom?: unknown }[]; resources: { requests: Record<string, string>; limits: Record<string, string> }; startupProbe?: { timeoutSeconds?: number }; readinessProbe?: { timeoutSeconds?: number; failureThreshold?: number }; livenessProbe?: { timeoutSeconds?: number; failureThreshold?: number }; securityContext: { runAsNonRoot: boolean; runAsUser: number; allowPrivilegeEscalation: boolean; readOnlyRootFilesystem: boolean } }[] } } } };
   assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
   assert.equal(deployment.spec.template.spec.shareProcessNamespace, undefined, 'Desktop and Agent must not share a process namespace');
   const [desktop, runtime] = deployment.spec.template.spec.containers;
   assert.equal(desktop.name, 'desktop');
   assert.equal(runtime.name, 'agent-runtime');
+  assert.deepEqual(desktop.resources, { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '1500m', memory: '1280Mi' } });
+  assert.deepEqual(runtime.resources, { requests: { cpu: '250m', memory: '384Mi' }, limits: { cpu: '500m', memory: '768Mi' } });
   assert.equal(desktop.securityContext.runAsNonRoot, true);
   assert.equal(desktop.securityContext.runAsUser, 1000);
   assert.equal(desktop.securityContext.allowPrivilegeEscalation, false);
