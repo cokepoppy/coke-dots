@@ -48,7 +48,6 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
   return <div className="slack-setup-backdrop" data-testid="slack-setup-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="slack-setup-dialog" role="dialog" aria-modal="true" aria-labelledby="slack-setup-title" onKeyDown={event => { if (event.key === 'Escape') onClose(); }}>
       <button className="slack-setup-close" type="button" aria-label="Close Slack setup" onClick={onClose}>×</button>
-      <div className="slack-setup-mark" aria-hidden="true">✣</div>
       <h2 id="slack-setup-title">Set up Slack</h2>
       {loading ? <p className="slack-setup-status" role="status">Loading workspaces…</p> : <>
         <div className="slack-setup-workspace-card">
@@ -66,7 +65,7 @@ export function SlackSetupModal({ dotName, canManage, onClose, onConnectSlack }:
         </div>
         {state?.installations.find(item => item.teamId === selectedTeamId)?.contactEnabled && <span className="sr-only" role="status">Workspace selected</span>}
         {!canManage && <p className="slack-setup-readonly">Ask a workspace owner or admin to connect Slack.</p>}
-        <button className="slack-setup-primary" data-testid="slack-connect" type="button" disabled={!canManage || saving || (!state?.configured && !state?.installations.length)} onClick={() => void addToSlack()}>{saving ? 'Adding…' : 'Add to Slack'}</button>
+        <button className="slack-setup-primary" data-testid="slack-connect" type="button" disabled={!canManage || saving || (!state?.configured && !state?.installations.length)} onClick={() => void addToSlack()}>{saving ? 'Adding…' : state?.installations.length ? 'Add to Slack' : 'Select a workspace'}</button>
         {state && !state.configured && state.installations.length === 0 && <p className="slack-setup-unavailable" role="status">Slack connection is not configured for this build.</p>}
       </>}
       {error && <p className="slack-setup-error" role="alert">{error}<button type="button" aria-label="Retry Slack workspace loading" onClick={() => void refresh()}>Retry</button></p>}

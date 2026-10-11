@@ -39,7 +39,6 @@
 }
 
 .slack-setup-close:hover { background: #f4f2f5; color: #39363e; }
-.slack-setup-mark { width: 42px; height: 42px; display: grid; place-items: center; margin: 0 auto 13px; border-radius: 13px; background: #f3eef9; color: #7c5ba7; font-size: 25px; }
 .slack-setup-dialog h2 { margin: 0 0 20px; font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
 
 .slack-setup-workspace-card {
@@ -85,7 +84,6 @@
 .dots-dark .slack-setup-dialog { border-color: #1e3527; background: #07170e; color: #f0f6f1; box-shadow: 0 20px 70px #0008; }
 .dots-dark .slack-setup-close { color: #aaa5af; }
 .dots-dark .slack-setup-close:hover { background: #173021; color: #f2eff5; }
-.dots-dark .slack-setup-mark { background: #393042; color: #d6baf8; }
 .dots-dark .slack-setup-workspace-card { border-color: #102a1b; background: #0b2115; }
 .dots-dark .slack-setup-picker > span:first-child { color: #e2eee5; }
 .dots-dark .slack-current-workspace { border-color: #23432f; background: #07170e; color: #eff8f1; }

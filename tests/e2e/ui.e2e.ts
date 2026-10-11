@@ -856,8 +856,8 @@ try {
     const workspacePlaceholder = modal.locator('.slack-current-workspace.is-placeholder');
     await workspacePlaceholder.waitFor({ state: 'visible' });
     assert.match(await workspacePlaceholder.innerText(), /Workspace/);
-    const connectButton = modal.getByTestId('slack-connect');
-    assert.equal(await connectButton.innerText(), 'Add to Slack');
+    const connectButton = modal.getByRole('button', { name: 'Select a workspace' });
+    assert.equal(await modal.getByTestId('slack-connect').innerText(), 'Select a workspace');
     assert.equal(await connectButton.isDisabled(), false);
     await screenshot(alphaPage!, 'slack-setup-empty-workspace');
 
