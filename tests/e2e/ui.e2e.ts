@@ -35,6 +35,7 @@ let mockSlackServer: Server | null = null;
 let mockQwenSignalingServer: Server | null = null;
 let mockVolcEngineServer: WebSocketServer | null = null;
 let mockVolcEngineDuplexServer: WebSocketServer | null = null;
+let mockVolcEngineRejectedServer: Server | null = null;
 let mockSlackProviderOrigin = '';
 let mockQwenSignalingUrl = '';
 let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp: string }[] = [];
@@ -361,6 +362,18 @@ async function startMockVolcEngineDuplexProvider() {
   const address = mockVolcEngineDuplexServer.address();
   assert(address && typeof address !== 'string');
   return `ws://127.0.0.1:${address.port}/duplex`;
+}
+
+async function startMockVolcEngineEntitlementRejection() {
+  mockVolcEngineRejectedServer = createHttpServer();
+  mockVolcEngineRejectedServer.on('upgrade', (_request, socket) => {
+    const body = JSON.stringify({ error: { code: 45000030, message: 'requested resource not granted [resource_id=volc.speech.dialog]' } });
+    socket.end('HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: ' + Buffer.byteLength(body) + '\r\nConnection: close\r\n\r\n' + body);
+  });
+  await new Promise<void>((resolvePromise, reject) => mockVolcEngineRejectedServer!.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  const address = mockVolcEngineRejectedServer.address();
+  assert(address && typeof address !== 'string');
+  return 'ws://127.0.0.1:' + address.port + '/duplex';
 }
 
 async function websocketUpgradeStatus(url: string, cookie: string) {
@@ -2487,6 +2500,39 @@ try {
     assert(finishSession >= 0 && sessionFinished > finishSession && finishConnection > sessionFinished, `Call cleanup must await session closure before finishing the provider connection; received ${providerConnection.timeline.join(', ')}`);
   });
 
+  await recordStep('SeedDuplex explains the observed 45000030 resource entitlement failure in Chinese', async () => {
+    const rejectedUrl = await startMockVolcEngineEntitlementRejection();
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-secret',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: rejectedUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    const alert = call.getByRole('alert').filter({ hasText: '端到端实时语音尚未开通' });
+    await alert.waitFor({ state: 'visible', timeout: 15_000 });
+    const visibleError = await alert.textContent();
+    assert.equal(visibleError?.includes('requested resource not granted'), false, 'Raw provider response text must not reach the browser');
+    assert.equal(visibleError?.includes('volc.speech.dialog'), false, 'Provider resource diagnostics must stay server-side');
+    await screenshot(alphaPage!, 'volcengine-resource-not-enabled');
+    await alphaPage!.waitForFunction(async () => {
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { endedAt: string | null }[];
+      return Boolean(calls[0]?.endedAt);
+    }, null, { timeout: 10_000 });
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
+    if (mockVolcEngineRejectedServer) {
+      await new Promise<void>((resolvePromise, reject) => mockVolcEngineRejectedServer!.close(error => error ? reject(error) : resolvePromise()));
+      mockVolcEngineRejectedServer = null;
+    }
+  });
+
   await recordStep('SeedDuplex 3.0 JSON WebSocket keeps API Key private and dispatches Chinese speech to the tenant Agent', async () => {
     mockVolcEngineDuplexUrl = await startMockVolcEngineDuplexProvider();
     await stopServer(server);
@@ -2574,6 +2620,7 @@ try {
   if (mockQwenSignalingServer) await new Promise<void>(resolvePromise => mockQwenSignalingServer!.close(() => resolvePromise()));
   if (mockVolcEngineServer) await new Promise<void>(resolvePromise => mockVolcEngineServer!.close(() => resolvePromise()));
   if (mockVolcEngineDuplexServer) await new Promise<void>(resolvePromise => mockVolcEngineDuplexServer!.close(() => resolvePromise()));
+  if (mockVolcEngineRejectedServer) await new Promise<void>(resolvePromise => mockVolcEngineRejectedServer!.close(() => resolvePromise()));
   if (e2eSlackTokenAccount) {
     try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
   }

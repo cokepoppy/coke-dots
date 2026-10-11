@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import {
   volcengineDuplexHeaders,
+  volcengineDuplexHandshakeErrorMessage,
   volcengineDuplexRealtimeUrl,
   volcengineDuplexSessionPayload,
   volcengineVoiceConfig,
@@ -128,6 +129,25 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
   upstream.on('open', () => {
     try { upstream.send(JSON.stringify(volcengineDuplexSessionPayload(dotName, randomUUID()))); }
     catch { fail('无法初始化火山实时语音连接。'); }
+  });
+  upstream.on('unexpected-response', (_request, response) => {
+    const bodyChunks: Buffer[] = [];
+    let retainedBytes = 0;
+    const maxDiagnosticBytes = 16 * 1024;
+    response.on('data', chunk => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const remaining = maxDiagnosticBytes - retainedBytes;
+      if (remaining > 0) {
+        const retained = bytes.subarray(0, remaining);
+        bodyChunks.push(retained);
+        retainedBytes += retained.byteLength;
+      }
+    });
+    response.on('end', () => {
+      const message = volcengineDuplexHandshakeErrorMessage(response.statusCode || 502, Buffer.concat(bodyChunks).toString('utf8'));
+      fail(message);
+    });
+    response.on('error', () => fail('无法读取火山实时语音服务响应，请稍后重试。'));
   });
   upstream.on('message', (raw, isBinary) => {
     if (isBinary) { fail('火山 SeedDuplex 返回了不支持的二进制响应。'); return; }

@@ -6,6 +6,7 @@ import {
   encodeVolcengineAudio,
   encodeVolcengineEvent,
   volcengineDuplexHeaders,
+  volcengineDuplexHandshakeErrorMessage,
   volcengineDuplexRealtimeUrl,
   volcengineDuplexSessionPayload,
   volcengineHeaders,
@@ -40,6 +41,18 @@ test('SeedDuplex API Key takes precedence over legacy credentials and stays serv
   assert.deepEqual(headers, { 'X-Api-Key': 'seed-duplex-secret', 'X-Api-Request-Id': 'request-id', 'X-Api-Connect-Id': 'connect-id' });
   assert.equal(JSON.stringify(volcengineVoiceInfo({ DOTS_VOLCENGINE_API_KEY: 'seed-duplex-secret' })).includes('seed-duplex-secret'), false);
   assert.throws(() => volcengineVoiceConfig({ DOTS_VOLCENGINE_API_KEY: 'x'.repeat(4097) }), /API Key/);
+});
+
+test('SeedDuplex handshake entitlement errors are actionable and never expose provider response details', () => {
+  const message = volcengineDuplexHandshakeErrorMessage(403, JSON.stringify({
+    error: { code: 45000030, message: 'requested resource not granted [resource_id=volc.speech.dialog] key=secret-value' },
+  }));
+  assert.equal(message, '火山引擎端到端实时语音尚未开通，请在语音控制台为当前项目开通后重试。');
+  assert.equal(message.includes('secret-value'), false);
+  assert.equal(message.includes('requested resource'), false);
+  assert.match(volcengineDuplexHandshakeErrorMessage(401, ''), /鉴权失败/);
+  assert.match(volcengineDuplexHandshakeErrorMessage(403, ''), /语音服务权限/);
+  assert.match(volcengineDuplexHandshakeErrorMessage(502, ''), /HTTP 502/);
 });
 
 test('Volcano test websocket override is restricted to a local test server', () => {

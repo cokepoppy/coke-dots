@@ -41,6 +41,22 @@ export function volcengineVoiceConfig(env: NodeJS.ProcessEnv = process.env): Vol
   return { mode: 'o2', appId, accessToken, resourceId };
 }
 
+export function volcengineDuplexHandshakeErrorMessage(statusCode: number, responseBody: string): string {
+  let providerCode: unknown;
+  try {
+    const response = JSON.parse(responseBody) as { error?: { code?: unknown }; code?: unknown };
+    providerCode = response.error?.code ?? response.code;
+  } catch {
+    // The provider response is diagnostic input only; never show it in the UI.
+  }
+  if (String(providerCode) === '45000030') {
+    return '火山引擎端到端实时语音尚未开通，请在语音控制台为当前项目开通后重试。';
+  }
+  if (statusCode === 401) return '火山引擎实时语音鉴权失败，请检查语音 API Key。';
+  if (statusCode === 403) return '火山引擎实时语音请求未获授权，请检查 API Key 所属项目的语音服务权限。';
+  return '火山引擎实时语音连接失败（HTTP ' + statusCode + '），请检查控制台配置后重试。';
+}
+
 export function volcengineVoiceInfo(env: NodeJS.ProcessEnv = process.env) {
   try {
     const config = volcengineVoiceConfig(env);
