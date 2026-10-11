@@ -30,7 +30,10 @@ const pageErrors: string[] = [];
 let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockSlackServer: Server | null = null;
+let mockQwenSignalingServer: Server | null = null;
 let mockSlackProviderOrigin = '';
+let mockQwenSignalingUrl = '';
+let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp: string }[] = [];
 let mockSlackCodeExchanges = 0;
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
@@ -212,6 +215,29 @@ async function startMockSlackProvider() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function startMockQwenSignaling() {
+  mockQwenSignalingRequests = [];
+  mockQwenSignalingServer = createHttpServer((request, response) => {
+    let raw = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => { raw += chunk; });
+    request.on('end', () => {
+      mockQwenSignalingRequests.push({ authorization: request.headers.authorization || '', contentType: request.headers['content-type'] || '', sdp: raw });
+      if (request.method !== 'POST' || request.url !== '/realtime?model=qwen3.8-omni-flash-realtime' || request.headers.authorization !== 'Bearer e2e-qwen-secret' || request.headers['content-type'] !== 'application/sdp' || !raw.startsWith('v=0')) {
+        response.writeHead(400, { 'content-type': 'text/plain' });
+        response.end('Invalid mock Qwen request');
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/sdp' });
+      response.end(['v=0', 'o=- 2 2 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)));
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => mockQwenSignalingServer!.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  const address = mockQwenSignalingServer.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}/realtime?model=qwen3.8-omni-flash-realtime`;
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -220,7 +246,7 @@ function captureServerOutput(child: ChildProcess) {
   });
 }
 
-async function startServer(port: number) {
+async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/server/index.ts'], {
     cwd: projectRoot,
     env: {
@@ -243,6 +269,12 @@ async function startServer(port: number) {
       SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
       SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
       DOTS_E2E_SLACK_PROVIDER_URL: mockSlackProviderOrigin,
+      DOTS_VOICE_PROVIDER: '',
+      DOTS_QWEN_API_KEY: '',
+      DOTS_QWEN_WORKSPACE_ID: '',
+      DOTS_QWEN_REGION: '',
+      DASHSCOPE_API_KEY: '',
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1292,6 +1324,15 @@ try {
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     const profileCall = alphaPage!.getByTestId('voice-call');
     await profileCall.waitFor({ state: 'visible' });
+    const voiceProviderConfig = await alphaPage!.evaluate(async () => await (await fetch('/api/voice/provider')).json()) as { provider: string; configured: boolean; apiKey?: string };
+    assert.deepEqual(voiceProviderConfig, { provider: 'browser', configured: true }, 'The browser fallback must be explicit and must not expose provider credentials');
+    const activeCall = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null }[];
+    const activeCallId = activeCall.find(item => !item.endedAt)?.id;
+    assert(activeCallId, 'The call UI must create its owner-scoped call record before starting its voice transport');
+    const unsupportedRealtimeStatus = await alphaPage!.evaluate(async (id: string) => (await fetch(`/api/voice-calls/${id}/realtime-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'v=0' }) })).status, activeCallId);
+    assert.equal(unsupportedRealtimeStatus, 409, 'The browser provider must not be silently treated as a realtime model session');
+    const crossTenantRealtimeStatus = await betaPage!.evaluate(async (id: string) => (await fetch(`/api/voice-calls/${id}/realtime-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'v=0' }) })).status, activeCallId);
+    assert.equal(crossTenantRealtimeStatus, 404, 'A different tenant cannot negotiate against another user’s active call');
     assert.equal(await profileCall.getAttribute('data-variant'), 'handset');
     assert.equal(await profileCall.locator('.voice-call-person > strong').innerText(), 'dot', 'The pixel-comparison frame must use the same visible Dot name as the reference video');
     const handsetBox = await profileCall.boundingBox();
@@ -2046,6 +2087,97 @@ try {
     await screenshot(alphaPage!, '16-computer-returned');
   });
 
+  await recordStep('Qwen WebRTC call sends Chinese speech to the tenant Agent and speaks its real task result', async () => {
+    mockQwenSignalingUrl = await startMockQwenSignaling();
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'qwen',
+      DOTS_QWEN_API_KEY: 'e2e-qwen-secret',
+      DOTS_QWEN_WORKSPACE_ID: 'e2e-workspace',
+      DOTS_QWEN_REGION: 'beijing',
+      DOTS_E2E_QWEN_SIGNALING_URL: mockQwenSignalingUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    const rtcMockScript = String.raw`(() => {
+      const view = window;
+      view.__dotsQwenSentEvents = [];
+      const track = { kind: 'audio', enabled: true, stopped: false, stop() { this.stopped = true; } };
+      view.__dotsQwenFakeTrack = track;
+      class FakeDataChannel {
+        constructor(label) { this.label = label; this.readyState = 'connecting'; this.onopen = null; this.onmessage = null; this.onerror = null; }
+        send(raw) {
+          const event = JSON.parse(raw);
+          view.__dotsQwenSentEvents.push(event);
+          if (event.type === 'response.create') {
+            view.__dotsQwenEventChannel?.emit({ type: 'response.created' });
+            window.setTimeout(() => view.__dotsQwenEventChannel?.emit({ type: 'response.done' }), 60);
+          }
+        }
+        emit(event) { this.onmessage?.({ data: JSON.stringify(event) }); }
+        close() { this.readyState = 'closed'; }
+      }
+      class FakePeerConnection {
+        constructor() { this.iceGatheringState = 'complete'; this.connectionState = 'new'; this.localDescription = null; this.ondatachannel = null; this.ontrack = null; this.onconnectionstatechange = null; this.sendChannel = null; }
+        addTrack() {}
+        createDataChannel(label) { this.sendChannel = new FakeDataChannel(label); return this.sendChannel; }
+        async createOffer() { return { type: 'offer', sdp: ['v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)) }; }
+        async setLocalDescription(description) { this.localDescription = description; }
+        async setRemoteDescription(description) {
+          if (!description?.sdp?.startsWith('v=0')) throw new Error('Qwen answer SDP was not returned to the browser');
+          this.sendChannel.readyState = 'open';
+          this.sendChannel.onopen?.();
+          const remote = new FakeDataChannel('txt');
+          remote.readyState = 'open';
+          view.__dotsQwenEventChannel = remote;
+          this.ondatachannel?.({ channel: remote });
+          remote.emit({ type: 'session.created' });
+        }
+        close() { this.connectionState = 'closed'; }
+      }
+      Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: FakePeerConnection });
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async () => ({ getAudioTracks: () => [track], getTracks: () => [track] }) } });
+    })()`;
+    await alphaPage!.evaluate((script: string) => window.eval(script), rtcMockScript);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-provider') === 'qwen');
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 10_000 });
+    const config = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as { provider: string; configured: boolean; apiKey?: string };
+    assert.deepEqual(config, { provider: 'qwen', configured: true, model: 'qwen3.8-omni-flash-realtime' });
+    assert.equal(mockQwenSignalingRequests.length, 1, 'The browser must complete server-side Qwen SDP negotiation before listening');
+    assert.deepEqual(mockQwenSignalingRequests[0], {
+      authorization: 'Bearer e2e-qwen-secret', contentType: 'application/sdp',
+      sdp: ['v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)),
+    });
+    const sessionUpdate = await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenSentEvents: { type: string; session?: { input_audio_transcription?: { model?: string }; turn_detection?: { type?: string } } }[] }).__dotsQwenSentEvents.find(event => event.type === 'session.update'));
+    assert.equal(sessionUpdate?.session?.input_audio_transcription?.model, 'qwen3-asr-flash-realtime');
+    assert.equal(sessionUpdate?.session?.turn_detection?.type, 'server_vad');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), false, 'Mute must disable the live microphone track');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), true, 'Unmute must re-enable the live microphone track');
+    await alphaPage!.evaluate(() => {
+      const view = window as unknown as { __dotsQwenEventChannel: { emit(event: unknown): void } };
+      view.__dotsQwenEventChannel.emit({ type: 'input_audio_buffer.speech_started' });
+      view.__dotsQwenEventChannel.emit({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'E2E voice response — speak actual task result' });
+      view.__dotsQwenEventChannel.emit({ type: 'response.created' });
+      window.setTimeout(() => view.__dotsQwenEventChannel.emit({ type: 'response.done' }), 700);
+    });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 20_000 });
+    await alphaPage!.waitForFunction(() => (window as unknown as { __dotsQwenSentEvents?: { type: string; item?: { content?: { text?: string }[] } }[] }).__dotsQwenSentEvents?.some(event => event.type === 'conversation.item.create' && event.item?.content?.some(part => part.text?.includes('Voice response returned from the model.'))) === true, null, { timeout: 10_000 });
+    const agentPrompt = mockModelPrompts.find(prompt => prompt.includes('E2E voice response — speak actual task result')) || '';
+    assert(agentPrompt, 'The recognized Chinese speech was not dispatched through the tenant Agent task path');
+    await screenshot(alphaPage!, 'qwen-realtime-call-agent-result');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { stopped: boolean } }).__dotsQwenFakeTrack.stopped), true, 'Ending the call must stop the microphone track');
+    const callHistory = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { endedAt: string | null }[];
+    assert(callHistory.some(item => item.endedAt), 'The Qwen call should be durably recorded when it ends');
+  });
+
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
 } catch (error) {
   failure = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
@@ -2069,6 +2201,7 @@ try {
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
+  if (mockQwenSignalingServer) await new Promise<void>(resolvePromise => mockQwenSignalingServer!.close(() => resolvePromise()));
   if (e2eSlackTokenAccount) {
     try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
   }

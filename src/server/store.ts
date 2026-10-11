@@ -501,6 +501,12 @@ export class Store {
     return { id, tenantId, startedAt: now, endedAt: null, durationSeconds: null };
   }
 
+  getVoiceCall(tenantId: string, userId: string, id: string): VoiceCallSession | null {
+    const row = this.db.prepare('SELECT id,tenant_id,started_at,ended_at,duration_seconds FROM voice_calls WHERE id=? AND tenant_id=? AND user_id=?')
+      .get(id, tenantId, userId) as { id: string; tenant_id: string; started_at: string; ended_at: string | null; duration_seconds: number | null } | undefined;
+    return row ? { id: row.id, tenantId: row.tenant_id, startedAt: row.started_at, endedAt: row.ended_at, durationSeconds: row.duration_seconds } : null;
+  }
+
   endVoiceCall(tenantId: string, userId: string, id: string, durationSeconds: number, now = new Date().toISOString()): VoiceCallSession | null {
     this.db.prepare('UPDATE voice_calls SET ended_at=?,duration_seconds=? WHERE id=? AND tenant_id=? AND user_id=? AND ended_at IS NULL')
       .run(now, durationSeconds, id, tenantId, userId);

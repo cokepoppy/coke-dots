@@ -17,6 +17,8 @@ test('voice call history is durable and scoped to its workspace and owner', () =
     assert.equal(call.tenantId, alpha.tenant.id);
     assert.equal(call.startedAt, startedAt);
     assert.equal(call.endedAt, null);
+    assert.deepEqual(store.getVoiceCall(alpha.tenant.id, alpha.user.id, call.id), call);
+    assert.equal(store.getVoiceCall(beta.tenant.id, beta.user.id, call.id), null, 'A different tenant and owner must not inspect this call');
     assert.deepEqual(store.voiceCalls(beta.tenant.id, beta.user.id), []);
     assert.equal(store.endVoiceCall(beta.tenant.id, beta.user.id, call.id, 12), null, 'A different tenant must not end this call');
     assert.deepEqual(store.voiceCalls(alpha.tenant.id, alpha.user.id), [call]);

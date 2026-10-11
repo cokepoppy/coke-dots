@@ -34,10 +34,17 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   const [transcript, setTranscript] = useState('');
   const [taskStatus, setTaskStatus] = useState('');
   const [callError, setCallError] = useState('');
+  const [voiceProvider, setVoiceProvider] = useState<'browser' | 'qwen'>('browser');
   const [expanded, setExpanded] = useState(false);
   const [desktopLayout, setDesktopLayout] = useState(() => displayMode === 'desktop' && window.innerWidth > 700);
   const sessionRef = useRef<VoiceCallSession | null>(null);
   const recognitionRef = useRef<RecognitionLike | null>(null);
+  const providerRef = useRef<'browser' | 'qwen'>('browser');
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const realtimeSendChannelRef = useRef<RTCDataChannel | null>(null);
+  const realtimeEventChannelRef = useRef<RTCDataChannel | null>(null);
   const recognitionConstructorRef = useRef<RecognitionConstructor | null>(null);
   const startRecognitionRef = useRef<() => void>(() => {});
   const activeRef = useRef(true);
@@ -53,6 +60,18 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   mutedRef.current = muted;
   speakerRef.current = speakerOn;
 
+  function stopRealtimeTransport() {
+    peerConnectionRef.current?.close();
+    peerConnectionRef.current = null;
+    localStreamRef.current?.getTracks().forEach(track => track.stop());
+    localStreamRef.current = null;
+    realtimeSendChannelRef.current?.close();
+    realtimeSendChannelRef.current = null;
+    realtimeEventChannelRef.current?.close();
+    realtimeEventChannelRef.current = null;
+    if (remoteAudioRef.current) { remoteAudioRef.current.pause(); remoteAudioRef.current.srcObject = null; remoteAudioRef.current = null; }
+  }
+
   useEffect(() => {
     const updateLayout = () => setDesktopLayout(displayMode === 'desktop' && window.innerWidth > 700);
     updateLayout();
@@ -66,78 +85,32 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     const timer = window.setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000)), 1000);
     const speechWindow = window as SpeechWindow;
     recognitionConstructorRef.current = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition || null;
+    let qwenResponseActive = false;
+    const qwenSpeechQueue: string[] = [];
 
-    const startRecognition = () => {
-      if (!activeRef.current || mutedRef.current) return;
-      if (speakingRef.current) return;
-      const Recognition = recognitionConstructorRef.current;
-      if (!Recognition) {
-        setStatus('当前浏览器不支持语音识别，可继续在下方输入文字。');
+    const sendQwenText = (text: string) => {
+      const channel = realtimeSendChannelRef.current;
+      if (!channel || channel.readyState !== 'open') return false;
+      channel.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `Dots Agent 状态更新：${text}\n请用简短、自然的中文朗读这条状态，不要添加未经证实的信息。` }] },
+      }));
+      channel.send(JSON.stringify({ type: 'response.create' }));
+      qwenResponseActive = true;
+      return true;
+    };
+    const queueQwenSpeech = (text: string) => {
+      if (qwenResponseActive || !sendQwenText(text)) qwenSpeechQueue.push(text);
+    };
+
+    function speak(text: string) {
+      const content = text.trim().slice(0, 1200);
+      if (!content || !speakerRef.current) return;
+      if (providerRef.current === 'qwen') {
+        queueQwenSpeech(content);
         return;
       }
-      let recognition = recognitionRef.current;
-      if (!recognition) {
-        recognition = new Recognition();
-        recognition.lang = navigator.language || 'zh-CN';
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.onresult = event => {
-          const finalParts: string[] = [];
-          for (let index = event.resultIndex; index < event.results.length; index += 1) {
-            const result = event.results[index];
-            if (result?.isFinal) {
-              const text = result[0]?.transcript?.trim();
-              if (text) finalParts.push(text);
-            }
-          }
-          const text = finalParts.join(' ').trim();
-          if (!text || !activeRef.current) return;
-          setTranscript(text);
-          setTaskStatus('正在交给 Dot…');
-          const waitingTaskId = waitingTaskIdRef.current;
-          if (waitingTaskId) waitingTaskIdRef.current = null;
-          void (async () => {
-            let accepted = false;
-            try {
-              const task = await onTranscriptRef.current(text, waitingTaskId || undefined);
-              accepted = true;
-              if (!activeRef.current) return;
-              setTaskStatus(waitingTaskId ? '已回复并继续：' + task.title : '已加入工作队列：' + task.title);
-              speak(waitingTaskId ? '收到，我会接着处理。' : '收到，已加入工作队列。');
-              await followTask(task);
-            } catch (error) {
-              if (!accepted && waitingTaskId && !waitingTaskIdRef.current) waitingTaskIdRef.current = waitingTaskId;
-              if (activeRef.current) setTaskStatus(error instanceof Error ? error.message : '任务创建失败');
-            }
-          })();
-        };
-        recognition.onerror = event => {
-          if (!activeRef.current) return;
-          if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-            setStatus('麦克风权限未开启，可继续在下方输入文字。');
-            return;
-          }
-          if (event.error !== 'no-speech' && event.error !== 'aborted') setStatus('语音输入暂不可用：' + event.error);
-        };
-        recognition.onend = () => {
-          if (!activeRef.current || mutedRef.current || speakingRef.current) return;
-          window.setTimeout(() => startRecognitionRef.current(), 180);
-        };
-        recognitionRef.current = recognition;
-      }
-      try {
-        recognition.start();
-        setStatus('正在聆听');
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'InvalidStateError') return;
-        setStatus('无法开启麦克风，可继续在下方输入文字。');
-      }
-    };
-    startRecognitionRef.current = startRecognition;
-
-    const speak = (text: string) => {
-      const content = text.trim().slice(0, 1200);
-      if (!content || !speakerRef.current || !('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) return;
+      if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) return;
       const generation = ++speechGenerationRef.current;
       speakingRef.current = true;
       recognitionRef.current?.abort();
@@ -151,7 +124,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       utterance.onend = resumeRecognition;
       utterance.onerror = resumeRecognition;
       window.speechSynthesis.speak(utterance);
-    };
+    }
 
     const followTask = async (submittedTask: Task) => {
       for (let attempt = 0; attempt < 1200 && activeRef.current; attempt += 1) {
@@ -188,25 +161,213 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       if (activeRef.current) setTaskStatus('仍在后台运行；你可以结束通话。');
     };
 
-    void appFetch('/api/voice-calls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
-      .then(async response => {
-        const data = await response.json() as VoiceCallSession & { error?: string };
-        if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
-        sessionRef.current = data;
+    const processTranscript = (rawText: string) => {
+      const text = rawText.trim().slice(0, 5000);
+      if (!text || !activeRef.current) return;
+      setTranscript(text);
+      setTaskStatus('正在交给 Dot…');
+      const waitingTaskId = waitingTaskIdRef.current;
+      if (waitingTaskId) waitingTaskIdRef.current = null;
+      void (async () => {
+        let accepted = false;
+        try {
+          const task = await onTranscriptRef.current(text, waitingTaskId || undefined);
+          accepted = true;
+          if (!activeRef.current) return;
+          setTaskStatus(waitingTaskId ? '已回复并继续：' + task.title : '已加入工作队列：' + task.title);
+          if (providerRef.current === 'browser') speak(waitingTaskId ? '收到，我会接着处理。' : '收到，已加入工作队列。');
+          await followTask(task);
+        } catch (error) {
+          if (!accepted && waitingTaskId && !waitingTaskIdRef.current) waitingTaskIdRef.current = waitingTaskId;
+          if (activeRef.current) setTaskStatus(error instanceof Error ? error.message : '任务创建失败');
+        }
+      })();
+    };
+
+    const handleQwenEvent = (raw: string) => {
+      let event: { type?: string; text?: string; stash?: string; transcript?: string; error?: { message?: string } };
+      try { event = JSON.parse(raw) as typeof event; } catch { return; }
+      if (event.type === 'session.created') {
+        realtimeSendChannelRef.current?.readyState === 'open' && realtimeSendChannelRef.current.send(JSON.stringify({
+          type: 'session.update',
+          session: {
+            modalities: ['text', 'audio'],
+            instructions: `你是 ${dotName}，是 Coke Dots 的语音界面。请始终使用中文。用户说话时，你只做简短确认，并明确真实工作会交给独立的 Dots Agent 处理；不要自行回答任务内容、假称已完成或编造进度。稍后收到以“Dots Agent 状态更新”开头的文字时，只简短朗读其中状态。`,
+            audio: { output: { voice: 'Tina' } },
+            turn_detection: { type: 'server_vad', threshold: 0.5, silence_duration_ms: 700 },
+            input_audio_transcription: { model: 'qwen3-asr-flash-realtime' },
+          },
+        }));
+        return;
+      }
+      if (event.type === 'conversation.item.input_audio_transcription.delta') {
+        setTranscript(`${event.text || ''}${event.stash || ''}`.trim());
+        return;
+      }
+      if (event.type === 'conversation.item.input_audio_transcription.completed') {
+        if (event.transcript) processTranscript(event.transcript);
+        return;
+      }
+      if (event.type === 'conversation.item.input_audio_transcription.failed' || event.type === 'error') {
+        setCallError(event.error?.message || 'Qwen 语音识别失败，请重试。');
+        return;
+      }
+      if (event.type === 'input_audio_buffer.speech_started') {
+        setTranscript('');
+        return;
+      }
+      if (event.type === 'response.created') { qwenResponseActive = true; return; }
+      if (event.type === 'response.done') {
+        qwenResponseActive = false;
+        const next = qwenSpeechQueue.shift();
+        if (next) sendQwenText(next);
+      }
+    };
+
+    const startQwenRealtime = async (call: VoiceCallSession) => {
+      if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') throw new Error('当前浏览器不支持 WebRTC 实时通话');
+      setStatus('正在连接 Qwen 实时语音…');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      if (!activeRef.current) { stream.getTracks().forEach(track => track.stop()); return; }
+      localStreamRef.current = stream;
+      const peer = new RTCPeerConnection({ iceServers: [] });
+      peerConnectionRef.current = peer;
+      for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
+      const sendChannel = peer.createDataChannel('oai-events');
+      realtimeSendChannelRef.current = sendChannel;
+      sendChannel.onopen = () => {
+        if (providerRef.current === 'qwen') setStatus('正在聆听');
+        const next = qwenSpeechQueue.shift();
+        if (next) sendQwenText(next);
+      };
+      peer.ondatachannel = event => {
+        realtimeEventChannelRef.current = event.channel;
+        event.channel.onmessage = message => handleQwenEvent(String(message.data));
+        event.channel.onerror = () => setCallError('Qwen 实时语音事件通道中断');
+      };
+      peer.ontrack = event => {
+        const audio = new Audio();
+        audio.autoplay = true;
+        audio.muted = !speakerRef.current;
+        audio.srcObject = event.streams[0] || new MediaStream([event.track]);
+        remoteAudioRef.current = audio;
+        void audio.play().catch(() => setStatus('请点击通话页面以启用扬声器播放'));
+      };
+      peer.onconnectionstatechange = () => {
+        if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') setCallError('Qwen 实时语音网络连接中断');
+      };
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      if (peer.iceGatheringState !== 'complete') {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(() => reject(new Error('WebRTC 网络协商超时')), 8000);
+          peer.onicegatheringstatechange = () => {
+            if (peer.iceGatheringState !== 'complete') return;
+            window.clearTimeout(timeout);
+            resolve();
+          };
+        });
+      }
+      const signaling = await appFetch(`/api/voice-calls/${call.id}/realtime-session`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sdp: peer.localDescription?.sdp || '' }),
+      });
+      const response = await signaling.json() as { answerSdp?: string; error?: string };
+      if (!signaling.ok || !response.answerSdp) throw new Error(response.error || 'Qwen WebRTC 信令协商失败');
+      await peer.setRemoteDescription({ type: 'answer', sdp: response.answerSdp });
+    };
+
+    const startRecognition = () => {
+      if (providerRef.current === 'qwen') return;
+      if (!activeRef.current || mutedRef.current) return;
+      if (speakingRef.current) return;
+      const Recognition = recognitionConstructorRef.current;
+      if (!Recognition) {
+        setStatus('当前浏览器不支持语音识别，可继续在下方输入文字。');
+        return;
+      }
+      let recognition = recognitionRef.current;
+      if (!recognition) {
+        recognition = new Recognition();
+        recognition.lang = navigator.language || 'zh-CN';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.onresult = event => {
+          const finalParts: string[] = [];
+          for (let index = event.resultIndex; index < event.results.length; index += 1) {
+            const result = event.results[index];
+            if (result?.isFinal) {
+              const text = result[0]?.transcript?.trim();
+              if (text) finalParts.push(text);
+            }
+          }
+          processTranscript(finalParts.join(' '));
+        };
+        recognition.onerror = event => {
+          if (!activeRef.current) return;
+          if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+            setStatus('麦克风权限未开启，可继续在下方输入文字。');
+            return;
+          }
+          if (event.error !== 'no-speech' && event.error !== 'aborted') setStatus('语音输入暂不可用：' + event.error);
+        };
+        recognition.onend = () => {
+          if (!activeRef.current || mutedRef.current || speakingRef.current) return;
+          window.setTimeout(() => startRecognitionRef.current(), 180);
+        };
+        recognitionRef.current = recognition;
+      }
+      try {
+        recognition.start();
+        setStatus('正在聆听');
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'InvalidStateError') return;
+        setStatus('无法开启麦克风，可继续在下方输入文字。');
+      }
+    };
+    startRecognitionRef.current = startRecognition;
+
+    void (async () => {
+      try {
+        const providerResponse = await appFetch('/api/voice/provider');
+        if (!providerResponse.ok) throw new Error('无法读取语音服务配置');
+        const provider = await providerResponse.json() as { provider?: string; configured?: boolean };
+        if (provider.provider !== 'browser' && provider.provider !== 'qwen') throw new Error('服务端配置了不支持的语音供应商');
+        const selectedProvider = provider.provider === 'qwen' ? 'qwen' : 'browser';
+        providerRef.current = selectedProvider;
+        setVoiceProvider(selectedProvider);
+        if (selectedProvider === 'qwen' && !provider.configured) throw new Error('服务端尚未配置 Qwen 实时语音 API Key、工作空间 ID 和地域');
+        const response = await appFetch('/api/voice-calls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+        const call = await response.json() as VoiceCallSession & { error?: string };
+        if (!response.ok) throw new Error(call.error || 'HTTP ' + response.status);
+        sessionRef.current = call;
         if (!activeRef.current) {
           const durationSeconds = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
-          await appFetch('/api/voice-calls/' + data.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
+          await appFetch('/api/voice-calls/' + call.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'end', durationSeconds }) });
           return;
         }
-        startRecognitionRef.current();
-      })
-      .catch(error => { if (activeRef.current) { setCallError(error instanceof Error ? error.message : '无法记录通话'); setStatus('通话无法启动'); } });
+        if (selectedProvider === 'qwen') await startQwenRealtime(call);
+        else startRecognitionRef.current();
+      } catch (error) {
+        if (activeRef.current) {
+          const message = error instanceof Error ? error.message : '无法启动语音通话';
+          setCallError(message);
+          setStatus('通话无法启动');
+          if (providerRef.current === 'qwen') {
+            peerConnectionRef.current?.close();
+            localStreamRef.current?.getTracks().forEach(track => track.stop());
+            localStreamRef.current = null;
+          }
+        }
+      }
+    })();
 
     return () => {
       activeRef.current = false;
       window.clearInterval(timer);
       recognitionRef.current?.abort();
       recognitionRef.current = null;
+      stopRealtimeTransport();
       speakingRef.current = false;
       speechGenerationRef.current += 1;
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
@@ -222,12 +383,13 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     const next = !mutedRef.current;
     mutedRef.current = next;
     setMuted(next);
+    for (const track of localStreamRef.current?.getAudioTracks() || []) track.enabled = !next;
     if (next) {
-      recognitionRef.current?.abort();
+      if (providerRef.current === 'browser') recognitionRef.current?.abort();
       setStatus('麦克风已静音');
     } else {
       setStatus('正在聆听');
-      window.setTimeout(() => startRecognitionRef.current(), 180);
+      if (providerRef.current === 'browser') window.setTimeout(() => startRecognitionRef.current(), 180);
     }
   }
 
@@ -235,7 +397,8 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     const next = !speakerRef.current;
     speakerRef.current = next;
     setSpeakerOn(next);
-    if (!next && 'speechSynthesis' in window) {
+    if (remoteAudioRef.current) remoteAudioRef.current.muted = !next;
+    if (providerRef.current === 'browser' && !next && 'speechSynthesis' in window) {
       speechGenerationRef.current += 1;
       speakingRef.current = false;
       window.speechSynthesis.cancel();
@@ -248,6 +411,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     endedRef.current = true;
     activeRef.current = false;
     recognitionRef.current?.abort();
+    stopRealtimeTransport();
     speakingRef.current = false;
     speechGenerationRef.current += 1;
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
@@ -264,7 +428,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
 
   const minutes = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0');
   const seconds = (elapsedSeconds % 60).toString().padStart(2, '0');
-  if (desktopLayout) return <section className="voice-call-inline" role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="desktop">
+  if (desktopLayout) return <section className="voice-call-inline" role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="desktop" data-voice-provider={voiceProvider}>
     <button type="button" className={`voice-call-inline-mic${muted ? ' is-muted' : ''}`} aria-label={muted ? '取消静音' : '静音'} aria-pressed={muted} title={muted ? '取消静音' : '静音'} onClick={toggleMute}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-4 0h8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>{muted && <path d="m4 4 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>}</svg>
     </button>
@@ -276,7 +440,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       <span>{status}</span>{transcript && <span>你说：{transcript}</span>}{taskStatus && <span>{taskStatus}</span>}
     </div>
   </section>;
-  return <section className={`voice-call-dock${expanded ? ' voice-call-expanded' : ''}`} role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="handset">
+  return <section className={`voice-call-dock${expanded ? ' voice-call-expanded' : ''}`} role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="handset" data-voice-provider={voiceProvider}>
     <div className="voice-call-screen">
       <div className="voice-call-statusbar" aria-hidden="true">
         <span className="voice-call-status-time">12:55</span><span className="voice-call-notch" />
