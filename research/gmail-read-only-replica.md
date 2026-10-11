@@ -27,3 +27,10 @@ The docs support a read-only Gmail connector and a future proactive email monito
 - This branch implements explicit task-directed reading, not proactive Gmail polling or Google push notifications. The official docs support ongoing checks, but the exact Gmail event workflow and UI have not been observed. That follow-up should be its own feature branch after confirming whether to poll or use a supported event source.
 - The Chrome E2E uses a local OAuth/Gmail fixture. It verifies click-through, requested scope, account isolation, task context, and disconnect behavior; it does not prove that the production Google OAuth app has passed Gmail-scope verification or that a real Gmail account is authorized.
 - UI positions and interaction timing are not claimed to be pixel-accurate. The inspected official docs do not show the Gmail setup screen; match it only after collecting a clear reference frame.
+
+## Verification on 2026-10-11
+
+- `npm test`: 112/112 unit tests passed.
+- `npm run build`: TypeScript check and production Vite build passed.
+- `node --import tsx tests/e2e/ui.e2e.ts`: all 54 Chromium click-through steps passed. The Gmail checks connect a separate Google account, verify that only the `gmail.readonly` scope is requested, read exactly the two requested inbox messages, confirm another Google account has no inherited Gmail authorization, and verify disconnect removes local authorization and prevents later Gmail requests.
+- Chrome run evidence is at `artifacts/e2e/2026-10-11T02-33-58-959Z/`; the setup-state screenshots are `screenshots/gmail-connection-before.png` and `screenshots/gmail-connected.png`. These artifacts are local and ignored by Git. The Google/Gmail endpoints are deterministic local fixtures, so the run proves app behavior and isolation but not Google's production consent verification or live inbox access.
