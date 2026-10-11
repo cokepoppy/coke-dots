@@ -427,7 +427,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
         const selectedProvider = provider.provider === 'qwen' ? 'qwen' : 'browser';
         providerRef.current = selectedProvider;
         setVoiceProvider(selectedProvider);
-        if (selectedProvider === 'qwen' && !provider.configured) throw new Error('服务端尚未配置 Qwen 实时语音 API Key、工作空间 ID 和地域');
+        if (selectedProvider === 'qwen' && !provider.configured) throw new Error('服务端尚未配置 Qwen 实时语音所需的百炼 API Key 和工作空间 ID；地域默认使用北京。');
         const response = await appFetch('/api/voice-calls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
         const call = await response.json() as VoiceCallSession & { error?: string };
         if (!response.ok) throw new Error(call.error || 'HTTP ' + response.status);

@@ -2100,6 +2100,22 @@ try {
     await stopServer(server);
     server = await startServer(e2ePort, {
       DOTS_VOICE_PROVIDER: 'qwen',
+      DOTS_QWEN_API_KEY: '',
+      DOTS_QWEN_WORKSPACE_ID: '',
+      DOTS_QWEN_REGION: '',
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const unconfiguredCall = alphaPage!.getByTestId('voice-call');
+    await unconfiguredCall.getByRole('alert').filter({ hasText: '百炼 API Key 和工作空间 ID；地域默认使用北京' }).waitFor({ state: 'visible' });
+    await unconfiguredCall.getByRole('button', { name: '结束通话' }).click();
+
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'qwen',
       DOTS_QWEN_API_KEY: 'e2e-qwen-secret',
       DOTS_QWEN_WORKSPACE_ID: 'e2e-workspace',
       DOTS_QWEN_REGION: 'beijing',
