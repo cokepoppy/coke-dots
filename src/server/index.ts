@@ -8,15 +8,18 @@ import { adapters } from './adapters.ts';
 import { isEngine, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
-import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
+import { loadModelSettings, migrateTenantModelKey, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { apiErrorResponse } from './computer-errors.ts';
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
+import { negotiateQwenRealtime, VoiceProviderError, voiceProviderInfo } from './voice-provider.ts';
 import { existsSync } from 'node:fs';
-import { createConnection, type Socket } from 'node:net';
+import { createConnection } from 'node:net';
 import type { Duplex } from 'node:stream';
+import { WebSocketServer } from 'ws';
+import { bridgeVolcengineVoiceCall } from './volcengine-voice-gateway.ts';
 
 const envFile = resolve(process.env.DOTS_ENV_FILE || '.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -25,11 +28,27 @@ const port = Number(process.env.DOTS_PORT || 4317);
 const host = '127.0.0.1';
 const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
+const priorModelAdminTenantId = store.getAppSetting('modelSettingsAdminTenantId');
+const modelSettingsCandidates = store.modelSettingsCandidates();
+const migratedModelKeyTenantId = migrateTenantModelKey([
+  ...(priorModelAdminTenantId ? [priorModelAdminTenantId] : []),
+  ...modelSettingsCandidates.map(item => item.tenantId),
+]);
+const modelSettingsSource = modelSettingsCandidates.find(item => item.tenantId === priorModelAdminTenantId)
+  || modelSettingsCandidates.find(item => item.tenantId === migratedModelKeyTenantId)
+  || modelSettingsCandidates.find(item => item.tenantId === 'legacy')
+  || modelSettingsCandidates.find(item => item.baseUrl || item.model);
+if (modelSettingsSource) {
+  if (!store.getAppSetting('modelBaseUrl') && modelSettingsSource.baseUrl) store.setAppSetting('modelBaseUrl', modelSettingsSource.baseUrl);
+  if (!store.getAppSetting('modelName') && modelSettingsSource.model) store.setAppSetting('modelName', modelSettingsSource.model);
+}
+if (!priorModelAdminTenantId && migratedModelKeyTenantId) store.setAppSetting('modelSettingsAdminTenantId', migratedModelKeyTenantId);
 const auth = new AuthService(store, port);
 const slack = new SlackService(store, port);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
+const volcVoiceWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
 const configuredDesktopEngines = () => {
   if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [] as Engine[];
   try {
@@ -40,9 +59,10 @@ const configuredDesktopEngines = () => {
 const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...configuredDesktopEngines()])];
 
 function snapshot(tenantId: string) {
-  loadModelSettings(store.getSetting('modelBaseUrl', tenantId), store.getSetting('modelName', tenantId), tenantId);
+  const adminTenantId = store.getAppSetting('modelSettingsAdminTenantId');
+  loadModelSettings(store.getAppSetting('modelBaseUrl'), store.getAppSetting('modelName'), adminTenantId);
   const available = availableFor(tenantId);
-  return store.snapshot(available.includes('model'), available, publicModelSettings(tenantId), tenantId);
+  return store.snapshot(available.includes('model'), available, publicModelSettings(adminTenantId), tenantId);
 }
 
 function computerFor(tenantId: string): ComputerRuntime {
@@ -134,6 +154,7 @@ const server = createServer(async (req, res) => {
     }
     if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot(session.tenant.id));
     if (path === '/api/voice-calls' && req.method === 'GET') return reply(res, 200, store.voiceCalls(session.tenant.id, session.user.id));
+    if (path === '/api/voice/provider' && req.method === 'GET') return reply(res, 200, voiceProviderInfo());
     if (path === '/api/activity' && req.method === 'GET') {
       const limit = Number(url.searchParams.get('limit') || 50);
       const beforeValue = url.searchParams.get('before');
@@ -191,9 +212,54 @@ const server = createServer(async (req, res) => {
       return removed ? reply(res, 200, { ok: true }) : reply(res, 404, { error: '待发送附件不存在' });
     }
 
-    const body = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT' ? await readJson(req) : {};
+    const realtimeVoiceMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)\/realtime-session$/);
+    const voiceTurnMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)\/turns$/);
+    const body = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT'
+      ? await readJson(req, realtimeVoiceMatch ? 100_000 : 32_000)
+      : {};
     if (path === '/api/voice-calls' && req.method === 'POST') {
       return reply(res, 201, store.createVoiceCall(session.tenant.id, session.user.id));
+    }
+    if (realtimeVoiceMatch && req.method === 'POST') {
+      const call = store.getVoiceCall(session.tenant.id, session.user.id, realtimeVoiceMatch[1]);
+      if (!call || call.endedAt) return reply(res, 404, { error: 'Voice call not found or ended' });
+      const provider = voiceProviderInfo();
+      if (provider.provider !== 'qwen') return reply(res, 409, { error: '当前语音供应商不支持实时 WebRTC' });
+      if (!provider.configured) return reply(res, 503, { error: 'Qwen 实时语音未配置，请联系服务管理员' });
+      if (typeof body.sdp !== 'string') return reply(res, 400, { error: 'WebRTC offer SDP 缺失' });
+      try {
+        const answerSdp = await negotiateQwenRealtime(body.sdp);
+        return reply(res, 200, { provider: 'qwen', model: provider.model, answerSdp });
+      } catch (error) {
+        if (error instanceof VoiceProviderError) return reply(res, error.status, { error: error.message });
+        return reply(res, 502, { error: 'Qwen 实时语音协商失败' });
+      }
+    }
+    if (voiceTurnMatch && req.method === 'POST') {
+      const call = store.getVoiceCall(session.tenant.id, session.user.id, voiceTurnMatch[1]);
+      if (!call) return reply(res, 404, { error: '语音通话不存在' });
+      const turnId = typeof body.turnId === 'string' ? body.turnId : '';
+      const transcript = typeof body.transcript === 'string' ? body.transcript : '';
+      const waitingTaskId = body.waitingTaskId === undefined || body.waitingTaskId === null ? undefined : body.waitingTaskId;
+      const requestedEngine = body.engine || 'model';
+      if (typeof waitingTaskId !== 'undefined' && (typeof waitingTaskId !== 'string' || !/^[a-f0-9-]{36}$/i.test(waitingTaskId))) {
+        return reply(res, 400, { error: '等待回复的任务 ID 无效' });
+      }
+      if (typeof requestedEngine !== 'string' || !isEngine(requestedEngine)) return reply(res, 400, { error: '任务内核无效' });
+      if (!turnId || turnId.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(turnId)) return reply(res, 400, { error: '语音轮次 ID 无效' });
+      if (!transcript.trim() || transcript.trim().length > 5000) return reply(res, 400, { error: '语音内容需为 1–5000 个字符' });
+      try {
+        const result = store.submitVoiceTurn({
+          tenantId: session.tenant.id, userId: session.user.id, callId: call.id, turnId,
+          transcript, engine: requestedEngine, ...(waitingTaskId ? { waitingTaskId } : {}),
+        });
+        publish();
+        void worker.tick();
+        return reply(res, result.duplicate ? 200 : 201, result.task);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '无法创建语音任务';
+        return reply(res, message === '语音通话已结束' ? 409 : 400, { error: message });
+      }
     }
     const voiceCallMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)$/);
     if (voiceCallMatch && req.method === 'PATCH') {
@@ -430,12 +496,16 @@ const server = createServer(async (req, res) => {
       try { parsed = new URL(baseUrl); } catch { return reply(res, 400, { error: '模型地址无效' }); }
       const localHttp = parsed.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(parsed.hostname);
       if ((!localHttp && parsed.protocol !== 'https:') || parsed.username || parsed.password || !model || model.length > 120 || apiKey.length > 5000) return reply(res, 400, { error: '模型配置无效' });
-      if (apiKey) saveModelKey(apiKey, session.tenant.id);
-      store.setSetting('modelBaseUrl', baseUrl, session.tenant.id);
-      store.setSetting('modelName', model, session.tenant.id);
-      setModelMetadata(baseUrl, model, session.tenant.id);
+      if (!['owner', 'admin'].includes(session.tenant.role)) return reply(res, 403, { error: '只有工作区所有者或管理员可以修改共享模型 API' });
+      const configuredAdmin = store.getAppSetting('modelSettingsAdminTenantId');
+      const adminTenantId = configuredAdmin || store.claimAppSetting('modelSettingsAdminTenantId', session.tenant.id);
+      if (adminTenantId !== session.tenant.id) return reply(res, 403, { error: '只有模型配置管理员工作区可以修改共享模型 API' });
+      if (apiKey) saveModelKey(apiKey);
+      store.setAppSetting('modelBaseUrl', baseUrl);
+      store.setAppSetting('modelName', model);
+      setModelMetadata(baseUrl, model, adminTenantId);
       publish();
-      return reply(res, 200, publicModelSettings(session.tenant.id));
+      return reply(res, 200, publicModelSettings(adminTenantId));
     }
     const approvalMatch = path.match(/^\/api\/tasks\/([a-f0-9-]+)\/approval$/);
     if (approvalMatch && req.method === 'GET') {
@@ -536,11 +606,11 @@ function isAllowedLocalOrigin(value: string) {
   } catch { return false; }
 }
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJson(req: IncomingMessage, maxBytes = 32_000): Promise<Record<string, unknown>> {
   let raw = '';
   for await (const chunk of req) {
     raw += chunk.toString();
-    if (raw.length > 32_000) throw new Error('Request too large');
+    if (Buffer.byteLength(raw, 'utf8') > maxBytes) throw new Error('Request too large');
   }
   return raw ? JSON.parse(raw) as Record<string, unknown> : {};
 }
@@ -575,6 +645,11 @@ function reply(res: ServerResponse, status: number, value: unknown) {
   res.end(JSON.stringify(value));
 }
 
+function rejectUpgrade(socket: Duplex, status: number, message: string) {
+  if (socket.destroyed || !socket.writable) return;
+  socket.end(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+}
+
 async function serveStatic(req: IncomingMessage, res: ServerResponse) {
   if (req.method !== 'GET') return reply(res, 405, { error: 'Method not allowed' });
   const pathname = new URL(req.url || '/', `http://${host}:${port}`).pathname;
@@ -602,6 +677,7 @@ const shutdown = () => {
   for (const client of clients.keys()) client.end();
   clients.clear();
   server.close(() => store.close());
+  volcVoiceWss.close();
   for (const computer of computers.values()) void computer.close();
   for (const sockets of novncStreams.values()) for (const socket of sockets) socket.destroy();
   novncStreams.clear();
@@ -613,6 +689,23 @@ server.on('upgrade', (req, client, head) => {
   void (async () => {
     try {
       const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
+      const realtimeVoiceMatch = requestUrl.pathname.match(/^\/api\/voice-calls\/([a-f0-9-]+)\/volcengine-stream$/i);
+      if (realtimeVoiceMatch) {
+        const origin = req.headers.origin || '';
+        if (!isLocalRequest(req) || !isAllowedLocalOrigin(origin)) return rejectUpgrade(client, 403, 'Forbidden');
+        const session = auth.session(req);
+        if (!session) return rejectUpgrade(client, 401, 'Unauthorized');
+        const call = store.getVoiceCall(session.tenant.id, session.user.id, realtimeVoiceMatch[1]);
+        if (!call || call.endedAt) return rejectUpgrade(client, 404, 'Voice call not found');
+        const provider = voiceProviderInfo();
+        if (provider.provider !== 'volcengine') return rejectUpgrade(client, 409, 'Realtime voice provider unavailable');
+        if (!provider.configured) return rejectUpgrade(client, 503, 'Volcengine voice is not configured');
+        volcVoiceWss.handleUpgrade(req, client, head, ws => {
+          const close = bridgeVolcengineVoiceCall(ws, snapshot(session.tenant.id).profile.name);
+          ws.once('close', () => close());
+        });
+        return;
+      }
       const prefix = '/api/computer/novnc/';
       if (!requestUrl.pathname.startsWith(prefix) || !isLocalRequest(req) || !isAllowedLocalOrigin(req.headers.origin || '')) return client.destroy();
       const session = auth.session(req);
