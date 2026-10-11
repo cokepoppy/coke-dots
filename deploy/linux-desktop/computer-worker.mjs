@@ -169,9 +169,19 @@ async function clickAgentInformationLink(input) {
   if (attributes.target && attributes.target !== '_self' || attributes.download) throw new Error('New-window links and downloads are not allowed');
   const bounds = await link.boundingBox();
   if (!bounds) throw new Error('The information link is no longer visible');
-  const offset = await browserPage.evaluate(() => ({ x: window.screenX, y: window.screenY + window.outerHeight - window.innerHeight }));
-  const x = Math.round(offset.x + bounds.x + bounds.width / 2);
-  const y = Math.round(offset.y + bounds.y + bounds.height / 2);
+  const windowIds = (await exec('xdotool', ['search', '--onlyvisible', '--class', 'chromium'], { timeout: 5000 })).stdout.trim().split(/\s+/).filter(Boolean);
+  const windows = await Promise.all(windowIds.map(async id => {
+    try {
+      const geometry = (await exec('xdotool', ['getwindowgeometry', '--shell', id], { timeout: 5000 })).stdout;
+      const read = (key) => Number(geometry.match(new RegExp(`^${key}=(\\d+)$`, 'm'))?.[1]);
+      return { id, x: read('X'), y: read('Y'), width: read('WIDTH'), height: read('HEIGHT') };
+    } catch { return null; }
+  }));
+  const desktopWindow = windows.filter(window => window && window.width >= 400 && window.height >= 300).sort((left, right) => right.width * right.height - left.width * left.height)[0];
+  if (!desktopWindow) throw new Error('The Chromium desktop window could not be located');
+  const chromeHeight = await browserPage.evaluate(() => window.outerHeight - window.innerHeight);
+  const x = Math.round(desktopWindow.x + bounds.x + bounds.width / 2);
+  const y = Math.round(desktopWindow.y + chromeHeight + bounds.y + bounds.height / 2);
   if (x < 0 || y < 0 || x > resolution[0] || y > resolution[1]) throw new Error('The information link is outside the visible desktop');
   await exec('xdotool', ['mousemove', String(x), String(y)], { timeout: 5000 });
   await new Promise(resolve => setTimeout(resolve, 180));
@@ -180,7 +190,7 @@ async function clickAgentInformationLink(input) {
   if (owner !== 'agent') throw new Error('The user took control during the browser click');
   const after = await publicHttpsUrl(browserPage.url());
   if (after.href !== destination.href) throw new Error('The browser did not open the inspected information link');
-  return inspectAgentBrowserUi();
+  return { ...await inspectAgentBrowserUi(), click: { name, x, y, window: { x: desktopWindow.x, y: desktopWindow.y, width: desktopWindow.width, height: desktopWindow.height }, destination: destination.href } };
 }
 
 async function command(input) {

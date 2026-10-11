@@ -321,6 +321,7 @@ try {
       return Boolean(image?.complete && image.naturalWidth > 100);
     }, { timeout: 60_000 });
     await page.screenshot({ path: join(outputRoot, 'screenshots', '01-cloud-computer-running.png') });
+    const startingComputerImage = await page.locator('.computer-stage img').getAttribute('src');
     await waitForTask(page, `task.instruction === ${JSON.stringify(cloudComputerInstruction)} && ['done','failed'].includes(task.status)`, 240_000);
     const liveState = await page.evaluate(async () => {
       const [computerResponse, stateResponse] = await Promise.all([fetch('/api/computer', { cache: 'no-store' }), fetch('/api/state', { cache: 'no-store' })]);
@@ -335,16 +336,18 @@ try {
     assert.equal(demoTask.engine, 'pi');
     assert.equal(liveState.computer.backend, 'linux-desktop');
     assert.equal(liveState.computer.owner, 'agent', 'The cloud desktop must remain agent controlled during the demonstration.');
-    assert.match(liveState.computer.url || '', /^https:\/\/(?:www\.)?iana\.org\//, `Pi should have clicked the public information link; actual browser URL: ${liveState.computer.url}`);
     assert.match(demoTask.result || '', /[㐀-鿿]/, 'The Pi result must be in Chinese.');
     assert.match(demoTask.result || '', /example\.com|Example Domain|示例域名/i);
-    assert.doesNotMatch(demoTask.result || '', /无法点击|未能点击|点击失败|could not click|unable to click/i, 'The reply must not describe a failed click as completed work.');
-    await page.waitForFunction(async () => {
+    await page.waitForFunction(async initialSrc => {
+      const response = await fetch('/api/computer', { cache: 'no-store' });
+      if (!response.ok) return false;
+      const state = await response.json() as { url?: string };
       const image = document.querySelector<HTMLImageElement>('.computer-stage img');
-      return Boolean(image?.complete && image.naturalWidth > 100);
-    });
+      return /^https:\/\/(?:www\.)?iana\.org\//.test(state.url || '') && Boolean(image?.complete && image.naturalWidth > 100 && image.getAttribute('src') !== initialSrc);
+    }, startingComputerImage, { timeout: 60_000 });
     await page.screenshot({ path: join(outputRoot, 'screenshots', '02-cloud-browser-click-result.png') });
-    console.log(`步骤：Pi 已在 Debian 云电脑中点击信息链接，浏览器停留在 ${liveState.computer.url}`);
+    const desktopScreenshot = Buffer.from(await page.evaluate(async () => Array.from(new Uint8Array(await (await fetch('/api/computer/screenshot', { cache: 'no-store' })).arrayBuffer()))));
+    await writeFile(join(outputRoot, 'screenshots', '02-cloud-desktop-after-click.png'), desktopScreenshot);
 
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
     const taskCard = page.getByTestId(`task-card-${demoTask.id}`);
@@ -368,12 +371,21 @@ try {
     const sessionFiles = command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'find', `/workspace/tasks/${demoTask.id}/.coke-dots/pi-sessions`, '-type', 'f', '-printf', '%P\\n']);
     assert(sessionFiles, 'Pi session must persist inside the task directory on the tenant Debian computer.');
     const taskRuntimeHash = createHash('sha256').update(demoTask.id).digest('hex');
-    const runtimeRecord = JSON.parse(command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'cat', `/workspace/.coke-dots-agent-runtime-state/${taskRuntimeHash}.json`])) as { result?: { computerUiAudit?: { inspections?: number; navigations?: number; informationClicks?: number } } };
+    const runtimeRecord = JSON.parse(command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'cat', `/workspace/.coke-dots-agent-runtime-state/${taskRuntimeHash}.json`])) as { result?: { computerUiAudit?: { inspections?: number; navigations?: number; informationClicks?: number; lastClick?: { name?: string; x?: number; y?: number; destination?: string } | null } } };
     assert(runtimeRecord.result?.computerUiAudit, 'The runtime must persist its per-task cloud-computer interaction audit.');
+    await writeFile(join(outputRoot, 'interaction-proof.json'), JSON.stringify({ taskStatus: demoTask.status, taskResult: demoTask.result, computer: liveState.computer, audit: runtimeRecord.result.computerUiAudit }, null, 2) + '\n');
     assert((runtimeRecord.result.computerUiAudit.inspections || 0) >= 1, 'Pi must inspect the page before the action.');
     assert.equal(runtimeRecord.result.computerUiAudit.navigations, 1, 'The test must navigate once to the requested public page.');
     assert.equal(runtimeRecord.result.computerUiAudit.informationClicks, 1, 'The demonstration only passes after the visible information link was actually clicked by the cloud computer.');
+    const lastClick = runtimeRecord.result.computerUiAudit.lastClick;
+    assert(lastClick && typeof lastClick.name === 'string' && typeof lastClick.destination === 'string' && typeof lastClick.x === 'number' && typeof lastClick.y === 'number', 'The runtime must record the clicked link and position.');
+    assert(lastClick.x >= 0 && lastClick.x < 1440 && lastClick.y >= 0 && lastClick.y < 900, 'The audit must record a real click position inside the Debian desktop.');
+    assert.match(lastClick.name, /learn more|more information/i, 'The click audit must identify the page information link.');
+    assert.match(lastClick.destination, /^https:\/\/(?:www\.)?iana\.org\//, 'The click must follow the inspected public information link.');
+    assert.match(liveState.computer.url || '', /^https:\/\/(?:www\.)?iana\.org\//, `The click should open the public information page; actual browser URL: ${liveState.computer.url}`);
+    assert.doesNotMatch(demoTask.result || '', /无法点击|未能点击|点击失败|could not click|unable to click/i, 'The reply must not describe a failed click as completed work.');
     await writeFile(join(outputRoot, 'computer-ui-audit.json'), JSON.stringify(runtimeRecord.result.computerUiAudit, null, 2) + '\n');
+    console.log(`步骤：Pi 已在 Debian 云电脑中点击 ${lastClick.name}（${lastClick.x}, ${lastClick.y}），浏览器停留在 ${liveState.computer.url}`);
     assert.deepEqual(browserErrors, [], `Browser runtime errors: ${browserErrors.join('; ')}`);
     console.log(`Pi 云电脑 UI 演示端到端测试通过：${tenantNamespace}`);
   } else {
@@ -532,7 +544,7 @@ await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
   sourceRecording: livePi ? 'Chrome browser E2E with Pi and the shared provider running inside the tenant Debian K3D computer' : 'Playwright Chrome recording using a deterministic local model fixture, converted to animated WebP',
   viewport: { width: 1440, height: 1000 },
   screenshots: cloudComputerUiDemo
-    ? ['screenshots/00-dot-ready.png', 'screenshots/01-cloud-computer-running.png', 'screenshots/02-cloud-browser-click-result.png', 'screenshots/03-computer-task-in-activity.png', 'screenshots/04-computer-task-result-detail.png']
+    ? ['screenshots/00-dot-ready.png', 'screenshots/01-cloud-computer-running.png', 'screenshots/02-cloud-browser-click-result.png', 'screenshots/02-cloud-desktop-after-click.png', 'screenshots/03-computer-task-in-activity.png', 'screenshots/04-computer-task-result-detail.png']
     : ['screenshots/00-dot-ready.png', 'screenshots/01-launch-draft-waiting.png', 'screenshots/02-proactive-finding-in-activity.png', 'screenshots/03-proactive-finding-detail.png'],
   webp: { width: playbackMetadata.width, height: playbackMetadata.height, frames: playbackMetadata.pages, durationSeconds: playbackDuration },
   webpPlayback,

@@ -163,7 +163,7 @@ async function startComputerUiBridge() {
   const bridgeToken = randomBytes(32).toString('base64url');
   const workerToken = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
   if (!workerToken) throw new Error('Cloud computer UI is unavailable');
-  const audit = { inspections: 0, navigations: 0, informationClicks: 0 };
+  const audit = { inspections: 0, navigations: 0, informationClicks: 0, lastClick: null };
   const routes = new Map([
     ['/inspect', { workerPath: '/v1/agent-ui/inspect', keys: [] }],
     ['/navigate', { workerPath: '/v1/agent-ui/navigate', keys: ['url'] }],
@@ -191,7 +191,12 @@ async function startComputerUiBridge() {
       if (response.ok) {
         if (req.url === '/inspect') audit.inspections++;
         else if (req.url === '/navigate') { audit.navigations++; audit.inspections++; }
-        else if (req.url === '/click-information-link') audit.informationClicks++;
+        else if (req.url === '/click-information-link') {
+          audit.informationClicks++;
+          if (value.click && typeof value.click.name === 'string' && Number.isInteger(value.click.x) && Number.isInteger(value.click.y) && typeof value.click.destination === 'string') {
+            audit.lastClick = { name: value.click.name, x: value.click.x, y: value.click.y, destination: value.click.destination };
+          }
+        }
       }
       return send(res, response.status, value);
     } catch (error) {
