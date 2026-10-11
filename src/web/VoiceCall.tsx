@@ -35,6 +35,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   const [taskStatus, setTaskStatus] = useState('');
   const [callError, setCallError] = useState('');
   const [voiceProvider, setVoiceProvider] = useState<'browser' | 'qwen' | 'volcengine'>('browser');
+  const [voiceModel, setVoiceModel] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [desktopLayout, setDesktopLayout] = useState(() => displayMode === 'desktop' && window.innerWidth > 700);
   const sessionRef = useRef<VoiceCallSession | null>(null);
@@ -46,6 +47,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   const realtimeSendChannelRef = useRef<RTCDataChannel | null>(null);
   const realtimeEventChannelRef = useRef<RTCDataChannel | null>(null);
   const volcWebSocketRef = useRef<WebSocket | null>(null);
+  const volcDuplexRef = useRef(false);
   const volcAudioContextRef = useRef<AudioContext | null>(null);
   const volcAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const volcAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
@@ -573,13 +575,17 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       try {
         const providerResponse = await appFetch('/api/voice/provider');
         if (!providerResponse.ok) throw new Error('无法读取语音服务配置');
-        const provider = await providerResponse.json() as { provider?: string; configured?: boolean };
+        const provider = await providerResponse.json() as { provider?: string; configured?: boolean; model?: string };
         if (provider.provider !== 'browser' && provider.provider !== 'qwen' && provider.provider !== 'volcengine') throw new Error('服务端配置了不支持的语音供应商');
         const selectedProvider = provider.provider === 'qwen' || provider.provider === 'volcengine' ? provider.provider : 'browser';
         providerRef.current = selectedProvider;
         setVoiceProvider(selectedProvider);
+        setVoiceModel(provider.model || '');
+        volcDuplexRef.current = selectedProvider === 'volcengine' && provider.model === 'doubao-seedduplex-3.0';
         if (selectedProvider === 'qwen' && !provider.configured) throw new Error('服务端尚未配置 Qwen 实时语音所需的百炼 API Key 和工作空间 ID；地域默认使用北京。');
-        if (selectedProvider === 'volcengine' && !provider.configured) throw new Error('服务端尚未配置火山引擎实时语音所需的 App ID 和 Access Token。');
+        if (selectedProvider === 'volcengine' && !provider.configured) throw new Error(provider.model === 'doubao-realtime-dialogue-2.0'
+          ? '服务端尚未配置火山引擎 O2.0 实时语音所需的 App ID 和 Access Token。'
+          : '服务端尚未配置火山引擎 SeedDuplex 实时语音 API Key。');
         const response = await appFetch('/api/voice-calls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
         const call = await response.json() as VoiceCallSession & { error?: string };
         if (!response.ok) throw new Error(call.error || 'HTTP ' + response.status);
@@ -641,6 +647,10 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     mutedRef.current = next;
     setMuted(next);
     for (const track of localStreamRef.current?.getAudioTracks() || []) track.enabled = !next;
+    if (providerRef.current === 'volcengine' && volcDuplexRef.current) {
+      const socket = volcWebSocketRef.current;
+      if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: next ? 'mute' : 'unmute' }));
+    }
     if (next) {
       if (providerRef.current === 'browser') recognitionRef.current?.abort();
       setStatus('麦克风已静音');
@@ -692,7 +702,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
 
   const minutes = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0');
   const seconds = (elapsedSeconds % 60).toString().padStart(2, '0');
-  if (desktopLayout) return <section className="voice-call-inline" role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="desktop" data-voice-provider={voiceProvider}>
+  if (desktopLayout) return <section className="voice-call-inline" role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="desktop" data-voice-provider={voiceProvider} data-voice-model={voiceModel}>
     <button type="button" className={`voice-call-inline-mic${muted ? ' is-muted' : ''}`} aria-label={muted ? '取消静音' : '静音'} aria-pressed={muted} title={muted ? '取消静音' : '静音'} onClick={toggleMute}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-4 0h8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>{muted && <path d="m4 4 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>}</svg>
     </button>
@@ -704,7 +714,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       <span>{status}</span>{transcript && <span>你说：{transcript}</span>}{taskStatus && <span>{taskStatus}</span>}
     </div>
   </section>;
-  return <section className={`voice-call-dock${expanded ? ' voice-call-expanded' : ''}`} role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="handset" data-voice-provider={voiceProvider}>
+  return <section className={`voice-call-dock${expanded ? ' voice-call-expanded' : ''}`} role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="handset" data-voice-provider={voiceProvider} data-voice-model={voiceModel}>
     <div className="voice-call-screen">
       <div className="voice-call-statusbar" aria-hidden="true">
         <span className="voice-call-status-time">12:55</span><span className="voice-call-notch" />

@@ -34,11 +34,14 @@ let mockModelServer: Server | null = null;
 let mockSlackServer: Server | null = null;
 let mockQwenSignalingServer: Server | null = null;
 let mockVolcEngineServer: WebSocketServer | null = null;
+let mockVolcEngineDuplexServer: WebSocketServer | null = null;
 let mockSlackProviderOrigin = '';
 let mockQwenSignalingUrl = '';
 let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp: string }[] = [];
 let mockVolcEngineUrl = '';
 let mockVolcEngineConnections: { headers: Record<string, string>; events: number[]; serverEvents: number[]; timeline: string[]; pcmBytes: number; spokenTexts: string[] }[] = [];
+let mockVolcEngineDuplexUrl = '';
+let mockVolcEngineDuplexConnections: { headers: Record<string, string>; events: string[]; timeline: string[]; pcmBytes: number; spokenTexts: string[]; audioDeltas: number }[] = [];
 let mockSlackCodeExchanges = 0;
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
@@ -308,6 +311,58 @@ async function startMockVolcEngineProvider() {
   return `ws://127.0.0.1:${address.port}/realtime`;
 }
 
+async function startMockVolcEngineDuplexProvider() {
+  mockVolcEngineDuplexConnections = [];
+  mockVolcEngineDuplexServer = new WebSocketServer({ port: 0, host: '127.0.0.1', maxPayload: 1024 * 1024, perMessageDeflate: false });
+  mockVolcEngineDuplexServer.on('connection', (socket, request) => {
+    const connection = {
+      headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(',') : String(value || '')])),
+      events: [] as string[], timeline: [] as string[], pcmBytes: 0, spokenTexts: [] as string[], audioDeltas: 0,
+    };
+    mockVolcEngineDuplexConnections.push(connection);
+    let sentTranscript = false;
+    socket.on('message', (raw, isBinary) => {
+      if (isBinary) { connection.timeline.push('unexpected-binary-client-frame'); return; }
+      let event: Record<string, unknown>;
+      try { event = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw)) as Record<string, unknown>; }
+      catch { connection.timeline.push('invalid-json-client-frame'); return; }
+      const type = typeof event.type === 'string' ? event.type : 'missing-type';
+      connection.events.push(type);
+      connection.timeline.push(`client:${type}`);
+      if (type === 'session.create') {
+        socket.send(JSON.stringify({ type: 'session.created', event_id: 'mock-session-created', session: { id: 'mock-seedduplex-session' } }));
+      } else if (type === 'input_audio_buffer.append') {
+        if (typeof event.audio === 'string') connection.pcmBytes += Buffer.from(event.audio, 'base64').byteLength;
+        if (!sentTranscript) {
+          sentTranscript = true;
+          socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.started', item_id: 'duplex-e2e-turn-0001' }));
+          socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'duplex-e2e-turn-0001', delta: '请用中文整理本周人工智能产品更新的三个要点，并说明来源。' }));
+          socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'duplex-e2e-turn-0001', transcript: '请用中文整理本周人工智能产品更新的三个要点，并说明来源。' }));
+        }
+      } else if (type === 'input_audio_mute.commit' || type === 'input_audio_unmute.commit') {
+        connection.timeline.push(`mute-control:${type}`);
+      } else if (type === 'speech_text_buffer.replacement.append') {
+        if (typeof event.text === 'string') connection.spokenTexts.push(event.text);
+      } else if (type === 'speech_text_buffer.replacement.commit') {
+        socket.send(JSON.stringify({ type: 'response.output_audio.started', response_id: 'mock-response' }));
+        socket.send(JSON.stringify({ type: 'response.output_audio.delta', response_id: 'mock-response', delta: Buffer.alloc(960, 1).toString('base64') }));
+        socket.send(JSON.stringify({ type: 'response.output_audio.done', response_id: 'mock-response' }));
+        connection.audioDeltas += 1;
+      } else if (type === 'session.close') {
+        connection.timeline.push('server:session.closed');
+        socket.send(JSON.stringify({ type: 'session.closed', event_id: 'mock-session-closed' }));
+      }
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    mockVolcEngineDuplexServer!.once('error', reject);
+    mockVolcEngineDuplexServer!.once('listening', resolvePromise);
+  });
+  const address = mockVolcEngineDuplexServer.address();
+  assert(address && typeof address !== 'string');
+  return `ws://127.0.0.1:${address.port}/duplex`;
+}
+
 async function websocketUpgradeStatus(url: string, cookie: string) {
   return await new Promise<number>(resolvePromise => {
     const origin = new URL(url).origin.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
@@ -358,10 +413,12 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_QWEN_WORKSPACE_ID: '',
       DOTS_QWEN_REGION: '',
       DASHSCOPE_API_KEY: '',
+      DOTS_VOLCENGINE_API_KEY: '',
       DOTS_VOLCENGINE_APP_ID: '',
       DOTS_VOLCENGINE_ACCESS_TOKEN: '',
       DOTS_VOLCENGINE_RESOURCE_ID: '',
       DOTS_E2E_VOLCENGINE_WS_URL: '',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: '',
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -2360,7 +2417,7 @@ try {
     await openProfile(alphaPage!);
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     const unconfiguredCall = alphaPage!.getByTestId('voice-call');
-    await unconfiguredCall.getByRole('alert').filter({ hasText: 'App ID 和 Access Token' }).waitFor({ state: 'visible' });
+    await unconfiguredCall.getByRole('alert').filter({ hasText: 'SeedDuplex 实时语音 API Key' }).waitFor({ state: 'visible' });
     await unconfiguredCall.getByRole('button', { name: '结束通话' }).click();
 
     await stopServer(server);
@@ -2430,6 +2487,67 @@ try {
     assert(finishSession >= 0 && sessionFinished > finishSession && finishConnection > sessionFinished, `Call cleanup must await session closure before finishing the provider connection; received ${providerConnection.timeline.join(', ')}`);
   });
 
+  await recordStep('SeedDuplex 3.0 JSON WebSocket keeps API Key private and dispatches Chinese speech to the tenant Agent', async () => {
+    mockVolcEngineDuplexUrl = await startMockVolcEngineDuplexProvider();
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-secret',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: mockVolcEngineDuplexUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await alphaContext!.grantPermissions(['microphone'], { origin: baseUrl });
+    await alphaPage!.evaluate(`(() => {
+      const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      Object.defineProperty(window, '__dotsVolcDuplexTrack', { configurable: true, value: null, writable: true });
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async constraints => {
+        const stream = await getUserMedia(constraints);
+        window.__dotsVolcDuplexTrack = stream.getAudioTracks()[0] || null;
+        return stream;
+      } } });
+    })()`);
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => {
+      const dialog = document.querySelector('[data-testid="voice-call"]');
+      return dialog?.getAttribute('data-voice-provider') === 'volcengine' && dialog.getAttribute('data-voice-model') === 'doubao-seedduplex-3.0';
+    });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 20_000 });
+    assert.equal(mockVolcEngineDuplexConnections.length, 1, 'The authenticated SeedDuplex call should open one provider connection');
+    const providerConnection = mockVolcEngineDuplexConnections[0];
+    assert.equal(providerConnection.headers['x-api-key'], 'e2e-seedduplex-secret', 'The shared API key must be sent only from the server');
+    assert(providerConnection.headers['x-api-request-id'], 'Each provider connection must carry a traceable request ID');
+    const publicProviderInfo = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as Record<string, unknown>;
+    assert.deepEqual(publicProviderInfo, { provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' }, 'Public provider state must not reveal the API key');
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 30_000 });
+    await waitFor(() => providerConnection.audioDeltas > 0, 5_000);
+    assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM audio in realtime-sized packets');
+    assert(providerConnection.events.includes('session.create') && providerConnection.events.includes('input_audio_buffer.append'), 'SeedDuplex must use JSON session and audio events');
+    assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be submitted to SeedDuplex direct text-to-speech events');
+    assert(providerConnection.events.includes('speech_text_buffer.replacement.commit'), 'Agent status speech must use the provider direct-synthesis event sequence');
+    assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Final Chinese speech transcript must start the normal tenant Agent task');
+
+    const activeCall = await alphaPage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
+    assert(activeCall, 'The SeedDuplex voice session must use the authenticated user-owned call record');
+    const betaCookie = (await betaContext!.cookies(baseUrl)).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+    const crossTenantUpgrade = await websocketUpgradeStatus(`${baseUrl.replace(/^http/, 'ws')}/api/voice-calls/${activeCall.id}/volcengine-stream`, betaCookie);
+    assert.equal(crossTenantUpgrade, 404, 'A different tenant cannot open another account’s SeedDuplex stream');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.enabled), false, 'Mute must disable microphone capture');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.enabled), true, 'Unmute must resume microphone capture');
+    await waitFor(() => providerConnection.events.includes('input_audio_mute.commit') && providerConnection.events.includes('input_audio_unmute.commit'), 5_000);
+    await screenshot(alphaPage!, 'volcengine-seedduplex-call-agent-result');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.readyState), 'ended', 'Ending the call must release the microphone');
+    await waitFor(() => providerConnection.events.includes('session.close') && providerConnection.timeline.includes('server:session.closed'), 5_000);
+  });
+
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
 } catch (error) {
   failure = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
@@ -2455,6 +2573,7 @@ try {
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
   if (mockQwenSignalingServer) await new Promise<void>(resolvePromise => mockQwenSignalingServer!.close(() => resolvePromise()));
   if (mockVolcEngineServer) await new Promise<void>(resolvePromise => mockVolcEngineServer!.close(() => resolvePromise()));
+  if (mockVolcEngineDuplexServer) await new Promise<void>(resolvePromise => mockVolcEngineDuplexServer!.close(() => resolvePromise()));
   if (e2eSlackTokenAccount) {
     try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
   }

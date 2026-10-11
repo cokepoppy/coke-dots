@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
+import { bridgeVolcengineDuplexVoiceCall } from './volcengine-duplex-voice-gateway.ts';
 import {
   decodeVolcengineFrame,
   encodeVolcengineAudio,
@@ -19,6 +20,7 @@ type LocalVoiceMessage = { type?: unknown; text?: unknown };
 
 export function bridgeVolcengineVoiceCall(client: WebSocket, dotName: string, env: NodeJS.ProcessEnv = process.env) {
   const config = volcengineVoiceConfig(env);
+  if (config.mode === 'seedduplex') return bridgeVolcengineDuplexVoiceCall(client, dotName, env);
   const connectionId = randomUUID();
   const sessionId = volcengineSessionId();
   const upstream = new WebSocket(volcengineRealtimeUrl(env), {

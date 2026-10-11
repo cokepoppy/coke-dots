@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
   encodeVolcengineAudio,
   encodeVolcengineEvent,
+  volcengineDuplexHeaders,
+  volcengineDuplexRealtimeUrl,
+  volcengineDuplexSessionPayload,
   volcengineHeaders,
   volcengineRealtimeUrl,
   volcengineSessionId,
@@ -15,10 +19,10 @@ import {
 
 const env = (): NodeJS.ProcessEnv => ({ DOTS_VOLCENGINE_APP_ID: 'test-app', DOTS_VOLCENGINE_ACCESS_TOKEN: 'server-token' });
 
-test('Volcano credentials are validated and never returned in public provider information', () => {
-  assert.deepEqual(volcengineVoiceInfo({}), { provider: 'volcengine', configured: false, model: 'doubao-realtime-dialogue-2.0' });
+test('Volcano O2.0 credentials remain compatible and never appear in public provider information', () => {
+  assert.deepEqual(volcengineVoiceInfo({}), { provider: 'volcengine', configured: false, model: 'doubao-seedduplex-3.0' });
   assert.deepEqual(volcengineVoiceInfo(env()), { provider: 'volcengine', configured: true, model: 'doubao-realtime-dialogue-2.0' });
-  assert.deepEqual(volcengineVoiceConfig(env()), { appId: 'test-app', accessToken: 'server-token', resourceId: 'volc.speech.dialog' });
+  assert.deepEqual(volcengineVoiceConfig(env()), { mode: 'o2', appId: 'test-app', accessToken: 'server-token', resourceId: 'volc.speech.dialog' });
   const headers = volcengineHeaders(volcengineVoiceConfig(env()), 'call-connection');
   assert.equal(headers['X-Api-App-ID'], 'test-app');
   assert.equal(headers['X-Api-Access-Key'], 'server-token');
@@ -28,10 +32,22 @@ test('Volcano credentials are validated and never returned in public provider in
   assert.throws(() => volcengineVoiceConfig({ ...env(), DOTS_VOLCENGINE_RESOURCE_ID: 'other-resource' }), /Resource ID/);
 });
 
+test('SeedDuplex API Key takes precedence over legacy credentials and stays server-side', () => {
+  const config = volcengineVoiceConfig({ ...env(), DOTS_VOLCENGINE_API_KEY: 'seed-duplex-secret' });
+  assert.deepEqual(config, { mode: 'seedduplex', apiKey: 'seed-duplex-secret' });
+  assert.deepEqual(volcengineVoiceInfo({ DOTS_VOLCENGINE_API_KEY: 'seed-duplex-secret', ...env() }), { provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' });
+  const headers = volcengineDuplexHeaders(config, 'request-id', 'connect-id');
+  assert.deepEqual(headers, { 'X-Api-Key': 'seed-duplex-secret', 'X-Api-Request-Id': 'request-id', 'X-Api-Connect-Id': 'connect-id' });
+  assert.equal(JSON.stringify(volcengineVoiceInfo({ DOTS_VOLCENGINE_API_KEY: 'seed-duplex-secret' })).includes('seed-duplex-secret'), false);
+  assert.throws(() => volcengineVoiceConfig({ DOTS_VOLCENGINE_API_KEY: 'x'.repeat(4097) }), /API Key/);
+});
+
 test('Volcano test websocket override is restricted to a local test server', () => {
   assert.equal(volcengineRealtimeUrl({ NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_VOLCENGINE_WS_URL: 'ws://127.0.0.1:9123/voice' }), 'ws://127.0.0.1:9123/voice');
   assert.equal(volcengineRealtimeUrl({ NODE_ENV: 'production', DOTS_E2E_AUTH: '1', DOTS_E2E_VOLCENGINE_WS_URL: 'ws://127.0.0.1/voice' }), 'wss://openspeech.bytedance.com/api/v3/realtime/dialogue');
   assert.throws(() => volcengineRealtimeUrl({ NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_VOLCENGINE_WS_URL: 'wss://attacker.example/voice' }), /测试语音服务地址无效/);
+  assert.equal(volcengineDuplexRealtimeUrl({ NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: 'ws://127.0.0.1:9123/duplex' }), 'ws://127.0.0.1:9123/duplex');
+  assert.throws(() => volcengineDuplexRealtimeUrl({ NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: 'wss://attacker.example/voice' }), /测试语音服务地址无效/);
 });
 
 test('Volcano event framing encodes event, session id, JSON payload, and big-endian lengths', () => {
@@ -89,4 +105,18 @@ test('Volcano session requests Chinese PCM output and limits Dot names', () => {
   assert.equal(payload.tts.audio_config.format, 'pcm_s16le');
   assert.equal(payload.tts.audio_config.sample_rate, 24000);
   assert.match(payload.dialog.system_role, /简体中文/);
+});
+
+test('SeedDuplex session.create uses the fixed 3.0 model, 16 kHz input, 24 kHz PCM output, and Chinese Agent instructions', () => {
+  const event = volcengineDuplexSessionPayload('名字\n太长'.repeat(8), 'e2e-event-id');
+  assert.equal(event.type, 'session.create');
+  assert.equal(event.event_id, 'e2e-event-id');
+  assert.equal(event.session.model, VOLCENGINE_DUPLEX_MODEL_VERSION);
+  assert.deepEqual(event.session.audio, {
+    input: { format: { type: 'pcm', rate: 16000 } },
+    output: { format: { type: 'pcm', rate: 24000 }, voice: 'zh_female_vv_jupiter_bigtts' },
+  });
+  assert.equal(event.session.extension.tts.audio_config.format, 'pcm_s16le');
+  assert.match(event.session.instructions, /简体中文/);
+  assert.match(event.session.instructions, /Dots Agent/);
 });

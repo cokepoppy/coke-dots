@@ -2,12 +2,17 @@ import { gunzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
 
 export const VOLCENGINE_REALTIME_ENDPOINT = 'wss://openspeech.bytedance.com/api/v3/realtime/dialogue';
+export const VOLCENGINE_DUPLEX_REALTIME_ENDPOINT = 'wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue';
 export const VOLCENGINE_REALTIME_RESOURCE_ID = 'volc.speech.dialog';
 export const VOLCENGINE_REALTIME_APP_KEY = 'PlgvMymc7f3tQnJ6';
 export const VOLCENGINE_REALTIME_MODEL = 'doubao-realtime-dialogue-2.0';
+export const VOLCENGINE_DUPLEX_REALTIME_MODEL = 'doubao-seedduplex-3.0';
+export const VOLCENGINE_DUPLEX_MODEL_VERSION = '1.2.6.1';
 const MAX_FRAME_BYTES = 1024 * 1024;
 
-export type VolcengineVoiceConfig = { appId: string; accessToken: string; resourceId: string };
+export type VolcengineVoiceConfig =
+  | { mode: 'seedduplex'; apiKey: string }
+  | { mode: 'o2'; appId: string; accessToken: string; resourceId: string };
 export type VolcengineFrame = {
   messageType: number;
   eventId: number | null;
@@ -22,22 +27,36 @@ export class VolcengineVoiceError extends Error {
 }
 
 export function volcengineVoiceConfig(env: NodeJS.ProcessEnv = process.env): VolcengineVoiceConfig {
+  const apiKey = (env.DOTS_VOLCENGINE_API_KEY || '').trim();
+  if (apiKey) {
+    if (apiKey.length > 4096) throw new VolcengineVoiceError('火山引擎实时语音 API Key 无效', 503);
+    return { mode: 'seedduplex', apiKey };
+  }
   const appId = (env.DOTS_VOLCENGINE_APP_ID || '').trim();
   const accessToken = (env.DOTS_VOLCENGINE_ACCESS_TOKEN || '').trim();
   const resourceId = (env.DOTS_VOLCENGINE_RESOURCE_ID || VOLCENGINE_REALTIME_RESOURCE_ID).trim();
   if (!appId || appId.length > 256) throw new VolcengineVoiceError('火山引擎实时语音未配置有效的 App ID', 503);
   if (!accessToken || accessToken.length > 4096) throw new VolcengineVoiceError('火山引擎实时语音未配置有效的 Access Token', 503);
   if (resourceId !== VOLCENGINE_REALTIME_RESOURCE_ID) throw new VolcengineVoiceError('火山引擎实时语音 Resource ID 必须为 volc.speech.dialog', 503);
-  return { appId, accessToken, resourceId };
+  return { mode: 'o2', appId, accessToken, resourceId };
 }
 
 export function volcengineVoiceInfo(env: NodeJS.ProcessEnv = process.env) {
   try {
-    volcengineVoiceConfig(env);
-    return { provider: 'volcengine', configured: true, model: VOLCENGINE_REALTIME_MODEL } as const;
+    const config = volcengineVoiceConfig(env);
+    return { provider: 'volcengine', configured: true, model: config.mode === 'seedduplex' ? VOLCENGINE_DUPLEX_REALTIME_MODEL : VOLCENGINE_REALTIME_MODEL } as const;
   } catch {
-    return { provider: 'volcengine', configured: false, model: VOLCENGINE_REALTIME_MODEL } as const;
+    const hasLegacyConfig = Boolean(env.DOTS_VOLCENGINE_APP_ID?.trim() || env.DOTS_VOLCENGINE_ACCESS_TOKEN?.trim());
+    return { provider: 'volcengine', configured: false, model: hasLegacyConfig ? VOLCENGINE_REALTIME_MODEL : VOLCENGINE_DUPLEX_REALTIME_MODEL } as const;
   }
+}
+
+export function volcengineDuplexHeaders(config: Extract<VolcengineVoiceConfig, { mode: 'seedduplex' }>, requestId: string, connectId: string) {
+  return {
+    'X-Api-Key': config.apiKey,
+    'X-Api-Request-Id': requestId,
+    'X-Api-Connect-Id': connectId,
+  };
 }
 
 export function volcengineRealtimeUrl(env: NodeJS.ProcessEnv = process.env) {
@@ -51,7 +70,19 @@ export function volcengineRealtimeUrl(env: NodeJS.ProcessEnv = process.env) {
   return VOLCENGINE_REALTIME_ENDPOINT;
 }
 
+export function volcengineDuplexRealtimeUrl(env: NodeJS.ProcessEnv = process.env) {
+  if (env.NODE_ENV === 'test' && env.DOTS_E2E_AUTH === '1' && env.DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL) {
+    const url = new URL(env.DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL);
+    if (url.protocol !== 'ws:' || !['127.0.0.1', 'localhost'].includes(url.hostname)) {
+      throw new VolcengineVoiceError('测试语音服务地址无效', 500);
+    }
+    return url.toString();
+  }
+  return VOLCENGINE_DUPLEX_REALTIME_ENDPOINT;
+}
+
 export function volcengineHeaders(config: VolcengineVoiceConfig, connectId: string) {
+  if (config.mode !== 'o2') throw new VolcengineVoiceError('旧版火山语音鉴权配置不可用', 500);
   return {
     'X-Api-App-ID': config.appId,
     'X-Api-Access-Key': config.accessToken,
@@ -152,15 +183,41 @@ export function decodeVolcengineFrame(data: Uint8Array): VolcengineFrame {
 export function volcengineSessionId() { return randomUUID(); }
 
 export function volcengineStartSessionPayload(dotName: string) {
-  const safeName = dotName.replace(/[\r\n]/g, ' ').slice(0, 20) || 'Dot';
+  const { safeName, systemRole, extension } = volcengineDialogConfiguration(dotName);
   return {
-    asr: { extra: { end_smooth_window_ms: 700 } },
-    dialog: {
-      bot_name: safeName,
-      system_role: `你是 ${safeName}，是 Coke Dots 的语音界面。始终使用简体中文。用户在布置工作时，只用一句简短的话确认收到，不要自行回答任务或假称完成。Dots Agent 会在用户所属的独立云电脑中执行工作。收到客户端通过 ChatTTSText 事件提供的“Dots Agent 状态更新”后，只按原文简洁播报。`,
-      speaking_style: '自然、简洁、清楚',
-      extra: { model: '1.2.1.1', enable_loudness_norm: true },
+    asr: extension.asr,
+    dialog: { bot_name: safeName, system_role: systemRole, speaking_style: '自然、简洁、清楚', extra: { model: '1.2.1.1', enable_loudness_norm: true } },
+    tts: extension.tts,
+  };
+}
+
+export function volcengineDuplexSessionPayload(dotName: string, eventId: string = randomUUID()) {
+  const { systemRole, extension } = volcengineDialogConfiguration(dotName);
+  return {
+    type: 'session.create',
+    event_id: eventId,
+    session: {
+      model: VOLCENGINE_DUPLEX_MODEL_VERSION,
+      instructions: systemRole,
+      audio: {
+        input: { format: { type: 'pcm', rate: 16000 } },
+        output: { format: { type: 'pcm', rate: 24000 }, voice: 'zh_female_vv_jupiter_bigtts' },
+      },
+      extension,
     },
-    tts: { speaker: 'zh_female_vv_jupiter_bigtts', audio_config: { channel: 1, format: 'pcm_s16le', sample_rate: 24000 } },
+  };
+}
+
+function volcengineDialogConfiguration(dotName: string) {
+  const safeName = dotName.replace(/[\r\n]/g, ' ').slice(0, 20) || 'Dot';
+  const systemRole = `你是 ${safeName}，是 Coke Dots 的语音界面。始终使用简体中文。用户在布置工作时，只用一句简短的话确认收到，不要自行回答任务或假称完成。Dots Agent 会在用户所属的独立云电脑中执行工作。收到客户端通过语音合成文本提供的“Dots Agent 状态更新”后，只按原文简洁播报。`;
+  return {
+    safeName,
+    systemRole,
+    extension: {
+      asr: { extra: { end_smooth_window_ms: 700 } },
+      tts: { speaker: 'zh_female_vv_jupiter_bigtts', audio_config: { channel: 1, format: 'pcm_s16le', sample_rate: 24000 } },
+      dialog: { bot_name: safeName, system_role: systemRole, speaking_style: '自然、简洁、清楚', extra: { enable_loudness_norm: true } },
+    },
   };
 }
