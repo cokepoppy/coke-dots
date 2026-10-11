@@ -162,14 +162,20 @@ async function clickAgentInformationLink(input) {
   if ((await browserPage.context().cookies(before.href)).length) throw new Error('Only public pages without an active login can be used');
   const link = browserPage.getByRole('link', { name, exact: true });
   if (await link.count() !== 1 || !(await link.isVisible())) throw new Error('The requested visible information link was not found exactly once');
-  await link.evaluate(element => element.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }));
+  await link.evaluate(element => {
+    const root = document.scrollingElement || document.documentElement;
+    if (!root.hasAttribute('data-coke-dots-scroll-padding')) {
+      root.setAttribute('data-coke-dots-scroll-padding', JSON.stringify({
+        value: root.style.getPropertyValue('padding-bottom'),
+        priority: root.style.getPropertyPriority('padding-bottom'),
+      }));
+    }
+    root.style.setProperty('padding-bottom', `${Math.ceil(window.innerHeight)}px`, 'important');
+    element.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+  });
   await link.evaluate(element => {
     const bounds = element.getBoundingClientRect();
-    window.scrollBy({
-      left: bounds.left + bounds.width / 2 - window.innerWidth / 2,
-      top: bounds.top + bounds.height / 2 - window.innerHeight / 2,
-      behavior: 'instant',
-    });
+    window.scrollBy({ left: bounds.left + bounds.width / 2 - window.innerWidth / 2, top: bounds.top + bounds.height / 2 - window.innerHeight / 2, behavior: 'instant' });
   });
   await browserPage.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const attributes = await link.evaluate(element => ({ href: element.href, target: element.target, download: element.hasAttribute('download') }));
@@ -225,6 +231,19 @@ async function clickAgentInformationLink(input) {
     throw new Error(`Click ${x},${y} missed: actual ${after.href}; expected ${destination.href}; X11 ${desktopWindow.x},${desktopWindow.y} ${desktopWindow.width}x${desktopWindow.height}; screen ${pageMetrics.screenX},${pageMetrics.screenY}; viewport ${pageMetrics.innerWidth}x${pageMetrics.innerHeight}; DPR ${scale}; link center ${Math.round(point.x)},${Math.round(point.y)}; hit ${JSON.stringify(hit)}; pointer ${pointer}; focus ${focused}`);
   }
   return { ...await inspectAgentBrowserUi(), click: { name, x, y, window: { x: desktopWindow.x, y: desktopWindow.y, width: desktopWindow.width, height: desktopWindow.height }, page: pageMetrics, destination: destination.href } };
+}
+
+async function restoreAgentScrollSpace() {
+  const browserPage = await page();
+  await browserPage.evaluate(() => {
+    const root = document.scrollingElement || document.documentElement;
+    const saved = root.getAttribute('data-coke-dots-scroll-padding');
+    if (saved === null) return;
+    const original = JSON.parse(saved);
+    if (original.value) root.style.setProperty('padding-bottom', original.value, original.priority || '');
+    else root.style.removeProperty('padding-bottom');
+    root.removeAttribute('data-coke-dots-scroll-padding');
+  });
 }
 
 async function command(input) {
@@ -307,6 +326,13 @@ http.createServer(async (req, res) => {
       const input = await body(req);
       if (Object.keys(input).some(key => key !== 'name') || typeof input.name !== 'string') return send(res, 400, { error: 'The UI click target is invalid' });
       return send(res, 200, await clickAgentInformationLink(input));
+    }
+    if (req.method === 'POST' && pathname === '/v1/agent-ui/restore-scroll-space') {
+      if (owner !== 'agent') return send(res, 409, { error: 'The user currently controls this computer' });
+      const input = await body(req);
+      if (Object.keys(input).length) return send(res, 400, { error: 'The scroll restore request is invalid' });
+      await restoreAgentScrollSpace();
+      return send(res, 200, { restored: true });
     }
     if (req.method === 'POST' && pathname === '/v1/commands') return send(res, 200, await command(await body(req)));
     return send(res, 404, { error: 'not found' });

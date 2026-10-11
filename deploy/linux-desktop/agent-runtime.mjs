@@ -156,6 +156,16 @@ async function executeKernel(input, requestSignal, slot) {
     requestSignal?.removeEventListener('abort', onRequestAbort);
     if (computerUiBridge) {
       try {
+        if (await controlOwner() === 'agent') {
+          await fetch(`http://127.0.0.1:${workerPort}/v1/agent-ui/restore-scroll-space`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${process.env.LINUX_DESKTOP_WORKER_TOKEN}`, 'content-type': 'application/json' },
+            body: '{}',
+            signal: AbortSignal.timeout(1500),
+          }).catch(() => undefined);
+        }
+      } catch { /* A completed task should not fail because temporary viewport cleanup was unavailable. */ }
+      try {
         const auditPath = path.join(cwd, '.coke-dots', 'computer-ui-audit.json');
         await mkdir(path.dirname(auditPath), { recursive: true, mode: 0o700 });
         await writeFile(auditPath, `${JSON.stringify(computerUiBridge.audit(), null, 2)}\n`, { mode: 0o600 });
