@@ -856,8 +856,8 @@ try {
     const workspacePlaceholder = modal.locator('.slack-current-workspace.is-placeholder');
     await workspacePlaceholder.waitFor({ state: 'visible' });
     assert.match(await workspacePlaceholder.innerText(), /Workspace/);
-    const connectButton = modal.getByTestId('slack-connect');
-    assert.equal(await connectButton.innerText(), 'Add to Slack');
+    const connectButton = modal.getByRole('button', { name: 'Select a workspace' });
+    assert.equal(await modal.getByTestId('slack-connect').innerText(), 'Select a workspace');
     assert.equal(await connectButton.isDisabled(), false);
     await screenshot(alphaPage!, 'slack-setup-empty-workspace');
 
@@ -870,6 +870,11 @@ try {
     await darkModal.waitFor({ state: 'visible' });
     assert.equal(await darkModal.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(7, 23, 14)');
     assert.equal(await darkModal.locator('.slack-setup-workspace-card').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(11, 33, 21)');
+    const darkModalBounds = await darkModal.boundingBox();
+    const slackViewport = alphaPage!.viewportSize();
+    assert(darkModalBounds && slackViewport, 'Slack dialog and viewport bounds must be available');
+    assert(Math.abs(darkModalBounds.x - Math.max(20, slackViewport.width * 0.0135)) <= 1, 'Slack dialog should use the observed left inset');
+    assert(Math.abs(darkModalBounds.y - Math.max(20, slackViewport.height * 0.22)) <= 1, 'Slack dialog should use the observed top placement');
     await screenshot(alphaPage!, 'slack-setup-empty-workspace-dark');
     await darkModal.getByRole('button', { name: 'Close Slack setup' }).click();
     await darkModal.waitFor({ state: 'hidden' });
@@ -892,15 +897,38 @@ try {
 
     const connectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
-    const workspace = connectedModal.getByLabel('Slack workspace');
+    const workspace = connectedModal.getByRole('button', { name: 'Slack workspace' });
     await workspace.waitFor({ state: 'visible' });
-    assert.equal(await workspace.inputValue(), 'TASPIE2E');
-    assert.deepEqual(await workspace.locator('option').allTextContents(), ['ASPI']);
-    assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Add to Slack');
-    await screenshot(alphaPage!, 'slack-workspace-installed');
+    assert.match(await workspace.innerText(), /Workspace/);
+    assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
+    await screenshot(alphaPage!, 'slack-workspace-available');
+    await workspace.click();
+    const workspaceMenu = connectedModal.getByRole('listbox', { name: 'Choose a Slack workspace' });
+    await workspaceMenu.waitFor({ state: 'visible' });
+    assert.deepEqual((await workspaceMenu.getByRole('option').allTextContents()).map(text => text.replace(/^✓/, '')), ['Choose a workspace', 'ASPI', 'Select another']);
+    await workspaceMenu.getByRole('option', { name: 'ASPI' }).hover();
+    await screenshot(alphaPage!, 'slack-workspace-menu-open');
+    await connectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
+    await contextPanel.getByRole('button', { name: 'Slack' }).click();
+    const darkConnectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
+    await darkConnectedModal.waitFor({ state: 'visible' });
+    const darkWorkspace = darkConnectedModal.getByRole('button', { name: 'Slack workspace' });
+    assert.match(await darkWorkspace.innerText(), /Workspace/);
+    assert.equal(await darkConnectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
+    await screenshot(alphaPage!, 'slack-workspace-available-dark');
+    await darkWorkspace.click();
+    const darkWorkspaceMenu = darkConnectedModal.getByRole('listbox', { name: 'Choose a Slack workspace' });
+    await darkWorkspaceMenu.waitFor({ state: 'visible' });
+    await darkWorkspaceMenu.getByRole('option', { name: 'ASPI' }).hover();
+    await screenshot(alphaPage!, 'slack-workspace-menu-open-dark');
+    await darkWorkspaceMenu.getByRole('option', { name: 'ASPI' }).click();
+    assert.match(await darkWorkspace.innerText(), /ASPI/);
+    assert.equal(await darkConnectedModal.getByTestId('slack-connect').innerText(), 'Add to Slack');
+    await screenshot(alphaPage!, 'slack-workspace-installed-dark');
 
-    await connectedModal.getByTestId('slack-connect').click();
-    await connectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
+    await darkConnectedModal.getByTestId('slack-connect').click();
+    await darkConnectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
     const tenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
     assert(tenantId, 'The Alpha tenant id must be present before checking tenant-scoped Slack credentials');
     e2eSlackTokenAccount = `tenant-${createHash('sha256').update(`${tenantId}\0TASPIE2E`).digest('hex')}-slack-bot-token`;
@@ -911,14 +939,14 @@ try {
       { teamId: 'TASPIE2E', teamName: 'ASPI', contactEnabled: true },
     ]);
     assert.equal(JSON.stringify(slackState).includes(storedToken), false, 'Slack OAuth token must not be returned by the API');
+    await screenshot(alphaPage!, 'slack-workspace-selected');
+    await darkConnectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
     const sqlite = new DatabaseSync(join(testDataDir, 'dots.db'), { readOnly: true });
     const storedInstallation = sqlite.prepare('SELECT team_id,team_name,scopes_json FROM slack_installations').all();
     sqlite.close();
     assert.equal(JSON.stringify(storedInstallation).includes(storedToken), false, 'Slack OAuth token must not be stored in SQLite');
     assert.equal(mockSlackCodeExchanges, 1, 'Chrome should complete exactly one Slack OAuth code exchange');
-    await screenshot(alphaPage!, 'slack-workspace-selected');
-    await connectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
-    await connectedModal.waitFor({ state: 'hidden' });
   });
 
   await recordStep('Dot computer shortcut opens the tenant-isolated browser workspace', async () => {
