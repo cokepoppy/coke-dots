@@ -2229,6 +2229,21 @@ try {
     assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { stopped: boolean } }).__dotsQwenFakeTrack.stopped), true, 'Ending the call must stop the microphone track');
     const callHistory = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { endedAt: string | null }[];
     assert(callHistory.some(item => item.endedAt), 'The Qwen call should be durably recorded when it ends');
+
+    await alphaPage!.evaluate("Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async function () { throw new Error('E2E microphone permission denied'); } } })");
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const failedCall = alphaPage!.getByTestId('voice-call');
+    await failedCall.waitFor({ state: 'visible' });
+    await failedCall.getByRole('alert').filter({ hasText: 'E2E microphone permission denied' }).waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(async () => {
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { endedAt: string | null }[];
+      return Boolean(calls[0]?.endedAt);
+    }, null, { timeout: 10_000 });
+    const failedCallHistory = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { endedAt: string | null }[];
+    assert(failedCallHistory[0]?.endedAt, 'A Qwen call that fails during microphone startup must not remain active in call history');
+    await failedCall.getByRole('button', { name: '结束通话' }).click();
+    await failedCall.waitFor({ state: 'detached' });
   });
 
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);

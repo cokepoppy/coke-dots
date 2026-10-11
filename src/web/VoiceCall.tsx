@@ -54,6 +54,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   const speakingRef = useRef(false);
   const speechGenerationRef = useRef(0);
   const startedAtRef = useRef(Date.now());
+  const startupFailedRef = useRef(false);
   const onTranscriptRef = useRef(onTranscript);
   const waitingTaskIdRef = useRef<string | null>(null);
   const taskFollowStopsRef = useRef(new Set<() => void>());
@@ -83,7 +84,9 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   useEffect(() => {
     activeRef.current = true;
     startedAtRef.current = Date.now();
-    const timer = window.setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000)), 1000);
+    const timer = window.setInterval(() => {
+      if (!startupFailedRef.current) setElapsedSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000));
+    }, 1000);
     const speechWindow = window as SpeechWindow;
     recognitionConstructorRef.current = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition || null;
     let qwenResponseActive = false;
@@ -442,9 +445,21 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
           setCallError(message);
           setStatus('通话无法启动');
           if (providerRef.current === 'qwen') {
-            peerConnectionRef.current?.close();
-            localStreamRef.current?.getTracks().forEach(track => track.stop());
-            localStreamRef.current = null;
+            startupFailedRef.current = true;
+            stopRealtimeTransport();
+            const call = sessionRef.current;
+            if (call) {
+              const durationSeconds = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
+              void appFetch('/api/voice-calls/' + call.id, {
+                method: 'PATCH', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ action: 'end', durationSeconds }),
+              }).then(response => {
+                if (!response.ok) throw new Error('通话记录未能保存');
+                if (sessionRef.current?.id === call.id) sessionRef.current = null;
+              }).catch(() => {
+                if (activeRef.current) setCallError(message + '；结束通话记录失败，请关闭通话后重试。');
+              });
+            }
           }
         }
       }
