@@ -1046,8 +1046,8 @@ try {
     const workspacePlaceholder = modal.locator('.slack-current-workspace.is-placeholder');
     await workspacePlaceholder.waitFor({ state: 'visible' });
     assert.match(await workspacePlaceholder.innerText(), /Workspace/);
-    const connectButton = modal.getByTestId('slack-connect');
-    assert.equal(await connectButton.innerText(), 'Add to Slack');
+    const connectButton = modal.getByRole('button', { name: 'Select a workspace' });
+    assert.equal(await modal.getByTestId('slack-connect').innerText(), 'Select a workspace');
     assert.equal(await connectButton.isDisabled(), false);
     await screenshot(alphaPage!, 'slack-setup-empty-workspace');
 
@@ -1060,6 +1060,11 @@ try {
     await darkModal.waitFor({ state: 'visible' });
     assert.equal(await darkModal.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(7, 23, 14)');
     assert.equal(await darkModal.locator('.slack-setup-workspace-card').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(11, 33, 21)');
+    const darkModalBounds = await darkModal.boundingBox();
+    const slackViewport = alphaPage!.viewportSize();
+    assert(darkModalBounds && slackViewport, 'Slack dialog and viewport bounds must be available');
+    assert(Math.abs(darkModalBounds.x - Math.max(20, slackViewport.width * 0.0135)) <= 1, 'Slack dialog should use the observed left inset');
+    assert(Math.abs(darkModalBounds.y - Math.max(20, slackViewport.height * 0.22)) <= 1, 'Slack dialog should use the observed top placement');
     await screenshot(alphaPage!, 'slack-setup-empty-workspace-dark');
     await darkModal.getByRole('button', { name: 'Close Slack setup' }).click();
     await darkModal.waitFor({ state: 'hidden' });
@@ -1082,15 +1087,38 @@ try {
 
     const connectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
-    const workspace = connectedModal.getByLabel('Slack workspace');
+    const workspace = connectedModal.getByRole('button', { name: 'Slack workspace' });
     await workspace.waitFor({ state: 'visible' });
-    assert.equal(await workspace.inputValue(), 'TASPIE2E');
-    assert.deepEqual(await workspace.locator('option').allTextContents(), ['ASPI']);
-    assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Add to Slack');
-    await screenshot(alphaPage!, 'slack-workspace-installed');
+    assert.match(await workspace.innerText(), /Workspace/);
+    assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
+    await screenshot(alphaPage!, 'slack-workspace-available');
+    await workspace.click();
+    const workspaceMenu = connectedModal.getByRole('listbox', { name: 'Choose a Slack workspace' });
+    await workspaceMenu.waitFor({ state: 'visible' });
+    assert.deepEqual((await workspaceMenu.getByRole('option').allTextContents()).map(text => text.replace(/^✓/, '')), ['Choose a workspace', 'ASPI', 'Select another']);
+    await workspaceMenu.getByRole('option', { name: 'ASPI' }).hover();
+    await screenshot(alphaPage!, 'slack-workspace-menu-open');
+    await connectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
+    await contextPanel.getByRole('button', { name: 'Slack' }).click();
+    const darkConnectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
+    await darkConnectedModal.waitFor({ state: 'visible' });
+    const darkWorkspace = darkConnectedModal.getByRole('button', { name: 'Slack workspace' });
+    assert.match(await darkWorkspace.innerText(), /Workspace/);
+    assert.equal(await darkConnectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
+    await screenshot(alphaPage!, 'slack-workspace-available-dark');
+    await darkWorkspace.click();
+    const darkWorkspaceMenu = darkConnectedModal.getByRole('listbox', { name: 'Choose a Slack workspace' });
+    await darkWorkspaceMenu.waitFor({ state: 'visible' });
+    await darkWorkspaceMenu.getByRole('option', { name: 'ASPI' }).hover();
+    await screenshot(alphaPage!, 'slack-workspace-menu-open-dark');
+    await darkWorkspaceMenu.getByRole('option', { name: 'ASPI' }).click();
+    assert.match(await darkWorkspace.innerText(), /ASPI/);
+    assert.equal(await darkConnectedModal.getByTestId('slack-connect').innerText(), 'Add to Slack');
+    await screenshot(alphaPage!, 'slack-workspace-installed-dark');
 
-    await connectedModal.getByTestId('slack-connect').click();
-    await connectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
+    await darkConnectedModal.getByTestId('slack-connect').click();
+    await darkConnectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
     const tenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
     assert(tenantId, 'The Alpha tenant id must be present before checking tenant-scoped Slack credentials');
     e2eSlackTokenAccount = `tenant-${createHash('sha256').update(`${tenantId}\0TASPIE2E`).digest('hex')}-slack-bot-token`;
@@ -1101,14 +1129,14 @@ try {
       { teamId: 'TASPIE2E', teamName: 'ASPI', contactEnabled: true },
     ]);
     assert.equal(JSON.stringify(slackState).includes(storedToken), false, 'Slack OAuth token must not be returned by the API');
+    await screenshot(alphaPage!, 'slack-workspace-selected');
+    await darkConnectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
     const sqlite = new DatabaseSync(join(testDataDir, 'dots.db'), { readOnly: true });
     const storedInstallation = sqlite.prepare('SELECT team_id,team_name,scopes_json FROM slack_installations').all();
     sqlite.close();
     assert.equal(JSON.stringify(storedInstallation).includes(storedToken), false, 'Slack OAuth token must not be stored in SQLite');
     assert.equal(mockSlackCodeExchanges, 1, 'Chrome should complete exactly one Slack OAuth code exchange');
-    await screenshot(alphaPage!, 'slack-workspace-selected');
-    await connectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
-    await connectedModal.waitFor({ state: 'hidden' });
   });
 
   await recordStep('Dot computer shortcut opens the tenant-isolated browser workspace', async () => {
@@ -1532,27 +1560,55 @@ try {
       measuredElements: {
         statusTimeLeft: number;
         statusTimeBoxTop: number;
+        notchLeft: number;
+        notchTop: number;
+        notchWidth: number;
+        notchHeight: number;
+        earpieceLeft: number;
+        earpieceTop: number;
+        earpieceWidth: number;
+        earpieceHeight: number;
+        sensorLeft: number;
+        sensorTop: number;
+        sensorDiameter: number;
         avatarTop: number;
         avatarDiameter: number;
         nameBoxTop: number;
         timerBoxTop: number;
-        tolerancePx: { statusTime: number; avatarTop: number; avatarDiameter: number; textTop: number };
+        tolerancePx: { statusTime: number; notchPosition: number; notchSize: number; notchDetailPosition: number; notchDetailSize: number; avatarTop: number; avatarDiameter: number; textTop: number };
       };
     };
     const upperFrameGeometry = await profileCall.evaluate(element => {
       const dock = element.getBoundingClientRect();
+      const notch = element.querySelector<HTMLElement>('.voice-call-notch')!.getBoundingClientRect();
+      const notchElement = element.querySelector<HTMLElement>('.voice-call-notch')!;
+      const earpieceStyle = getComputedStyle(notchElement, '::before');
+      const sensorStyle = getComputedStyle(notchElement, '::after');
       const avatar = element.querySelector<HTMLElement>('.voice-call-avatar')!.getBoundingClientRect();
       const name = element.querySelector<HTMLElement>('.voice-call-person > strong')!.getBoundingClientRect();
       const timer = element.querySelector<HTMLElement>('.voice-call-screen-timer')!.getBoundingClientRect();
       const statusTime = element.querySelector<HTMLElement>('.voice-call-status-time')!.getBoundingClientRect();
+      const statusSilent = element.querySelector<HTMLElement>('.voice-call-status-leading .voice-call-silent')!.getBoundingClientRect();
       return {
         statusTimeLeft: statusTime.left - dock.left,
         statusTimeBoxTop: statusTime.top - dock.top,
-        statusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
+        statusSilentGap: statusSilent.left - statusTime.right,
+        rightStatusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
         avatarTop: avatar.top - dock.top,
         avatarDiameter: avatar.width,
         nameBoxTop: name.top - dock.top,
         timerBoxTop: timer.top - dock.top,
+        notchLeft: notch.left - dock.left,
+        notchTop: notch.top - dock.top,
+        notchWidth: notch.width,
+        notchHeight: notch.height,
+        earpieceLeft: notch.left - dock.left + Number.parseFloat(earpieceStyle.left),
+        earpieceTop: notch.top - dock.top + Number.parseFloat(earpieceStyle.top),
+        earpieceWidth: Number.parseFloat(earpieceStyle.width),
+        earpieceHeight: Number.parseFloat(earpieceStyle.height),
+        sensorLeft: notch.right - dock.left - Number.parseFloat(sensorStyle.right) - Number.parseFloat(sensorStyle.width),
+        sensorTop: notch.top - dock.top + Number.parseFloat(sensorStyle.top),
+        sensorDiameter: Number.parseFloat(sensorStyle.width),
       };
     });
     const upperTolerance = upperFrameReference.measuredElements.tolerancePx;
@@ -1560,7 +1616,25 @@ try {
       `Status time should match the 06:26 frame horizontally: expected ${upperFrameReference.measuredElements.statusTimeLeft}px, saw ${upperFrameGeometry.statusTimeLeft.toFixed(1)}px`);
     assert(Math.abs(upperFrameGeometry.statusTimeBoxTop - upperFrameReference.measuredElements.statusTimeBoxTop) <= upperTolerance.statusTime,
       `Status time should match the 06:26 frame vertically: expected ${upperFrameReference.measuredElements.statusTimeBoxTop}px, saw ${upperFrameGeometry.statusTimeBoxTop.toFixed(1)}px`);
-    assert.equal(upperFrameGeometry.statusIconCount, 3, 'iOS status symbols should use the measured silent, signal, and Wi-Fi glyphs');
+    for (const key of ['notchLeft', 'notchTop'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchPosition,
+        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['notchWidth', 'notchHeight'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchSize,
+        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['earpieceLeft', 'earpieceTop', 'sensorLeft', 'sensorTop'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailPosition,
+        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['earpieceWidth', 'earpieceHeight', 'sensorDiameter'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailSize,
+        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    assert(upperFrameGeometry.statusSilentGap >= 0 && upperFrameGeometry.statusSilentGap <= 6,
+      'The crossed-bell status glyph should sit immediately beside the time as in the 06:26 frame');
+    assert.equal(upperFrameGeometry.rightStatusIconCount, 2, 'Cellular and Wi-Fi status glyphs should remain grouped by the battery on the right');
     assert(Math.abs(upperFrameGeometry.avatarTop - upperFrameReference.measuredElements.avatarTop) <= upperTolerance.avatarTop,
       `Avatar top should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarTop}px, saw ${upperFrameGeometry.avatarTop.toFixed(1)}px`);
     assert(Math.abs(upperFrameGeometry.avatarDiameter - upperFrameReference.measuredElements.avatarDiameter) <= upperTolerance.avatarDiameter,
