@@ -19,12 +19,14 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const sourceDraft = '请先起草一份新品发布公告，发布时间写 10 月 21 日。先保持草稿状态，等我审批后再发送。';
 const sourceDecision = '发布团队今天确认发布时间改为 10 月 22 日。请用中文总结这项决定。';
 const finding = '我发现一处需要你决定的冲突：最新决定将发布时间改为 10 月 22 日，但待审批的公告草稿仍写着 10 月 21 日。要我更新草稿吗？我没有修改或发送。';
+const cloudComputerInstruction = '请在你的云电脑里打开 https://example.com，检查页面显示什么，再用鼠标点击页面上的“More information...”链接。完成后用中文告诉我打开了什么，以及点击后出现了什么。只浏览公开网页，不登录、不输入或提交内容、不下载、不修改文件。';
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-proactive-demo-'));
 const livePi = process.env.DOTS_PROACTIVE_DEMO_LIVE_PI === '1';
+const cloudComputerUiDemo = process.env.DOTS_CLOUD_COMPUTER_UI_DEMO === '1';
 const cluster = process.env.DOTS_K3D_CLUSTER || 'tp1121-sandbox-dev';
 const tokenSecret = randomBytes(32).toString('base64url');
 const keychainService = `com.cokepoppy.coke-dots.proactive-demo-${randomUUID()}`;
-const outputName = livePi ? 'proactive-cross-task-review-cloud-pi' : 'proactive-cross-task-review';
+const outputName = cloudComputerUiDemo ? 'cloud-computer-ui-demo' : livePi ? 'proactive-cross-task-review-cloud-pi' : 'proactive-cross-task-review';
 const outputRoot = join(projectRoot, 'artifacts', 'demos', outputName);
 const videoOutput = join(outputRoot, `${outputName}.webp`);
 const dataDirectory = join(tempRoot, 'data');
@@ -230,7 +232,7 @@ async function waitForTask(pageToWait: Page, predicate: string, timeoutMs = live
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const state = await pageToWait.evaluate(async () => await fetch('/api/state', { cache: 'no-store' }).then(response => response.json())) as { tasks: Record<string, unknown>[] };
-    const scenarioTasks = state.tasks.filter(task => task.instruction === sourceDraft || task.instruction === sourceDecision || task.executionMode === 'proactive-research');
+    const scenarioTasks = state.tasks.filter(task => task.instruction === sourceDraft || task.instruction === sourceDecision || task.instruction === cloudComputerInstruction || task.executionMode === 'proactive-research');
     for (const task of scenarioTasks) {
       const id = String(task.id || '');
       if (!id) continue;
@@ -256,6 +258,7 @@ baseUrl = `http://127.0.0.1:${port}`;
 
 try {
   assert(chromePath, 'Chrome was not found; set DOTS_CHROME_BIN.');
+  assert(!cloudComputerUiDemo || livePi, 'The visible cloud-computer demo requires the real Pi kernel inside a tenant Debian computer.');
   if (livePi) await configureLivePi();
   else modelBaseUrl = await startModel();
   await startServer(port, modelBaseUrl);
@@ -299,6 +302,73 @@ try {
     assert(engines.availableEngines.includes('pi'), 'Pi must be selected as the tenant cloud-computer kernel.');
     console.log(`步骤：选择 Pi 云电脑内核，隔离租户 ${tenantNamespace}`);
   }
+  if (cloudComputerUiDemo) {
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '00-dot-ready.png') });
+    await submitTask(page, cloudComputerInstruction);
+    console.log('步骤：用中文交代 Pi 在云电脑中查看公开网页并点击信息链接');
+    await page.getByRole('button', { name: '电脑', exact: true }).click();
+    const openComputer = page.getByRole('button', { name: '打开电脑', exact: true });
+    if (await openComputer.count()) await openComputer.click();
+    await page.getByTestId('computer-workspace').waitFor({ state: 'visible', timeout: 120_000 });
+    await page.waitForFunction(async () => {
+      const response = await fetch('/api/computer', { cache: 'no-store' });
+      if (!response.ok) return false;
+      const state = await response.json() as { ready?: boolean; backend?: string };
+      return state.ready === true && state.backend === 'linux-desktop';
+    }, undefined, { timeout: 120_000 });
+    await page.waitForFunction(() => {
+      const image = document.querySelector<HTMLImageElement>('.computer-stage img');
+      return Boolean(image?.complete && image.naturalWidth > 100);
+    }, { timeout: 60_000 });
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '01-cloud-computer-running.png') });
+    await waitForTask(page, `task.instruction === ${JSON.stringify(cloudComputerInstruction)} && ['done','failed'].includes(task.status)`, 240_000);
+    const liveState = await page.evaluate(async () => {
+      const [computerResponse, stateResponse] = await Promise.all([fetch('/api/computer', { cache: 'no-store' }), fetch('/api/state', { cache: 'no-store' })]);
+      return { computer: await computerResponse.json(), state: await stateResponse.json() };
+    }) as {
+      computer: { ready?: boolean; backend?: string; owner?: string; url?: string; title?: string };
+      state: { tasks: { id: string; instruction: string; status: string; engine: string; result: string | null; error: string | null }[] };
+    };
+    const demoTask = liveState.state.tasks.find(task => task.instruction === cloudComputerInstruction);
+    assert(demoTask, 'The browser-recorded cloud-computer task should persist in Activity.');
+    assert.equal(demoTask.status, 'done', `Pi cloud-computer task failed: ${demoTask.error || demoTask.result || ''}`);
+    assert.equal(demoTask.engine, 'pi');
+    assert.equal(liveState.computer.backend, 'linux-desktop');
+    assert.equal(liveState.computer.owner, 'agent', 'The cloud desktop must remain agent controlled during the demonstration.');
+    assert.match(liveState.computer.url || '', /^https:\/\/(?:www\.)?iana\.org\//, `Pi should have clicked the public information link; actual browser URL: ${liveState.computer.url}`);
+    assert.match(demoTask.result || '', /[㐀-鿿]/, 'The Pi result must be in Chinese.');
+    assert.match(demoTask.result || '', /example\.com|Example Domain|示例域名/i);
+    await page.waitForFunction(async () => {
+      const image = document.querySelector<HTMLImageElement>('.computer-stage img');
+      return Boolean(image?.complete && image.naturalWidth > 100);
+    });
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '02-cloud-browser-click-result.png') });
+    console.log(`步骤：Pi 已在 Debian 云电脑中点击信息链接，浏览器停留在 ${liveState.computer.url}`);
+
+    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    const taskCard = page.getByTestId(`task-card-${demoTask.id}`);
+    await taskCard.waitFor({ state: 'visible' });
+    await taskCard.getByText(demoTask.result || '', { exact: true }).waitFor({ state: 'visible' });
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '03-computer-task-in-activity.png') });
+    await page.waitForTimeout(2_500);
+    await taskCard.getByRole('button', { name: /查看详情/ }).click();
+    await page.locator('.timeline .message.dot p').filter({ hasText: demoTask.result || '' }).waitFor({ state: 'visible' });
+    await page.screenshot({ path: join(outputRoot, 'screenshots', '04-computer-task-result-detail.png') });
+    await page.waitForTimeout(2_000);
+
+    const namespace = JSON.parse(command(['kubectl', 'get', 'namespace', tenantNamespace, '-o', 'json'])) as { metadata?: { labels?: Record<string, string> } };
+    assert.equal(namespace.metadata?.labels?.['coke-dots.io/managed-by'], 'coke-dots');
+    assert.equal(namespace.metadata?.labels?.['coke-dots.io/tenant-hash'], tenantNamespaceIdentityHash);
+    const pod = command(['kubectl', '-n', tenantNamespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
+    assert(pod, 'The browser interaction must have run inside the tenant Debian cloud computer.');
+    const osRelease = command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'cat', '/etc/os-release']);
+    assert.match(osRelease, /^ID=debian$/m);
+    assert.match(osRelease, /^VERSION_ID="13"$/m);
+    const sessionFiles = command(['kubectl', '-n', tenantNamespace, 'exec', pod, '--', 'find', `/workspace/tasks/${demoTask.id}/.coke-dots/pi-sessions`, '-type', 'f', '-printf', '%P\\n']);
+    assert(sessionFiles, 'Pi session must persist inside the task directory on the tenant Debian computer.');
+    assert.deepEqual(browserErrors, [], `Browser runtime errors: ${browserErrors.join('; ')}`);
+    console.log(`Pi 云电脑 UI 演示端到端测试通过：${tenantNamespace}`);
+  } else {
   await new Promise(resolvePromise => setTimeout(resolvePromise, 900));
   await page.screenshot({ path: join(outputRoot, 'screenshots', '00-dot-ready.png') });
 
@@ -391,6 +461,7 @@ try {
   }
 
   console.log(`${livePi ? 'Pi 云电脑' : '主动工作'}演示端到端测试通过：${baseUrl}`);
+  }
 } finally {
   await context?.close().catch(() => undefined);
   context = null;
@@ -446,13 +517,16 @@ try {
   await webpPlaybackBrowser.close();
 }
 await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
-  scenario: '待审批的公告草稿写着 10 月 21 日；新决定将发布时间改为 10 月 22 日。Dot 主动发现冲突并询问用户，没有修改或发送。',
-  reference: 'https://learn.chatgpt.com/docs/dots/tasks-and-memory',
-  evidence: 'Official documentation supports proactive review of connected information and surfacing suggestions/questions; the exact UI shown is Coke Dots.',
+  scenario: cloudComputerUiDemo ? cloudComputerInstruction : '待审批的公告草稿写着 10 月 21 日；新决定将发布时间改为 10 月 22 日。Dot 主动发现冲突并询问用户，没有修改或发送。',
+  reference: cloudComputerUiDemo ? 'https://learn.chatgpt.com/docs/dots/computers-and-apps' : 'https://learn.chatgpt.com/docs/dots/tasks-and-memory',
+  evidence: cloudComputerUiDemo ? 'Pi runs inside the tenant Debian cloud computer and navigates its visible browser, inspects a public page, and clicks one information link; the Chrome recording shows the UI and Activity result.' : 'Official documentation supports proactive review of connected information and surfacing suggestions/questions; the exact UI shown is Coke Dots.',
   recording: `${outputName}.webp`,
   sourceRecording: livePi ? 'Chrome browser E2E with Pi and the shared provider running inside the tenant Debian K3D computer' : 'Playwright Chrome recording using a deterministic local model fixture, converted to animated WebP',
   viewport: { width: 1440, height: 1000 },
-  screenshots: ['screenshots/00-dot-ready.png', 'screenshots/01-launch-draft-waiting.png', 'screenshots/02-proactive-finding-in-activity.png', 'screenshots/03-proactive-finding-detail.png'],
+  screenshots: cloudComputerUiDemo
+    ? ['screenshots/00-dot-ready.png', 'screenshots/01-cloud-computer-running.png', 'screenshots/02-cloud-browser-click-result.png', 'screenshots/03-computer-task-in-activity.png', 'screenshots/04-computer-task-result-detail.png']
+    : ['screenshots/00-dot-ready.png', 'screenshots/01-launch-draft-waiting.png', 'screenshots/02-proactive-finding-in-activity.png', 'screenshots/03-proactive-finding-detail.png'],
+  webp: { width: playbackMetadata.width, height: playbackMetadata.height, frames: playbackMetadata.pages, durationSeconds: playbackDuration },
   webpPlayback,
   modelCalls: livePi ? undefined : modelRequests.length,
   model: livePi ? `Pi in Debian; shared provider model ${liveModelName}` : 'Deterministic local E2E fixture; no live provider request',

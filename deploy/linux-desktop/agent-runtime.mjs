@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
 
@@ -101,6 +102,9 @@ async function executeKernel(input, requestSignal, slot) {
   const cwd = safeWorkspace(executionMode === 'proactive-research' ? `reviews/${taskId}` : input.cwd);
   await mkdir(cwd, { recursive: true, mode: 0o700 });
   if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
+  const computerUiBridge = engine === 'pi' && executionMode !== 'proactive-research' && process.env.LINUX_DESKTOP_WORKER_TOKEN
+    ? await startComputerUiBridge()
+    : null;
   const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['DOTS_AGENT_RUNTIME_TOKEN', 'LINUX_DESKTOP_WORKER_TOKEN'].includes(key)));
   const child = spawn(adapter.command, adapter.args, { cwd, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
   const abort = new AbortController();
@@ -117,11 +121,7 @@ async function executeKernel(input, requestSignal, slot) {
     ...(modelConfig ? { modelConfig } : {}),
     ... (executionMode === 'proactive-research' ? {} : { workspace }),
     sessionId: typeof input.sessionId === 'string' ? input.sessionId : null,
-    ...(executionMode === 'proactive-research' ? {} : { computer: {
-      baseUrl: `http://127.0.0.1:${workerPort}`,
-      workerToken: process.env.LINUX_DESKTOP_WORKER_TOKEN,
-      actions: ['navigate', 'click', 'type', 'screenshot'],
-    } }),
+    ...(computerUiBridge ? { computer: { computerUiUrl: computerUiBridge.url, computerUiToken: computerUiBridge.token } } : {}),
   }));
   const timer = setTimeout(() => child.kill('SIGTERM'), 14 * 60_000);
   const controlPoll = executionMode === 'proactive-research' ? undefined : setInterval(() => { void controlOwner().then(owner => { if (owner === 'user') pauseActive(); }).catch(() => child.kill('SIGTERM')); }, 500);
@@ -151,8 +151,52 @@ async function executeKernel(input, requestSignal, slot) {
   } finally {
     clearTimeout(timer); clearInterval(controlPoll);
     requestSignal?.removeEventListener('abort', onRequestAbort);
+    await computerUiBridge?.close();
     slot.child = null; slot.abort = null;
   }
+}
+
+async function startComputerUiBridge() {
+  const bridgeToken = randomBytes(32).toString('base64url');
+  const workerToken = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
+  if (!workerToken) throw new Error('Cloud computer UI is unavailable');
+  const routes = new Map([
+    ['/inspect', { workerPath: '/v1/agent-ui/inspect', keys: [] }],
+    ['/navigate', { workerPath: '/v1/agent-ui/navigate', keys: ['url'] }],
+    ['/click-information-link', { workerPath: '/v1/agent-ui/click-information-link', keys: ['name'] }],
+  ]);
+  const server = http.createServer(async (req, res) => {
+    try {
+      const route = routes.get(req.url || '');
+      if (req.method !== 'POST' || !route) return send(res, 404, { error: 'not found' });
+      const authorization = String(req.headers.authorization || '');
+      const actual = Buffer.from(authorization.startsWith('Bearer ') ? authorization.slice(7) : '');
+      const expected = Buffer.from(bridgeToken);
+      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return send(res, 401, { error: 'computer UI capability is invalid' });
+      if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'content type must be JSON' });
+      const body = await readJson(req);
+      if (Object.keys(body).some(key => !route.keys.includes(key)) || route.keys.some(key => typeof body[key] !== 'string')) return send(res, 400, { error: 'computer UI request is invalid' });
+      if ((route.keys.includes('url') && body.url.length > 2048) || (route.keys.includes('name') && body.name.length > 160)) return send(res, 400, { error: 'computer UI request is too long' });
+      const response = await fetch(`http://127.0.0.1:${workerPort}${route.workerPath}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${workerToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30000),
+      });
+      const value = await response.json().catch(() => ({}));
+      return send(res, response.status, value);
+    } catch (error) {
+      return send(res, 502, { error: error instanceof Error ? error.message.slice(0, 300) : 'computer UI operation failed' });
+    }
+  });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Could not start the computer UI bridge');
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    token: bridgeToken,
+    close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+  };
 }
 
 function validateModelConfig(value) {

@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import dns from 'node:dns/promises';
+import net from 'node:net';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
@@ -76,9 +78,107 @@ async function body(req) {
 async function screenshot() {
   const file = `/tmp/dots-screen-${crypto.randomUUID()}.png`;
   try {
-    await exec('scrot', ['-o', file], { timeout: 5000 });
+    await exec('scrot', ['-p', '-o', file], { timeout: 5000 });
     return await fs.readFile(file);
   } finally { await fs.rm(file, { force: true }).catch(() => undefined); }
+}
+
+function isPublicAddress(address) {
+  const version = net.isIP(address);
+  if (version === 4) {
+    const octets = address.split('.').map(Number);
+    const [a, b, c] = octets;
+    return !(a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) || (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+      (a === 198 && (b === 18 || b === 19 || b === 51 && c === 100)) || (a === 203 && b === 0 && c === 113));
+  }
+  if (version !== 6) return false;
+  const normalized = address.toLowerCase();
+  if (normalized.startsWith('::ffff:')) return isPublicAddress(normalized.slice(7));
+  return normalized !== '::' && normalized !== '::1' && !/^f[cd]/.test(normalized) &&
+    !/^fe[89ab]/.test(normalized) && !/^ff/.test(normalized) &&
+    !normalized.startsWith('2001:db8:') && !normalized.startsWith('2001:0:');
+}
+
+async function publicHttpsUrl(value) {
+  let target;
+  try { target = new URL(String(value || '')); } catch { throw new Error('Only public HTTPS pages are allowed'); }
+  const host = target.hostname.toLowerCase().replace(/\.$/, '');
+  if (target.protocol !== 'https:' || target.username || target.password || (target.port && target.port !== '443') ||
+    !host.includes('.') || host === 'localhost' || /\.(?:localhost|local|internal|invalid|test|svc)$/.test(host) ||
+    host === 'cluster.local' || host.endsWith('.cluster.local') || host.endsWith('.home.arpa')) {
+    throw new Error('Only public HTTPS pages are allowed');
+  }
+  let addresses;
+  try { addresses = net.isIP(host) ? [{ address: host }] : await dns.lookup(host, { all: true, verbatim: true }); }
+  catch { throw new Error('The public page host could not be resolved'); }
+  if (!addresses.length || addresses.some(entry => !isPublicAddress(entry.address))) throw new Error('Private or reserved network destinations are not allowed');
+  target.hash = '';
+  return target;
+}
+
+async function inspectAgentBrowserUi() {
+  if (owner !== 'agent') throw new Error('The user currently controls this computer');
+  const browserPage = await page();
+  const target = await publicHttpsUrl(browserPage.url());
+  if ((await browserPage.context().cookies(target.href)).length) throw new Error('Only public pages without an active login can be inspected');
+  const result = await browserPage.evaluate(() => {
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const links = [...document.querySelectorAll('a')].filter(visible).map(anchor => ({
+      name: (anchor.getAttribute('aria-label') || anchor.innerText || anchor.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 160),
+      href: anchor.href,
+      target: anchor.target,
+      download: anchor.hasAttribute('download'),
+    })).filter(link => link.name && link.href).slice(0, 40);
+    return { url: location.href, title: document.title, text: document.body?.innerText || '', links };
+  });
+  return { url: target.href, title: String(result.title || '').slice(0, 300), text: String(result.text || '').trim().slice(0, 12000), links: result.links };
+}
+
+async function navigateAgentBrowserUi(input) {
+  if (owner !== 'agent') throw new Error('The user currently controls this computer');
+  const target = await publicHttpsUrl(input.url);
+  const browserPage = await page();
+  if ((await browserPage.context().cookies(target.href)).length) throw new Error('Only public pages without an active login can be opened');
+  await browserPage.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  if (owner !== 'agent') throw new Error('The user took control before the page finished opening');
+  await publicHttpsUrl(browserPage.url());
+  return inspectAgentBrowserUi();
+}
+
+async function clickAgentInformationLink(input) {
+  if (owner !== 'agent') throw new Error('The user currently controls this computer');
+  const name = String(input.name || '').trim();
+  if (!name || name.length > 160 || !/more information|learn more|read more|view details|documentation|了解更多|查看详情|官方文档|更多信息/i.test(name)) {
+    throw new Error('Only a visible information link can be clicked');
+  }
+  const browserPage = await page();
+  const before = await publicHttpsUrl(browserPage.url());
+  if ((await browserPage.context().cookies(before.href)).length) throw new Error('Only public pages without an active login can be used');
+  const link = browserPage.getByRole('link', { name, exact: true });
+  if (await link.count() !== 1 || !(await link.isVisible())) throw new Error('The requested visible information link was not found exactly once');
+  const attributes = await link.evaluate(element => ({ href: element.href, target: element.target, download: element.hasAttribute('download') }));
+  const destination = await publicHttpsUrl(attributes.href);
+  if (attributes.target && attributes.target !== '_self' || attributes.download) throw new Error('New-window links and downloads are not allowed');
+  const bounds = await link.boundingBox();
+  if (!bounds) throw new Error('The information link is no longer visible');
+  const offset = await browserPage.evaluate(() => ({ x: window.screenX, y: window.screenY + window.outerHeight - window.innerHeight }));
+  const x = Math.round(offset.x + bounds.x + bounds.width / 2);
+  const y = Math.round(offset.y + bounds.y + bounds.height / 2);
+  if (x < 0 || y < 0 || x > resolution[0] || y > resolution[1]) throw new Error('The information link is outside the visible desktop');
+  await exec('xdotool', ['mousemove', String(x), String(y)], { timeout: 5000 });
+  await new Promise(resolve => setTimeout(resolve, 180));
+  await exec('xdotool', ['click', '1'], { timeout: 5000 });
+  await browserPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => undefined);
+  if (owner !== 'agent') throw new Error('The user took control during the browser click');
+  const after = await publicHttpsUrl(browserPage.url());
+  if (after.href !== destination.href) throw new Error('The browser did not open the inspected information link');
+  return inspectAgentBrowserUi();
 }
 
 async function command(input) {
@@ -147,6 +247,21 @@ http.createServer(async (req, res) => {
       return send(res, 200, { ready: true, owner, url: browserPage.url(), title: await browserPage.title().catch(() => '') });
     }
     if (req.method === 'GET' && pathname === '/v1/screenshot') return send(res, 200, await screenshot(), 'image/png');
+    if (req.method === 'POST' && pathname === '/v1/agent-ui/inspect') {
+      const input = await body(req);
+      if (Object.keys(input).length) return send(res, 400, { error: 'The UI inspect request does not accept parameters' });
+      return send(res, 200, await inspectAgentBrowserUi());
+    }
+    if (req.method === 'POST' && pathname === '/v1/agent-ui/navigate') {
+      const input = await body(req);
+      if (Object.keys(input).some(key => key !== 'url') || typeof input.url !== 'string' || input.url.length > 2048) return send(res, 400, { error: 'The public page URL is invalid' });
+      return send(res, 200, await navigateAgentBrowserUi(input));
+    }
+    if (req.method === 'POST' && pathname === '/v1/agent-ui/click-information-link') {
+      const input = await body(req);
+      if (Object.keys(input).some(key => key !== 'name') || typeof input.name !== 'string') return send(res, 400, { error: 'The UI click target is invalid' });
+      return send(res, 200, await clickAgentInformationLink(input));
+    }
     if (req.method === 'POST' && pathname === '/v1/commands') return send(res, 200, await command(await body(req)));
     return send(res, 404, { error: 'not found' });
   } catch (error) {

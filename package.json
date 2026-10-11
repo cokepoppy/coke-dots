@@ -20,14 +20,16 @@
     "dev:desktop": "concurrently -k \"npm run dev:web\" \"npm run build:electron && wait-on http://127.0.0.1:5173 && DOTS_DEV_URL=http://127.0.0.1:5173 electron electron-dist/main.cjs\"",
     "desktop": "npm run build && npm run build:server && npm run build:electron && electron electron-dist/main.cjs",
     "test:e2e:proactive-demo": "npm run build && node --import tsx tests/e2e/proactive-research-demo.e2e.ts",
-    "test:e2e:proactive-demo:pi": "npm run build && DOTS_PROACTIVE_DEMO_LIVE_PI=1 node --import tsx tests/e2e/proactive-research-demo.e2e.ts"
+    "test:e2e:proactive-demo:pi": "npm run build && DOTS_PROACTIVE_DEMO_LIVE_PI=1 node --import tsx tests/e2e/proactive-research-demo.e2e.ts",
+    "test:e2e:cloud-computer-demo:pi": "npm run build && DOTS_PROACTIVE_DEMO_LIVE_PI=1 DOTS_CLOUD_COMPUTER_UI_DEMO=1 node --import tsx tests/e2e/proactive-research-demo.e2e.ts"
   },
   "dependencies": {
     "@napi-rs/keyring": "^2.1.0",
     "google-auth-library": "^11.1.0",
     "playwright-core": "^1.56.1",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "typebox": "^1.3.34"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -46,6 +46,12 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       res.end(JSON.stringify({ owner }));
       return;
     }
+    if (req.method === 'POST' && req.url?.startsWith('/v1/agent-ui/')) {
+      assert.equal(req.headers.authorization, 'Bearer worker-test-token', 'Only the runtime bridge should hold the worker credential');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ url: 'https://example.com/', title: 'Example Domain', text: 'More information...', links: [] }));
+      return;
+    }
     res.writeHead(404); res.end();
   });
   try {
@@ -61,6 +67,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       'await new Promise(resolve => setTimeout(resolve, 80));',
       "await appendFile(process.env.DOTS_TEST_MARKER, `end ${input.taskId}\\n`);",
       "if (input.executionMode === 'proactive-research') await appendFile(process.env.DOTS_TEST_MARKER, `review ${JSON.stringify({ cwd: input.cwd, workspace: input.workspace, computer: input.computer, workerToken: Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN) })}\\n`);",
+      "if (input.prompt === 'computer-ui-bridge') { const computer = input.computer; const request = async (path, token, body = {}) => { const response = await fetch(`${computer.computerUiUrl}${path}`, { method: 'POST', headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), 'content-type': 'application/json' }, body: JSON.stringify(body) }); return response.status; }; const checks = { capability: Boolean(computer?.computerUiToken), workerTokenInInput: Boolean(computer?.workerToken), workerTokenInEnv: Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN), unauthenticated: await request('/inspect'), forbiddenRoute: await request('/commands', computer.computerUiToken), malformed: await request('/inspect', computer.computerUiToken, { arbitrary: true }), allowed: await request('/inspect', computer.computerUiToken) }; await appendFile(process.env.DOTS_TEST_MARKER, `computer-ui ${JSON.stringify(checks)}\\n`); }",
       "if (input.engine === 'pi') await appendFile(process.env.DOTS_TEST_MARKER, `pi-config ${JSON.stringify({ present: Boolean(input.modelConfig?.apiKey), model: input.modelConfig?.model, keyCopiedToEnv: process.env.DOTS_MODEL_API_KEY === input.modelConfig?.apiKey })}\\n`);",
       "process.stdout.write(JSON.stringify(input.executionMode === 'proactive-research' ? { status: 'done', message: 'A bounded finding.', proactiveFinding: true } : { status: 'done', message: `runtime ${process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'token leaked' : 'token isolated'}; computer ${process.env.LINUX_DESKTOP_WORKER_TOKEN ? 'token leaked' : 'token isolated'}` }));",
       '',
@@ -130,6 +137,19 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     const markers = await readFile(markerPath, 'utf8');
     assert.match(markers, /pi-config \{"present":true,"model":"deepseek-chat","keyCopiedToEnv":false\}/);
     assert.doesNotMatch(markers, new RegExp(testModelKey));
+    const computerTask = await submit('77777777-7777-4777-8777-777777777777', 'computer-ui-bridge', 'standard', 'pi', { apiKey: testModelKey, model: 'deepseek-chat', baseUrl: 'https://api.deepseek.com/v1' });
+    assert.equal(computerTask.status, 200, computerTask.body.error || 'The standard Pi task should have a scoped computer UI bridge.');
+    const computerCheck = (await readFile(markerPath, 'utf8')).split('\n').find(line => line.startsWith('computer-ui '));
+    assert(computerCheck, 'The Pi adapter fixture should exercise all bridge routes.');
+    assert.deepEqual(JSON.parse(computerCheck.slice('computer-ui '.length)), {
+      capability: true,
+      workerTokenInInput: false,
+      workerTokenInEnv: false,
+      unauthenticated: 401,
+      forbiddenRoute: 404,
+      malformed: 400,
+      allowed: 200,
+    });
     const rejectedPi = await submit('55555555-5555-4555-8555-555555555555', 'bad config', 'proactive-research', 'pi', { apiKey: testModelKey, model: 'deepseek-chat', baseUrl: 'file:///etc/passwd' });
     assert.equal(rejectedPi.status, 400);
     assert.match(rejectedPi.body.error || '', /configuration is invalid/);
