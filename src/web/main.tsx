@@ -18,6 +18,7 @@ import { DotContextPanel } from './DotContextPanel.tsx';
 import { SlackSetupModal } from './SlackSetupModal.tsx';
 import { appPath } from './api.ts';
 import { ScheduledView } from './ScheduledView.tsx';
+import { GmailEventSetup } from './GmailEventSetup.tsx';
 import { PagePane, PagesView, ScratchpadNavigationPane } from './Pages.tsx';
 import { PermissionRules } from './PermissionRules.tsx';
 import { DotOnboarding } from './DotOnboarding.tsx';
@@ -108,6 +109,7 @@ function App() {
   const [engine, setEngine] = useState<Engine>('model');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   useEffect(() => {
     if (view === 'home' || view === 'chat') lastChatLocation.current = { view, selected, selectedPageId };
@@ -147,6 +149,13 @@ function App() {
         }
       }
     } catch { /* Continue with the home view when session storage is unavailable. */ }
+    if (gmailConnected || gmailError) {
+      try {
+        const savedView = sessionStorage.getItem('coke-dots:gmail-return-view');
+        sessionStorage.removeItem('coke-dots:gmail-return-view');
+        if (savedView === 'activity') setView('activity');
+      } catch { /* Continue with the default route if storage is unavailable. */ }
+    }
     url.searchParams.delete('slack');
     url.searchParams.delete('slackError');
     url.searchParams.delete('gmail');
@@ -155,8 +164,8 @@ function App() {
     if (connected) setSlackModalOpen(true);
     else if (slackError === 'cancelled') setError('Slack 工作区连接已取消。');
     else if (slackError === 'expired') setError('Slack 连接已过期，请重新连接。');
-    else setError('Slack 工作区连接失败，请重试。');
-    if (gmailConnected) setError('Gmail 已连接，可以在 Scheduled 中创建邮件触发任务。');
+    else if (slackError) setError('Slack 工作区连接失败，请重试。');
+    if (gmailConnected) { setError(''); setNotice('Gmail 已连接，可以在 Work 中创建邮件触发任务。'); }
     else if (gmailError === 'cancelled') setError('Gmail 授权已取消。');
     else if (gmailError === 'expired') setError('Gmail 授权请求已过期，请重新连接。');
     else if (gmailError) setError('Gmail 连接失败，请检查权限后重试。');
@@ -200,6 +209,12 @@ function App() {
     const timer = window.setTimeout(() => setComputerConnectedToast(false), 5000);
     return () => window.clearTimeout(timer);
   }, [computerConnectedToast]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     if (!authContext) return;
@@ -414,6 +429,7 @@ function App() {
       <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div>{contextMode && !voiceCallOpen && <div className="dot-conversation-actions"><button type="button" data-testid="conversation-call-launch" className="conversation-call-launch" aria-label="Call" title="Call" onMouseDown={event => event.preventDefault()} onClick={() => setVoiceCallOpen(true)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 3.8 10 7.2 8.2 9.1a13 13 0 0 0 6.7 6.7l1.9-1.8 3.4 2.9-.8 3.2a1.8 1.8 0 0 1-2 1.4C9 20.2 3.8 15 2.5 6.6a1.8 1.8 0 0 1 1.4-2z" /></svg></button></div>}</header>
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
+      {notice && <div className="notice-banner" role="status">{notice}<button onClick={() => setNotice('')}>×</button></div>}
       {computerConnectedToast && <div className="computer-connected-toast" data-testid="computer-connected-toast" role="status"><span className="computer-connected-icon" aria-hidden="true">✓</span><span>The computer is connected to your dot</span><button type="button" aria-label="Dismiss notification" onClick={() => setComputerConnectedToast(false)}>×</button></div>}
       {(view === 'home' || view === 'chat') && <div className="chat-layout"><section className="chat-panel">
         {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What's on your mind today?</h1></div> : !voiceCallsLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : !selectedTask && !hasConversationHistory ? <DotOnboarding profile={state.profile} computerAccess={state.computerAccess} onComputerAccess={saveComputerAccess} onEditSetup={openDotCustomizer} /> : <div className="timeline" ref={timelineRef} onScroll={() => { const timeline = timelineRef.current; if (timeline) timelineAtBottomRef.current = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 48; }}>
@@ -428,8 +444,8 @@ function App() {
           <div className="composer"><input ref={attachmentInputRef} className="attachment-input" data-testid="attachment-input" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.go,.rs,.java,.sql,.sh,.toml,.ini,.log,.c,.h,.cpp,.hpp" onChange={event => void uploadAttachments(event.currentTarget.files)} /><button className="attachment-button" data-testid="attachment-button" type="button" onMouseDown={event => event.preventDefault()} aria-label="添加附件" title="添加附件" disabled={uploadingAttachments || pendingAttachments.length >= 5} onClick={() => attachmentInputRef.current?.click()}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></button><textarea data-testid="task-composer" ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder={view === 'home' ? 'Ask ChatGPT' : 'Type a message'} /><DictationButton draft={draft} setDraft={setDraft} onError={setError} textareaRef={composerRef} /><div className="composer-bottom"><label>内核 <select data-testid="engine-select" value={engine} onChange={e => setEngine(e.target.value as Engine)}>{selectableEngines.map(id => <option key={id} value={id}>{engineText[id]}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="voice-call-launch" data-testid="voice-call-launch" type="button" onMouseDown={event => event.preventDefault()} aria-label={`拨打 ${state.profile.name}`} title={`拨打 ${state.profile.name}`} onClick={() => setVoiceCallOpen(true)}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg></button><button className="send" onMouseDown={event => event.preventDefault()} disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
       </section>{view === 'chat' && selectedPageId ? <div className="scratchpad-page-split" data-testid="scratchpad-page-split"><ScratchpadNavigationPane tenantId={authContext.tenant.id} selectedPageId={selectedPageId} refreshKey={pageIndexVersion} onOpen={setSelectedPageId} onBack={() => { setSelectedPageId(null); setView('pages'); }} /><PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => { setSelectedPageId(null); setView('pages'); }} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /></div> : view === 'chat' && (selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onStartCall={() => setVoiceCallOpen(true)} onOpenSlack={() => setSlackModalOpen(true)} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
       {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
-      {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
-      {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches} gmail={state.gmail} eventTriggerEngines={state.availableEngines.filter((id): id is 'pi' | 'dsh' => id === 'pi' || id === 'dsh')}
+      {view === 'activity' && <ActivityView key={`${authContext.tenant.id}:${authContext.user.id}`} tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} onOpenScheduled={() => setView('scheduled')} />}
+      {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches} gmail={state.gmail}
         onCancelTask={task => void act(task, 'cancelSchedule')}
         onWatchAction={(watch, action) => void actWatch(watch.id, action)}
         onOpenTask={task => { setSelected(task.id); setView('chat'); }}
@@ -491,7 +507,7 @@ function LoginScreen({ googleConfigured, e2eAuthAvailable }: { googleConfigured:
   return <main className="auth-page"><div className="auth-card"><div className="brand"><span className="brand-mark">●</span> Coke Dots</div><h1>让你的个人代理持续推进工作</h1><p>使用 Google 账号登录。每个工作区的任务、记录、模型密钥和浏览器会话相互隔离。</p>{authError && <div className="auth-error">{authErrors[authError] || '登录失败，请重试。'}</div>}{desktopError && <div className="auth-error">{desktopError}</div>}{googleConfigured ? isElectron ? <button className="google-login" disabled={desktopPending} onClick={() => void beginDesktopLogin()}><span>G</span>{desktopPending ? '等待浏览器完成登录…' : '使用 Google 登录'}</button> : <a className="google-login" href="/api/auth/google/start"><span>G</span>使用 Google 登录</a> : <div className="auth-setup"><strong>需要配置 Google OAuth</strong><span>在本机服务环境中设置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET，然后重启服务。</span></div>}{e2eAuthAvailable && <div className="e2e-login"><label htmlFor="e2e-email">E2E 测试账号</label><input id="e2e-email" type="email" value={e2eEmail} onChange={event => setE2eEmail(event.target.value)} /><button data-testid="e2e-sign-in" className="google-login" onClick={() => void signInE2e()}>测试环境登录</button></div>}<small>仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。</small></div></main>;
 }
 
-function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask, onOpenPage }: { tenantId: string; profileName: string; state: Snapshot; stateLoaded: boolean; onSelectTask: (taskId: string) => void; onOpenPage: (pageId: string, taskId?: string | null) => void }) {
+function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask, onOpenPage, onOpenScheduled }: { tenantId: string; profileName: string; state: Snapshot; stateLoaded: boolean; onSelectTask: (taskId: string) => void; onOpenPage: (pageId: string, taskId?: string | null) => void; onOpenScheduled: () => void }) {
   const tenantIdRef = useRef(tenantId);
   tenantIdRef.current = tenantId;
   const pageGeneration = useRef(0);
@@ -553,6 +569,7 @@ function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask,
   const activityTasks = state.tasks.filter(task => !task.parentTaskId).flatMap(task => [task, ...(childrenByParent.get(task.id) || [])]);
   return <section className="content activity-content">
     <div className="section-heading"><h1>Activity</h1><p>查看 dot 正在处理的工作、结果和需要你决定的事项。</p></div>
+    <GmailEventSetup key={tenantId} gmail={state.gmail} engines={state.availableEngines.filter((id): id is 'pi' | 'dsh' => id === 'pi' || id === 'dsh')} onOpenScheduled={onOpenScheduled} />
     <div className="cards">{!stateLoaded ? <div className="empty workspace-loading" role="status">正在加载工作区…</div> : !state.tasks.length ? <div className="empty">还没有任务。回到对话，交给 dot 第一项工作。</div> : activityTasks.map(task => {
       const parent = task.parentTaskId ? tasks.get(task.parentTaskId) : undefined;
       const children = childrenByParent.get(task.id) || [];
