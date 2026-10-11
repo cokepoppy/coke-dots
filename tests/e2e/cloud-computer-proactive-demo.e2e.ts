@@ -400,7 +400,6 @@ try {
   runFailed = false;
   console.log(`Cloud computer proactive demo E2E passed: ${baseUrl}`);
 } finally {
-  if (pageVideo) recordingPath = await pageVideo.path().catch(() => '');
   if (runFailed && page) {
     await page.screenshot({ path: join(runOutputRoot, 'failure.png'), fullPage: true }).catch(() => undefined);
     taskDiagnostics = await page.evaluate(async () => {
@@ -410,8 +409,11 @@ try {
       return state.tasks.map(({ id, title, status, engine, executionMode, result, error }) => ({ id, title, status, engine, executionMode, result, error }));
     }).catch(() => null);
   }
+  // Playwright finalizes a page's video only after its BrowserContext closes.
+  // Close the context before awaiting video.path(), or this cleanup can wait forever.
   await context?.close().catch(() => undefined);
   context = null;
+  if (pageVideo) recordingPath = await pageVideo.path().catch(() => '');
   await browser?.close().catch(() => undefined);
   browser = null;
   const activeWorkerPortForward = workerPortForward as ChildProcess | null;
