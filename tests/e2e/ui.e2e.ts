@@ -34,7 +34,7 @@ let mockModelServer: Server | null = null;
 let mockSlackServer: Server | null = null;
 let mockSlackProviderOrigin = '';
 let mockSlackCodeExchanges = 0;
-let e2eSlackTokenAccount = '';
+let e2eSlackTokenAccounts: string[] = [];
 let mockModelPrompts: string[] = [];
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
@@ -178,7 +178,8 @@ async function startMockSlackProvider() {
       }
       const approve = new URLSearchParams({ redirect_uri: callback.toString(), state: url.searchParams.get('state') || '' });
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      response.end(`<!doctype html><html><head><title>Slack authorization</title></head><body><main><h1>Authorize Coke Dots for ASPI</h1><p>Permission requested: chat:write</p><form method="get" action="/oauth/approve"><input type="hidden" name="redirect_uri" value="${approve.get('redirect_uri')}"><input type="hidden" name="state" value="${approve.get('state')}"><button type="submit">Allow access</button></form></main></body></html>`);
+      const fields = `<input type="hidden" name="redirect_uri" value="${approve.get('redirect_uri')}"><input type="hidden" name="state" value="${approve.get('state')}">`;
+      response.end(`<!doctype html><html><head><title>Slack authorization</title></head><body><main><h1>Choose a Slack workspace for Coke Dots</h1><p>Permission requested: chat:write</p><form method="get" action="/oauth/approve">${fields}<input type="hidden" name="team_id" value="TASPIE2E"><button type="submit">Allow access</button></form><form method="get" action="/oauth/approve">${fields}<input type="hidden" name="team_id" value="TCOKEE2E"><button type="submit">Allow access to Coke Lab</button></form></main></body></html>`);
       return;
     }
     if (request.method === 'GET' && url.pathname === '/oauth/approve') {
@@ -189,7 +190,13 @@ async function startMockSlackProvider() {
         response.end('Invalid Slack OAuth approval');
         return;
       }
-      callback.searchParams.set('code', 'coke-dots-e2e-authorization-code');
+      const teamId = url.searchParams.get('team_id') || 'TASPIE2E';
+      if (!['TASPIE2E', 'TCOKEE2E'].includes(teamId)) {
+        response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+        response.end('Invalid Slack test workspace');
+        return;
+      }
+      callback.searchParams.set('code', `coke-dots-e2e-code-${teamId}`);
       callback.searchParams.set('state', state);
       response.writeHead(302, { location: callback.toString(), 'cache-control': 'no-store' });
       response.end();
@@ -201,14 +208,19 @@ async function startMockSlackProvider() {
       request.on('data', chunk => { raw += chunk; });
       request.on('end', () => {
         const body = new URLSearchParams(raw);
-        if (body.get('code') !== 'coke-dots-e2e-authorization-code' || body.get('client_id') !== 'coke-dots-slack-e2e-client' || body.get('client_secret') !== 'coke-dots-slack-e2e-secret' || body.get('redirect_uri') !== `${baseUrl}/auth/slack/callback`) {
+        const grants = new Map([
+          ['coke-dots-e2e-code-TASPIE2E', { id: 'TASPIE2E', name: 'ASPI', token: 'xoxb-coke-dots-e2e-aspi-token' }],
+          ['coke-dots-e2e-code-TCOKEE2E', { id: 'TCOKEE2E', name: 'Coke Lab', token: 'xoxb-coke-dots-e2e-coke-lab-token' }],
+        ]);
+        const grant = grants.get(body.get('code') || '');
+        if (!grant || body.get('client_id') !== 'coke-dots-slack-e2e-client' || body.get('client_secret') !== 'coke-dots-slack-e2e-secret' || body.get('redirect_uri') !== `${baseUrl}/auth/slack/callback`) {
           response.writeHead(400, { 'content-type': 'application/json' });
           response.end(JSON.stringify({ ok: false, error: 'invalid_e2e_oauth_exchange' }));
           return;
         }
         mockSlackCodeExchanges += 1;
         response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-        response.end(JSON.stringify({ ok: true, access_token: 'xoxb-coke-dots-e2e-only-token', scope: 'chat:write', team: { id: 'TASPIE2E', name: 'ASPI' } }));
+        response.end(JSON.stringify({ ok: true, access_token: grant.token, scope: 'chat:write', team: { id: grant.id, name: grant.name } }));
       });
       return;
     }
@@ -846,7 +858,11 @@ try {
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
   });
 
-  await recordStep('Connect Slack in Chrome, authorize the mock workspace, and select it for the Alpha tenant', async () => {
+  await recordStep('Install two Slack workspaces in Chrome and switch Alpha’s active contact workspace', async () => {
+    const tenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    assert(tenantId, 'The Alpha tenant id must be present before checking tenant-scoped Slack credentials');
+    const keychainAccount = (teamId: string) => `tenant-${createHash('sha256').update(`${tenantId}\0${teamId}`).digest('hex')}-slack-bot-token`;
+    e2eSlackTokenAccounts = ['TASPIE2E', 'TCOKEE2E'].map(keychainAccount);
     const contextPanel = alphaPage!.getByTestId('dot-context-panel');
     await contextPanel.getByRole('button', { name: 'Slack' }).click();
     const modal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
@@ -881,12 +897,12 @@ try {
       alphaPage!.waitForURL(url => url.origin === mockSlackProviderOrigin && url.pathname === '/oauth/v2/authorize', { timeout: 10_000 }),
       connectButton.click(),
     ]);
-    await alphaPage!.getByRole('heading', { name: 'Authorize Coke Dots for ASPI' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('heading', { name: 'Choose a Slack workspace for Coke Dots' }).waitFor({ state: 'visible' });
     await alphaPage!.getByText('Permission requested: chat:write', { exact: true }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'slack-mock-consent');
     await Promise.all([
       alphaPage!.waitForURL(url => url.origin === new URL(baseUrl).origin && url.pathname === '/', { timeout: 15_000 }),
-      alphaPage!.getByRole('button', { name: 'Allow access' }).click(),
+      alphaPage!.getByRole('button', { name: 'Allow access', exact: true }).click(),
     ]);
 
     const connectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
@@ -905,21 +921,44 @@ try {
 
     await connectedModal.getByTestId('slack-connect').click();
     await connectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
-    const tenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
-    assert(tenantId, 'The Alpha tenant id must be present before checking tenant-scoped Slack credentials');
-    e2eSlackTokenAccount = `tenant-${createHash('sha256').update(`${tenantId}\0TASPIE2E`).digest('hex')}-slack-bot-token`;
-    const storedToken = new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).getPassword();
-    assert.equal(storedToken, 'xoxb-coke-dots-e2e-only-token', 'OAuth token should be persisted only in the isolated E2E keychain');
+    const aspiToken = new Entry('com.cokepoppy.coke-dots.e2e', keychainAccount('TASPIE2E')).getPassword();
+    assert.equal(aspiToken, 'xoxb-coke-dots-e2e-aspi-token', 'ASPI token should be persisted only in its isolated E2E keychain entry');
+
+    await connectedModal.locator('.slack-setup-advanced > summary').click();
+    await Promise.all([
+      alphaPage!.waitForURL(url => url.origin === mockSlackProviderOrigin && url.pathname === '/oauth/v2/authorize', { timeout: 10_000 }),
+      connectedModal.getByRole('button', { name: 'Connect or refresh Slack access' }).click(),
+    ]);
+    await alphaPage!.getByRole('heading', { name: 'Choose a Slack workspace for Coke Dots' }).waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, 'slack-mock-consent-second-workspace');
+    await Promise.all([
+      alphaPage!.waitForURL(url => url.origin === new URL(baseUrl).origin && url.pathname === '/', { timeout: 15_000 }),
+      alphaPage!.getByRole('button', { name: 'Allow access to Coke Lab' }).click(),
+    ]);
+    await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
+    assert.equal(await connectedModal.locator('.slack-select-another').getAttribute('aria-expanded'), 'false', 'Installing another workspace should return to the compact state');
+    await connectedModal.locator('.slack-select-another').click();
+    await workspace.waitFor({ state: 'visible' });
+    assert.deepEqual(await workspace.locator('option').allTextContents(), ['ASPI', 'Coke Lab']);
+    await workspace.selectOption('TCOKEE2E');
+    await connectedModal.getByTestId('slack-connect').click();
+    await connectedModal.getByRole('status').filter({ hasText: /Coke Lab is selected for/ }).waitFor({ state: 'visible' });
+    const cokeLabToken = new Entry('com.cokepoppy.coke-dots.e2e', keychainAccount('TCOKEE2E')).getPassword();
+    assert.equal(cokeLabToken, 'xoxb-coke-dots-e2e-coke-lab-token', 'Coke Lab token should use its separate isolated E2E keychain entry');
+
     const slackState = await alphaPage!.evaluate(async () => await (await fetch('/api/slack')).json()) as { installations: { teamId: string; teamName: string; contactEnabled: boolean }[] };
     assert.deepEqual(slackState.installations.map(item => ({ teamId: item.teamId, teamName: item.teamName, contactEnabled: item.contactEnabled })), [
-      { teamId: 'TASPIE2E', teamName: 'ASPI', contactEnabled: true },
-    ]);
-    assert.equal(JSON.stringify(slackState).includes(storedToken), false, 'Slack OAuth token must not be returned by the API');
+      { teamId: 'TASPIE2E', teamName: 'ASPI', contactEnabled: false },
+      { teamId: 'TCOKEE2E', teamName: 'Coke Lab', contactEnabled: true },
+    ], 'The UI should switch the single active Dot contact destination while keeping both installs tenant scoped');
+    assert.equal(JSON.stringify(slackState).includes(aspiToken || ''), false, 'Slack OAuth tokens must not be returned by the API');
+    assert.equal(JSON.stringify(slackState).includes(cokeLabToken || ''), false, 'Slack OAuth tokens must not be returned by the API');
     const sqlite = new DatabaseSync(join(testDataDir, 'dots.db'), { readOnly: true });
     const storedInstallation = sqlite.prepare('SELECT team_id,team_name,scopes_json FROM slack_installations').all();
     sqlite.close();
-    assert.equal(JSON.stringify(storedInstallation).includes(storedToken), false, 'Slack OAuth token must not be stored in SQLite');
-    assert.equal(mockSlackCodeExchanges, 1, 'Chrome should complete exactly one Slack OAuth code exchange');
+    assert.equal(JSON.stringify(storedInstallation).includes(aspiToken || ''), false, 'ASPI OAuth token must not be stored in SQLite');
+    assert.equal(JSON.stringify(storedInstallation).includes(cokeLabToken || ''), false, 'Coke Lab OAuth token must not be stored in SQLite');
+    assert.equal(mockSlackCodeExchanges, 2, 'Chrome should complete one OAuth exchange for each Slack workspace installation');
     await screenshot(alphaPage!, 'slack-workspace-selected');
     await connectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
     await connectedModal.waitFor({ state: 'hidden' });
@@ -1913,8 +1952,8 @@ try {
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
-  if (e2eSlackTokenAccount) {
-    try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
+  for (const account of e2eSlackTokenAccounts) {
+    try { new Entry('com.cokepoppy.coke-dots.e2e', account).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
   }
   testModelBaseUrl = '';
   testModelApiKey = '';

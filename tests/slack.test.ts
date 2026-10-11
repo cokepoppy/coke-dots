@@ -28,18 +28,25 @@ test('Slack installations and selected contact workspace stay isolated between C
     const store = new Store(directory);
     const alpha = store.signInGoogle({ subject: 'slack-alpha', email: 'slack-alpha@example.test', name: 'Alpha' });
     const beta = store.signInGoogle({ subject: 'slack-beta', email: 'slack-beta@example.test', name: 'Beta' });
-    const installation = (tenantId: string, teamName: string) => ({
-      tenantId, teamId: 'TASPI', teamName, scopes: ['chat:write'], installedAt: '2026-10-08T00:00:00.000Z',
+    const installation = (tenantId: string, teamId: string, teamName: string) => ({
+      tenantId, teamId, teamName, scopes: ['chat:write'], installedAt: '2026-10-08T00:00:00.000Z',
     });
-    store.installSlackWorkspace(installation(alpha.tenant.id, 'Alpha Slack'));
-    store.installSlackWorkspace(installation(beta.tenant.id, 'Beta Slack'));
+    store.installSlackWorkspace(installation(alpha.tenant.id, 'TASPI', 'Alpha Slack'));
+    store.installSlackWorkspace(installation(alpha.tenant.id, 'TOTHER', 'Alpha Other Slack'));
+    store.installSlackWorkspace(installation(beta.tenant.id, 'TASPI', 'Beta Slack'));
+    store.installSlackWorkspace(installation(beta.tenant.id, 'TBETA', 'Beta Other Slack'));
     assert.equal(store.setSlackContactWorkspace(alpha.tenant.id, 'TASPI'), true);
     assert.equal(store.setSlackContactWorkspace(beta.tenant.id, 'TASPI'), true);
-    assert.equal(store.setSlackContactWorkspace(alpha.tenant.id, 'TOTHER'), false, 'A tenant cannot select a Slack workspace installed in another tenant');
-    assert.equal(store.slackInstallations(alpha.tenant.id)[0]?.teamName, 'Alpha Slack');
-    assert.equal(store.slackInstallations(alpha.tenant.id)[0]?.contactEnabled, true);
-    assert.equal(store.slackInstallations(beta.tenant.id)[0]?.teamName, 'Beta Slack');
-    assert.equal(store.slackInstallations(beta.tenant.id)[0]?.contactEnabled, true);
+    assert.equal(store.setSlackContactWorkspace(alpha.tenant.id, 'TBETA'), false, 'A tenant cannot select a Slack workspace installed in another tenant');
+    assert.equal(store.setSlackContactWorkspace(alpha.tenant.id, 'TOTHER'), true);
+    assert.deepEqual(store.slackInstallations(alpha.tenant.id).map(item => ({ teamId: item.teamId, contactEnabled: item.contactEnabled })).sort((a, b) => a.teamId.localeCompare(b.teamId)), [
+      { teamId: 'TASPI', contactEnabled: false },
+      { teamId: 'TOTHER', contactEnabled: true },
+    ]);
+    assert.deepEqual(store.slackInstallations(beta.tenant.id).map(item => ({ teamId: item.teamId, teamName: item.teamName, contactEnabled: item.contactEnabled })).sort((a, b) => a.teamId.localeCompare(b.teamId)), [
+      { teamId: 'TASPI', teamName: 'Beta Slack', contactEnabled: true },
+      { teamId: 'TBETA', teamName: 'Beta Other Slack', contactEnabled: false },
+    ]);
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
