@@ -335,11 +335,15 @@ try {
   assert(reviewTask, 'The completed work should trigger an autonomous context review');
   assert.equal(reviewTask.status, 'done', `The proactive review failed: ${reviewTask.error || reviewTask.result || ''}`);
   assert.match(reviewTask.result || '', /10 月 22 日.*10 月 21 日|10 月 21 日.*10 月 22 日/);
+  const displayedFinding = livePi ? reviewTask.result || '' : finding;
   if (livePi) {
     assert.equal(draftTask.engine, 'pi');
     assert.equal(decisionTask.engine, 'pi');
     assert.equal(reviewTask.engine, 'pi');
-    assert.match(reviewTask.result || '', /[㐀-鿿]/, 'Pi proactive review must report the finding in Chinese.');
+    assert.match(displayedFinding, /[㐀-鿿]/, 'Pi proactive review must report the finding in Chinese.');
+    assert.match(displayedFinding, /用户决定|需要你|建议.*审批/, 'The proactive result must explain the approval decision needed.');
+    assert.match(displayedFinding, /未.*修改|没有.*修改/);
+    assert.match(displayedFinding, /未.*发送|没有.*发送/);
     const namespace = JSON.parse(command(['kubectl', 'get', 'namespace', tenantNamespace, '-o', 'json'])) as { metadata?: { labels?: Record<string, string> } };
     assert.equal(namespace.metadata?.labels?.['coke-dots.io/managed-by'], 'coke-dots');
     assert.equal(namespace.metadata?.labels?.['coke-dots.io/tenant-hash'], tenantNamespaceIdentityHash);
@@ -366,14 +370,14 @@ try {
   const proactiveCard = page.getByTestId(`task-card-${reviewTask.id}`);
   await proactiveCard.waitFor({ state: 'visible' });
   await proactiveCard.getByText('Dot 主动研究 · 只读', { exact: true }).waitFor({ state: 'visible' });
-  await proactiveCard.getByText(finding, { exact: true }).waitFor({ state: 'visible' });
-  const activityFinding = page.getByTestId('activity-feed').getByTestId('activity-entry').filter({ hasText: finding });
+  await proactiveCard.getByText(displayedFinding, { exact: true }).waitFor({ state: 'visible' });
+  const activityFinding = page.getByTestId('activity-feed').getByTestId('activity-entry').filter({ hasText: displayedFinding });
   await activityFinding.waitFor({ state: 'visible' });
   await page.screenshot({ path: join(outputRoot, 'screenshots', '02-proactive-finding-in-activity.png') });
   await new Promise(resolvePromise => setTimeout(resolvePromise, 2_500));
 
   await proactiveCard.getByRole('button', { name: /查看详情/ }).click();
-  await page.locator('.timeline .message.dot p').filter({ hasText: finding }).waitFor({ state: 'visible' });
+  await page.locator('.timeline .message.dot p').filter({ hasText: displayedFinding }).waitFor({ state: 'visible' });
   await page.screenshot({ path: join(outputRoot, 'screenshots', '03-proactive-finding-detail.png') });
   await new Promise(resolvePromise => setTimeout(resolvePromise, 2_000));
   assert.deepEqual(browserErrors, [], `Browser runtime errors: ${browserErrors.join('; ')}`);
