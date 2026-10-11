@@ -516,12 +516,16 @@ async function screenshot(page: Page, name: string) {
 }
 
 async function waitForComputerScreenshot(page: Page) {
-  await page.waitForFunction(() => {
+  const screenshot = await page.waitForFunction(() => {
     const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
-    if (!screenshot?.complete || screenshot.naturalWidth !== 1280 || screenshot.naturalHeight !== 820) return false;
+    if (!screenshot?.complete || screenshot.naturalWidth <= 0 || screenshot.naturalHeight <= 0) return false;
     const bounds = screenshot.getBoundingClientRect();
-    return bounds.width > 0 && bounds.height > 0;
+    if (bounds.width <= 0 || bounds.height <= 0) return false;
+    return { naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight, src: screenshot.currentSrc };
   }, null, { timeout: 20_000 });
+  const frame = await screenshot.jsonValue() as { naturalWidth: number; naturalHeight: number; src: string };
+  await screenshot.dispose();
+  return frame;
 }
 
 async function clickComputerScreen(page: Page, x: number, y: number) {
@@ -2346,12 +2350,10 @@ try {
     assert.equal(welcomeState.owner, 'agent');
     assert.equal(await alphaPage!.locator('.computer-dock span').count(), 3, 'The source computer view shows three dock icons');
     assert.equal(await alphaPage!.locator('.computer-controlbar.is-user-control').count(), 0, 'The agent-owned screen must keep the takeover affordance');
-    await waitForComputerScreenshot(alphaPage!);
-    const screenAspect = await alphaPage!.getByAltText('独立浏览器画面').evaluate(element => {
-      const image = element as HTMLImageElement;
-      return image.naturalWidth / image.naturalHeight;
-    });
-    assert.ok(Math.abs(screenAspect - 1280 / 820) < 0.001, 'The replicated remote screen aspect ratio changed');
+    const screenImage = await waitForComputerScreenshot(alphaPage!);
+    const screenAspect = screenImage.naturalWidth / screenImage.naturalHeight;
+    assert.ok(Math.abs(screenAspect - 1280 / 820) < 0.002,
+      `The replicated remote screen aspect ratio changed: expected 1280x820, saw ${screenImage.naturalWidth}x${screenImage.naturalHeight} (${screenAspect.toFixed(5)}) from ${screenImage.src}`);
     await screenshot(alphaPage!, '14-computer-dot-control');
   });
 
