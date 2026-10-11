@@ -191,6 +191,7 @@ function publicPageTool(computer, browserActions) {
 function computerUiTool(computer, browserActions, expectedPublicUrl) {
   if (!computer?.computerUiUrl || !computer?.computerUiToken) return null;
   let informationalClicks = 0;
+  const attemptedInformationButtons = new Set();
   return {
     name: 'computer_ui',
     label: 'Use Dot computer browser',
@@ -209,24 +210,39 @@ function computerUiTool(computer, browserActions, expectedPublicUrl) {
     }, { additionalProperties: false }),
     async execute(_id, params, signal) {
       if (params.action === 'click_information_button') {
-        if (params.url !== undefined || !params.buttonName || informationalClicks >= 4) throw new Error('The limited information-only browser click allowance has been reached or no button label was supplied');
-        informationalClicks++;
+        if (params.url !== undefined || !params.buttonName) throw new Error('A visible information button label is required; page URLs are handled by open_public_page');
       } else if (params.buttonName !== undefined) throw new Error('Inspect does not accept a button name');
+      const clickKey = params.action === 'click_information_button'
+        ? `${expectedPublicUrl || ''}\u0000${params.buttonName.trim().replace(/\s+/g, ' ')}`
+        : '';
+      const duplicateClick = Boolean(clickKey && attemptedInformationButtons.has(clickKey));
+      if (clickKey && !duplicateClick) {
+        if (informationalClicks >= 4) throw new Error('The limited information-only browser click allowance has been reached');
+        informationalClicks++;
+        attemptedInformationButtons.add(clickKey);
+      }
       const targetUrl = params.url || expectedPublicUrl;
       const openedPage = targetUrl && computer.openPublicPageUrl && computer.openPublicPageToken
         ? await openPublicPage(computer, browserActions, targetUrl, signal, { reuseCompleted: true })
         : null;
-      const endpoint = params.action === 'inspect' ? '/inspect' : '/click';
+      // Information controls can be disclosures that toggle open and closed.
+      // A model retry for the same target therefore becomes a fresh inspection,
+      // never a second physical click.
+      const effectiveAction = duplicateClick ? 'inspect' : params.action;
+      const endpoint = effectiveAction === 'inspect' ? '/inspect' : '/click';
       const response = await fetch(`${computer.computerUiUrl}${endpoint}`, {
         method: 'POST',
         headers: { authorization: `Bearer ${computer.computerUiToken}`, 'content-type': 'application/json' },
-        body: JSON.stringify(params.action === 'inspect' ? {} : { name: params.buttonName }),
+      body: JSON.stringify(effectiveAction === 'inspect' ? {} : { name: params.buttonName }),
         signal,
       });
       const value = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof value.error === 'string' ? value.error : 'Cloud computer UI operation failed');
       if (openedPage?.url && value.url !== openedPage.url) throw new Error('The cloud computer UI is not showing the public page that was opened for this task');
-      return { content: [{ type: 'text', text: JSON.stringify(value) }], details: { action: params.action, buttonName: params.buttonName } };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(value) }],
+        details: { action: duplicateClick ? 'duplicate-click-inspected' : params.action, buttonName: params.buttonName },
+      };
     },
   };
 }

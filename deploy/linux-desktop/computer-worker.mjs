@@ -16,6 +16,7 @@ let browser;
 let initialized = false;
 let researchGuardInstalled = false;
 let privateSignInFields = null;
+const agentUiInteractionAudit = [];
 
 if (!token) throw new Error('LINUX_DESKTOP_WORKER_TOKEN is required');
 
@@ -118,10 +119,20 @@ async function inspectAgentBrowserUi() {
     }));
     return { url: location.href, title: document.title, text: document.body?.innerText || '', buttons };
   });
-  return { url: snapshot.url, title: snapshot.title.slice(0, 200), text: snapshot.text.trim().slice(0, 8000), buttons: snapshot.buttons };
+  return {
+    url: snapshot.url,
+    title: snapshot.title.slice(0, 200),
+    text: snapshot.text.trim().slice(0, 8000),
+    buttons: snapshot.buttons,
+    interactionAudit: agentUiInteractionAudit.slice(-8),
+  };
 }
 
 async function clickAgentInfoButton(name) {
+  const audit = { at: new Date().toISOString(), action: 'click-information-button', name: String(name || '').slice(0, 120) };
+  agentUiInteractionAudit.push(audit);
+  if (agentUiInteractionAudit.length > 20) agentUiInteractionAudit.splice(0, agentUiInteractionAudit.length - 20);
+  try {
   if (owner !== 'agent') throw new Error('电脑目前由你控制；Agent 暂停了云电脑操作。');
   const target = String(name || '').trim().replace(/\s+/g, ' ');
   if (!target || target.length > 120 || !/^(?:查看|显示|展开|筛选|详情|view\b|show\b|expand\b|filter\b)/i.test(target)) {
@@ -129,6 +140,7 @@ async function clickAgentInfoButton(name) {
   }
   const browserPage = await page();
   const beforeUrl = new URL(await validatePublicHttpsUrl(browserPage.url()));
+  audit.url = beforeUrl.href;
   if ((await browser.contexts()[0].cookies(beforeUrl.href)).length) throw new Error('云电脑 UI 操作仅支持未登录的公开网页');
   const button = browserPage.getByRole('button', { name: target, exact: true });
   if (await button.count() !== 1) throw new Error('找不到唯一匹配的可见信息按钮');
@@ -148,21 +160,50 @@ async function clickAgentInfoButton(name) {
   const viewportOrigin = await browserPage.evaluate(() => ({
     x: window.screenX + (window.outerWidth - window.innerWidth) / 2,
     y: window.screenY + window.outerHeight - window.innerHeight - (window.outerWidth - window.innerWidth) / 2,
-    scale: window.devicePixelRatio || 1,
-  }));
+      scale: window.devicePixelRatio || 1,
+      screenX: window.screenX,
+      screenY: window.screenY,
+      outerWidth: window.outerWidth,
+      outerHeight: window.outerHeight,
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+    }));
   const beforeText = await browserPage.locator('body').innerText();
+  audit.viewport = viewportOrigin;
+  audit.target = { x: details.x, y: details.y, expanded: details.expanded };
+  audit.physicalClick = {
+    x: Math.round((viewportOrigin.x + details.x) * viewportOrigin.scale),
+    y: Math.round((viewportOrigin.y + details.y) * viewportOrigin.scale),
+  };
   await browserPage.bringToFront();
   await exec('xdotool', [
-    'mousemove', String(Math.round((viewportOrigin.x + details.x) * viewportOrigin.scale)),
-    String(Math.round((viewportOrigin.y + details.y) * viewportOrigin.scale)), 'click', '1',
+    'mousemove', String(audit.physicalClick.x), String(audit.physicalClick.y), 'click', '1',
   ], { timeout: 5000 });
   await browserPage.waitForTimeout(250);
   const afterUrl = new URL(await validatePublicHttpsUrl(browserPage.url()));
   if (afterUrl.origin !== beforeUrl.origin) throw new Error('信息按钮打开了其他网站；已停止后续操作');
-  const snapshot = await inspectAgentBrowserUi();
-  const expanded = await button.getAttribute('aria-expanded').catch(() => null);
-  if (beforeText === snapshot.text && details.expanded === expanded) throw new Error('信息按钮已点击，但页面内容和展开状态都没有变化');
+  let snapshot = await inspectAgentBrowserUi();
+  let expanded = await button.getAttribute('aria-expanded').catch(() => null);
+  audit.physicalClickChangedPage = beforeText !== snapshot.text || details.expanded !== expanded;
+  if (!audit.physicalClickChangedPage) {
+    // The X11 pointer may be offset by Chromium's window-manager chrome. Retry
+    // once through Chromium's own mouse input at the same visible DOM target.
+    await browserPage.mouse.click(details.x, details.y);
+    await browserPage.waitForTimeout(250);
+    snapshot = await inspectAgentBrowserUi();
+    expanded = await button.getAttribute('aria-expanded').catch(() => null);
+    audit.browserMouseFallbackChangedPage = beforeText !== snapshot.text || details.expanded !== expanded;
+  }
+  if (beforeText === snapshot.text && details.expanded === expanded) throw new Error('信息按钮点击后页面内容和展开状态都没有变化');
+  audit.success = true;
+  audit.expanded = expanded;
+  audit.changedText = beforeText !== snapshot.text;
   return { action: 'clicked-information-button', button: target, expanded, ...snapshot };
+  } catch (error) {
+    audit.success = false;
+    audit.error = error instanceof Error ? error.message.slice(0, 240) : 'computer UI click failed';
+    throw error;
+  }
 }
 
 async function command(input) {

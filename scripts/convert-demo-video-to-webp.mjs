@@ -21,9 +21,9 @@ function selectSegments(events, sourceDuration) {
   };
   const segments = [
     { name: '提交每小时任务', start: get('demo-start'), end: get('task-working') + 1.25 },
-    { name: '云电脑打开活动页', start: get('cloud-page-visible') - 0.35, end: get('cloud-page-visible') + 1.15 },
-    { name: '点击查看活动详情', start: get('details-visible') - 1.2, end: get('details-visible') + 1.5 },
-    { name: 'Activity 结果与计划', start: get('activity-result') - 0.75, end: get('scheduled-confirmed') + 2 },
+    { name: '云电脑打开活动页', start: get('cloud-page-visible') - 0.35, end: get('cloud-page-visible') + 2.65 },
+    { name: '点击查看活动详情', start: get('details-visible') - 1.8, end: get('details-visible') + 4 },
+    { name: 'Activity 结果与计划', start: get('activity-result') - 1, end: get('scheduled-confirmed') + 4 },
   ].map(segment => ({
     ...segment,
     start: Math.max(0, segment.start),

@@ -93,6 +93,7 @@ websockify_pid=$!
 
 chrome_flags=(
   --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check
+  --disable-translate --disable-features=Translate,TranslateUI
   --password-store=basic --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
   --user-data-dir="$HOME/.config/chromium" --load-extension=/opt/coke-dots/chrome-theme --window-position="$browser_x,$browser_y"
   --window-size="$browser_width,$browser_height"

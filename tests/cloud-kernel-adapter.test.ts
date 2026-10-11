@@ -83,7 +83,7 @@ test('Pi cloud browser tool uses only its scoped read-only bridge capability', a
   }
 });
 
-test('Pi cloud computer UI tool uses a scoped bridge and permits only inspect or information-button actions', async () => {
+test('Pi cloud computer UI tool scopes access and inspects instead of repeating a disclosure click', async () => {
   const { root, task } = await makeWorkspace();
   const requests: { path: string; body: unknown; token: string }[] = [];
   const server = createServer(async (request, response) => {
@@ -113,6 +113,7 @@ test('Pi cloud computer UI tool uses a scoped bridge and permits only inspect or
       ]);
       toolResults.push(...parallelResults);
       toolResults.push(await computerUi.execute('click', { action: 'click_information_button', buttonName: '查看活动详情' }));
+      toolResults.push(await computerUi.execute('repeat-click', { action: 'click_information_button', buttonName: '查看活动详情' }));
       return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
     },
   };
@@ -129,9 +130,11 @@ test('Pi cloud computer UI tool uses a scoped bridge and permits only inspect or
       { path: '/open_public_page', body: { url: 'https://example.test/activity' }, token: `Bearer ${scopedToken}` },
       { path: '/computer_ui/inspect', body: {}, token: `Bearer ${scopedToken}` },
       { path: '/computer_ui/click', body: { name: '查看活动详情' }, token: `Bearer ${scopedToken}` },
+      { path: '/computer_ui/inspect', body: {}, token: `Bearer ${scopedToken}` },
     ]);
     assert.match(JSON.stringify(toolResults), /免费名额：2 个/);
     assert.match(JSON.stringify(toolResults), /查看活动详情/);
+    assert.match(JSON.stringify(toolResults), /duplicate-click-inspected/);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });

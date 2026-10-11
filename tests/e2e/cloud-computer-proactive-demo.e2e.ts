@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -16,11 +16,13 @@ import { desktopResourceIdentity } from '../../src/server/linux-desktop-computer
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const outputRoot = join(projectRoot, 'artifacts', 'demos', 'cloud-computer-proactive-activity');
+const runOutputRoot = `${outputRoot}.run-${randomUUID()}`;
 const fixtureUrl = 'https://activity-fixture.dots.test/open';
 const kickoffInstruction = '请用中文回复：云电脑已准备好。不要打开网页或执行其他操作。';
-const taskInstruction = `每小时在你的 Debian 云电脑中检查这个公开活动页：${fixtureUrl}。先用 open_public_page 打开页面，再用 computer_ui 查看当前页面。如果有“AI 助手上手分享”且显示免费名额，请点击“查看活动详情”，读取活动日期和名额。只查看信息；不要报名、付款、登录、填写或提交表单。完成后用中文告诉我活动名称、日期、免费名额，并确认没有报名或付款；保留每小时检查。`;
+const taskInstruction = `每小时在你的 Debian 云电脑中检查这个公开活动页：${fixtureUrl}。先用 open_public_page 打开页面，再用 computer_ui 查看当前页面。如果有“AI 助手上手分享”且显示免费名额，只调用一次 computer_ui 的 click_information_button，按钮名必须是“查看活动详情”；然后重新 inspect 并读取活动日期和名额。如果点击报错或内容仍未展开，不要重复点击，说明无法读取日期。只查看信息；不要报名、付款、登录、填写或提交表单。完成后用中文告诉我活动名称、日期、免费名额，并确认没有报名或付款；保留每小时检查。`;
 const cluster = process.env.DOTS_K3D_CLUSTER || 'tp1121-sandbox-dev';
-const imageName = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:cloud-ui-demo';
+const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projectRoot, encoding: 'utf8' }).trim();
+const imageName = process.env.DOTS_LINUX_DESKTOP_IMAGE?.trim() || `coke-dots-linux-desktop:sha-${sourceRevision}`;
 const tokenSecret = randomBytes(32).toString('base64url');
 const keychainService = `com.cokepoppy.coke-dots.computer-demo-${randomUUID()}`;
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-computer-demo-'));
@@ -43,6 +45,7 @@ let liveModelApiKey = '';
 let workerPortForward: ChildProcess | null = null;
 let runFailed = true;
 let uiEvidence: unknown = null;
+let clickEvidence: { action: string; name: string; success?: boolean; physicalClickChangedPage?: boolean; browserMouseFallbackChangedPage?: boolean } | null = null;
 let taskDiagnostics: unknown = null;
 let recordingPath = '';
 let videoStartedAt = 0;
@@ -72,7 +75,9 @@ function command(args: string[]) {
 async function configureLivePi() {
   assert.equal(command(['kubectl', 'config', 'current-context']), `k3d-${cluster}`, 'The live demo must use the explicitly selected Coke sandbox cluster.');
   command(['kubectl', 'get', 'nodes']);
-  command(['docker', 'image', 'inspect', imageName]);
+  const imageMetadata = JSON.parse(command(['docker', 'image', 'inspect', imageName]))[0] as { Config?: { Labels?: Record<string, string> } };
+  const imageRevision = imageMetadata.Config?.Labels?.['org.opencontainers.image.revision'];
+  assert.equal(imageRevision, sourceRevision, `Cloud computer image ${imageName} must be built from this checkout (${sourceRevision}); found ${imageRevision || 'no revision label'}.`);
   const sourceKeychainService = process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots';
   const sourceDataDirectory = resolve(process.env.DOTS_DATA_DIR || join(projectRoot, '..', 'coke-dots', 'data'));
   const sourceStore = new Store(sourceDataDirectory);
@@ -198,8 +203,8 @@ async function startWorkerPortForward() {
   return `http://127.0.0.1:${port}`;
 }
 
-await rm(outputRoot, { recursive: true, force: true });
-await mkdir(join(outputRoot, 'screenshots'), { recursive: true });
+await rm(runOutputRoot, { recursive: true, force: true });
+await mkdir(join(runOutputRoot, 'screenshots'), { recursive: true });
 await writeFile(emptyEnvFile, '');
 const port = await reservePort();
 baseUrl = `http://127.0.0.1:${port}`;
@@ -225,7 +230,7 @@ try {
   });
 
   await signIn(page);
-  await page.screenshot({ path: join(outputRoot, 'screenshots', '00-signed-in.png') });
+  await page.screenshot({ path: join(runOutputRoot, 'screenshots', '00-signed-in.png') });
   const workspace = await page.evaluate(async name => {
     const response = await fetch('/api/tenants', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
     return { status: response.status, body: await response.json() as { id?: string } };
@@ -237,7 +242,7 @@ try {
   await page.locator('.composer-bottom select').selectOption('pi');
   const engineState = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[] };
   assert(engineState.availableEngines.includes('pi') && engineState.remoteEngines.includes('pi'), 'Pi must be shown as an available cloud computer kernel.');
-  await page.screenshot({ path: join(outputRoot, 'screenshots', '01-pi-selected.png') });
+  await page.screenshot({ path: join(runOutputRoot, 'screenshots', '01-pi-selected.png') });
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
   const computerChoice = page.getByTestId('computer-choice');
   await computerChoice.getByRole('heading', { name: 'Choose where your dot can work' }).waitFor({ state: 'visible' });
@@ -245,7 +250,7 @@ try {
   if (await localComputerToggle.isChecked()) await localComputerToggle.uncheck();
   await computerChoice.getByRole('button', { name: 'Continue' }).click();
   await page.getByTestId('dot-onboarding').getByRole('heading', { name: 'Hey! I’m your dot' }).waitFor({ state: 'visible' });
-  await page.screenshot({ path: join(outputRoot, 'screenshots', '01b-dot-cloud-computer-onboarding.png'), fullPage: true });
+  await page.screenshot({ path: join(runOutputRoot, 'screenshots', '01b-dot-cloud-computer-onboarding.png'), fullPage: true });
   tenantId = (await page.getByTestId('app-shell').getAttribute('data-tenant-id')) || '';
   assert(tenantId && tenantId === workspace.body.id, 'The browser must use the disposable tenant created for this demo.');
   tenantNamespace = desktopResourceIdentity(tenantId).namespace;
@@ -271,7 +276,7 @@ try {
     const frame = document.querySelector<HTMLImageElement>('img[alt="Linux 云桌面画面"]');
     return Boolean(frame?.complete && frame.naturalWidth >= 1000 && frame.naturalHeight >= 700);
   }, { timeout: 90_000 });
-  await page.screenshot({ path: join(outputRoot, 'screenshots', '02-cloud-computer-ready.png'), fullPage: true });
+  await page.screenshot({ path: join(runOutputRoot, 'screenshots', '02-cloud-computer-ready.png'), fullPage: true });
   console.log(`STEP cloud computer ready: ${tenantNamespace}`);
 
   await page.getByRole('button', { name: '新聊天', exact: true }).click();
@@ -281,7 +286,7 @@ try {
   await page.locator('.timeline .message.user p').filter({ hasText: kickoffInstruction }).waitFor({ state: 'visible', timeout: 15_000 });
   const kickoffTask = await waitForTask(page, kickoffInstruction, 'done', 120_000);
   assert.match(String(kickoffTask.result), /[\u3400-\u9fff]/, 'The Pi cloud-computer kernel should return a Chinese response.');
-  await page.screenshot({ path: join(outputRoot, 'screenshots', '02b-pi-cloud-kernel-ready.png'), fullPage: true });
+  await page.screenshot({ path: join(runOutputRoot, 'screenshots', '02b-pi-cloud-kernel-ready.png'), fullPage: true });
 
   await page.locator('.timeline').waitFor({ state: 'visible' });
   await page.getByLabel('定期检查').waitFor({ state: 'visible' });
@@ -289,16 +294,16 @@ try {
   await page.getByLabel('重复频率').selectOption('interval');
   await page.locator('input.minutes').fill('60');
   await page.getByTestId('task-composer').fill(taskInstruction);
-  await page.screenshot({ path: join(outputRoot, 'screenshots', '03-chinese-scheduled-task.png'), fullPage: true });
+  await page.screenshot({ path: join(runOutputRoot, 'screenshots', '03-chinese-scheduled-task.png'), fullPage: true });
   const workerBaseUrl = await startWorkerPortForward();
   const workerToken = createHmac('sha256', tokenSecret).update(`worker:${tenantId}`).digest('base64url');
   markVideo('demo-start');
-  await page.waitForTimeout(900);
+  await page.waitForTimeout(2_500);
   await page.locator('button.send').click();
   await page.locator('.timeline .message.user p').filter({ hasText: fixtureUrl }).waitFor({ state: 'visible', timeout: 15_000 });
   await page.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 20_000 });
   markVideo('task-working');
-  await page.screenshot({ path: join(outputRoot, 'screenshots', '04-task-working.png'), fullPage: true });
+  await page.screenshot({ path: join(runOutputRoot, 'screenshots', '04-task-working.png'), fullPage: true });
   console.log('STEP submitted Chinese hourly monitoring task to Pi');
 
   await page.getByRole('button', { name: '电脑', exact: true }).click();
@@ -314,6 +319,7 @@ try {
       });
       if (!response.ok) return;
       const evidence = await response.json() as { url?: string; text?: string };
+      uiEvidence = evidence;
       if (evidence.url === fixtureUrl && evidence.text?.includes('报名状态：尚未报名') && evidence.text.includes('当前可用名额：2 个')) {
         detailsVisible = true;
         markVideo('details-visible');
@@ -338,23 +344,39 @@ try {
   const remoteFrame = PNG.sync.read(computerPng);
   assert.equal(remoteFrame.width, 1440);
   assert.equal(remoteFrame.height, 1080);
-  await writeFile(join(outputRoot, 'screenshots', '05-cloud-computer-after-click.png'), computerPng);
+  await writeFile(join(runOutputRoot, 'screenshots', '05-cloud-computer-after-click.png'), computerPng);
   await page.waitForFunction(() => {
     const frame = document.querySelector<HTMLImageElement>('img[alt="Linux 云桌面画面"]');
     return Boolean(frame?.complete && frame.naturalWidth > 1000);
   });
-  await page.waitForTimeout(2_000);
-  await page.screenshot({ path: join(outputRoot, 'screenshots', '06-computer-browser-in-dots.png'), fullPage: true });
+  await page.waitForTimeout(3_000);
+  await page.screenshot({ path: join(runOutputRoot, 'screenshots', '06-computer-browser-in-dots.png'), fullPage: true });
 
   const inspectResponse = await fetch(`${workerBaseUrl}/v1/agent-ui/inspect`, {
     method: 'POST', headers: { authorization: `Bearer ${workerToken}`, 'content-type': 'application/json' }, body: '{}',
   });
   assert.equal(inspectResponse.status, 200, 'The authenticated test audit should inspect the same remote browser page.');
-  uiEvidence = await inspectResponse.json() as { url: string; title: string; text: string; buttons: { name: string }[] };
+  uiEvidence = await inspectResponse.json() as {
+    url: string;
+    title: string;
+    text: string;
+    buttons: { name: string }[];
+    interactionAudit: {
+      action: string;
+      name: string;
+      success?: boolean;
+      physicalClickChangedPage?: boolean;
+      browserMouseFallbackChangedPage?: boolean;
+    }[];
+  };
   assert.equal((uiEvidence as { url: string }).url, fixtureUrl);
   assert.match((uiEvidence as { text: string }).text, /活动详情/);
   assert.match((uiEvidence as { text: string }).text, /报名状态：尚未报名/);
   assert.match((uiEvidence as { text: string }).text, /当前可用名额：2 个/);
+  clickEvidence = [...(uiEvidence as { interactionAudit: { action: string; name: string; success?: boolean; physicalClickChangedPage?: boolean; browserMouseFallbackChangedPage?: boolean }[] }).interactionAudit]
+    .reverse().find(item => item.action === 'click-information-button' && item.success === true) || null;
+  assert(clickEvidence, 'The worker must record a successful information-button UI click.');
+  assert(clickEvidence.physicalClickChangedPage || clickEvidence.browserMouseFallbackChangedPage, 'The successful UI click must prove a visible page-state change.');
   assert.deepEqual(browserErrors, [], `Browser runtime errors: ${browserErrors.join('; ')}`);
 
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
@@ -363,8 +385,8 @@ try {
   await card.waitFor({ state: 'visible' });
   await card.getByText(resultText, { exact: true }).waitFor({ state: 'visible' });
   markVideo('activity-result');
-  await page.screenshot({ path: join(outputRoot, 'screenshots', '07-chinese-result-in-activity.png'), fullPage: true });
-  await page.waitForTimeout(2_000);
+  await page.screenshot({ path: join(runOutputRoot, 'screenshots', '07-chinese-result-in-activity.png'), fullPage: true });
+  await page.waitForTimeout(3_000);
   await page.getByRole('button', { name: 'Scheduled', exact: true }).click();
   const scheduledItem = page.locator('.scheduled-item').filter({ hasText: taskTitle });
   await scheduledItem.waitFor({ state: 'visible' });
@@ -372,15 +394,15 @@ try {
   const scheduledDetail = page.getByTestId('scheduled-detail');
   await scheduledDetail.getByText('Every 60 minutes', { exact: true }).waitFor({ state: 'visible' });
   markVideo('scheduled-confirmed');
-  await page.screenshot({ path: join(outputRoot, 'screenshots', '08-hourly-follow-up-scheduled.png'), fullPage: true });
-  await page.waitForTimeout(2_500);
+  await page.screenshot({ path: join(runOutputRoot, 'screenshots', '08-hourly-follow-up-scheduled.png'), fullPage: true });
+  await page.waitForTimeout(4_000);
 
   runFailed = false;
   console.log(`Cloud computer proactive demo E2E passed: ${baseUrl}`);
 } finally {
   if (pageVideo) recordingPath = await pageVideo.path().catch(() => '');
   if (runFailed && page) {
-    await page.screenshot({ path: join(outputRoot, 'failure.png'), fullPage: true }).catch(() => undefined);
+    await page.screenshot({ path: join(runOutputRoot, 'failure.png'), fullPage: true }).catch(() => undefined);
     taskDiagnostics = await page.evaluate(async () => {
       const response = await fetch('/api/state', { cache: 'no-store' });
       if (!response.ok) return null;
@@ -397,9 +419,9 @@ try {
   workerPortForward = null;
   await stopServer();
   const secret = liveModelApiKey;
-  await writeFile(join(outputRoot, 'server.log'), secret ? serverLogs.join('').replaceAll(secret, '[REDACTED]') : serverLogs.join(''));
-  await writeFile(join(outputRoot, 'e2e-debug.json'), JSON.stringify({ mode: 'live-pi-in-debian-13-cloud-computer', result: runFailed ? 'failed' : 'passed', cluster, namespace: tenantNamespace, providerModel: liveModelName, fixtureUrl, uiEvidence, tasks: taskDiagnostics, computerApiResponses, recording: recordingPath ? 'captured' : 'missing' }, null, 2).replace(secret || '\u0000', '[REDACTED]') + '\n');
-  await writeFile(join(outputRoot, 'recording-marks.json'), JSON.stringify({ events: videoMarks }, null, 2) + '\n');
+  await writeFile(join(runOutputRoot, 'server.log'), secret ? serverLogs.join('').replaceAll(secret, '[REDACTED]') : serverLogs.join(''));
+  await writeFile(join(runOutputRoot, 'e2e-debug.json'), JSON.stringify({ mode: 'live-pi-in-debian-13-cloud-computer', result: runFailed ? 'failed' : 'passed', cluster, namespace: tenantNamespace, image: imageName, imageRevision: sourceRevision, providerModel: liveModelName, fixtureUrl, uiEvidence, tasks: taskDiagnostics, computerApiResponses, recording: recordingPath ? 'captured' : 'missing' }, null, 2).replace(secret || '\u0000', '[REDACTED]') + '\n');
+  await writeFile(join(runOutputRoot, 'recording-marks.json'), JSON.stringify({ events: videoMarks }, null, 2) + '\n');
   if (tenantNamespace && tenantNamespaceCreated) {
     const keepFailedNamespace = runFailed && process.env.DOTS_CLOUD_COMPUTER_DEMO_KEEP_FAILED_NAMESPACE === '1';
     if (keepFailedNamespace) console.log(`Preserved disposable namespace for diagnosis: ${tenantNamespace}`);
@@ -410,12 +432,13 @@ try {
 }
 
 assert(recordingPath && existsSync(recordingPath), 'Chrome did not produce the cloud computer demo recording');
-execFileSync(process.execPath, [join(projectRoot, 'scripts', 'convert-demo-video-to-webp.mjs'), recordingPath, join(outputRoot, 'cloud-computer-proactive-activity.webp'), join(outputRoot, 'recording-marks.json')], { cwd: projectRoot, stdio: 'inherit' });
-execFileSync(process.execPath, [join(projectRoot, 'scripts', 'verify-demo-webp.mjs'), join(outputRoot, 'cloud-computer-proactive-activity.webp')], { cwd: projectRoot, stdio: 'inherit' });
-execFileSync(process.execPath, [join(projectRoot, 'scripts', 'create-demo-webp-viewer.mjs'), join(outputRoot, 'cloud-computer-proactive-activity.webp'), join(outputRoot, 'cloud-computer-proactive-activity.html')], { cwd: projectRoot, stdio: 'inherit' });
-const videoAudit = JSON.parse(await readFile(join(outputRoot, 'cloud-computer-proactive-activity.webp.audit.json'), 'utf8'));
+execFileSync(process.execPath, [join(projectRoot, 'scripts', 'convert-demo-video-to-webp.mjs'), recordingPath, join(runOutputRoot, 'cloud-computer-proactive-activity.webp'), join(runOutputRoot, 'recording-marks.json')], { cwd: projectRoot, stdio: 'inherit' });
+execFileSync(process.execPath, [join(projectRoot, 'scripts', 'verify-demo-webp.mjs'), join(runOutputRoot, 'cloud-computer-proactive-activity.webp')], { cwd: projectRoot, stdio: 'inherit' });
+execFileSync(process.execPath, [join(projectRoot, 'scripts', 'create-demo-webp-viewer.mjs'), join(runOutputRoot, 'cloud-computer-proactive-activity.webp'), join(runOutputRoot, 'cloud-computer-proactive-activity.html')], { cwd: projectRoot, stdio: 'inherit' });
+const videoAudit = JSON.parse(await readFile(join(runOutputRoot, 'cloud-computer-proactive-activity.webp.audit.json'), 'utf8'));
+assert(videoAudit.durationSeconds >= 18, `The demo must preserve enough reading time at normal speed; got ${videoAudit.durationSeconds}s.`);
 await rm(recordingRoot, { recursive: true, force: true });
-await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
+await writeFile(join(runOutputRoot, 'manifest.json'), JSON.stringify({
   scenario: 'Dot runs an hourly check, finds a free place in a public activity listing, opens its details in the Debian cloud computer, and reports the date and availability in Chinese. It stops before registration or payment.',
   reference: [
     'https://learn.chatgpt.com/docs/dots/tasks-and-memory',
@@ -426,7 +449,7 @@ await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
   fixtureDisclosure: 'The activity page and all availability data are synthetic E2E fixtures served only inside the test cloud browser. No real registration, account change, or payment occurs.',
   recording: 'cloud-computer-proactive-activity.webp',
   viewer: 'cloud-computer-proactive-activity.html',
-  sourceRecording: 'Chrome E2E recording, cut to remove provisioning and model-wait time, cropped to remove the fixed capture strip, then converted to animated WebP',
+  sourceRecording: 'Chrome E2E recording, cut to remove provisioning and model-wait time, with brief reading holds at the Chinese prompt, cloud page, details, result, and schedule; cropped to remove the fixed capture strip, then converted to animated WebP at native speed',
   videoAudit,
   recordingMarkers: 'recording-marks.json',
   viewport: { width: 1440, height: 1000 },
@@ -437,12 +460,24 @@ await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
     'screenshots/06-computer-browser-in-dots.png', 'screenshots/07-chinese-result-in-activity.png', 'screenshots/08-hourly-follow-up-scheduled.png',
   ],
   kernel: 'Pi runs inside the tenant-isolated Debian 13 cloud computer; the Pi session is stored in that task workspace.',
+  desktopImage: imageName,
+  desktopImageRevision: sourceRevision,
   model: liveModelName,
   providerMode: 'Live shared Model API credentials reused across tenants',
-  browserAction: 'Pi inspected the visible page and used xdotool to click the exact non-submit “查看活动详情” button through the cloud computer desktop.',
+  browserAction: 'Pi inspected the visible page and clicked the exact non-submit “查看活动详情” button through the Debian cloud computer; the worker records the input method and verifies the visible disclosure state changed.',
+  computerUiInteraction: clickEvidence,
   resultLanguage: 'Chinese input and Chinese output',
   result: 'passed',
 }, null, 2) + '\n');
+const previousOutputRoot = `${outputRoot}.previous-${randomUUID()}`;
+if (existsSync(outputRoot)) await rename(outputRoot, previousOutputRoot);
+try {
+  await rename(runOutputRoot, outputRoot);
+} catch (error) {
+  if (existsSync(previousOutputRoot)) await rename(previousOutputRoot, outputRoot);
+  throw error;
+}
+await rm(previousOutputRoot, { recursive: true, force: true });
 assert(existsSync(join(outputRoot, 'cloud-computer-proactive-activity.webp')));
 assert(existsSync(join(outputRoot, 'cloud-computer-proactive-activity.html')));
 console.log(`Animated WebP: ${join(outputRoot, 'cloud-computer-proactive-activity.webp')}`);
