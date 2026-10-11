@@ -9,19 +9,19 @@
   "fixtureDisclosure": "The activity page and all availability data are synthetic E2E fixtures served only inside the test cloud browser. No real registration, account change, or payment occurs.",
   "recording": "cloud-computer-proactive-activity.webp",
   "viewer": "cloud-computer-proactive-activity.html",
-  "sourceRecording": "Chrome E2E recording, cut to remove provisioning and model-wait time, cropped to remove the fixed capture strip, then converted to animated WebP",
+  "sourceRecording": "Chrome E2E recording, cut to remove provisioning and model-wait time, with brief reading holds at the Chinese prompt, cloud page, details, result, and schedule; cropped to remove the fixed capture strip, then converted to animated WebP at native speed",
   "videoAudit": {
     "format": "webp",
     "width": 1152,
     "height": 730,
-    "decodedFrames": 52,
-    "distinctDecodedFrames": 52,
-    "durationSeconds": 11.09,
+    "decodedFrames": 107,
+    "distinctDecodedFrames": 107,
+    "durationSeconds": 20,
     "chromePlayback": {
       "width": 1152,
       "height": 730,
-      "samples": 22,
-      "distinctSamples": 21
+      "samples": 37,
+      "distinctSamples": 37
     },
     "verified": true
   },
@@ -44,9 +44,41 @@
     "screenshots/08-hourly-follow-up-scheduled.png"
   ],
   "kernel": "Pi runs inside the tenant-isolated Debian 13 cloud computer; the Pi session is stored in that task workspace.",
+  "desktopImage": "coke-dots-linux-desktop:sha-d8acb5533117aa252c60b1f1887481524727dc49",
+  "desktopImageRevision": "d8acb5533117aa252c60b1f1887481524727dc49",
   "model": "deepseek-flash",
   "providerMode": "Live shared Model API credentials reused across tenants",
-  "browserAction": "Pi inspected the visible page and used xdotool to click the exact non-submit “查看活动详情” button through the cloud computer desktop.",
+  "browserAction": "Pi inspected the visible page and clicked the exact non-submit “查看活动详情” button through the Debian cloud computer; the worker records the input method and verifies the visible disclosure state changed.",
+  "computerUiInteraction": {
+    "at": "2026-10-11T19:26:57.954Z",
+    "action": "click-information-button",
+    "name": "查看活动详情",
+    "url": "https://activity-fixture.dots.test/open",
+    "viewport": {
+      "x": 94,
+      "y": 184,
+      "scale": 1,
+      "screenX": 94,
+      "screenY": 97,
+      "outerWidth": 1252,
+      "outerHeight": 885,
+      "innerWidth": 1252,
+      "innerHeight": 798
+    },
+    "target": {
+      "x": 290.0078125,
+      "y": 459.546875,
+      "expanded": "false"
+    },
+    "physicalClick": {
+      "x": 384,
+      "y": 644
+    },
+    "physicalClickChangedPage": true,
+    "success": true,
+    "expanded": "true",
+    "changedText": true
+  },
   "resultLanguage": "Chinese input and Chinese output",
   "result": "passed"
 }

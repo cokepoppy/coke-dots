@@ -8,6 +8,9 @@ assert(process.argv[2] && process.argv[3], 'Usage: node scripts/create-demo-webp
 
 const bytes = await readFile(source);
 assert(bytes.length > 100_000, 'The WebP file is unexpectedly small.');
+const audit = JSON.parse(await readFile(`${source}.audit.json`, 'utf8'));
+assert(audit.verified === true && Number.isFinite(audit.durationSeconds), 'The viewer requires a completed playback audit.');
+const durationSeconds = Math.round(audit.durationSeconds);
 const encoded = bytes.toString('base64');
 const page = `<!doctype html>
 <html lang="zh-CN">
@@ -46,7 +49,7 @@ const page = `<!doctype html>
     </header>
     <section class="player" aria-label="演示视频">
       <img id="demo" alt="Dot 在 Debian 云电脑中查看活动详情，并在 Activity 汇报结果和确认每小时后续计划" src="data:image/webp;base64,${encoded}">
-      <div class="caption"><span>11 秒 · 自动循环 · 中文任务与汇报</span><span class="playing"><i class="dot"></i>正在播放</span></div>
+      <div class="caption"><span>${durationSeconds} 秒 · 原速播放 · 自动循环 · 中文任务与汇报</span><span class="playing"><i class="dot"></i>正在播放</span></div>
     </section>
     <section class="steps" aria-label="演示步骤">
       <div class="step"><b>1 · 接收目标</b>用户用中文交代定时检查任务</div>

@@ -2,27 +2,27 @@
   "events": [
     {
       "name": "demo-start",
-      "atSeconds": 64.459
+      "atSeconds": 67.188
     },
     {
       "name": "task-working",
-      "atSeconds": 65.464
+      "atSeconds": 69.782
     },
     {
       "name": "cloud-page-visible",
-      "atSeconds": 67.186
+      "atSeconds": 71.566
     },
     {
       "name": "details-visible",
-      "atSeconds": 69.341
+      "atSeconds": 75.381
     },
     {
       "name": "activity-result",
-      "atSeconds": 74.163
+      "atSeconds": 82.677
     },
     {
       "name": "scheduled-confirmed",
-      "atSeconds": 76.294
+      "atSeconds": 85.803
     }
   ]
 }
