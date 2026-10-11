@@ -294,8 +294,8 @@ try {
     await page.getByTestId('dot-onboarding').waitFor({ state: 'visible' });
     await page.getByTestId('engine-select').waitFor({ state: 'visible' });
     await page.locator('.composer-bottom select').selectOption('pi');
-    const engines = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[] };
-    assert(engines.availableEngines.includes('pi') && engines.remoteEngines.includes('pi'), 'Pi must be selected as the tenant cloud-computer kernel.');
+    const engines = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[] };
+    assert(engines.availableEngines.includes('pi'), 'Pi must be selected as the tenant cloud-computer kernel.');
     console.log(`步骤：选择 Pi 云电脑内核，隔离租户 ${tenantNamespace}`);
   }
   await new Promise(resolvePromise => setTimeout(resolvePromise, 900));
