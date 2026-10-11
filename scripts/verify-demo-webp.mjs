@@ -42,10 +42,12 @@ const server = createServer((_request, response) => {
   response.end(bytes);
 });
 await new Promise((resolvePromise, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+let page;
+let verificationPassed = false;
 try {
   const address = server.address();
   assert(address && typeof address !== 'string');
-  const page = await browser.newPage({ viewport: { width: frameSize.width, height: frameSize.height } });
+  page = await browser.newPage({ viewport: { width: frameSize.width, height: frameSize.height } });
   await page.goto(`http://127.0.0.1:${address.port}/cloud-computer-proactive-activity.webp`);
   await page.waitForFunction(({ width, height }) => {
     const image = document.querySelector('img');
@@ -73,7 +75,22 @@ try {
   };
   await writeFile(`${file}.audit.json`, JSON.stringify(audit, null, 2) + '\n');
   console.log(`Chrome verified animated WebP: ${durationSeconds}s, ${frameHashes.length} decoded frames, ${uniqueFrames} distinct frames, ${playback.distinctSamples} distinct playback samples.`);
+  verificationPassed = true;
 } finally {
-  await browser.close();
-  await new Promise(resolvePromise => server.close(resolvePromise));
+  const withTimeout = async (promise, timeoutMs) => Promise.race([
+    promise,
+    new Promise(resolvePromise => setTimeout(() => resolvePromise(false), timeoutMs)),
+  ]);
+  const pageClosed = await withTimeout(page?.close().then(() => true).catch(() => true) || Promise.resolve(true), 3000);
+  const browserClosed = await withTimeout(browser.close().then(() => true).catch(() => true), 5000);
+  server.closeAllConnections();
+  server.unref();
+  const closeServer = new Promise(resolvePromise => server.close(resolvePromise));
+  const serverClosed = await withTimeout(closeServer.then(() => true), 1000);
+  if (!pageClosed || !browserClosed || !serverClosed) {
+    console.warn(`Chrome playback cleanup exceeded its time limit (page=${pageClosed}, browser=${browserClosed}, server=${serverClosed}).`);
+  }
+  // Chrome has already rendered and sampled every required playback frame;
+  // avoid hanging the E2E job on stray browser/keep-alive handles after audit.
+  if (verificationPassed) process.exit(0);
 }
