@@ -18,7 +18,9 @@
     "build:server": "esbuild src/server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=server-dist/index.js",
     "build:electron": "esbuild electron/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=electron-dist/main.cjs",
     "dev:desktop": "concurrently -k \"npm run dev:web\" \"npm run build:electron && wait-on http://127.0.0.1:5173 && DOTS_DEV_URL=http://127.0.0.1:5173 electron electron-dist/main.cjs\"",
-    "desktop": "npm run build && npm run build:server && npm run build:electron && electron electron-dist/main.cjs"
+    "desktop": "npm run build && npm run build:server && npm run build:electron && electron electron-dist/main.cjs",
+    "test:e2e:proactive-demo": "npm run build && node --import tsx tests/e2e/proactive-research-demo.e2e.ts",
+    "test:e2e:proactive-demo:pi": "npm run build && DOTS_PROACTIVE_DEMO_LIVE_PI=1 node --import tsx tests/e2e/proactive-research-demo.e2e.ts"
   },
   "dependencies": {
     "@napi-rs/keyring": "^2.1.0",
@@ -37,6 +39,7 @@
     "electron": "39.8.10",
     "esbuild": "^0.28.0",
     "pngjs": "^7.0.0",
+    "sharp": "^0.35.5",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "vite": "^7.1.0",

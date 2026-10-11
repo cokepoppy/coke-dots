@@ -84,21 +84,24 @@ async function drainQueue() {
 
 async function executeKernel(input, requestSignal, slot) {
   const engine = String(input.engine || '');
+  if (input.executionMode !== undefined && !['standard', 'read-only', 'proactive-research'].includes(input.executionMode)) throw new Error('Agent execution mode is invalid');
+  const executionMode = input.executionMode === 'proactive-research' ? 'proactive-research' : input.executionMode === 'read-only' ? 'read-only' : 'standard';
   if (!allowedEngines.has(engine)) throw new Error(`Agent kernel '${engine}' is not enabled for this workspace`);
   if (!['pi', 'dsh'].includes(engine)) throw new Error(`Agent kernel '${engine}' needs an installed adapter`);
   const adapter = configured[engine];
   if (!adapter) throw new Error(`Agent kernel '${engine}' is enabled but no adapter is installed in this image`);
+  const modelConfig = engine === 'pi' ? validateModelConfig(input.modelConfig) : null;
   const taskId = String(input.taskId || '');
   if (!/^[a-f0-9-]{8,64}$/i.test(taskId)) throw new Error('Task id is invalid');
   const prompt = String(input.prompt || '').trim();
   if (!prompt || prompt.length > 20_000) throw new Error('Task prompt must contain 1–20000 characters');
   if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
-  if (await controlOwner() !== 'agent') return { taskId, status: 'waiting', message: '电脑目前由你控制。交还电脑后，请告诉我继续。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
+  if (executionMode !== 'proactive-research' && await controlOwner() !== 'agent') return { taskId, status: 'waiting', message: '电脑目前由你控制。交还电脑后，请告诉我继续。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
 
-  const cwd = safeWorkspace(input.cwd);
+  const cwd = safeWorkspace(executionMode === 'proactive-research' ? `reviews/${taskId}` : input.cwd);
   await mkdir(cwd, { recursive: true, mode: 0o700 });
   if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
-  const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'DOTS_AGENT_RUNTIME_TOKEN'));
+  const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['DOTS_AGENT_RUNTIME_TOKEN', 'LINUX_DESKTOP_WORKER_TOKEN'].includes(key)));
   const child = spawn(adapter.command, adapter.args, { cwd, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
   const abort = new AbortController();
   slot.child = child;
@@ -107,16 +110,18 @@ async function executeKernel(input, requestSignal, slot) {
   child.stdout.on('data', chunk => { stdout = (stdout + chunk.toString()).slice(-500_000); });
   child.stderr.on('data', () => undefined);
   child.stdin.end(JSON.stringify({
-    engine, prompt, cwd, workspace, taskId,
+    engine, prompt, cwd, taskId, executionMode,
+    ...(modelConfig ? { modelConfig } : {}),
+    ... (executionMode === 'proactive-research' ? {} : { workspace }),
     sessionId: typeof input.sessionId === 'string' ? input.sessionId : null,
-    computer: {
+    ...(executionMode === 'proactive-research' ? {} : { computer: {
       baseUrl: `http://127.0.0.1:${workerPort}`,
       workerToken: process.env.LINUX_DESKTOP_WORKER_TOKEN,
       actions: ['navigate', 'click', 'type', 'screenshot'],
-    },
+    } }),
   }));
   const timer = setTimeout(() => child.kill('SIGTERM'), 14 * 60_000);
-  const controlPoll = setInterval(() => { void controlOwner().then(owner => { if (owner === 'user') pauseActive(); }).catch(() => child.kill('SIGTERM')); }, 500);
+  const controlPoll = executionMode === 'proactive-research' ? undefined : setInterval(() => { void controlOwner().then(owner => { if (owner === 'user') pauseActive(); }).catch(() => child.kill('SIGTERM')); }, 500);
   const onRequestAbort = () => abort.abort();
   requestSignal?.addEventListener('abort', onRequestAbort, { once: true });
   abort.signal.addEventListener('abort', () => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2000).unref(); }, { once: true });
@@ -131,12 +136,28 @@ async function executeKernel(input, requestSignal, slot) {
     let result;
     try { result = JSON.parse(stdout); } catch { throw new Error('Agent adapter must return a JSON decision'); }
     if (!['done', 'waiting', 'scheduled', 'delegating'].includes(result.status) || typeof result.message !== 'string' || !result.message.trim()) throw new Error('Agent adapter returned an invalid decision');
+    if (executionMode === 'proactive-research' && (result.status !== 'done' || typeof result.proactiveFinding !== 'boolean' || result.pageAction !== undefined || result.delegations !== undefined || result.nextMinutes !== undefined)) throw new Error('Proactive research adapter returned an invalid or actionable decision');
+    if (executionMode !== 'proactive-research' && result.proactiveFinding !== undefined) throw new Error('Standard Agent adapter must not return a proactive research finding');
+    if (result.notifyUser !== undefined && typeof result.notifyUser !== 'boolean') throw new Error('Agent adapter returned an invalid notification preference');
     return { taskId, ...result, engine, message: result.message.slice(0, 20_000), sessionId: typeof result.sessionId === 'string' ? result.sessionId : null };
   } finally {
     clearTimeout(timer); clearInterval(controlPoll);
     requestSignal?.removeEventListener('abort', onRequestAbort);
     slot.child = null; slot.abort = null;
   }
+}
+
+function validateModelConfig(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Pi needs the shared model API configuration');
+  const apiKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : '';
+  const model = typeof value.model === 'string' ? value.model.trim() : '';
+  const baseUrl = typeof value.baseUrl === 'string' ? value.baseUrl.trim() : '';
+  let parsed;
+  try { parsed = new URL(baseUrl); } catch { throw new Error('Pi shared model endpoint is invalid'); }
+  if (!apiKey || apiKey.length > 4096 || /[\r\n\u0000]/.test(apiKey) || !model || model.length > 256 || !['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('Pi shared model API configuration is invalid');
+  }
+  return { apiKey, model, baseUrl: baseUrl.replace(/\/$/, '') };
 }
 
 function pauseActive() {

@@ -5,6 +5,7 @@ export type Engine = (typeof selectableEngines)[number];
 export type TaskEngine = Engine | 'claude';
 export const isEngine = (value: unknown): value is Engine => typeof value === 'string' && (selectableEngines as readonly string[]).includes(value);
 export type TaskStatus = 'queued' | 'working' | 'delegating' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused' | 'stopped';
+export type TaskExecutionMode = 'standard' | 'read-only' | 'proactive-research';
 export type ActionRuleMode = 'without-asking' | 'when-requested' | 'ask-before' | 'hand-off';
 export type { ScheduleSpec } from './scheduling.ts';
 
@@ -26,6 +27,7 @@ export interface Task {
   agentSessionId: string | null;
   title: string;
   instruction: string;
+  executionMode?: TaskExecutionMode;
   status: TaskStatus;
   priority: number;
   nextRunAt: string | null;

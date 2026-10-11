@@ -26,6 +26,40 @@ test('tasks, redirects and profile survive database reopen', () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('proactive research is idempotent, bounded to one tenant, and hidden when there is no finding', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-proactive-review-'));
+  const store = new Store(directory);
+  try {
+    const alpha = store.signInGoogle({ subject: 'proactive-alpha', email: 'proactive-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'proactive-beta', email: 'proactive-beta@example.test', name: 'Beta' });
+    store.addTenantMemory(alpha.tenant.id, alpha.user.id, 'The approved launch date is October 21.');
+    store.addTenantMemory(beta.tenant.id, beta.user.id, 'Beta private note must remain isolated.');
+    const active = store.createTask('Keep the announcement draft open until approval.', null, 'model', alpha.tenant.id, null, null, [], alpha.user.id);
+    store.updateTask(active.id, { status: 'waiting', result: 'The draft still says October 21.' }, alpha.tenant.id);
+    const source = store.createTask('Summarize the release decision.', null, 'model', alpha.tenant.id, null, null, [], alpha.user.id);
+    store.updateTask(source.id, { status: 'done', result: 'The team moved launch to October 22. sk-test-1234567890 api_key=private-secret.' }, alpha.tenant.id);
+
+    const review = store.createProactiveResearchReview(source.id, alpha.tenant.id, 'model');
+    assert(review);
+    assert.equal(review.executionMode, 'proactive-research');
+    assert.equal(review.priority, -1, 'The background review must be queued behind user-assigned work');
+    assert.equal(store.createProactiveResearchReview(source.id, alpha.tenant.id, 'pi')?.id, review.id, 'A duplicate completion callback must reuse its review');
+    const context = store.taskContext(review.id, alpha.tenant.id);
+    assert.match(context, /October 22/);
+    assert.match(context, /October 21/);
+    assert.doesNotMatch(context, /private-secret|sk-test-1234567890/);
+    assert.doesNotMatch(context, /Beta private note/);
+    assert.equal(store.createProactiveResearchReview(source.id, beta.tenant.id, 'model'), null, 'A tenant cannot review another tenant task');
+
+    const recurring = store.createTask('Check the release plan each day.', null, 'model', alpha.tenant.id, { frequency: 'daily', time: '09:00', timeZone: 'Asia/Shanghai' }, null, [], alpha.user.id);
+    store.updateTask(recurring.id, { status: 'done', result: 'Daily report.' }, alpha.tenant.id);
+    assert.equal(store.createProactiveResearchReview(recurring.id, alpha.tenant.id, 'model'), null, 'A recurring task run must not spawn a second background review');
+
+    store.updateTask(review.id, { status: 'done', result: null }, alpha.tenant.id);
+    assert.equal(store.snapshot(false, [], undefined, alpha.tenant.id).tasks.some(task => task.id === review.id), false, 'An empty review result must not appear as a user-facing task');
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('dot appearance is durable and isolated to its tenant', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-appearance-'));
   try {
@@ -523,6 +557,130 @@ test('background worker stores real model result and schedules a future run', as
     delete process.env.DOTS_MODEL_BASE_URL;
     delete process.env.DOTS_MODEL;
     delete process.env.DOTS_MODEL_API_KEY;
+  }
+});
+
+test('completed one-off work starts a quiet read-only proactive review and surfaces only supported findings', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-proactive-worker-'));
+  const keys = ['DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(keys.map(key => [key, process.env[key]]));
+  const requests: { prompt: string; tools: unknown[] }[] = [];
+  const modelServer = createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += String(chunk);
+    const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[]; tools?: unknown[] };
+    const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
+    requests.push({ prompt, tools: payload.tools || [] });
+    const proactive = prompt.includes('Proactive research constraints');
+    const decision = proactive
+      ? { status: 'done', message: '新决定把发布时间改为 10 月 22 日，但未审批的公告仍写着 10 月 21 日。要我更新草稿吗？我没有修改或发送。', proactiveFinding: true }
+      : { status: 'done', message: '团队确认发布时间改为 10 月 22 日。' };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(decision) } }] }));
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'test-model';
+  process.env.DOTS_MODEL_API_KEY = 'test-key';
+  const store = new Store(directory);
+  const owner = store.signInGoogle({ subject: 'proactive-worker-owner', email: 'proactive-worker@example.test', name: 'Owner' });
+  store.addTenantMemory(owner.tenant.id, owner.user.id, 'The public announcement must wait for approval.');
+  const draft = store.createTask('Keep the launch announcement draft open for approval.', null, 'model', owner.tenant.id, null, null, [], owner.user.id);
+  store.updateTask(draft.id, { status: 'waiting', result: 'The announcement draft says October 21.' }, owner.tenant.id);
+  const source = store.createTask('Summarize the release decision.', null, 'model', owner.tenant.id, null, null, [], owner.user.id);
+  const worker = new Worker(store, () => {});
+  try {
+    worker.start();
+    await waitFor(() => store.snapshot(true, [], undefined, owner.tenant.id).tasks.some(task => task.executionMode === 'proactive-research' && task.status === 'done'));
+    const tasks = store.snapshot(true, [], undefined, owner.tenant.id).tasks;
+    const completedSource = store.getTask(source.id, owner.tenant.id)!;
+    const review = tasks.find(task => task.executionMode === 'proactive-research' && task.status === 'done');
+    assert.equal(completedSource.status, 'done');
+    assert(review?.result?.includes('10 月 22 日'));
+    assert.equal(store.getTask(draft.id, owner.tenant.id)?.status, 'waiting', 'The review must leave the existing draft task untouched');
+    assert.equal(store.tenantPages(owner.tenant.id).length, 0, 'The read-only review must not write to Scratchpad');
+    assert.equal(requests.length, 2, 'The completed task and its follow-up review should each run once');
+    const reviewRequest = requests.find(request => request.prompt.includes('Proactive research constraints'));
+    assert(reviewRequest);
+    assert.match(reviewRequest.prompt, /October 21/);
+    assert.match(reviewRequest.prompt, /10 月 22 日/);
+    assert.match(reviewRequest.prompt, /Do not browse, control a computer, read or modify files/);
+    assert.doesNotMatch(JSON.stringify(reviewRequest.tools), /computer|send|write/i);
+  } finally {
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of keys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('one background review has a separate lane and cannot occupy capacity reserved for assigned work', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-review-capacity-'));
+  const keys = ['DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(keys.map(key => [key, process.env[key]]));
+  const modelRequests: { prompt: string; release: (decision: Record<string, unknown>) => void }[] = [];
+  const modelServer = createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += String(chunk);
+    const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+    const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
+    await new Promise<void>(resolve => modelRequests.push({ prompt, release: decision => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(decision) } }] }));
+      resolve();
+    } }));
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'capacity-test-model';
+  process.env.DOTS_MODEL_API_KEY = 'capacity-test-key';
+  const store = new Store(directory);
+  const alpha = store.signInGoogle({ subject: 'capacity-alpha', email: 'capacity-alpha@example.test', name: 'Alpha' });
+  const beta = store.signInGoogle({ subject: 'capacity-beta', email: 'capacity-beta@example.test', name: 'Beta' });
+  const gamma = store.signInGoogle({ subject: 'capacity-gamma', email: 'capacity-gamma@example.test', name: 'Gamma' });
+  const assigned = [
+    store.createTask('Assigned Alpha one', null, 'model', alpha.tenant.id, null, null, [], alpha.user.id),
+    store.createTask('Assigned Alpha two', null, 'model', alpha.tenant.id, null, null, [], alpha.user.id),
+    store.createTask('Assigned Beta one', null, 'model', beta.tenant.id, null, null, [], beta.user.id),
+  ];
+  const ongoing = store.createTask('Keep the launch note open.', null, 'model', gamma.tenant.id, null, null, [], gamma.user.id);
+  store.updateTask(ongoing.id, { status: 'waiting', result: 'Waiting for approval.' }, gamma.tenant.id);
+  const source = store.createTask('Summarize a completed release update.', null, 'model', gamma.tenant.id, null, null, [], gamma.user.id);
+  store.updateTask(source.id, { status: 'done', result: 'The release date is October 22.' }, gamma.tenant.id);
+  const review = store.createProactiveResearchReview(source.id, gamma.tenant.id, 'model');
+  assert(review);
+  const worker = new Worker(store, () => {});
+  try {
+    worker.start();
+    await waitFor(() => modelRequests.length === 4);
+    assert.equal(modelRequests.filter(request => !request.prompt.includes('Proactive research constraints')).length, 3);
+    assert.equal(modelRequests.filter(request => request.prompt.includes('Proactive research constraints')).length, 1);
+
+    const nextAssigned = store.createTask('Assigned Gamma task.', null, 'model', gamma.tenant.id, null, null, [], gamma.user.id);
+    void worker.tick();
+    await waitFor(() => modelRequests.length === 5);
+    assert(modelRequests.some(request => request.prompt.includes('Assigned Gamma task.')), 'A background review occupied an assigned-work slot');
+
+    worker.stop();
+    for (const request of modelRequests) request.release(request.prompt.includes('Proactive research constraints')
+      ? { status: 'done', message: 'No useful connection.', proactiveFinding: false, notifyUser: false }
+      : { status: 'waiting', message: 'Need your review.' });
+    await waitFor(() => assigned.every(task => store.getTask(task.id, task.tenantId)?.status === 'waiting') && store.getTask(nextAssigned.id, gamma.tenant.id)?.status === 'waiting' && store.getTask(review.id, gamma.tenant.id)?.status === 'done');
+  } finally {
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of keys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
   }
 });
 

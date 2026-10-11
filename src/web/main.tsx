@@ -553,6 +553,7 @@ function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask,
       return <div className={`task-card ${task.parentTaskId ? 'delegated-child' : ''}`} data-testid={`task-card-${task.id}`} key={task.id}>
       <div className="task-card-head"><span className={`pill ${task.status}`}>{statusText[task.status]}</span><time>{new Date(task.updatedAt).toLocaleString('zh-CN')}</time></div>
       {parent && <small className="delegated-from">委派自：{parent.title} · 内核：{engineText[task.engine]}</small>}
+      {task.executionMode === 'proactive-research' && <small className="task-mode-badge">Dot 主动研究 · 只读</small>}
       <h2>{task.title}</h2><p>{description}</p>
       <div className="card-actions"><button onClick={() => onSelectTask(task.id)}>查看详情 →</button><TaskControls task={task} act={async (item, action, extra) => { try { await request(`/tasks/${item.id}`, 'PATCH', { action, ...extra }); } catch (reason) { setError(String(reason)); } }} compact /></div>
     </div>})}</div>

@@ -1,6 +1,7 @@
 import { createHmac, createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
+import type { TaskExecutionMode } from '../shared/types.ts';
 import type { ComputerRuntime, ComputerState } from './computer.ts';
 import { LinuxDesktopWorkerError } from './computer-errors.ts';
 
@@ -110,21 +111,34 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     return this.connection?.novncUrl ?? null;
   }
 
-  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; signal?: AbortSignal }) {
+  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; executionMode?: TaskExecutionMode; modelConfig?: { apiKey: string; baseUrl: string; model: string }; signal?: AbortSignal }) {
     await this.ensureConnection();
-    const owner = await this.request('/v1/control');
-    if (!owner.ok || (await owner.json() as { owner?: string }).owner !== 'agent') throw new Error('用户正在接管这台电脑，Agent 已暂停');
+    const executionMode = input.executionMode || 'standard';
+    if (executionMode !== 'proactive-research') {
+      const owner = await this.request('/v1/control');
+      if (!owner.ok || (await owner.json() as { owner?: string }).owner !== 'agent') throw new Error('用户正在接管这台电脑，Agent 已暂停');
+    }
     const url = endpointUrl(this.connection!.agentUrl, 'v1/tasks/run');
+    const taskRequest = {
+      engine: input.engine,
+      taskId: input.taskId,
+      prompt: input.prompt,
+      sessionId: input.sessionId,
+      executionMode,
+      ...(input.engine === 'pi' && input.modelConfig ? { modelConfig: input.modelConfig } : {}),
+      cwd: executionMode === 'proactive-research' ? `reviews/${input.taskId}` : `tasks/${input.taskId}`,
+      ...(executionMode === 'proactive-research' ? {} : { computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
+    };
     const response = await fetch(url, {
       method: 'POST',
       headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ engine: input.engine, taskId: input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
+      body: JSON.stringify(taskRequest),
       signal: input.signal ? AbortSignal.any([AbortSignal.timeout(15 * 60_000), input.signal]) : AbortSignal.timeout(15 * 60_000),
     });
-    const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] };
+    const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; proactiveFinding?: boolean; notifyUser?: boolean };
     if (!response.ok) throw new Error(result.error || `Linux Agent 运行时返回 HTTP ${response.status}`);
     if (typeof result.status !== 'string' || typeof result.message !== 'string') throw new Error('Linux Agent 运行时返回了无效结果');
-    return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }) };
+    return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }), ...(result.proactiveFinding === undefined ? {} : { proactiveFinding: result.proactiveFinding }), ...(result.notifyUser === undefined ? {} : { notifyUser: result.notifyUser }) };
   }
 
   async close() {

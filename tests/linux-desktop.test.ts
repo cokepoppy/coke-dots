@@ -215,9 +215,12 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
   const agentServer = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
-    agentInput.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    const input = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+    agentInput.push(input);
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ status: 'done', message: 'remote task finished', sessionId: 'remote-session' }));
+    res.end(JSON.stringify(input.executionMode === 'proactive-research'
+      ? { status: 'done', message: 'remote research finding', proactiveFinding: true }
+      : { status: 'done', message: 'remote task finished', sessionId: 'remote-session' }));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   await new Promise<void>(resolve => agentServer.listen(0, '127.0.0.1', resolve));
@@ -246,13 +249,24 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     assert.deepEqual(commands.map(command => command.action), ['open', 'click', 'type', 'navigate']);
     assert.equal((await computer.screenshot()).toString(), png.toString());
     await assert.rejects(computer.runAgentTask({ engine: 'dsh', taskId: 'task-1', prompt: 'continue', sessionId: null }), /用户正在接管/);
+    const sharedModel = { apiKey: 'test-shared-model-key', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' };
+    const proactive = await computer.runAgentTask({ engine: 'pi', taskId: 'review-1', prompt: 'review bounded context', sessionId: null, executionMode: 'proactive-research', modelConfig: sharedModel });
+    assert.equal(proactive.proactiveFinding, true, 'Read-only research should not need control of the visible desktop');
+    const reviewInput = agentInput.find(input => input.executionMode === 'proactive-research');
+    assert(reviewInput);
+    assert.equal(reviewInput.cwd, 'reviews/review-1');
+    assert.equal('computer' in reviewInput, false, 'Proactive research must not receive the desktop capability token');
+    assert.deepEqual(reviewInput.modelConfig, sharedModel, 'Pi receives the shared model profile inside the tenant computer runtime');
     await computer.returnControl();
     const result = await computer.runAgentTask({ engine: 'dsh', taskId: 'task-1', prompt: 'continue', sessionId: null });
     assert.equal(result.message, 'remote task finished');
     assert.equal(result.sessionId, 'remote-session');
-    assert.equal(agentInput[0].cwd, 'tasks/task-1');
-    assert.equal('signal' in agentInput[0], false, 'AbortSignal must control the HTTP request, not leak into the runtime payload');
-    assert.equal((agentInput[0].computer as { workerToken: string }).workerToken, 'scoped-worker-token');
+    const standardInput = agentInput.find(input => input.executionMode === 'standard');
+    assert(standardInput);
+    assert.equal(standardInput.cwd, 'tasks/task-1');
+    assert.equal('modelConfig' in standardInput, false, 'The shared model profile is not forwarded to another kernel');
+    assert.equal('signal' in standardInput, false, 'AbortSignal must control the HTTP request, not leak into the runtime payload');
+    assert.equal((standardInput.computer as { workerToken: string }).workerToken, 'scoped-worker-token');
     await computer.close();
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));

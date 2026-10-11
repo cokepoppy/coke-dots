@@ -100,3 +100,7 @@ V1's chapter titles and selected frames have been reviewed directly in Chrome. S
 ### Reference-frame comparison
 
 `npm run compare:reference -- research/comparisons/avatar-editor-v2-0246.json <implementation.png>` crops a retained local YouTube/Chrome reference and an app screenshot, aligns their sizes, then writes reference and implementation crops, a 50% overlay, a difference image, and `metrics.json` under `artifacts/reference-comparison/avatar-editor-v2-0246/`. The current comparison uses a 600 × 370 crop of the V2 Shape editor frame at 02:46. Its PNG source and generated output are local-only; the tracked JSON records crop coordinates and the compression/scaling limitation. MAE and changed-pixel ratio help spot regressions after a fixed crop, but typography, source-video compression, browser chrome and unknown CSS viewport make them unsuitable as a claim of exact pixel parity.
+
+### 主动跨任务研究
+
+[可追溯规格与证据边界](proactive-cross-task-review.md) 记录官方只读主动研究约束、Coke Dots 的触发/隔离/Activity 映射、中文冲突场景、Pi 云电脑验证方法及 WebP/Chrome 验收方法。该具体操作序列尚未在公开视频中观察到，不宣称像素级复刻。

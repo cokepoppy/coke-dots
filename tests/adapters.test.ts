@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { adapters, parseDecision } from '../src/server/adapters.ts';
+import { adapters, formatAgentPrompt, parseDecision } from '../src/server/adapters.ts';
 import { Store } from '../src/server/store.ts';
 import { Worker } from '../src/server/worker.ts';
 
@@ -11,6 +11,21 @@ test('agent output must specify a real task state', () => {
   assert.equal(parseDecision('{"status":"waiting","message":"Need access"}').status, 'waiting');
   assert.throws(() => parseDecision('I probably finished the work'));
   assert.throws(() => parseDecision('{"status":"done","message":""}'));
+});
+
+test('proactive research accepts only an explicit read-only finding decision', () => {
+  const decision = parseDecision(JSON.stringify({ status: 'done', message: 'Two active plans disagree about the release date.', proactiveFinding: true }), undefined, { allowDelegation: false, allowProactiveFinding: true });
+  assert.equal(decision.proactiveFinding, true);
+  assert.equal(parseDecision(JSON.stringify({ status: 'done', message: 'No useful connection.', proactiveFinding: false, notifyUser: false }), undefined, { allowProactiveFinding: true }).notifyUser, false);
+  assert.throws(() => parseDecision('{"status":"done","message":"Maybe"}', undefined, { allowProactiveFinding: true }), /明确的发现标记/);
+  assert.throws(() => parseDecision('{"status":"waiting","message":"Need access","proactiveFinding":false}', undefined, { allowProactiveFinding: true }), /明确的发现标记/);
+  assert.throws(() => parseDecision('{"status":"done","message":"Updated it","proactiveFinding":true,"pageAction":{"action":"create","title":"Notes","content":"Changed"}}', undefined, { allowProactiveFinding: true }), /不能写入页面/);
+  assert.throws(() => parseDecision('{"status":"done","message":"Found one","proactiveFinding":true}', undefined, { allowProactiveFinding: false }), /普通任务不能返回/);
+
+  const prompt = formatAgentPrompt({ executionMode: 'proactive-research', prompt: '{"sourceTask":{"result":"October 22"}}', priorResult: null, sessionId: null, workspace: '/tmp/review', onEvent: () => {} });
+  assert.match(prompt, /Proactive research constraints/);
+  assert.match(prompt, /Do not browse, control a computer, read or modify files/);
+  assert.match(prompt, /October 22/);
 });
 
 test('agent Scratchpad actions require bounded page content and a valid tenant page ID', () => {

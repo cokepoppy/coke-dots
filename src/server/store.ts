@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isEngine, type ActionRuleMode, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskEngine, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WorkspacePage } from '../shared/types.ts';
+import { isEngine, type ActionRuleMode, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskEngine, type TaskStatus, type TaskExecutionMode, type TenantActionRule, type VoiceCallSession, type Watch, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -71,7 +71,15 @@ export class Store {
         status TEXT NOT NULL, priority INTEGER NOT NULL, next_run_at TEXT,
         schedule_minutes INTEGER, result TEXT, error TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT, parent_task_id TEXT
+        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT, parent_task_id TEXT,
+        execution_mode TEXT NOT NULL DEFAULT 'standard', task_context TEXT NOT NULL DEFAULT '',
+        created_by_user_id TEXT REFERENCES users(id)
+      );
+      CREATE TABLE IF NOT EXISTS proactive_research_reviews (
+        source_task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        review_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'legacy', task_id TEXT,
@@ -154,6 +162,9 @@ export class Store {
     this.addColumnIfMissing('tasks', 'agent_session_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
     this.addColumnIfMissing('tasks', 'parent_task_id', 'TEXT');
+    this.addColumnIfMissing('tasks', 'execution_mode', "TEXT NOT NULL DEFAULT 'standard'");
+    this.addColumnIfMissing('tasks', 'task_context', "TEXT NOT NULL DEFAULT ''");
+    this.addColumnIfMissing('tasks', 'created_by_user_id', 'TEXT REFERENCES users(id)');
     this.addColumnIfMissing('page_action_approvals', 'decided_by', 'TEXT REFERENCES users(id)');
     this.addColumnIfMissing('tenant_profiles', 'eyes', "TEXT NOT NULL DEFAULT 'classic'");
     this.addColumnIfMissing('tenant_profiles', 'glasses', "TEXT NOT NULL DEFAULT 'none'");
@@ -493,7 +504,9 @@ export class Store {
         localComputer: this.getSetting('localComputerEnabled', tenantId) !== 'false',
         configured: this.getSetting('computerChoiceConfigured', tenantId) === 'true',
       },
-      tasks: (this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? ORDER BY priority DESC,created_at DESC').all(tenantId) as Record<string, unknown>[]).map(toTask),
+      tasks: (this.db.prepare(`SELECT * FROM tasks WHERE tenant_id=? AND (
+        execution_mode!='proactive-research' OR status IN ('queued','working','failed','paused','stopped') OR (status='done' AND result IS NOT NULL)
+      ) ORDER BY priority DESC,created_at DESC`).all(tenantId) as Record<string, unknown>[]).map(toTask),
       watches: (this.db.prepare('SELECT * FROM watches WHERE tenant_id=? ORDER BY rowid DESC').all(tenantId) as Record<string, unknown>[]).map(toWatch),
       entries: (this.db.prepare('SELECT id,tenant_id,task_id,kind,body,created_at,attachment_ids_json FROM entries WHERE tenant_id=? ORDER BY id DESC LIMIT 150').all(tenantId) as Record<string, unknown>[]).map(row => {
         const entry = toEntry(row);
@@ -571,8 +584,8 @@ export class Store {
       } else {
         const id = randomUUID();
         const title = transcript.split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
-        this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(id, input.tenantId, title, transcript, 'queued', 0, now, null, null, null, now, now, input.engine, null, null, null);
+        this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id,created_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(id, input.tenantId, title, transcript, 'queued', 0, now, null, null, null, now, now, input.engine, null, null, null, input.userId);
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,?)')
           .run(input.tenantId, id, 'user', transcript, now, '[]');
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,?)')
@@ -808,7 +821,7 @@ export class Store {
     return this.tenantPage(tenantId, id)!;
   }
 
-  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], uploaderId = ''): Task {
+  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], creatorUserId = ''): Task {
     if (!isEngine(engine)) throw new Error('任务内核无效');
     const now = new Date().toISOString();
     const id = randomUUID();
@@ -819,19 +832,19 @@ export class Store {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       if (attachmentIds.length) {
-        if (!uploaderId) throw new Error('上传附件的用户无效');
+        if (!creatorUserId) throw new Error('上传附件的用户无效');
         const placeholders = attachmentIds.map(() => '?').join(',');
-        const owned = this.db.prepare(`SELECT id FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).all(tenantId, uploaderId, ...attachmentIds) as { id: string }[];
+        const owned = this.db.prepare(`SELECT id FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).all(tenantId, creatorUserId, ...attachmentIds) as { id: string }[];
         if (owned.length !== attachmentIds.length) throw new Error('一个或多个附件已失效或不属于当前工作区');
-        const total = this.db.prepare(`SELECT COALESCE(SUM(size),0) AS total FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).get(tenantId, uploaderId, ...attachmentIds) as { total: number };
+        const total = this.db.prepare(`SELECT COALESCE(SUM(size),0) AS total FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).get(tenantId, creatorUserId, ...attachmentIds) as { total: number };
         if (total.total > 512 * 1024) throw new Error('附件总大小不能超过 512 KB');
       }
-      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null);
+      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,created_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null, creatorUserId || null);
       if (attachmentIds.length) {
         const placeholders = attachmentIds.map(() => '?').join(',');
         this.db.prepare(`UPDATE task_attachments SET task_id=? WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`)
-          .run(id, tenantId, uploaderId, ...attachmentIds);
+          .run(id, tenantId, creatorUserId, ...attachmentIds);
       }
       this.addEntry('user', instruction.trim(), id, tenantId, attachmentIds);
       this.addEntry('system', taskSchedule ? `已安排：${describeSchedule(taskSchedule)}。` : '已加入工作队列。', id, tenantId);
@@ -936,6 +949,78 @@ export class Store {
   getTask(id: string, tenantId = 'legacy'): Task | null {
     const row = this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, id) as Record<string, unknown> | undefined;
     return row ? toTask(row) : null;
+  }
+
+  taskContext(id: string, tenantId = 'legacy'): string {
+    const row = this.db.prepare('SELECT task_context FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, id) as { task_context: string } | undefined;
+    return row?.task_context || '';
+  }
+
+  /** Queue one bounded, read-only review after a completed user-assigned task. */
+  createProactiveResearchReview(sourceTaskId: string, tenantId: string, engine: Engine): Task | null {
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const source = this.db.prepare(`SELECT title,instruction,result,status,parent_task_id AS parentTaskId,execution_mode AS executionMode,
+          schedule_json AS scheduleJson,schedule_minutes AS scheduleMinutes,created_by_user_id AS createdBy
+        FROM tasks WHERE tenant_id=? AND id=?`).get(tenantId, sourceTaskId) as {
+          title: string; instruction: string; result: string | null; status: string; parentTaskId: string | null;
+          executionMode: string; scheduleJson: string | null; scheduleMinutes: number | null; createdBy: string | null;
+        } | undefined;
+      if (!source || source.status !== 'done' || source.executionMode !== 'standard' || source.parentTaskId ||
+          source.scheduleJson || source.scheduleMinutes !== null || !source.result || !source.createdBy) {
+        this.db.exec('COMMIT');
+        return null;
+      }
+
+      const existing = this.db.prepare('SELECT review_task_id AS reviewTaskId FROM proactive_research_reviews WHERE tenant_id=? AND source_task_id=?')
+        .get(tenantId, sourceTaskId) as { reviewTaskId: string } | undefined;
+      if (existing) {
+        this.db.exec('COMMIT');
+        return this.getTask(existing.reviewTaskId, tenantId);
+      }
+
+      const activeTasks = this.db.prepare(`SELECT title,instruction,status,result FROM tasks
+        WHERE tenant_id=? AND id<>? AND execution_mode!='proactive-research' AND status IN ('queued','working','delegating','waiting','scheduled')
+        ORDER BY priority DESC,updated_at DESC LIMIT 6`).all(tenantId, sourceTaskId) as {
+          title: string; instruction: string; status: string; result: string | null;
+        }[];
+      const workspaceNotes = this.db.prepare('SELECT note FROM tenant_memories WHERE tenant_id=? ORDER BY updated_at DESC,id DESC LIMIT 10')
+        .all(tenantId) as { note: string }[];
+      if (!activeTasks.length && !workspaceNotes.length) {
+        this.db.exec('COMMIT');
+        return null;
+      }
+
+      const id = randomUUID();
+      const title = '检查是否有重要关联';
+      const instruction = '只读检查这项已完成工作与当前工作区责任及获准记忆之间是否存在明确的重要关联、冲突、机会或需要用户决定的问题。仅报告上下文支持的具体发现；没有有用发现时安静完成。不要修改任何内容或对外发送信息。';
+      const context = JSON.stringify({
+        sourceTask: {
+          title: reviewText(source.title, 120),
+          instruction: reviewText(source.instruction, 800),
+          result: reviewText(source.result, 1600),
+        },
+        activeTasks: activeTasks.map(task => ({
+          title: reviewText(task.title, 120),
+          instruction: reviewText(task.instruction, 600),
+          status: task.status,
+          result: reviewText(task.result || '', 1000),
+        })),
+        workspaceNotes: workspaceNotes.map(row => reviewText(row.note, 600)),
+      });
+      this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,
+          created_at,updated_at,engine,agent_session_id,schedule_json,execution_mode,task_context,created_by_user_id)
+        VALUES (?,?,?,?, 'queued',-1,?,NULL,NULL,NULL,?,?,?,NULL,NULL,'proactive-research',?,?)`)
+        .run(id, tenantId, title, instruction, now, now, now, engine, context, source.createdBy);
+      this.db.prepare('INSERT INTO proactive_research_reviews(source_task_id,tenant_id,review_task_id,created_at) VALUES (?,?,?,?)')
+        .run(sourceTaskId, tenantId, id, now);
+      this.db.exec('COMMIT');
+      return this.getTask(id, tenantId);
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   dueTasks(now = new Date().toISOString()): Task[] {
@@ -1089,6 +1174,7 @@ function toTask(r: Record<string, unknown>): Task {
   scheduleSpec = scheduleForTask(scheduleSpec, scheduleMinutes);
   return {
     id: String(r.id), tenantId: String(r.tenant_id), parentTaskId: r.parent_task_id == null ? null : String(r.parent_task_id), title: String(r.title), instruction: String(r.instruction),
+    executionMode: ['read-only', 'proactive-research'].includes(String(r.execution_mode)) ? r.execution_mode as TaskExecutionMode : 'standard',
     engine: r.engine as TaskEngine, agentSessionId: r.agent_session_id == null ? null : String(r.agent_session_id),
     status: r.status as TaskStatus, priority: Number(r.priority),
     nextRunAt: r.next_run_at == null ? null : String(r.next_run_at),
@@ -1097,6 +1183,13 @@ function toTask(r: Record<string, unknown>): Task {
     result: r.result == null ? null : String(r.result), error: r.error == null ? null : String(r.error),
     createdAt: String(r.created_at), updatedAt: String(r.updated_at),
   };
+}
+
+function reviewText(value: string, limit: number): string {
+  return value
+    .replace(/\b(?:sk|ark|rk|ghp|github_pat|xox[baprs]|AIza)[-_][A-Za-z0-9_-]{10,}\b/gi, '[已隐藏凭据]')
+    .replace(/\b(api[_ -]?key|access[_ -]?token|client[_ -]?secret|password)\s*[:=]\s*\S+/gi, '$1=[已隐藏凭据]')
+    .slice(0, limit);
 }
 
 function toEntry(r: Record<string, unknown>): Entry {
