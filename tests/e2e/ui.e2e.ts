@@ -2114,6 +2114,7 @@ try {
       view.__dotsQwenSentEvents = [];
       const track = { kind: 'audio', enabled: true, stopped: false, stop() { this.stopped = true; } };
       view.__dotsQwenFakeTrack = track;
+      view.__dotsQwenFakeSender = null;
       class FakeDataChannel {
         constructor(label) { this.label = label; this.readyState = 'connecting'; this.onopen = null; this.onmessage = null; this.onerror = null; }
         send(raw) {
@@ -2129,19 +2130,25 @@ try {
       }
       class FakePeerConnection {
         constructor() { this.iceGatheringState = 'complete'; this.connectionState = 'new'; this.localDescription = null; this.ondatachannel = null; this.ontrack = null; this.onconnectionstatechange = null; this.sendChannel = null; }
-        addTrack() {}
+        addTransceiver(kind, options) {
+          if (kind !== 'audio' || options?.direction !== 'sendrecv') throw new Error('Voice call must reserve bidirectional audio before SDP offer');
+          const sender = { track: null, async replaceTrack(nextTrack) { this.track = nextTrack; } };
+          view.__dotsQwenFakeSender = sender;
+          return { sender };
+        }
         createDataChannel(label) { this.sendChannel = new FakeDataChannel(label); return this.sendChannel; }
         async createOffer() { return { type: 'offer', sdp: ['v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)) }; }
         async setLocalDescription(description) { this.localDescription = description; }
         async setRemoteDescription(description) {
           if (!description?.sdp?.startsWith('v=0')) throw new Error('Qwen answer SDP was not returned to the browser');
-          this.sendChannel.readyState = 'open';
-          this.sendChannel.onopen?.();
           const remote = new FakeDataChannel('txt');
           remote.readyState = 'open';
           view.__dotsQwenEventChannel = remote;
           this.ondatachannel?.({ channel: remote });
           remote.emit({ type: 'session.created' });
+          this.sendChannel.readyState = 'open';
+          this.sendChannel.onopen?.();
+          view.__dotsQwenConfirmSession = () => remote.emit({ type: 'session.updated' });
         }
         close() { this.connectionState = 'closed'; }
       }
@@ -2153,7 +2160,16 @@ try {
     const call = alphaPage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-provider') === 'qwen');
+    await alphaPage!.waitForFunction(() => (window as unknown as { __dotsQwenSentEvents?: { type: string }[] }).__dotsQwenSentEvents?.some(event => event.type === 'session.update') === true, null, { timeout: 10_000 });
+    assert.match(await call.locator('[data-testid="voice-call-transcript"]').innerText(), /正在初始化语音模型/, 'The UI must not report listening before model setup is acknowledged');
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeSender: { track: unknown } }).__dotsQwenFakeSender.track), null, 'The microphone must remain detached until session.updated');
+    await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenConfirmSession: () => void }).__dotsQwenConfirmSession());
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 10_000 });
+    const microphoneAttachedAfterSetup = await alphaPage!.evaluate(() => {
+      const view = window as unknown as { __dotsQwenFakeSender: { track: unknown }; __dotsQwenFakeTrack: unknown };
+      return view.__dotsQwenFakeSender.track === view.__dotsQwenFakeTrack;
+    });
+    assert.equal(microphoneAttachedAfterSetup, true, 'The microphone should attach only after model configuration is acknowledged');
     const config = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as { provider: string; configured: boolean; apiKey?: string };
     assert.deepEqual(config, { provider: 'qwen', configured: true, model: 'qwen3.8-omni-flash-realtime' });
     assert.equal(mockQwenSignalingRequests.length, 1, 'The browser must complete server-side Qwen SDP negotiation before listening');

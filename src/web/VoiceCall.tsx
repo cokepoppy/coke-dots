@@ -89,10 +89,38 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     let qwenResponseActive = false;
     const qwenSpeechQueue: string[] = [];
     const processedVoiceTurns = new Set<string>();
+    let qwenSessionCreated = false;
+    let qwenSessionUpdateSent = false;
+    let qwenModelReady = false;
+    let qwenAudioSender: RTCRtpSender | null = null;
+    let qwenMicrophoneTrack: MediaStreamTrack | null = null;
+
+    const flushQwenSpeech = () => {
+      if (!qwenModelReady || qwenResponseActive) return;
+      const next = qwenSpeechQueue.shift();
+      if (next) sendQwenText(next);
+    };
+
+    const initializeQwenSession = () => {
+      const channel = realtimeSendChannelRef.current;
+      if (!qwenSessionCreated || qwenSessionUpdateSent || !channel || channel.readyState !== 'open') return;
+      channel.send(JSON.stringify({
+        type: 'session.update',
+        session: {
+          modalities: ['text', 'audio'],
+          instructions: `你是 ${dotName}，是 Coke Dots 的语音界面。请始终使用中文。用户说话时，你只做简短确认，并明确真实工作会交给独立的 Dots Agent 处理；不要自行回答任务内容、假称已完成或编造进度。稍后收到以“Dots Agent 状态更新”开头的文字时，只简短朗读其中状态。`,
+          audio: { output: { voice: 'Tina' } },
+          turn_detection: { type: 'server_vad', threshold: 0.5, silence_duration_ms: 700 },
+          input_audio_transcription: { model: 'qwen3-asr-flash-realtime' },
+        },
+      }));
+      qwenSessionUpdateSent = true;
+      setStatus('正在初始化语音模型…');
+    };
 
     const sendQwenText = (text: string) => {
       const channel = realtimeSendChannelRef.current;
-      if (!channel || channel.readyState !== 'open') return false;
+      if (!qwenModelReady || !channel || channel.readyState !== 'open') return false;
       channel.send(JSON.stringify({
         type: 'conversation.item.create',
         item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `Dots Agent 状态更新：${text}\n请用简短、自然的中文朗读这条状态，不要添加未经证实的信息。` }] },
@@ -239,16 +267,25 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       let event: { type?: string; event_id?: string; item_id?: string; text?: string; stash?: string; transcript?: string; error?: { message?: string } };
       try { event = JSON.parse(raw) as typeof event; } catch { return; }
       if (event.type === 'session.created') {
-        realtimeSendChannelRef.current?.readyState === 'open' && realtimeSendChannelRef.current.send(JSON.stringify({
-          type: 'session.update',
-          session: {
-            modalities: ['text', 'audio'],
-            instructions: `你是 ${dotName}，是 Coke Dots 的语音界面。请始终使用中文。用户说话时，你只做简短确认，并明确真实工作会交给独立的 Dots Agent 处理；不要自行回答任务内容、假称已完成或编造进度。稍后收到以“Dots Agent 状态更新”开头的文字时，只简短朗读其中状态。`,
-            audio: { output: { voice: 'Tina' } },
-            turn_detection: { type: 'server_vad', threshold: 0.5, silence_duration_ms: 700 },
-            input_audio_transcription: { model: 'qwen3-asr-flash-realtime' },
-          },
-        }));
+        qwenSessionCreated = true;
+        initializeQwenSession();
+        return;
+      }
+      if (event.type === 'session.updated') {
+        if (!qwenSessionUpdateSent || qwenModelReady) return;
+        if (!qwenAudioSender || !qwenMicrophoneTrack) {
+          setCallError('Qwen 语音会话已就绪，但麦克风音轨尚未准备好。');
+          return;
+        }
+        void qwenAudioSender.replaceTrack(qwenMicrophoneTrack).then(() => {
+          if (!activeRef.current) {
+            void qwenAudioSender?.replaceTrack(null);
+            return;
+          }
+          qwenModelReady = true;
+          setStatus(mutedRef.current ? '麦克风已静音' : '正在聆听');
+          flushQwenSpeech();
+        }).catch(() => setCallError('Qwen 实时语音麦克风音轨启动失败'));
         return;
       }
       if (event.type === 'conversation.item.input_audio_transcription.delta') {
@@ -270,8 +307,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       if (event.type === 'response.created') { qwenResponseActive = true; return; }
       if (event.type === 'response.done') {
         qwenResponseActive = false;
-        const next = qwenSpeechQueue.shift();
-        if (next) sendQwenText(next);
+        flushQwenSpeech();
       }
     };
 
@@ -283,13 +319,14 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       localStreamRef.current = stream;
       const peer = new RTCPeerConnection({ iceServers: [] });
       peerConnectionRef.current = peer;
-      for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
+      qwenMicrophoneTrack = stream.getAudioTracks()[0] || null;
+      qwenAudioSender = peer.addTransceiver('audio', { direction: 'sendrecv' }).sender;
       const sendChannel = peer.createDataChannel('oai-events');
       realtimeSendChannelRef.current = sendChannel;
       sendChannel.onopen = () => {
-        if (providerRef.current === 'qwen') setStatus('正在聆听');
-        const next = qwenSpeechQueue.shift();
-        if (next) sendQwenText(next);
+        if (providerRef.current === 'qwen' && !qwenModelReady) setStatus('正在初始化语音模型…');
+        initializeQwenSession();
+        flushQwenSpeech();
       };
       peer.ondatachannel = event => {
         realtimeEventChannelRef.current = event.channel;
