@@ -1333,15 +1333,30 @@ try {
       measuredElements: {
         statusTimeLeft: number;
         statusTimeBoxTop: number;
+        notchLeft: number;
+        notchTop: number;
+        notchWidth: number;
+        notchHeight: number;
+        earpieceLeft: number;
+        earpieceTop: number;
+        earpieceWidth: number;
+        earpieceHeight: number;
+        sensorLeft: number;
+        sensorTop: number;
+        sensorDiameter: number;
         avatarTop: number;
         avatarDiameter: number;
         nameBoxTop: number;
         timerBoxTop: number;
-        tolerancePx: { statusTime: number; avatarTop: number; avatarDiameter: number; textTop: number };
+        tolerancePx: { statusTime: number; notchPosition: number; notchSize: number; notchDetailPosition: number; notchDetailSize: number; avatarTop: number; avatarDiameter: number; textTop: number };
       };
     };
     const upperFrameGeometry = await profileCall.evaluate(element => {
       const dock = element.getBoundingClientRect();
+      const notch = element.querySelector<HTMLElement>('.voice-call-notch')!.getBoundingClientRect();
+      const notchElement = element.querySelector<HTMLElement>('.voice-call-notch')!;
+      const earpieceStyle = getComputedStyle(notchElement, '::before');
+      const sensorStyle = getComputedStyle(notchElement, '::after');
       const avatar = element.querySelector<HTMLElement>('.voice-call-avatar')!.getBoundingClientRect();
       const name = element.querySelector<HTMLElement>('.voice-call-person > strong')!.getBoundingClientRect();
       const timer = element.querySelector<HTMLElement>('.voice-call-screen-timer')!.getBoundingClientRect();
@@ -1356,6 +1371,17 @@ try {
         avatarDiameter: avatar.width,
         nameBoxTop: name.top - dock.top,
         timerBoxTop: timer.top - dock.top,
+        notchLeft: notch.left - dock.left,
+        notchTop: notch.top - dock.top,
+        notchWidth: notch.width,
+        notchHeight: notch.height,
+        earpieceLeft: notch.left - dock.left + Number.parseFloat(earpieceStyle.left),
+        earpieceTop: notch.top - dock.top + Number.parseFloat(earpieceStyle.top),
+        earpieceWidth: Number.parseFloat(earpieceStyle.width),
+        earpieceHeight: Number.parseFloat(earpieceStyle.height),
+        sensorLeft: notch.right - dock.left - Number.parseFloat(sensorStyle.right) - Number.parseFloat(sensorStyle.width),
+        sensorTop: notch.top - dock.top + Number.parseFloat(sensorStyle.top),
+        sensorDiameter: Number.parseFloat(sensorStyle.width),
       };
     });
     const upperTolerance = upperFrameReference.measuredElements.tolerancePx;
@@ -1363,6 +1389,22 @@ try {
       `Status time should match the 06:26 frame horizontally: expected ${upperFrameReference.measuredElements.statusTimeLeft}px, saw ${upperFrameGeometry.statusTimeLeft.toFixed(1)}px`);
     assert(Math.abs(upperFrameGeometry.statusTimeBoxTop - upperFrameReference.measuredElements.statusTimeBoxTop) <= upperTolerance.statusTime,
       `Status time should match the 06:26 frame vertically: expected ${upperFrameReference.measuredElements.statusTimeBoxTop}px, saw ${upperFrameGeometry.statusTimeBoxTop.toFixed(1)}px`);
+    for (const key of ['notchLeft', 'notchTop'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchPosition,
+        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['notchWidth', 'notchHeight'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchSize,
+        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['earpieceLeft', 'earpieceTop', 'sensorLeft', 'sensorTop'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailPosition,
+        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['earpieceWidth', 'earpieceHeight', 'sensorDiameter'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailSize,
+        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
     assert(upperFrameGeometry.statusSilentGap >= 0 && upperFrameGeometry.statusSilentGap <= 6,
       'The crossed-bell status glyph should sit immediately beside the time as in the 06:26 frame');
     assert.equal(upperFrameGeometry.rightStatusIconCount, 2, 'Cellular and Wi-Fi status glyphs should remain grouped by the battery on the right');

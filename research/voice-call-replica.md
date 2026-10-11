@@ -1,6 +1,6 @@
 # Voice-call replica: evidence and limits
 
-Updated 2026-10-10 on `feature/voice-call-reference-fidelity-mainline`.
+Updated 2026-10-11 on `feature/voice-call-reference-fidelity-mainline`.
 
 ## Reference evidence
 
@@ -37,4 +37,6 @@ Updated 2026-10-10 on `feature/voice-call-reference-fidelity-mainline`.
 - On 2026-10-11, the V1 06:26 status bar was corrected so the crossed-bell glyph sits beside the time, matching the Chrome-observed frame. After merging the latest `origin/main`, `npm test` passed 57/57, `npm run build` passed, and Chrome UI E2E passed all 35 browser steps at `artifacts/e2e/2026-10-11T05-18-03-885Z`; the flow includes the handset call, tenant task dispatch, and call ending while assigned work continues. The refreshed upper-screen comparison covers 285,560 pixels at MAE 23.47/255 and 19.76% changed pixels at threshold 32. The score remains a compressed-video diagnostic and does not establish pixel-perfect CSS parity.
 - After the measured geometry and statusbar change, `npm test` passed 135/135, `npm run build` passed, and Chrome UI E2E passed all 57 steps at `artifacts/e2e/2026-10-10T04-07-55-255Z`, including measured status/avatar/name/timer geometry and the existing 06:50.9 control positions.
 - The 06:26 Chrome comparison showed the crossed-bell status glyph beside the time, while the replica had grouped it with the right-side cellular/Wi-Fi icons. The replica now places it beside the time; Chrome E2E checks its 0–6 px gap and separately checks the two right-side SVG glyphs.
+- The 06:26 phone crop now has measured Chrome assertions for the top capsule (224×37 px), earpiece (65×7 px), and 7 px sensor, in addition to the status bar and avatar/text bounds. The CSS dimensions follow those measured bounds. The latest upper-screen image comparison covers 285,560 pixels at MAE 22.81/255 and 19.00% changed pixels at threshold 32; it remains a compressed-video diagnostic and does not establish original CSS-pixel parity. The E2E screenshot and comparison artifacts are at `artifacts/e2e/2026-10-11T12-21-46-177Z/` and `artifacts/reference-comparison/voice-call-v1-0626-upper-screen/`.
+- Current 2026-10-11 branch verification: `npm test` passed 57/57, `npm run build` passed, and the Chrome UI E2E passed all 35 browser steps at `artifacts/e2e/2026-10-11T12-21-46-177Z`. The run checks the capsule, earpiece, and sensor against measured bounds from the 06:26 reference frame.
 - See [voice technology and adapter design](voice-technology.md) for the current browser audio path, confirmed/unknown Dots internals, and the proposed PI/DeepSeek-compatible voice gateway.
