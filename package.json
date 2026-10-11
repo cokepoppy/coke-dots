@@ -25,13 +25,15 @@
     "google-auth-library": "^11.1.0",
     "playwright-core": "^1.56.1",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^5.0.0",
     "concurrently": "^9.2.0",
     "electron": "39.8.10",

@@ -17,7 +17,7 @@ Sources:
 
 ## Current Coke Dots call path
 
-The default browser provider is a **chained browser voice path**. The `feature/realtime-voice-provider` branch adds an optional Qwen WebRTC speech-to-speech path:
+The default browser provider is a **chained browser voice path**. The `feature/realtime-voice-provider` branch adds an optional Qwen WebRTC speech-to-speech path. Its child branch `feature/volcengine-realtime-voice-provider` adds a server-mediated Volcano Realtime API O2.0 WebSocket path; both providers submit final transcripts through the existing tenant-authenticated voice task API:
 
 1. The browser's Web Speech `SpeechRecognition` implementation listens to the microphone. The browser/OS speech service provides a finalized transcript; Coke Dots does not receive or persist the raw audio.
 2. Each final phrase goes through the same tenant-authenticated task API as typed work. A clarification uses the existing waiting task ID and task-reply endpoint.
@@ -119,6 +119,19 @@ Qwen and Doubao both document realtime Function Calling. It can be useful for de
 The Qwen browser path already uses WebRTC with audio media tracks and a DataChannel for transcripts and events. Qwen documents WebRTC as a browser low-latency option with UDP media, echo cancellation, and noise reduction. Doubao's documented Realtime API is WebSocket based and authenticates with Volcano App ID, access key, and resource ID; keep those headers in a server-side voice gateway. Benchmark its end-to-end API against Qwen before choosing on sound or speed. Neither provider's general “low latency” description proves a numeric response-time guarantee for this app.
 
 Store voice provider configuration as shared instance configuration, separately from each tenant's tasks and conversations. The Qwen DashScope API key/workspace and the Volcano credentials are distinct from the DeepSeek text-model key. Keep them on the trusted Dots server; only the authorized call/session signaling crosses the client boundary. The Agent kernel itself remains in the authenticated tenant's Debian cloud computer.
+
+## Volcano credential and protocol versions
+
+The official Volcano documentation currently describes two different realtime paths; their credentials and wire protocols are not interchangeable:
+
+| Path | Official endpoint and protocol | Credential/configuration | Coke Dots status |
+|---|---|---|---|
+| Realtime API O2.0 | `wss://openspeech.bytedance.com/api/v3/realtime/dialogue`; binary event frames; StartSession selects model `1.2.1.1` | Console App ID, Access Token, fixed Resource ID `volc.speech.dialog`, and fixed App Key `PlgvMymc7f3tQnJ6` | Implemented by `feature/volcengine-realtime-voice-provider`; the long-lived values stay in the Coke Dots server environment. |
+| SeedDuplex 3.0 | `wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue`; one JSON text message per event, base64 audio payloads; fixed `session.model: 1.2.6.1` | The official iOS integration says to obtain an API Key in Console > API Key Management; it configures the SeedDuplex JSON protocol and engine separately. | Not implemented by this branch. It needs its own adapter/protocol tests and must not be pointed at the O2.0 binary gateway. |
+
+The account application therefore needs to enable the **Realtime API O2.0** product and provide its App ID and Access Token for this implementation; a generic API Key alone is not sufficient for the O2.0 headers. If the console instead provisions only SeedDuplex 3.0 API Keys, use a separate 3.0 adapter rather than translating that key into O2.0 fields. `feature/volcengine-realtime-voice-provider` passes the production build, all 68 unit tests, and 37 Chrome UI E2E steps. The E2E uses a local deterministic provider and fake microphone; it verifies Chinese transcript dispatch to the normal Agent task path, spoken task output, cross-tenant rejection, credential secrecy, mute/unmute, microphone cleanup, and the ordered FinishSession → SessionFinished → FinishConnection shutdown. It has not made a live call because no Volcano credentials have been provisioned.
+
+Sources: [Volcano Realtime API access document](https://docs.volcengine.com/docs/DoubaoVoice/End-to-endreal-timespeechlargemodelAPIaccessdocument?lang=zh) documents the O2.0 endpoint, required headers, binary frame format and model version; [SeedDuplex 3.0 access requirements](https://docs.volcengine.com/docs/DoubaoVoice/access-mustread?lang=zh) documents the JSON text-frame protocol and model `1.2.6.1`; [SeedDuplex iOS integration](https://docs.volcengine.com/docs/DoubaoVoice/end-to-end-full-duplex-ios-sdk-documentation?lang=zh) documents Console API Key management and the `/api/v3/duplex/realtime/dialogue` endpoint.
 
 ## WebRTC model-initialization race caught on 2026-10-11
 

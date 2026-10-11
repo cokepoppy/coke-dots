@@ -11,6 +11,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 import { Entry } from '@napi-rs/keyring';
+import { WebSocket as NodeWebSocket, WebSocketServer } from 'ws';
+import { decodeVolcengineFrame, encodeVolcengineEvent } from '../../src/server/volcengine-voice.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const artifactStamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -31,9 +33,12 @@ let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockSlackServer: Server | null = null;
 let mockQwenSignalingServer: Server | null = null;
+let mockVolcEngineServer: WebSocketServer | null = null;
 let mockSlackProviderOrigin = '';
 let mockQwenSignalingUrl = '';
 let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp: string }[] = [];
+let mockVolcEngineUrl = '';
+let mockVolcEngineConnections: { headers: Record<string, string>; events: number[]; serverEvents: number[]; timeline: string[]; pcmBytes: number; spokenTexts: string[] }[] = [];
 let mockSlackCodeExchanges = 0;
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
@@ -105,6 +110,7 @@ async function startMockModel() {
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
         const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
         const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
+        const isVolcVoiceResponse = prompt.includes('请用中文整理本周人工智能产品更新的三个要点');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
         const isParallelTask = prompt.includes('E2E parallel work —');
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
@@ -136,13 +142,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -238,6 +244,84 @@ async function startMockQwenSignaling() {
   return `http://127.0.0.1:${address.port}/realtime?model=qwen3.8-omni-flash-realtime`;
 }
 
+function encodeVolcServerFrame(eventId: number, payload: unknown, sessionId?: string, audio = false) {
+  const body = audio ? Buffer.from(payload as Uint8Array) : Buffer.from(JSON.stringify(payload), 'utf8');
+  const id = sessionId === undefined ? Buffer.alloc(0) : Buffer.concat([Buffer.from([0, Buffer.byteLength(sessionId)]), Buffer.from(sessionId, 'utf8')]);
+  const header = Buffer.from([0x11, ((audio ? 11 : 9) << 4) | 4, audio ? 0 : 0x10, 0]);
+  const event = Buffer.alloc(4); event.writeUInt32BE(eventId);
+  const payloadLength = Buffer.alloc(4); payloadLength.writeUInt32BE(body.byteLength);
+  return Buffer.concat([header, event, id, payloadLength, body]);
+}
+
+async function startMockVolcEngineProvider() {
+  mockVolcEngineConnections = [];
+  mockVolcEngineServer = new WebSocketServer({ port: 0, host: '127.0.0.1', maxPayload: 1024 * 1024, perMessageDeflate: false });
+  mockVolcEngineServer.on('connection', (socket, request) => {
+    const connection = {
+      headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(',') : String(value || '')])),
+      events: [] as number[], serverEvents: [] as number[], timeline: [] as string[], pcmBytes: 0, spokenTexts: [] as string[],
+    };
+    mockVolcEngineConnections.push(connection);
+    let activeSessionId = '';
+    let sentSpeech = false;
+    socket.on('message', (raw, isBinary) => {
+      if (!isBinary) return;
+      const frame = decodeVolcengineFrame(Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer));
+      if (frame.eventId === null) return;
+      connection.events.push(frame.eventId);
+      connection.timeline.push(`client:${frame.eventId}`);
+      let payload: Record<string, unknown> = {};
+      if (frame.payloadIsJson) {
+        try { payload = JSON.parse(frame.payload.toString('utf8')) as Record<string, unknown>; } catch { /* malformed client JSON is visible in the assertion set */ }
+      }
+      if (frame.eventId === 1) {
+        socket.send(encodeVolcServerFrame(50, {}, frame.sessionId || undefined));
+      } else if (frame.eventId === 100) {
+        activeSessionId = frame.sessionId || '';
+        socket.send(encodeVolcServerFrame(150, { dialog_id: 'mock-volc-dialog' }, activeSessionId));
+      } else if (frame.eventId === 200) {
+        connection.pcmBytes += frame.payload.byteLength;
+        if (!sentSpeech && activeSessionId) {
+          sentSpeech = true;
+          socket.send(encodeVolcServerFrame(450, { question_id: 'volc-question-e2e-0001' }, activeSessionId));
+          socket.send(encodeVolcServerFrame(451, { results: [{ text: '请用中文整理本周人工智能产品更新的三个要点，并说明来源。', is_interim: false }] }, activeSessionId));
+          socket.send(encodeVolcServerFrame(459, {}, activeSessionId));
+        }
+      } else if (frame.eventId === 500) {
+        connection.spokenTexts.push(String(payload.content || ''));
+        socket.send(encodeVolcServerFrame(350, { tts_type: 'chat_tts_text', text: payload.content || '' }, activeSessionId));
+        socket.send(encodeVolcServerFrame(352, Buffer.alloc(960, 1), activeSessionId, true));
+        socket.send(encodeVolcServerFrame(359, {}, activeSessionId));
+      } else if (frame.eventId === 102) {
+        connection.serverEvents.push(152);
+        connection.timeline.push('server:152');
+        socket.send(encodeVolcServerFrame(152, {}, activeSessionId));
+      }
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    mockVolcEngineServer!.once('error', reject);
+    mockVolcEngineServer!.once('listening', resolvePromise);
+  });
+  const address = mockVolcEngineServer.address();
+  assert(address && typeof address !== 'string');
+  return `ws://127.0.0.1:${address.port}/realtime`;
+}
+
+async function websocketUpgradeStatus(url: string, cookie: string) {
+  return await new Promise<number>(resolvePromise => {
+    const origin = new URL(url).origin.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+    const socket = new NodeWebSocket(url, { headers: { cookie, origin }, handshakeTimeout: 5000 });
+    socket.once('unexpected-response', (_request, response) => {
+      const status = response.statusCode || 0;
+      response.resume();
+      resolvePromise(status);
+    });
+    socket.once('open', () => { socket.close(); resolvePromise(101); });
+    socket.once('error', () => resolvePromise(0));
+  });
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -274,6 +358,10 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_QWEN_WORKSPACE_ID: '',
       DOTS_QWEN_REGION: '',
       DASHSCOPE_API_KEY: '',
+      DOTS_VOLCENGINE_APP_ID: '',
+      DOTS_VOLCENGINE_ACCESS_TOKEN: '',
+      DOTS_VOLCENGINE_RESOURCE_ID: '',
+      DOTS_E2E_VOLCENGINE_WS_URL: '',
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -456,7 +544,7 @@ try {
   baseUrl = `http://127.0.0.1:${e2ePort}`;
   mockSlackProviderOrigin = await startMockSlackProvider();
   server = await startServer(e2ePort);
-  browser = await chromium.launch({ executablePath: chromePath, headless: true });
+  browser = await chromium.launch({ executablePath: chromePath, headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
   alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   betaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   gammaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
@@ -2262,6 +2350,86 @@ try {
     await failedCall.waitFor({ state: 'detached' });
   });
 
+  await recordStep('Volcano realtime WebSocket keeps credentials server-side and sends Chinese speech into the tenant Agent', async () => {
+    mockVolcEngineUrl = await startMockVolcEngineProvider();
+    await stopServer(server);
+    server = await startServer(e2ePort, { DOTS_VOICE_PROVIDER: 'volcengine' });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const unconfiguredCall = alphaPage!.getByTestId('voice-call');
+    await unconfiguredCall.getByRole('alert').filter({ hasText: 'App ID 和 Access Token' }).waitFor({ state: 'visible' });
+    await unconfiguredCall.getByRole('button', { name: '结束通话' }).click();
+
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_APP_ID: 'e2e-volc-app-id',
+      DOTS_VOLCENGINE_ACCESS_TOKEN: 'e2e-volc-access-token',
+      DOTS_VOLCENGINE_RESOURCE_ID: 'volc.speech.dialog',
+      DOTS_E2E_VOLCENGINE_WS_URL: mockVolcEngineUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await alphaContext!.grantPermissions(['microphone'], { origin: baseUrl });
+    await alphaPage!.evaluate(`(() => {
+      const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      Object.defineProperty(window, '__dotsVolcTrack', { configurable: true, value: null, writable: true });
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async constraints => {
+        const stream = await getUserMedia(constraints);
+        window.__dotsVolcTrack = stream.getAudioTracks()[0] || null;
+        return stream;
+      } } });
+    })()`);
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-provider') === 'volcengine');
+    await call.locator('[data-testid="voice-call-transcript"]').waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 20_000 });
+    assert.equal(mockVolcEngineConnections.length, 1, 'The authenticated call should establish exactly one provider socket');
+    const providerConnection = mockVolcEngineConnections[0];
+    assert.equal(providerConnection.headers['x-api-app-id'], 'e2e-volc-app-id');
+    assert.equal(providerConnection.headers['x-api-access-key'], 'e2e-volc-access-token');
+    assert.equal(providerConnection.headers['x-api-resource-id'], 'volc.speech.dialog');
+    assert.equal(providerConnection.headers['x-api-app-key'], 'PlgvMymc7f3tQnJ6');
+    const publicProviderInfo = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as Record<string, unknown>;
+    assert.deepEqual(publicProviderInfo, { provider: 'volcengine', configured: true, model: 'doubao-realtime-dialogue-2.0' }, 'Public provider state must not contain Volcano credentials');
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 30_000 });
+    assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM packets to the gateway');
+    assert(providerConnection.events.includes(100) && providerConnection.events.includes(200), 'Provider must see StartSession followed by audio TaskRequest frames');
+    assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be spoken through the provider TTS channel');
+    assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Finalized Chinese Volcano ASR text must start a normal tenant Agent task');
+
+    const activeCall = await alphaPage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
+    assert(activeCall, 'The realtime call must have a user-owned call record');
+    const betaCookie = (await betaContext!.cookies(baseUrl)).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+    const crossTenantUpgrade = await websocketUpgradeStatus(`${baseUrl.replace(/^http/, 'ws')}/api/voice-calls/${activeCall.id}/volcengine-stream`, betaCookie);
+    assert.equal(crossTenantUpgrade, 404, 'A different tenant cannot open another account’s voice stream');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcTrack: MediaStreamTrack }).__dotsVolcTrack.enabled), false, 'Mute must disable the captured microphone track');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcTrack: MediaStreamTrack }).__dotsVolcTrack.enabled), true, 'Unmute must resume microphone capture');
+    await screenshot(alphaPage!, 'volcengine-realtime-call-agent-result');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcTrack: MediaStreamTrack }).__dotsVolcTrack.readyState), 'ended', 'Ending a call must release the microphone');
+    await waitFor(() => {
+      const finishSession = providerConnection.timeline.indexOf('client:102');
+      const sessionFinished = providerConnection.timeline.indexOf('server:152');
+      const finishConnection = providerConnection.timeline.indexOf('client:2');
+      return finishSession >= 0 && sessionFinished > finishSession && finishConnection > sessionFinished;
+    }, 5_000).catch(() => undefined);
+    const finishSession = providerConnection.timeline.indexOf('client:102');
+    const sessionFinished = providerConnection.timeline.indexOf('server:152');
+    const finishConnection = providerConnection.timeline.indexOf('client:2');
+    assert(finishSession >= 0 && sessionFinished > finishSession && finishConnection > sessionFinished, `Call cleanup must await session closure before finishing the provider connection; received ${providerConnection.timeline.join(', ')}`);
+  });
+
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
 } catch (error) {
   failure = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
@@ -2286,6 +2454,7 @@ try {
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
   if (mockQwenSignalingServer) await new Promise<void>(resolvePromise => mockQwenSignalingServer!.close(() => resolvePromise()));
+  if (mockVolcEngineServer) await new Promise<void>(resolvePromise => mockVolcEngineServer!.close(() => resolvePromise()));
   if (e2eSlackTokenAccount) {
     try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
   }

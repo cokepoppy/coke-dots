@@ -16,8 +16,10 @@ import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
 import { negotiateQwenRealtime, VoiceProviderError, voiceProviderInfo } from './voice-provider.ts';
 import { existsSync } from 'node:fs';
-import { createConnection, type Socket } from 'node:net';
+import { createConnection } from 'node:net';
 import type { Duplex } from 'node:stream';
+import { WebSocketServer } from 'ws';
+import { bridgeVolcengineVoiceCall } from './volcengine-voice-gateway.ts';
 
 const envFile = resolve(process.env.DOTS_ENV_FILE || '.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -31,6 +33,7 @@ const slack = new SlackService(store, port);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
+const volcVoiceWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
 const configuredDesktopEngines = () => {
   if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [] as Engine[];
   try {
@@ -622,6 +625,11 @@ function reply(res: ServerResponse, status: number, value: unknown) {
   res.end(JSON.stringify(value));
 }
 
+function rejectUpgrade(socket: Duplex, status: number, message: string) {
+  if (socket.destroyed || !socket.writable) return;
+  socket.end(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+}
+
 async function serveStatic(req: IncomingMessage, res: ServerResponse) {
   if (req.method !== 'GET') return reply(res, 405, { error: 'Method not allowed' });
   const pathname = new URL(req.url || '/', `http://${host}:${port}`).pathname;
@@ -649,6 +657,7 @@ const shutdown = () => {
   for (const client of clients.keys()) client.end();
   clients.clear();
   server.close(() => store.close());
+  volcVoiceWss.close();
   for (const computer of computers.values()) void computer.close();
   for (const sockets of novncStreams.values()) for (const socket of sockets) socket.destroy();
   novncStreams.clear();
@@ -660,6 +669,23 @@ server.on('upgrade', (req, client, head) => {
   void (async () => {
     try {
       const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
+      const realtimeVoiceMatch = requestUrl.pathname.match(/^\/api\/voice-calls\/([a-f0-9-]+)\/volcengine-stream$/i);
+      if (realtimeVoiceMatch) {
+        const origin = req.headers.origin || '';
+        if (!isLocalRequest(req) || !isAllowedLocalOrigin(origin)) return rejectUpgrade(client, 403, 'Forbidden');
+        const session = auth.session(req);
+        if (!session) return rejectUpgrade(client, 401, 'Unauthorized');
+        const call = store.getVoiceCall(session.tenant.id, session.user.id, realtimeVoiceMatch[1]);
+        if (!call || call.endedAt) return rejectUpgrade(client, 404, 'Voice call not found');
+        const provider = voiceProviderInfo();
+        if (provider.provider !== 'volcengine') return rejectUpgrade(client, 409, 'Realtime voice provider unavailable');
+        if (!provider.configured) return rejectUpgrade(client, 503, 'Volcengine voice is not configured');
+        volcVoiceWss.handleUpgrade(req, client, head, ws => {
+          const close = bridgeVolcengineVoiceCall(ws, snapshot(session.tenant.id).profile.name);
+          ws.once('close', () => close());
+        });
+        return;
+      }
       const prefix = '/api/computer/novnc/';
       if (!requestUrl.pathname.startsWith(prefix) || !isLocalRequest(req) || !isAllowedLocalOrigin(req.headers.origin || '')) return client.destroy();
       const session = auth.session(req);
