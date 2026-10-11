@@ -14,6 +14,7 @@ import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { apiErrorResponse } from './computer-errors.ts';
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
+import { negotiateQwenRealtime, VoiceProviderError, voiceProviderInfo } from './voice-provider.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -150,6 +151,7 @@ const server = createServer(async (req, res) => {
     }
     if (path === '/api/state' && req.method === 'GET') return reply(res, 200, snapshot(session.tenant.id));
     if (path === '/api/voice-calls' && req.method === 'GET') return reply(res, 200, store.voiceCalls(session.tenant.id, session.user.id));
+    if (path === '/api/voice/provider' && req.method === 'GET') return reply(res, 200, voiceProviderInfo());
     if (path === '/api/activity' && req.method === 'GET') {
       const limit = Number(url.searchParams.get('limit') || 50);
       const beforeValue = url.searchParams.get('before');
@@ -207,9 +209,54 @@ const server = createServer(async (req, res) => {
       return removed ? reply(res, 200, { ok: true }) : reply(res, 404, { error: '待发送附件不存在' });
     }
 
-    const body = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT' ? await readJson(req) : {};
+    const realtimeVoiceMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)\/realtime-session$/);
+    const voiceTurnMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)\/turns$/);
+    const body = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT'
+      ? await readJson(req, realtimeVoiceMatch ? 100_000 : 32_000)
+      : {};
     if (path === '/api/voice-calls' && req.method === 'POST') {
       return reply(res, 201, store.createVoiceCall(session.tenant.id, session.user.id));
+    }
+    if (realtimeVoiceMatch && req.method === 'POST') {
+      const call = store.getVoiceCall(session.tenant.id, session.user.id, realtimeVoiceMatch[1]);
+      if (!call || call.endedAt) return reply(res, 404, { error: 'Voice call not found or ended' });
+      const provider = voiceProviderInfo();
+      if (provider.provider !== 'qwen') return reply(res, 409, { error: '当前语音供应商不支持实时 WebRTC' });
+      if (!provider.configured) return reply(res, 503, { error: 'Qwen 实时语音未配置，请联系服务管理员' });
+      if (typeof body.sdp !== 'string') return reply(res, 400, { error: 'WebRTC offer SDP 缺失' });
+      try {
+        const answerSdp = await negotiateQwenRealtime(body.sdp);
+        return reply(res, 200, { provider: 'qwen', model: provider.model, answerSdp });
+      } catch (error) {
+        if (error instanceof VoiceProviderError) return reply(res, error.status, { error: error.message });
+        return reply(res, 502, { error: 'Qwen 实时语音协商失败' });
+      }
+    }
+    if (voiceTurnMatch && req.method === 'POST') {
+      const call = store.getVoiceCall(session.tenant.id, session.user.id, voiceTurnMatch[1]);
+      if (!call) return reply(res, 404, { error: '语音通话不存在' });
+      const turnId = typeof body.turnId === 'string' ? body.turnId : '';
+      const transcript = typeof body.transcript === 'string' ? body.transcript : '';
+      const waitingTaskId = body.waitingTaskId === undefined || body.waitingTaskId === null ? undefined : body.waitingTaskId;
+      const requestedEngine = body.engine || 'model';
+      if (typeof waitingTaskId !== 'undefined' && (typeof waitingTaskId !== 'string' || !/^[a-f0-9-]{36}$/i.test(waitingTaskId))) {
+        return reply(res, 400, { error: '等待回复的任务 ID 无效' });
+      }
+      if (typeof requestedEngine !== 'string' || !isEngine(requestedEngine)) return reply(res, 400, { error: '任务内核无效' });
+      if (!turnId || turnId.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(turnId)) return reply(res, 400, { error: '语音轮次 ID 无效' });
+      if (!transcript.trim() || transcript.trim().length > 5000) return reply(res, 400, { error: '语音内容需为 1–5000 个字符' });
+      try {
+        const result = store.submitVoiceTurn({
+          tenantId: session.tenant.id, userId: session.user.id, callId: call.id, turnId,
+          transcript, engine: requestedEngine, ...(waitingTaskId ? { waitingTaskId } : {}),
+        });
+        publish();
+        void worker.tick();
+        return reply(res, result.duplicate ? 200 : 201, result.task);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '无法创建语音任务';
+        return reply(res, message === '语音通话已结束' ? 409 : 400, { error: message });
+      }
     }
     const voiceCallMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)$/);
     if (voiceCallMatch && req.method === 'PATCH') {
@@ -556,11 +603,11 @@ function isAllowedLocalOrigin(value: string) {
   } catch { return false; }
 }
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJson(req: IncomingMessage, maxBytes = 32_000): Promise<Record<string, unknown>> {
   let raw = '';
   for await (const chunk of req) {
     raw += chunk.toString();
-    if (raw.length > 32_000) throw new Error('Request too large');
+    if (Buffer.byteLength(raw, 'utf8') > maxBytes) throw new Error('Request too large');
   }
   return raw ? JSON.parse(raw) as Record<string, unknown> : {};
 }

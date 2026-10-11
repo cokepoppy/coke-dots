@@ -30,7 +30,10 @@ const pageErrors: string[] = [];
 let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockSlackServer: Server | null = null;
+let mockQwenSignalingServer: Server | null = null;
 let mockSlackProviderOrigin = '';
+let mockQwenSignalingUrl = '';
+let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp: string }[] = [];
 let mockSlackCodeExchanges = 0;
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
@@ -218,6 +221,29 @@ async function startMockSlackProvider() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function startMockQwenSignaling() {
+  mockQwenSignalingRequests = [];
+  mockQwenSignalingServer = createHttpServer((request, response) => {
+    let raw = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => { raw += chunk; });
+    request.on('end', () => {
+      mockQwenSignalingRequests.push({ authorization: request.headers.authorization || '', contentType: request.headers['content-type'] || '', sdp: raw });
+      if (request.method !== 'POST' || request.url !== '/realtime?model=qwen3.8-omni-flash-realtime' || request.headers.authorization !== 'Bearer e2e-qwen-secret' || request.headers['content-type'] !== 'application/sdp' || !raw.startsWith('v=0')) {
+        response.writeHead(400, { 'content-type': 'text/plain' });
+        response.end('Invalid mock Qwen request');
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/sdp' });
+      response.end(['v=0', 'o=- 2 2 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)));
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => mockQwenSignalingServer!.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  const address = mockQwenSignalingServer.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}/realtime?model=qwen3.8-omni-flash-realtime`;
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -226,7 +252,7 @@ function captureServerOutput(child: ChildProcess) {
   });
 }
 
-async function startServer(port: number) {
+async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/server/index.ts'], {
     cwd: projectRoot,
     env: {
@@ -249,6 +275,12 @@ async function startServer(port: number) {
       SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
       SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
       DOTS_E2E_SLACK_PROVIDER_URL: mockSlackProviderOrigin,
+      DOTS_VOICE_PROVIDER: '',
+      DOTS_QWEN_API_KEY: '',
+      DOTS_QWEN_WORKSPACE_ID: '',
+      DOTS_QWEN_REGION: '',
+      DASHSCOPE_API_KEY: '',
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -867,8 +899,8 @@ try {
     const workspacePlaceholder = modal.locator('.slack-current-workspace.is-placeholder');
     await workspacePlaceholder.waitFor({ state: 'visible' });
     assert.match(await workspacePlaceholder.innerText(), /Workspace/);
-    const connectButton = modal.getByTestId('slack-connect');
-    assert.equal(await connectButton.innerText(), 'Add to Slack');
+    const connectButton = modal.getByRole('button', { name: 'Select a workspace' });
+    assert.equal(await modal.getByTestId('slack-connect').innerText(), 'Select a workspace');
     assert.equal(await connectButton.isDisabled(), false);
     await screenshot(alphaPage!, 'slack-setup-empty-workspace');
 
@@ -881,6 +913,11 @@ try {
     await darkModal.waitFor({ state: 'visible' });
     assert.equal(await darkModal.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(7, 23, 14)');
     assert.equal(await darkModal.locator('.slack-setup-workspace-card').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(11, 33, 21)');
+    const darkModalBounds = await darkModal.boundingBox();
+    const slackViewport = alphaPage!.viewportSize();
+    assert(darkModalBounds && slackViewport, 'Slack dialog and viewport bounds must be available');
+    assert(Math.abs(darkModalBounds.x - Math.max(20, slackViewport.width * 0.0135)) <= 1, 'Slack dialog should use the observed left inset');
+    assert(Math.abs(darkModalBounds.y - Math.max(20, slackViewport.height * 0.22)) <= 1, 'Slack dialog should use the observed top placement');
     await screenshot(alphaPage!, 'slack-setup-empty-workspace-dark');
     await darkModal.getByRole('button', { name: 'Close Slack setup' }).click();
     await darkModal.waitFor({ state: 'hidden' });
@@ -903,15 +940,38 @@ try {
 
     const connectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
-    const workspace = connectedModal.getByLabel('Slack workspace');
+    const workspace = connectedModal.getByRole('button', { name: 'Slack workspace' });
     await workspace.waitFor({ state: 'visible' });
-    assert.equal(await workspace.inputValue(), 'TASPIE2E');
-    assert.deepEqual(await workspace.locator('option').allTextContents(), ['ASPI']);
-    assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Add to Slack');
-    await screenshot(alphaPage!, 'slack-workspace-installed');
+    assert.match(await workspace.innerText(), /Workspace/);
+    assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
+    await screenshot(alphaPage!, 'slack-workspace-available');
+    await workspace.click();
+    const workspaceMenu = connectedModal.getByRole('listbox', { name: 'Choose a Slack workspace' });
+    await workspaceMenu.waitFor({ state: 'visible' });
+    assert.deepEqual((await workspaceMenu.getByRole('option').allTextContents()).map(text => text.replace(/^✓/, '')), ['Choose a workspace', 'ASPI', 'Select another']);
+    await workspaceMenu.getByRole('option', { name: 'ASPI' }).hover();
+    await screenshot(alphaPage!, 'slack-workspace-menu-open');
+    await connectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
+    await contextPanel.getByRole('button', { name: 'Slack' }).click();
+    const darkConnectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
+    await darkConnectedModal.waitFor({ state: 'visible' });
+    const darkWorkspace = darkConnectedModal.getByRole('button', { name: 'Slack workspace' });
+    assert.match(await darkWorkspace.innerText(), /Workspace/);
+    assert.equal(await darkConnectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
+    await screenshot(alphaPage!, 'slack-workspace-available-dark');
+    await darkWorkspace.click();
+    const darkWorkspaceMenu = darkConnectedModal.getByRole('listbox', { name: 'Choose a Slack workspace' });
+    await darkWorkspaceMenu.waitFor({ state: 'visible' });
+    await darkWorkspaceMenu.getByRole('option', { name: 'ASPI' }).hover();
+    await screenshot(alphaPage!, 'slack-workspace-menu-open-dark');
+    await darkWorkspaceMenu.getByRole('option', { name: 'ASPI' }).click();
+    assert.match(await darkWorkspace.innerText(), /ASPI/);
+    assert.equal(await darkConnectedModal.getByTestId('slack-connect').innerText(), 'Add to Slack');
+    await screenshot(alphaPage!, 'slack-workspace-installed-dark');
 
-    await connectedModal.getByTestId('slack-connect').click();
-    await connectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
+    await darkConnectedModal.getByTestId('slack-connect').click();
+    await darkConnectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
     const tenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
     assert(tenantId, 'The Alpha tenant id must be present before checking tenant-scoped Slack credentials');
     e2eSlackTokenAccount = `tenant-${createHash('sha256').update(`${tenantId}\0TASPIE2E`).digest('hex')}-slack-bot-token`;
@@ -922,14 +982,14 @@ try {
       { teamId: 'TASPIE2E', teamName: 'ASPI', contactEnabled: true },
     ]);
     assert.equal(JSON.stringify(slackState).includes(storedToken), false, 'Slack OAuth token must not be returned by the API');
+    await screenshot(alphaPage!, 'slack-workspace-selected');
+    await darkConnectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
     const sqlite = new DatabaseSync(join(testDataDir, 'dots.db'), { readOnly: true });
     const storedInstallation = sqlite.prepare('SELECT team_id,team_name,scopes_json FROM slack_installations').all();
     sqlite.close();
     assert.equal(JSON.stringify(storedInstallation).includes(storedToken), false, 'Slack OAuth token must not be stored in SQLite');
     assert.equal(mockSlackCodeExchanges, 1, 'Chrome should complete exactly one Slack OAuth code exchange');
-    await screenshot(alphaPage!, 'slack-workspace-selected');
-    await connectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
-    await connectedModal.waitFor({ state: 'hidden' });
   });
 
   await recordStep('Dot computer shortcut opens the tenant-isolated browser workspace', async () => {
@@ -1170,7 +1230,8 @@ try {
     assert.equal(await gammaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).count(), 0, 'A pending invitation exposed the workspace before acceptance');
     await screenshot(gammaPage!, '10b-gamma-pending-invitation');
     await gammaPage!.getByRole('button', { name: '接受并打开工作区' }).click();
-    await (await taskNavigationItem(gammaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
+    await clickNav(gammaPage!, 'Activity');
+    await gammaPage!.locator('.task-card').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
     assert.equal(await gammaPage!.locator('.profile-link strong').innerText(), 'Shared Dot');
     await openProfile(gammaPage!);
     await gammaPage!.locator('.member-row').filter({ hasText: 'gamma@example.test' }).waitFor({ state: 'visible' });
@@ -1360,6 +1421,15 @@ try {
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     const profileCall = alphaPage!.getByTestId('voice-call');
     await profileCall.waitFor({ state: 'visible' });
+    const voiceProviderConfig = await alphaPage!.evaluate(async () => await (await fetch('/api/voice/provider')).json()) as { provider: string; configured: boolean; apiKey?: string };
+    assert.deepEqual(voiceProviderConfig, { provider: 'browser', configured: true }, 'The browser fallback must be explicit and must not expose provider credentials');
+    const activeCall = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null }[];
+    const activeCallId = activeCall.find(item => !item.endedAt)?.id;
+    assert(activeCallId, 'The call UI must create its owner-scoped call record before starting its voice transport');
+    const unsupportedRealtimeStatus = await alphaPage!.evaluate(async (id: string) => (await fetch(`/api/voice-calls/${id}/realtime-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'v=0' }) })).status, activeCallId);
+    assert.equal(unsupportedRealtimeStatus, 409, 'The browser provider must not be silently treated as a realtime model session');
+    const crossTenantRealtimeStatus = await betaPage!.evaluate(async (id: string) => (await fetch(`/api/voice-calls/${id}/realtime-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'v=0' }) })).status, activeCallId);
+    assert.equal(crossTenantRealtimeStatus, 404, 'A different tenant cannot negotiate against another user’s active call');
     assert.equal(await profileCall.getAttribute('data-variant'), 'handset');
     assert.equal(await profileCall.locator('.voice-call-person > strong').innerText(), 'dot', 'The pixel-comparison frame must use the same visible Dot name as the reference video');
     const handsetBox = await profileCall.boundingBox();
@@ -1401,27 +1471,55 @@ try {
       measuredElements: {
         statusTimeLeft: number;
         statusTimeBoxTop: number;
+        notchLeft: number;
+        notchTop: number;
+        notchWidth: number;
+        notchHeight: number;
+        earpieceLeft: number;
+        earpieceTop: number;
+        earpieceWidth: number;
+        earpieceHeight: number;
+        sensorLeft: number;
+        sensorTop: number;
+        sensorDiameter: number;
         avatarTop: number;
         avatarDiameter: number;
         nameBoxTop: number;
         timerBoxTop: number;
-        tolerancePx: { statusTime: number; avatarTop: number; avatarDiameter: number; textTop: number };
+        tolerancePx: { statusTime: number; notchPosition: number; notchSize: number; notchDetailPosition: number; notchDetailSize: number; avatarTop: number; avatarDiameter: number; textTop: number };
       };
     };
     const upperFrameGeometry = await profileCall.evaluate(element => {
       const dock = element.getBoundingClientRect();
+      const notch = element.querySelector<HTMLElement>('.voice-call-notch')!.getBoundingClientRect();
+      const notchElement = element.querySelector<HTMLElement>('.voice-call-notch')!;
+      const earpieceStyle = getComputedStyle(notchElement, '::before');
+      const sensorStyle = getComputedStyle(notchElement, '::after');
       const avatar = element.querySelector<HTMLElement>('.voice-call-avatar')!.getBoundingClientRect();
       const name = element.querySelector<HTMLElement>('.voice-call-person > strong')!.getBoundingClientRect();
       const timer = element.querySelector<HTMLElement>('.voice-call-screen-timer')!.getBoundingClientRect();
       const statusTime = element.querySelector<HTMLElement>('.voice-call-status-time')!.getBoundingClientRect();
+      const statusSilent = element.querySelector<HTMLElement>('.voice-call-status-leading .voice-call-silent')!.getBoundingClientRect();
       return {
         statusTimeLeft: statusTime.left - dock.left,
         statusTimeBoxTop: statusTime.top - dock.top,
-        statusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
+        statusSilentGap: statusSilent.left - statusTime.right,
+        rightStatusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
         avatarTop: avatar.top - dock.top,
         avatarDiameter: avatar.width,
         nameBoxTop: name.top - dock.top,
         timerBoxTop: timer.top - dock.top,
+        notchLeft: notch.left - dock.left,
+        notchTop: notch.top - dock.top,
+        notchWidth: notch.width,
+        notchHeight: notch.height,
+        earpieceLeft: notch.left - dock.left + Number.parseFloat(earpieceStyle.left),
+        earpieceTop: notch.top - dock.top + Number.parseFloat(earpieceStyle.top),
+        earpieceWidth: Number.parseFloat(earpieceStyle.width),
+        earpieceHeight: Number.parseFloat(earpieceStyle.height),
+        sensorLeft: notch.right - dock.left - Number.parseFloat(sensorStyle.right) - Number.parseFloat(sensorStyle.width),
+        sensorTop: notch.top - dock.top + Number.parseFloat(sensorStyle.top),
+        sensorDiameter: Number.parseFloat(sensorStyle.width),
       };
     });
     const upperTolerance = upperFrameReference.measuredElements.tolerancePx;
@@ -1429,7 +1527,25 @@ try {
       `Status time should match the 06:26 frame horizontally: expected ${upperFrameReference.measuredElements.statusTimeLeft}px, saw ${upperFrameGeometry.statusTimeLeft.toFixed(1)}px`);
     assert(Math.abs(upperFrameGeometry.statusTimeBoxTop - upperFrameReference.measuredElements.statusTimeBoxTop) <= upperTolerance.statusTime,
       `Status time should match the 06:26 frame vertically: expected ${upperFrameReference.measuredElements.statusTimeBoxTop}px, saw ${upperFrameGeometry.statusTimeBoxTop.toFixed(1)}px`);
-    assert.equal(upperFrameGeometry.statusIconCount, 3, 'iOS status symbols should use the measured silent, signal, and Wi-Fi glyphs');
+    for (const key of ['notchLeft', 'notchTop'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchPosition,
+        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['notchWidth', 'notchHeight'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchSize,
+        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['earpieceLeft', 'earpieceTop', 'sensorLeft', 'sensorTop'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailPosition,
+        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['earpieceWidth', 'earpieceHeight', 'sensorDiameter'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailSize,
+        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    assert(upperFrameGeometry.statusSilentGap >= 0 && upperFrameGeometry.statusSilentGap <= 6,
+      'The crossed-bell status glyph should sit immediately beside the time as in the 06:26 frame');
+    assert.equal(upperFrameGeometry.rightStatusIconCount, 2, 'Cellular and Wi-Fi status glyphs should remain grouped by the battery on the right');
     assert(Math.abs(upperFrameGeometry.avatarTop - upperFrameReference.measuredElements.avatarTop) <= upperTolerance.avatarTop,
       `Avatar top should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarTop}px, saw ${upperFrameGeometry.avatarTop.toFixed(1)}px`);
     assert(Math.abs(upperFrameGeometry.avatarDiameter - upperFrameReference.measuredElements.avatarDiameter) <= upperTolerance.avatarDiameter,
@@ -1548,6 +1664,11 @@ try {
     assert.equal(clarificationPrompts.length, 2, 'The original voice task and its spoken reply should use one task lifecycle');
     assert.match(clarificationPrompts[1] || '', /Task: E2E voice clarification — ask which launch date to use\n\nUser reply: Use Friday\./);
 
+    let voiceStatePollingRequests = 0;
+    const countVoiceStatePolling = (request: { url(): string }) => {
+      if (new URL(request.url()).pathname === '/api/state') voiceStatePollingRequests += 1;
+    };
+    alphaPage!.on('request', countVoiceStatePolling);
     const instruction = 'E2E voice request — finish after the call ends';
     await alphaPage!.evaluate((text: string) => {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
@@ -1556,6 +1677,7 @@ try {
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: instruction }).waitFor({ state: 'visible' });
     await waitFor(() => Boolean(heldVoiceModelRelease), 10_000);
     await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
+    await waitFor(async () => (await call.getByTestId('voice-call-transcript').getAttribute('data-task-status'))?.includes('Dot 正在处理') || false, 10_000);
     await screenshot(alphaPage!, 'voice-call-task-running');
     speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
     assert(speechOutput.includes('收到，已加入工作队列。'), 'The call should speak its queue acknowledgement when speaker output is enabled');
@@ -1570,6 +1692,8 @@ try {
       return speechOutput.includes('Voice response returned from the model.');
     }, 10_000);
     assert(speechOutput.includes('Voice response returned from the model.'), 'The call should speak the completed task result, not only acknowledge receipt');
+    assert.equal(voiceStatePollingRequests, 0, 'Voice task progress should arrive on the authenticated event stream instead of polling /api/state');
+    alphaPage!.off('request', countVoiceStatePolling);
     const composer = alphaPage!.getByTestId('task-composer');
     await composer.fill('Typed while the voice call is active');
     assert.equal(await composer.inputValue(), 'Typed while the voice call is active');
@@ -2114,6 +2238,173 @@ try {
     await screenshot(alphaPage!, '16-computer-returned');
   });
 
+  await recordStep('Qwen WebRTC call sends Chinese speech to the tenant Agent and speaks its real task result', async () => {
+    mockQwenSignalingUrl = await startMockQwenSignaling();
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'qwen',
+      DOTS_QWEN_API_KEY: '',
+      DOTS_QWEN_WORKSPACE_ID: '',
+      DOTS_QWEN_REGION: '',
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const unconfiguredCall = alphaPage!.getByTestId('voice-call');
+    await unconfiguredCall.getByRole('alert').filter({ hasText: '百炼 API Key 和工作空间 ID；地域默认使用北京' }).waitFor({ state: 'visible' });
+    await unconfiguredCall.getByRole('button', { name: '结束通话' }).click();
+
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'qwen',
+      DOTS_QWEN_API_KEY: 'e2e-qwen-secret',
+      DOTS_QWEN_WORKSPACE_ID: 'e2e-workspace',
+      DOTS_QWEN_REGION: 'beijing',
+      DOTS_E2E_QWEN_SIGNALING_URL: mockQwenSignalingUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    const rtcMockScript = String.raw`(() => {
+      const view = window;
+      view.__dotsQwenSentEvents = [];
+      const track = { kind: 'audio', enabled: true, stopped: false, stop() { this.stopped = true; } };
+      view.__dotsQwenFakeTrack = track;
+      view.__dotsQwenFakeSender = null;
+      class FakeDataChannel {
+        constructor(label) { this.label = label; this.readyState = 'connecting'; this.onopen = null; this.onmessage = null; this.onerror = null; }
+        send(raw) {
+          const event = JSON.parse(raw);
+          view.__dotsQwenSentEvents.push(event);
+          if (event.type === 'response.create') {
+            view.__dotsQwenEventChannel?.emit({ type: 'response.created' });
+            window.setTimeout(() => view.__dotsQwenEventChannel?.emit({ type: 'response.done' }), 60);
+          }
+        }
+        emit(event) { this.onmessage?.({ data: JSON.stringify(event) }); }
+        close() { this.readyState = 'closed'; }
+      }
+      class FakePeerConnection {
+        constructor() { this.iceGatheringState = 'complete'; this.connectionState = 'new'; this.localDescription = null; this.ondatachannel = null; this.ontrack = null; this.onconnectionstatechange = null; this.sendChannel = null; }
+        addTransceiver(kind, options) {
+          if (kind !== 'audio' || options?.direction !== 'sendrecv') throw new Error('Voice call must reserve bidirectional audio before SDP offer');
+          const sender = { track: null, async replaceTrack(nextTrack) { this.track = nextTrack; } };
+          view.__dotsQwenFakeSender = sender;
+          return { sender };
+        }
+        createDataChannel(label) { this.sendChannel = new FakeDataChannel(label); return this.sendChannel; }
+        async createOffer() { return { type: 'offer', sdp: ['v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)) }; }
+        async setLocalDescription(description) { this.localDescription = description; }
+        async setRemoteDescription(description) {
+          if (!description?.sdp?.startsWith('v=0')) throw new Error('Qwen answer SDP was not returned to the browser');
+          const remote = new FakeDataChannel('txt');
+          remote.readyState = 'open';
+          view.__dotsQwenEventChannel = remote;
+          this.ondatachannel?.({ channel: remote });
+          remote.emit({ type: 'session.created' });
+          this.sendChannel.readyState = 'open';
+          this.sendChannel.onopen?.();
+          view.__dotsQwenConfirmSession = () => remote.emit({ type: 'session.updated' });
+        }
+        close() { this.connectionState = 'closed'; }
+      }
+      Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: FakePeerConnection });
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async () => ({ getAudioTracks: () => [track], getTracks: () => [track] }) } });
+    })()`;
+    await alphaPage!.evaluate((script: string) => window.eval(script), rtcMockScript);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-provider') === 'qwen');
+    await alphaPage!.waitForFunction(() => (window as unknown as { __dotsQwenSentEvents?: { type: string }[] }).__dotsQwenSentEvents?.some(event => event.type === 'session.update') === true, null, { timeout: 10_000 });
+    assert.match(await call.locator('[data-testid="voice-call-transcript"]').innerText(), /正在初始化语音模型/, 'The UI must not report listening before model setup is acknowledged');
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeSender: { track: unknown } }).__dotsQwenFakeSender.track), null, 'The microphone must remain detached until session.updated');
+    await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenConfirmSession: () => void }).__dotsQwenConfirmSession());
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 10_000 });
+    const microphoneAttachedAfterSetup = await alphaPage!.evaluate(() => {
+      const view = window as unknown as { __dotsQwenFakeSender: { track: unknown }; __dotsQwenFakeTrack: unknown };
+      return view.__dotsQwenFakeSender.track === view.__dotsQwenFakeTrack;
+    });
+    assert.equal(microphoneAttachedAfterSetup, true, 'The microphone should attach only after model configuration is acknowledged');
+    const config = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as { provider: string; configured: boolean; apiKey?: string };
+    assert.deepEqual(config, { provider: 'qwen', configured: true, model: 'qwen3.8-omni-flash-realtime' });
+    assert.equal(mockQwenSignalingRequests.length, 1, 'The browser must complete server-side Qwen SDP negotiation before listening');
+    assert.deepEqual(mockQwenSignalingRequests[0], {
+      authorization: 'Bearer e2e-qwen-secret', contentType: 'application/sdp',
+      sdp: ['v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)),
+    });
+    const sessionUpdate = await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenSentEvents: { type: string; session?: { input_audio_transcription?: { model?: string }; turn_detection?: { type?: string } } }[] }).__dotsQwenSentEvents.find(event => event.type === 'session.update'));
+    assert.equal(sessionUpdate?.session?.input_audio_transcription?.model, 'qwen3-asr-flash-realtime');
+    assert.equal(sessionUpdate?.session?.turn_detection?.type, 'server_vad');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), false, 'Mute must disable the live microphone track');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), true, 'Unmute must re-enable the live microphone track');
+    const voiceTurnTranscript = 'E2E voice response — speak actual task result';
+    const voiceTurnId = 'item-e2e-qwen-voice-turn-001';
+    await alphaPage!.evaluate(({ transcript, turnId }) => {
+      const view = window as unknown as { __dotsQwenEventChannel: { emit(event: unknown): void } };
+      view.__dotsQwenEventChannel.emit({ type: 'input_audio_buffer.speech_started' });
+      const completed = { type: 'conversation.item.input_audio_transcription.completed', event_id: 'event-e2e-qwen-voice-turn-001', item_id: turnId, transcript };
+      view.__dotsQwenEventChannel.emit(completed);
+      view.__dotsQwenEventChannel.emit(completed);
+      view.__dotsQwenEventChannel.emit({ type: 'response.created' });
+      window.setTimeout(() => view.__dotsQwenEventChannel.emit({ type: 'response.done' }), 700);
+    }, { transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 20_000 });
+    await alphaPage!.waitForFunction(() => (window as unknown as { __dotsQwenSentEvents?: { type: string; item?: { content?: { text?: string }[] } }[] }).__dotsQwenSentEvents?.some(event => event.type === 'conversation.item.create' && event.item?.content?.some(part => part.text?.includes('Voice response returned from the model.'))) === true, null, { timeout: 10_000 });
+    const agentPrompt = mockModelPrompts.find(prompt => prompt.includes('E2E voice response — speak actual task result')) || '';
+    assert(agentPrompt, 'The recognized Chinese speech was not dispatched through the tenant Agent task path');
+    const turnResult = await alphaPage!.evaluate(async ({ transcript, turnId }) => {
+      const callResponse = await fetch('/api/voice-calls');
+      const calls = await callResponse.json() as { id: string; startedAt: string; endedAt: string | null }[];
+      const activeCall = calls.find(candidate => !candidate.endedAt);
+      if (!activeCall) throw new Error('No active call was recorded for the voice turn');
+      const response = await fetch(`/api/voice-calls/${activeCall.id}/turns`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ transcript, turnId, engine: 'pi' }),
+      });
+      return { status: response.status, callId: activeCall.id, callStartedAt: activeCall.startedAt, task: await response.json() as { id: string } };
+    }, { transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    assert.equal(turnResult.status, 200, 'A replayed transcript turn should return the original task');
+    const crossTenantTurnStatus = await betaPage!.evaluate(async ({ callId, transcript, turnId }) => (await fetch(`/api/voice-calls/${callId}/turns`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ transcript, turnId, engine: 'pi' }),
+    })).status, { callId: turnResult.callId, transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    assert.equal(crossTenantTurnStatus, 404, 'A different tenant cannot inspect or replay another user’s voice turn');
+    const voiceTaskCheck = await alphaPage!.evaluate(async ({ transcript, callStartedAt }) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; createdAt: string }[] };
+      const tasks = state.tasks.filter(task => task.instruction === transcript && Date.parse(task.createdAt) >= Date.parse(callStartedAt));
+      return { count: tasks.length, taskId: tasks[0]?.id };
+    }, { transcript: voiceTurnTranscript, callStartedAt: turnResult.callStartedAt });
+    assert.equal(voiceTaskCheck.taskId, turnResult.task.id, 'The replay response must reference the task started for this call');
+    const voiceTaskCount = voiceTaskCheck.count;
+    assert.equal(voiceTaskCount, 1, 'Repeated WebRTC transcript delivery must not start a second Agent task');
+    await screenshot(alphaPage!, 'qwen-realtime-call-agent-result');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { stopped: boolean } }).__dotsQwenFakeTrack.stopped), true, 'Ending the call must stop the microphone track');
+    const callHistory = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { endedAt: string | null }[];
+    assert(callHistory.some(item => item.endedAt), 'The Qwen call should be durably recorded when it ends');
+
+    await alphaPage!.evaluate("Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async function () { throw new Error('E2E microphone permission denied'); } } })");
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const failedCall = alphaPage!.getByTestId('voice-call');
+    await failedCall.waitFor({ state: 'visible' });
+    await failedCall.getByRole('alert').filter({ hasText: 'E2E microphone permission denied' }).waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(async () => {
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { endedAt: string | null }[];
+      return Boolean(calls[0]?.endedAt);
+    }, null, { timeout: 10_000 });
+    const failedCallHistory = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { endedAt: string | null }[];
+    assert(failedCallHistory[0]?.endedAt, 'A Qwen call that fails during microphone startup must not remain active in call history');
+    await failedCall.getByRole('button', { name: '结束通话' }).click();
+    await failedCall.waitFor({ state: 'detached' });
+  });
+
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
 } catch (error) {
   failure = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
@@ -2141,6 +2432,7 @@ try {
     else e2eSharedModelKeyEntry.deletePassword();
   } catch { /* Restore only the isolated E2E Keychain service. */ }
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
+  if (mockQwenSignalingServer) await new Promise<void>(resolvePromise => mockQwenSignalingServer!.close(() => resolvePromise()));
   if (e2eSlackTokenAccount) {
     try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
   }
