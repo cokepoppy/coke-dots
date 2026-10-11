@@ -3483,7 +3483,7 @@ try {
     } finally { database.close(); }
   });
 
-  await recordStep('Disconnecting Gmail removes its per-account authorization and blocks later reads', async () => {
+  await recordStep('Disconnecting Gmail removes its authorization, preserves Google sign-in, and blocks later reads', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await openProfile(alphaPage!);
     await alphaPage!.getByTestId('gmail-disconnect').click();
@@ -3491,6 +3491,12 @@ try {
     const disconnected = await alphaPage!.evaluate(async () => await (await fetch('/api/gmail')).json()) as { connected: boolean; connection: unknown };
     assert.deepEqual(disconnected, { configured: true, connected: false, connection: null });
     const userId = oauthTestState.alphaSession!.user.id;
+    const signedIn = await alphaPage!.evaluate(async () => {
+      const response = await fetch('/api/auth/me');
+      return { status: response.status, body: response.ok ? await response.json() as { user: { id: string } } : null };
+    });
+    assert.equal(signedIn.status, 200, 'Disconnecting Gmail must not invalidate the Google sign-in session');
+    assert.equal(signedIn.body?.user.id, userId, 'The original Google account must remain signed in after disconnect');
     const tenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
     const verification = new DatabaseSync(join(testDataDir, 'dots.db'));
     try {
