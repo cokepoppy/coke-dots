@@ -107,8 +107,11 @@ async function executeKernel(input, requestSignal, slot) {
   slot.child = child;
   slot.abort = abort;
   let stdout = '';
+  let stderr = '';
   child.stdout.on('data', chunk => { stdout = (stdout + chunk.toString()).slice(-500_000); });
-  child.stderr.on('data', () => undefined);
+  child.stderr.on('data', chunk => {
+    if (process.env.DOTS_PI_ADAPTER_TEST_DIAGNOSTICS === '1' && engine === 'pi') stderr = (stderr + chunk.toString()).slice(-4000);
+  });
   child.stdin.end(JSON.stringify({
     engine, prompt, cwd, taskId, executionMode,
     ...(modelConfig ? { modelConfig } : {}),
@@ -132,7 +135,12 @@ async function executeKernel(input, requestSignal, slot) {
     });
     if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
     if (slot.interruptedByUser) return { taskId, status: 'waiting', message: '我已暂停当前操作，因为你正在接管电脑。交还电脑后，请告诉我继续。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
-    if (code !== 0) throw new Error(`Agent adapter exited with code ${code}`);
+    if (code !== 0) {
+      const diagnostic = process.env.DOTS_PI_ADAPTER_TEST_DIAGNOSTICS === '1' && engine === 'pi' && stderr.trim()
+        ? `: ${redactDiagnostic(stderr, modelConfig).slice(-1200)}`
+        : '';
+      throw new Error(`Agent adapter exited with code ${code}${diagnostic}`);
+    }
     let result;
     try { result = JSON.parse(stdout); } catch { throw new Error('Agent adapter must return a JSON decision'); }
     if (!['done', 'waiting', 'scheduled', 'delegating'].includes(result.status) || typeof result.message !== 'string' || !result.message.trim()) throw new Error('Agent adapter returned an invalid decision');
@@ -158,6 +166,14 @@ function validateModelConfig(value) {
     throw new Error('Pi shared model API configuration is invalid');
   }
   return { apiKey, model, baseUrl: baseUrl.replace(/\/$/, '') };
+}
+
+function redactDiagnostic(value, modelConfig) {
+  let result = String(value || '');
+  for (const secret of [modelConfig?.apiKey, process.env.DOTS_AGENT_RUNTIME_TOKEN, process.env.LINUX_DESKTOP_WORKER_TOKEN]) {
+    if (secret) result = result.replaceAll(secret, '[REDACTED]');
+  }
+  return result;
 }
 
 function pauseActive() {

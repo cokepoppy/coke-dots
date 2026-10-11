@@ -59,6 +59,24 @@ test('production cloud computers reject mutable worker tags and expose the selec
   }
 });
 
+test('Pi adapter diagnostics are absent by default and require an explicit test flag', () => {
+  const previous = process.env.DOTS_PI_ADAPTER_TEST_DIAGNOSTICS;
+  const deploymentEnv = () => {
+    const resources = desktopResources('diagnostic-test-tenant', 'worker-token', 'agent-token')[1] as { items: Record<string, any>[] };
+    const deployment = resources.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { containers: { env: { name: string; value?: string }[] }[] } } } };
+    return deployment.spec.template.spec.containers[0].env;
+  };
+  try {
+    delete process.env.DOTS_PI_ADAPTER_TEST_DIAGNOSTICS;
+    assert.equal(deploymentEnv().some(variable => variable.name === 'DOTS_PI_ADAPTER_TEST_DIAGNOSTICS'), false);
+    process.env.DOTS_PI_ADAPTER_TEST_DIAGNOSTICS = '1';
+    assert.deepEqual(deploymentEnv().find(variable => variable.name === 'DOTS_PI_ADAPTER_TEST_DIAGNOSTICS'), { name: 'DOTS_PI_ADAPTER_TEST_DIAGNOSTICS', value: '1' });
+  } finally {
+    if (previous === undefined) delete process.env.DOTS_PI_ADAPTER_TEST_DIAGNOSTICS;
+    else process.env.DOTS_PI_ADAPTER_TEST_DIAGNOSTICS = previous;
+  }
+});
+
 test('Kubernetes reconciliation reconnects only when the Deployment generation changes', async () => {
   const envKeys = ['KUBERNETES_SERVICE_HOST', 'DOTS_LINUX_DESKTOP_FORCE_PORT_FORWARD', 'DOTS_LINUX_DESKTOP_TOKEN_SECRET'] as const;
   const previousEnvironment = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));

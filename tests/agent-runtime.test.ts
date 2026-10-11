@@ -55,6 +55,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       "import { appendFile } from 'node:fs/promises';",
       "let raw = ''; for await (const chunk of process.stdin) raw += chunk;",
       'const input = JSON.parse(raw);',
+      "if (input.prompt === 'diagnostic-failure') { process.stderr.write(`provider-error key=${input.modelConfig?.apiKey} worker=${input.computer?.workerToken} agent=agent-test-token-never-print`); process.exit(1); }",
       "await appendFile(process.env.DOTS_TEST_MARKER, `start ${input.taskId}\\n`);",
       "if (input.prompt === 'hold') await new Promise(resolve => setTimeout(resolve, 30000));",
       'await new Promise(resolve => setTimeout(resolve, 80));',
@@ -69,6 +70,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       env: {
         ...process.env,
         DOTS_AGENT_RUNTIME_TOKEN: 'agent-test-token-never-print',
+        DOTS_PI_ADAPTER_TEST_DIAGNOSTICS: '1',
         DOTS_AGENT_RUNTIME_PORT: String(runtimePort),
         DOTS_AGENT_WORKSPACE: workspace,
         DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: process.execPath, args: [adapterPath] }, pi: { command: process.execPath, args: [adapterPath] }, claude: { command: '/bin/false', args: [] } }),
@@ -132,6 +134,12 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     assert.equal(rejectedPi.status, 400);
     assert.match(rejectedPi.body.error || '', /configuration is invalid/);
     assert.doesNotMatch(rejectedPi.body.error || '', new RegExp(testModelKey));
+
+    const diagnosticId = '66666666-6666-4666-8666-666666666666';
+    const diagnostic = await submit(diagnosticId, 'diagnostic-failure', 'standard', 'pi', { apiKey: testModelKey, model: 'deepseek-chat', baseUrl: 'https://api.deepseek.com/v1' });
+    assert.equal(diagnostic.status, 400);
+    assert.match(diagnostic.body.error || '', /provider-error/);
+    for (const secret of [testModelKey, 'worker-test-token', 'agent-test-token-never-print']) assert.doesNotMatch(diagnostic.body.error || '', new RegExp(secret));
 
     const heldId = '33333333-3333-4333-8333-333333333333';
     const heldPromise = submit(heldId, 'hold');

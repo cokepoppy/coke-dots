@@ -180,6 +180,7 @@ async function startServer(port: number, modelBaseUrl: string) {
       DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX: livePi ? '1' : '',
       DOTS_DESKTOP_AGENT_ADAPTERS: livePi ? 'pi' : '',
       DOTS_AGENT_KERNELS_JSON: livePi ? JSON.stringify({ pi: { command: 'node', args: ['/opt/coke-dots/pi-adapter.mjs'] } }) : '',
+      DOTS_PI_ADAPTER_TEST_DIAGNOSTICS: livePi ? '1' : '',
       GOOGLE_CLIENT_ID: '',
       GOOGLE_CLIENT_SECRET: '',
     },

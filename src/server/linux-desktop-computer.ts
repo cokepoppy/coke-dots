@@ -372,6 +372,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 { name: 'COKE_DESKTOP_CHROME_NO_SANDBOX', value: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX === '1' ? '1' : '0' },
                 { name: 'DOTS_DESKTOP_AGENT_ADAPTERS', value: agentEngines },
                 ...(process.env.DOTS_AGENT_KERNELS_JSON ? [{ name: 'DOTS_AGENT_KERNELS_JSON', value: process.env.DOTS_AGENT_KERNELS_JSON }] : []),
+                ...(process.env.DOTS_PI_ADAPTER_TEST_DIAGNOSTICS === '1' ? [{ name: 'DOTS_PI_ADAPTER_TEST_DIAGNOSTICS', value: '1' }] : []),
               ],
               ports: [{ name: 'novnc', containerPort: 6080 }, { name: 'worker', containerPort: 8082 }, { name: 'agent', containerPort: 8083 }, { name: 'cdp', containerPort: 9222 }],
               readinessProbe: { httpGet: { path: '/readyz', port: 'worker' }, initialDelaySeconds: 10, periodSeconds: 5, failureThreshold: 36 },
