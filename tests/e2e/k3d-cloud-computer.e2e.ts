@@ -670,13 +670,61 @@ try {
   }, null, 2)}\n`);
   console.log('A drifted one-second readiness probe was reconciled from a safe state GET; the replacement desktop returned HTTP 200 and retained tenant workspace data');
 
+  // Releasing a tenant desktop Pod must not strand the workspace. A later
+  // authenticated state read should re-apply the desired single replica,
+  // wait for the tenant computer to become usable, and keep its PVC intact.
+  e2ePhase = 'scaled-to-zero-recovery';
+  const beforeScaleToZeroDeployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as {
+    metadata?: { generation?: number };
+    spec?: { replicas?: number };
+  };
+  const beforeScaleToZeroPod = desktopPod;
+  const workspacePvcUid = command(['kubectl', '-n', namespace, 'get', 'pvc', 'desktop-data', '-o', 'jsonpath={.metadata.uid}']);
+  assert.equal(beforeScaleToZeroDeployment.spec?.replicas, 1, 'The test tenant must have exactly one desktop before release');
+  // Leave the computer view so its normal two-second health polling does not
+  // immediately reprovision the intentionally released test Pod.
+  await page.getByRole('button', { name: '新聊天' }).click();
+  await page.getByTestId('task-composer').waitFor({ state: 'visible' });
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 2_500));
+  command(['kubectl', '-n', namespace, 'scale', 'deployment/desktop', '--replicas=0']);
+  command(['kubectl', '-n', namespace, 'wait', '--for=delete', 'pod', '-l', 'app=desktop', '--timeout=120s']);
+  const releasedPodNames = command(['kubectl', '-n', namespace, 'get', 'pods', '-l', 'app=desktop', '-o', 'name']);
+  const releasedPodCount = releasedPodNames ? releasedPodNames.split('\n').length : 0;
+  assert.equal(releasedPodCount, 0, 'Scaling to zero must release only the disposable tenant Pod');
+  const persistedWhileReleased = command(['kubectl', '-n', namespace, 'get', 'pvc', 'desktop-data', '-o', 'jsonpath={.metadata.uid}']);
+  assert.equal(persistedWhileReleased, workspacePvcUid, 'Releasing the Pod must retain the tenant workspace volume');
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 15_100));
+  const restoredResponse = await page.request.get(`${appBaseUrl}/api/computer`, { timeout: 240_000 });
+  const restoredState = { status: restoredResponse.status(), body: await restoredResponse.json() as { backend?: string; error?: string; title?: string } };
+  assert.equal(restoredState.status, 200, `A later safe state GET must restore a released tenant computer: ${restoredState.body.error || ''}`);
+  assert.equal(restoredState.body.backend, 'linux-desktop');
+  assert.equal(restoredState.body.title, 'Welcome back, Roger', 'The computer must reopen its personalized page after scale-to-zero recovery');
+  desktopPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
+  assert.notEqual(desktopPod, beforeScaleToZeroPod, 'Recovery must create a new Pod after the old tenant Pod was released');
+  const restoredDeployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as {
+    metadata?: { generation?: number };
+    spec?: { replicas?: number };
+    status?: { readyReplicas?: number };
+  };
+  assert.equal(restoredDeployment.spec?.replicas, 1, 'The tenant computer must return to its desired single replica');
+  assert.equal(restoredDeployment.status?.readyReplicas, 1, 'The restored tenant computer must be Ready');
+  const restoredPvcUid = command(['kubectl', '-n', namespace, 'get', 'pvc', 'desktop-data', '-o', 'jsonpath={.metadata.uid}']);
+  assert.equal(restoredPvcUid, workspacePvcUid, 'Scale-to-zero recovery must reuse the same workspace PVC');
+  assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive scaling the desktop to zero');
+  await writeFile(join(artifacts, 'cloud-computer-scaled-to-zero-recovery.json'), `${JSON.stringify({
+    before: { generation: beforeScaleToZeroDeployment.metadata?.generation, replicas: 1, pod: beforeScaleToZeroPod, workspacePvcUid },
+    released: { replicas: 0, pods: releasedPodCount, workspacePvcUid: persistedWhileReleased },
+    after: { generation: restoredDeployment.metadata?.generation, replicas: restoredDeployment.spec?.replicas, readyReplicas: restoredDeployment.status?.readyReplicas, pod: desktopPod, stateStatus: restoredState.status, title: restoredState.body.title, workspacePvcUid: restoredPvcUid, persistedWorkspace: true },
+  }, null, 2)}\n`);
+  console.log('An authenticated state GET restored the released tenant Pod and preserved the same workspace PVC and Agent artifact');
+
   command(['kubectl', '-n', namespace, 'delete', 'pod', desktopPod, '--wait=true', '--timeout=90s']);
   command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready', 'pod', '-l', 'app=desktop', '--timeout=120s']);
   const restartedPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive a cloud computer Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'live Kubernetes startup/readiness/liveness probe contract', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', 'Chromium renderer hang triggers Chromium-only restart', 'metadata-only reconciliation preserves the Pod and cached worker tunnel', 'safe GET reconnect reconciles stale Kubernetes probes and preserves the workspace PVC', 'Agent runtime and workspace remain available during renderer recovery', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'live Kubernetes startup/readiness/liveness probe contract', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', 'Chromium renderer hang triggers Chromium-only restart', 'metadata-only reconciliation preserves the Pod and cached worker tunnel', 'safe GET reconnect reconciles stale Kubernetes probes and preserves the workspace PVC', 'tenant scale-to-zero recovery restores one Ready Pod without replacing its workspace PVC', 'Agent runtime and workspace remain available during renderer recovery', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
   logs.push(`Failure diagnostics: appServerExit=${appServer?.exitCode ?? 'running'} health=${health} page=${page?.url() ?? 'unavailable'}`);
