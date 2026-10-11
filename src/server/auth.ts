@@ -172,7 +172,18 @@ export class AuthService {
   }
 
   private oauthClient() {
-    return new OAuth2Client(this.clientId, this.clientSecret, process.env.GOOGLE_REDIRECT_URI?.trim() || `http://127.0.0.1:${this.port}/auth/google/callback`);
+    const redirectUri = process.env.GOOGLE_REDIRECT_URI?.trim() || `http://127.0.0.1:${this.port}/auth/google/callback`;
+    const testProvider = e2eGoogleProviderOrigin();
+    return testProvider
+      ? new OAuth2Client({
+        clientId: this.clientId, clientSecret: this.clientSecret, redirectUri,
+        endpoints: {
+          oauth2AuthBaseUrl: `${testProvider}/authorize`, oauth2TokenUrl: `${testProvider}/token`,
+          oauth2FederatedSignonPemCertsUrl: `${testProvider}/certs`, oauth2FederatedSignonJwkCertsUrl: `${testProvider}/certs`,
+          tokenInfoUrl: `${testProvider}/tokeninfo`,
+        },
+      })
+      : new OAuth2Client(this.clientId, this.clientSecret, redirectUri);
   }
 
   private async createAuthorizationUrl(req: IncomingMessage, res: ServerResponse, handoffHash?: string) {
@@ -191,6 +202,15 @@ export class AuthService {
     authorizationUrl.searchParams.set('nonce', nonce);
     return authorizationUrl.toString();
   }
+}
+
+function e2eGoogleProviderOrigin() {
+  if (process.env.NODE_ENV !== 'test' || process.env.DOTS_E2E_AUTH !== '1') return '';
+  try {
+    const url = new URL(process.env.DOTS_E2E_GOOGLE_PROVIDER_URL || '');
+    if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(url.hostname) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) return '';
+    return url.origin;
+  } catch { return ''; }
 }
 
 export function hash(value: string) { return createHash('sha256').update(value).digest('hex'); }

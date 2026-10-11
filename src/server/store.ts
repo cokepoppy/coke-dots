@@ -366,14 +366,16 @@ export class Store {
     try {
       const triggers = this.db.prepare(`SELECT * FROM gmail_event_triggers WHERE tenant_id=? AND user_id=? AND status='active' ORDER BY created_at,id`)
         .all(input.tenantId, input.userId) as {
-          id: string; tenant_id: string; user_id: string; from_filter: string; subject_filter: string; condition: string; prompt: string; engine: Extract<Engine, 'pi' | 'dsh'>;
+          id: string; tenant_id: string; user_id: string; from_filter: string; subject_filter: string; condition: string; prompt: string; engine: Extract<Engine, 'pi' | 'dsh'>; created_at: string;
         }[];
       let matched = 0;
       let duplicate = false;
       let rateLimited = false;
       const now = new Date().toISOString();
+      const receivedAt = Date.parse(input.receivedAt);
       for (const trigger of triggers) {
-        const matches = (!trigger.from_filter || from.toLocaleLowerCase().includes(trigger.from_filter.toLocaleLowerCase()))
+        const matches = Number.isFinite(receivedAt) && receivedAt >= Date.parse(trigger.created_at)
+          && (!trigger.from_filter || from.toLocaleLowerCase().includes(trigger.from_filter.toLocaleLowerCase()))
           && (!trigger.subject_filter || subject.toLocaleLowerCase().includes(trigger.subject_filter.toLocaleLowerCase()));
         const rateLimitedAt = new Date(Date.now() - 60 * 60_000).toISOString();
         const dailyFloor = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
