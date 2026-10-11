@@ -1,6 +1,6 @@
 # Dots voice calls: public evidence and Coke Dots design
 
-Updated 2026-10-10 on `feature/voice-call-reference-fidelity`.
+Updated 2026-10-11 on `feature/realtime-voice-provider`.
 
 ## What OpenAI has publicly confirmed
 
@@ -17,7 +17,7 @@ Sources:
 
 ## Current Coke Dots call path
 
-The current call is a **chained browser voice path**, not a native speech-to-speech model session:
+The default browser provider is a **chained browser voice path**. The `feature/realtime-voice-provider` branch adds an optional Qwen WebRTC speech-to-speech path:
 
 1. The browser's Web Speech `SpeechRecognition` implementation listens to the microphone. The browser/OS speech service provides a finalized transcript; Coke Dots does not receive or persist the raw audio.
 2. Each final phrase goes through the same tenant-authenticated task API as typed work. A clarification uses the existing waiting task ID and task-reply endpoint.
@@ -25,7 +25,7 @@ The current call is a **chained browser voice path**, not a native speech-to-spe
 4. Browser `speechSynthesis` reads short acknowledgements, questions, and final task results. Recognition pauses during playback to reduce self-transcription.
 5. Mute stops recognition; Speaker stops synthesized playback; End records the call duration and tears down the client call. The regular composer remains available.
 
-This is deterministic enough for mocked Chrome E2E and it connects to the existing Pi/DeepSeek Harness task engines. It is not equivalent to a live full-duplex voice model: recognition and voice quality depend on browser support, the UI cannot cancel remote playback at the model, and polling adds delay. The current E2E injects speech through a fake browser recognizer; it does not claim live microphone or acoustic-quality coverage.
+The browser path is deterministic enough for mocked Chrome E2E and connects to the existing Pi/DeepSeek Harness task engines. It is not equivalent to a live full-duplex voice model: recognition and voice quality depend on browser support, the UI cannot cancel remote playback at the model, and polling adds delay. The current E2E injects speech through a fake browser recognizer; it does not claim live microphone or acoustic-quality coverage.
 
 ## Recommended production path for Pi and DeepSeek Harness
 
@@ -51,7 +51,7 @@ Use a provider interface rather than binding the task kernel to a speech vendor:
 
 For low-latency speech-to-speech, OpenAI's public [voice-agent guide](https://developers.openai.com/api/docs/guides/voice-agents) documents a Realtime session in the browser, handling audio turns, tools, interruptions, and handoffs. The [WebRTC guide](https://developers.openai.com/api/docs/guides/voice-webrtc) sends microphone and generated audio over negotiated WebRTC media tracks, with JSON events over a data channel; a trusted server creates the session or mints a short-lived client key, while the standard API key stays server-side. OpenAI recommends WebRTC for browser/mobile Realtime clients. This is a public developer API design, **not confirmed Dots internals**, and it introduces a separate voice provider and billing profile from the user's Pi/DeepSeek task kernel.
 
-For provider flexibility and direct compatibility with Pi/DeepSeek Harness, the current **chained voice pipeline** is the right first target: speech-to-text → normal tenant task/reply → text-to-speech. OpenAI's guide describes this as the path for inspecting or transforming intermediate text and replacing each stage independently. It is easier to audit, replay in E2E, and route user intent to the existing Agent adapter, though it has more latency than speech-to-speech.
+For provider flexibility and direct compatibility with Pi/DeepSeek Harness, a **chained voice pipeline** remains a valid option: speech-to-text → normal tenant task/reply → text-to-speech. OpenAI's guide describes this as the path for inspecting or transforming intermediate text and replacing each stage independently. It is easier to audit and replay in E2E, though it has more latency than speech-to-speech. The Qwen branch instead uses a realtime voice model for turn detection, transcription, short acknowledgements, and spoken task updates; it still delegates durable work to the existing Agent adapter.
 
 Security and lifecycle requirements:
 
@@ -66,6 +66,35 @@ Security and lifecycle requirements:
 The 06:26 source frame is a compressed phone-in-video composite, so these dimensions are relative to the visible handset, not original CSS pixels. The V1 call surface is roughly 0.49:1 width-to-height; it has a graphite bezel, blue/gray gradient, status bar and notch, ring-style Dot avatar/name, large timer, one expand control, and three bottom controls ordered Speaker → End → Mute. V2 shows a separate compact call state beside the conversation: a microphone toggle and red hang-up button at the conversation's upper right. Coke Dots models both observed visual states, selecting the compact state for an active desktop conversation and the handset for standalone call entry; that selection rule is inferred because the footage does not show all entry points in both layouts. Visible transcript/task details remain in the underlying conversation; screen-reader updates retain transcript and task state without adding a text card that is absent from the reference frame.
 
 The expand button is an implementation interaction inferred from its visible icon. No source video frame demonstrates its resulting state; it is marked as unverified rather than treated as a confirmed Dots behavior.
+
+## Provider choice: Qwen first, Volcano as a measured alternative
+
+Both Qwen and Volcano offer integrated realtime speech-to-speech models. A separate TTS service is **not required** for the first live conversation: the realtime model can listen, detect turns, and return speech. Keep standalone streaming TTS as an optional adapter when exact playback of Agent text, voice selection, or vendor failover requires it.
+
+| Provider | Relevant official capability | Coke Dots fit |
+|---|---|---|
+| Alibaba Model Studio Qwen | `qwen3.8-omni-flash-realtime` supports browser WebRTC and server WebSocket. WebRTC carries audio on media tracks and text/events on a DataChannel; an authenticated AppServer exchanges SDP so the long-lived API key stays server-side. Qwen-Audio Realtime also documents VAD/push-to-talk modes and Function Calling. | Best first integration because the existing voice feature branch already implements the WebRTC negotiation and task handoff. Requires a matching DashScope API key and workspace ID for Beijing or Singapore. |
+| Volcano Engine / Doubao | The standalone end-to-end realtime speech API uses a streaming WebSocket. Volcano's RTC `StartVoiceChat` path also offers pure S2S and a hybrid mode that sends tool-oriented turns to its configured LLM. The documented hybrid `LLMConfig` is limited to Volcano Ark models. | A credible Mandarin voice-quality/latency comparison. Use a separate provider adapter and server-side credential handling; route Pi/DSH through Coke Dots' own authorized task bridge rather than assuming the managed Ark model can host those kernels. |
+
+Sources: [Qwen Realtime overview](https://help.aliyun.com/zh/model-studio/realtime), [Qwen WebRTC connection](https://help.aliyun.com/zh/model-studio/realtime-webrtc-access), [Qwen Audio Realtime and Function Calling](https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides), [Volcano end-to-end realtime speech integration](https://docs.volcengine.com/docs/real_time_communication/Accessend-to-endreal-timespeechlargemodel?lang=zh), [Doubao Realtime API](https://docs.volcengine.com/docs/DoubaoVoice/End-to-endreal-timespeechlargemodelAPIaccessdocument?lang=zh).
+
+**Recommendation:** validate Qwen end to end first, then benchmark Volcano behind the same provider interface if a Volcano credential is available. Qwen is the lower-risk first step for the current browser call because its WebRTC path is already implemented. This is an implementation choice based on fit and existing code, not a claim that Qwen is faster or sounds better; that requires a same-device, same-network Mandarin test.
+
+## Voice-to-Agent handoff and perceived latency
+
+Keep the voice loop responsive while the personal Agent does durable work:
+
+1. The browser opens an authenticated call and streams microphone audio over WebRTC. Qwen/Volcano handles VAD, transcription, barge-in, and a short acknowledgement such as “收到，我开始查了”.
+2. On each finalized utterance, the app sends a `callId` and unique `turnId` to the Coke Dots API. The server derives tenant and user from the session, deduplicates the turn, then creates a task or replies to that user's waiting task.
+3. The tenant's Debian cloud computer runs Pi or DeepSeek Harness. The call is only a channel; it does not replace the Agent runtime or its task state.
+4. The task emits `accepted`, `working`, `needs_input`, `approval_required`, `done`, or `failed` events. Send these to the conversation and active call over SSE/WebSocket. Speak short progress or clarification messages as they arrive; do not hold the voice response open until a long task finishes.
+5. Ending the call closes media but leaves the task running. If the user asks a follow-up during the call, reply to the existing waiting task rather than creating a duplicate.
+
+Treat provider Function Calling as an intent signal, not authorization. Only the Coke Dots server should execute a `create_task`/`reply_to_task` action after deriving tenant ownership, checking task state and action rules, applying idempotency, and requiring approval where needed. Never accept a tenant ID, tool permission, or arbitrary tool payload supplied by the browser or voice model as authority.
+
+The current Qwen branch already sends finalized Qwen transcripts into the existing task/reply API and has the voice model read Agent status updates. It currently polls task state while the call is active; an SSE/WebSocket event stream is the next latency improvement. Its acknowledgement is intentionally short so a long Agent task does not block the call. Do not present that acknowledgement as task progress or completion.
+
+For validation, record separate timings for utterance end → acknowledgement audio, transcript final → task accepted, and Agent event → spoken update. Set an initial product target of a brief acknowledgement beginning within about one second after the user finishes speaking, then measure p50/p95 on the same browser and network. This is a Coke Dots acceptance target, not a provider guarantee. Also test barge-in, muted input, duplicate turn delivery, task clarification, approval, provider disconnect, tenant isolation, and ending a call while the task continues. The E2E mock can prove task routing and UI states; only a live provider session can prove real microphone quality and actual round-trip latency.
 
 ## Qwen Realtime implementation
 
