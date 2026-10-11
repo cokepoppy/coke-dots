@@ -293,7 +293,8 @@ export class LinuxDesktopComputer implements ComputerRuntime {
 
         // A Deployment template change may replace its Pod. Drop the cached
         // tunnel first, then reconnect so the next safe read waits for Ready.
-        process.stderr.write('Cloud desktop tenant resource drift detected; reconnecting\n');
+        const identity = desktopResourceIdentity(this.tenantId);
+        process.stderr.write(`${JSON.stringify({ event: 'cloud_desktop_resource_reconnect', tenantHash: identity.tenantHash, at: new Date().toISOString(), reason: 'deployment_generation_changed' })}\n`);
         this.connection = null;
         const resetting = Promise.resolve(this.connector.close?.()).then(() => undefined, () => undefined);
         this.resetting = resetting;
@@ -510,17 +511,21 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
   ];
 }
 
-class KubectlDesktopConnector implements DesktopConnector {
+type KubectlRunner = (args: string[], input?: string) => Promise<string>;
+
+export class KubectlDesktopConnector implements DesktopConnector {
   private portForward: ChildProcess | null = null;
   private current: DesktopConnection | null = null;
+
+  constructor(private readonly runKubectl: KubectlRunner = kubectl) {}
 
   async connect(tenantId: string): Promise<DesktopConnection> {
     if (this.current) return this.current;
     const resources = this.resourcesFor(tenantId);
     const identity = desktopResourceIdentity(tenantId);
-    await kubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[0]));
-    await kubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[1]));
-    await kubectl(['-n', identity.namespace, 'rollout', 'status', 'deployment/desktop', '--timeout=180s']);
+    await this.runKubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[0]));
+    await this.runKubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[1]));
+    await this.runKubectl(['-n', identity.namespace, 'rollout', 'status', 'deployment/desktop', '--timeout=180s']);
 
     return this.connectToTenant(identity, resources.workerToken, resources.agentToken);
   }
@@ -528,9 +533,21 @@ class KubectlDesktopConnector implements DesktopConnector {
   async reconcile(tenantId: string) {
     if (!this.current) return false;
     const resources = this.resourcesFor(tenantId);
-    const namespaceResult = await kubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[0]));
-    const tenantResult = await kubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[1]));
-    return `${namespaceResult}\n${tenantResult}`.split('\n').some(line => /\b(?:configured|created)\s*$/.test(line));
+    const identity = desktopResourceIdentity(tenantId);
+    const previousGeneration = await this.deploymentGeneration(identity.namespace);
+    await this.runKubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[0]));
+    await this.runKubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[1]));
+    const currentGeneration = await this.deploymentGeneration(identity.namespace);
+    // Namespace, Secret, Service, and Deployment metadata can be updated without
+    // replacing the Pod. Only a Deployment generation change invalidates the
+    // cached worker connection and warrants reconnecting the tenant desktop.
+    return previousGeneration !== currentGeneration;
+  }
+
+  private async deploymentGeneration(namespace: string) {
+    const raw = await this.runKubectl(['-n', namespace, 'get', 'deployment', 'desktop', '--ignore-not-found=true', '-o=jsonpath={.metadata.generation}']);
+    const value = raw.trim();
+    return /^\d+$/.test(value) ? Number(value) : null;
   }
 
   private resourcesFor(tenantId: string) {
@@ -569,7 +586,7 @@ class KubectlDesktopConnector implements DesktopConnector {
   async reset(tenantId: string) {
     await this.close();
     const identity = desktopResourceIdentity(tenantId);
-    const rawNamespace = await kubectl(['get', 'namespace', identity.namespace, '-o', 'json', '--ignore-not-found=true']);
+    const rawNamespace = await this.runKubectl(['get', 'namespace', identity.namespace, '-o', 'json', '--ignore-not-found=true']);
     if (!rawNamespace.trim()) return;
     let namespace: { metadata?: { labels?: Record<string, string> } };
     try { namespace = JSON.parse(rawNamespace); }
@@ -577,7 +594,7 @@ class KubectlDesktopConnector implements DesktopConnector {
     if (namespace.metadata?.labels?.['coke-dots.io/managed-by'] !== 'coke-dots' || namespace.metadata.labels['coke-dots.io/tenant-hash'] !== identity.tenantHash) {
       throw new Error('Linux 云电脑工作区标记与当前租户不匹配，已停止重置');
     }
-    await kubectl(['delete', 'namespace', identity.namespace, '--wait=true', '--timeout=120s']);
+    await this.runKubectl(['delete', 'namespace', identity.namespace, '--wait=true', '--timeout=120s']);
   }
 }
 
