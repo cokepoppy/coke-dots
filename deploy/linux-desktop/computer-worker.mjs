@@ -118,6 +118,16 @@ async function publicHttpsUrl(value) {
   return target;
 }
 
+function samePublicDestination(actual, expected) {
+  const normalize = value => {
+    const url = new URL(value);
+    url.hostname = url.hostname.replace(/^www\./i, '');
+    url.hash = '';
+    return url.href;
+  };
+  return normalize(actual) === normalize(expected);
+}
+
 async function inspectAgentBrowserUi() {
   if (owner !== 'agent') throw new Error('The user currently controls this computer');
   const browserPage = await page();
@@ -181,6 +191,7 @@ async function clickAgentInformationLink(input) {
   const attributes = await link.evaluate(element => ({ href: element.href, target: element.target, download: element.hasAttribute('download') }));
   const destination = await publicHttpsUrl(attributes.href);
   if (attributes.target && attributes.target !== '_self' || attributes.download) throw new Error('New-window links and downloads are not allowed');
+  if (samePublicDestination(before.href, destination.href)) throw new Error('The information link does not navigate to a different public page');
   const bounds = await link.boundingBox();
   if (!bounds) throw new Error('The information link is no longer visible');
   const windowIds = (await exec('xdotool', ['search', '--onlyvisible', '--class', 'chromium'], { timeout: 5000 })).stdout.trim().split(/\s+/).filter(Boolean);
@@ -230,11 +241,12 @@ async function clickAgentInformationLink(input) {
   if (!pointerWindowChain.some(id => chromiumWindowIds.has(id))) {
     throw new Error(`The target point ${x},${y} is not inside a Chromium window (pointer ${pointerLocation.trim()}; window chain ${pointerWindowChain.join('>')}); refusing to click another desktop app`);
   }
+  const navigation = browserPage.waitForURL(url => samePublicDestination(url.href, destination.href), { waitUntil: 'domcontentloaded', timeout: 15000 }).then(() => true).catch(() => false);
   await exec('xdotool', ['click', '1'], { timeout: 5000 });
-  await browserPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => undefined);
+  const navigated = await navigation;
   if (owner !== 'agent') throw new Error('The user took control during the browser click');
   const after = await publicHttpsUrl(browserPage.url());
-  if (after.href !== destination.href) {
+  if (!navigated || !samePublicDestination(after.href, destination.href)) {
     const hit = await browserPage.evaluate(({ x, y }) => {
       const element = document.elementFromPoint(x, y);
       return element ? { tag: element.tagName, text: (element.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 120) } : null;
