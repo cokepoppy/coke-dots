@@ -1345,10 +1345,12 @@ try {
       const name = element.querySelector<HTMLElement>('.voice-call-person > strong')!.getBoundingClientRect();
       const timer = element.querySelector<HTMLElement>('.voice-call-screen-timer')!.getBoundingClientRect();
       const statusTime = element.querySelector<HTMLElement>('.voice-call-status-time')!.getBoundingClientRect();
+      const statusSilent = element.querySelector<HTMLElement>('.voice-call-status-leading .voice-call-silent')!.getBoundingClientRect();
       return {
         statusTimeLeft: statusTime.left - dock.left,
         statusTimeBoxTop: statusTime.top - dock.top,
-        statusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
+        statusSilentGap: statusSilent.left - statusTime.right,
+        rightStatusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
         avatarTop: avatar.top - dock.top,
         avatarDiameter: avatar.width,
         nameBoxTop: name.top - dock.top,
@@ -1360,7 +1362,9 @@ try {
       `Status time should match the 06:26 frame horizontally: expected ${upperFrameReference.measuredElements.statusTimeLeft}px, saw ${upperFrameGeometry.statusTimeLeft.toFixed(1)}px`);
     assert(Math.abs(upperFrameGeometry.statusTimeBoxTop - upperFrameReference.measuredElements.statusTimeBoxTop) <= upperTolerance.statusTime,
       `Status time should match the 06:26 frame vertically: expected ${upperFrameReference.measuredElements.statusTimeBoxTop}px, saw ${upperFrameGeometry.statusTimeBoxTop.toFixed(1)}px`);
-    assert.equal(upperFrameGeometry.statusIconCount, 3, 'iOS status symbols should use the measured silent, signal, and Wi-Fi glyphs');
+    assert(upperFrameGeometry.statusSilentGap >= 0 && upperFrameGeometry.statusSilentGap <= 6,
+      'The crossed-bell status glyph should sit immediately beside the time as in the 06:26 frame');
+    assert.equal(upperFrameGeometry.rightStatusIconCount, 2, 'Cellular and Wi-Fi status glyphs should remain grouped by the battery on the right');
     assert(Math.abs(upperFrameGeometry.avatarTop - upperFrameReference.measuredElements.avatarTop) <= upperTolerance.avatarTop,
       `Avatar top should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarTop}px, saw ${upperFrameGeometry.avatarTop.toFixed(1)}px`);
     assert(Math.abs(upperFrameGeometry.avatarDiameter - upperFrameReference.measuredElements.avatarDiameter) <= upperTolerance.avatarDiameter,
