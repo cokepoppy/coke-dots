@@ -1,0 +1,48 @@
+name: Verify
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coke-dots-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-and-chrome-e2e:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build and run Chrome click-through E2E
+        env:
+          DOTS_CHROME_BIN: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+        run: npm run test:e2e
+
+      - name: Preserve browser evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coke-dots-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/e2e
+          if-no-files-found: ignore
+          retention-days: 14
