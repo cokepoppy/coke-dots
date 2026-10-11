@@ -543,7 +543,12 @@ await writeFile(join(outputRoot, 'manifest.json'), JSON.stringify({
   screenshots: cloudComputerUiDemo
     ? ['screenshots/00-dot-ready.png', 'screenshots/01-cloud-computer-running.png', 'screenshots/02-cloud-browser-click-result.png', 'screenshots/02-cloud-desktop-after-click.png', 'screenshots/03-computer-task-in-activity.png', 'screenshots/04-computer-task-result-detail.png']
     : ['screenshots/00-dot-ready.png', 'screenshots/01-launch-draft-waiting.png', 'screenshots/02-proactive-finding-in-activity.png', 'screenshots/03-proactive-finding-detail.png'],
-  webp: { width: playbackMetadata.width, height: playbackMetadata.height, frames: playbackMetadata.pages, durationSeconds: playbackDuration },
+  webp: {
+    width: playbackMetadata.width,
+    height: playbackMetadata.pageHeight || Math.round(playbackMetadata.height / Math.max(1, playbackMetadata.pages || 1)),
+    frames: playbackMetadata.pages,
+    durationSeconds: playbackDuration,
+  },
   webpPlayback,
   ...(cloudComputerUiDemo ? { computerUiAudit: 'computer-ui-audit.json', interactionProof: 'interaction-proof.json' } : {}),
   modelCalls: livePi ? undefined : modelRequests.length,
