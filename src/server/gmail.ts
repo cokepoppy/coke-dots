@@ -92,38 +92,19 @@ export class GmailService {
         }
         try {
           const client = this.oauthClient(refreshToken);
-          let pageToken = '';
-          let latestHistoryId = mailbox.historyId;
-          let pages = 0;
-          let createdCount = 0;
-          do {
-            const params = new URLSearchParams({ startHistoryId: mailbox.historyId, historyTypes: 'messageAdded', labelId: 'INBOX', maxResults: '100' });
-            if (pageToken) params.set('pageToken', pageToken);
-            const history = await this.googleRequest<GmailHistoryResponse>(client, `/users/me/history?${params.toString()}`);
-            latestHistoryId = history.historyId || latestHistoryId;
-            const messageIds = [...new Set((history.history || []).flatMap(record => (record.messagesAdded || []).map(item => item.message?.id || '')).filter(Boolean))];
-            for (const messageId of messageIds) {
-              const message = await this.googleRequest<GmailMessageResponse>(client, `/users/me/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`);
-              const headers = new Map((message.payload?.headers || []).map(header => [header.name.toLowerCase(), header.value.slice(0, 500)]));
-              const result = this.store.createGmailMessageEventTasks({
-                tenantId: mailbox.tenantId, userId: mailbox.userId, messageId,
-                from: headers.get('from') || '', subject: headers.get('subject') || '',
-                snippet: message.snippet || '', receivedAt: toIsoDate(message.internalDate) || headers.get('date') || new Date().toISOString(),
-              });
-              createdCount += result.taskIds.length;
-            }
-            pageToken = history.nextPageToken || '';
-            pages++;
-            if (pages >= 20 && pageToken) throw new GmailHistoryOverflowError();
-          } while (pageToken);
-          this.store.updateGmailHistory(mailbox.tenantId, mailbox.userId, latestHistoryId);
-          if (createdCount) this.onTasksCreated();
+          let sync: GmailSyncResult;
+          try {
+            sync = await this.readHistory(client, mailbox, mailbox.historyId);
+          } catch (error) {
+            if (!(error instanceof GmailHistoryCursorExpiredError)) throw error;
+            sync = await this.reconcileExpiredHistory(client, mailbox);
+          }
+          this.store.updateGmailHistory(mailbox.tenantId, mailbox.userId, sync.historyId);
+          if (sync.createdCount) this.onTasksCreated();
         } catch (error) {
           const status = httpStatus(error);
-          if (status === 404) {
-            this.store.setGmailConnectionError(mailbox.tenantId, mailbox.userId, 'Gmail history expired. Reconnect the mailbox to resume monitoring.', true);
-          } else if (error instanceof GmailHistoryOverflowError) {
-            this.store.setGmailConnectionError(mailbox.tenantId, mailbox.userId, 'Gmail has too many unprocessed changes. Reconnect to establish a new history cursor.', true);
+          if (error instanceof GmailHistoryOverflowError) {
+            this.store.setGmailConnectionError(mailbox.tenantId, mailbox.userId, 'Gmail 历史游标已过期，待补扫邮件超过自动恢复上限。为避免重复派工，监控已暂停；请重新连接后检查触发器。', true);
           } else if (status === 401 || status === 403) {
             this.store.setGmailConnectionError(mailbox.tenantId, mailbox.userId, 'Gmail authorization expired or was revoked. Reconnect the mailbox.', true);
           } else {
@@ -132,6 +113,82 @@ export class GmailService {
         }
       }
     } finally { this.polling = false; }
+  }
+
+  private async readHistory(client: OAuth2Client, mailbox: GmailMailbox, startHistoryId: string): Promise<GmailSyncResult> {
+    let pageToken = '';
+    let latestHistoryId = startHistoryId;
+    let pages = 0;
+    let createdCount = 0;
+    do {
+      const params = new URLSearchParams({ startHistoryId, historyTypes: 'messageAdded', labelId: 'INBOX', maxResults: '100' });
+      if (pageToken) params.set('pageToken', pageToken);
+      let history: GmailHistoryResponse;
+      try {
+        history = await this.googleRequest<GmailHistoryResponse>(client, `/users/me/history?${params.toString()}`);
+      } catch (error) {
+        if (httpStatus(error) === 404) throw new GmailHistoryCursorExpiredError();
+        throw error;
+      }
+      latestHistoryId = history.historyId || latestHistoryId;
+      const messageIds = [...new Set((history.history || []).flatMap(record => (record.messagesAdded || []).map(item => item.message?.id || '')).filter(Boolean))];
+      createdCount += await this.readMessages(client, mailbox, messageIds);
+      pageToken = history.nextPageToken || '';
+      pages++;
+      if (pages >= 20 && pageToken) throw new GmailHistoryOverflowError();
+    } while (pageToken);
+    return { historyId: latestHistoryId, createdCount };
+  }
+
+  private async reconcileExpiredHistory(client: OAuth2Client, mailbox: GmailMailbox): Promise<GmailSyncResult> {
+    const profile = await this.googleRequest<{ historyId?: string }>(client, '/users/me/profile');
+    const baselineHistoryId = profile.historyId?.trim() || '';
+    if (!/^[0-9]{1,40}$/.test(baselineHistoryId)) throw new Error('Gmail did not return a valid history cursor for recovery');
+
+    const activeTriggers = this.store.gmailEventTriggers(mailbox.tenantId, mailbox.userId).filter(trigger => trigger.status === 'active');
+    const triggerStarts = activeTriggers.map(trigger => Date.parse(trigger.createdAt)).filter(Number.isFinite);
+    let createdCount = 0;
+    if (triggerStarts.length) {
+      // Search from one second before the earliest trigger; the store applies the exact per-trigger timestamp gate.
+      const after = Math.floor((Math.min(...triggerStarts) - 1000) / 1000);
+      let pageToken = '';
+      let pages = 0;
+      do {
+        const params = new URLSearchParams({ q: `in:inbox after:${after}`, maxResults: '100' });
+        if (pageToken) params.set('pageToken', pageToken);
+        const page = await this.googleRequest<GmailMessagesPage>(client, `/users/me/messages?${params.toString()}`);
+        const messageIds = (page.messages || []).map(message => message.id || '').filter(Boolean);
+        createdCount += await this.readMessages(client, mailbox, messageIds);
+        pageToken = page.nextPageToken || '';
+        pages++;
+        if (pages >= 20 && pageToken) throw new GmailHistoryOverflowError();
+      } while (pageToken);
+    }
+
+    // Capture changes that arrived while the bounded inbox scan was running before advancing the cursor.
+    const catchUp = await this.readHistory(client, mailbox, baselineHistoryId);
+    return { historyId: catchUp.historyId, createdCount: createdCount + catchUp.createdCount };
+  }
+
+  private async readMessages(client: OAuth2Client, mailbox: GmailMailbox, messageIds: string[]): Promise<number> {
+    let createdCount = 0;
+    for (const messageId of messageIds) {
+      let message: GmailMessageResponse;
+      try {
+        message = await this.googleRequest<GmailMessageResponse>(client, `/users/me/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`);
+      } catch (error) {
+        if (httpStatus(error) === 404) continue; // History may refer to mail deleted before its metadata read.
+        throw error;
+      }
+      const headers = new Map((message.payload?.headers || []).map(header => [header.name.toLowerCase(), header.value.slice(0, 500)]));
+      const result = this.store.createGmailMessageEventTasks({
+        tenantId: mailbox.tenantId, userId: mailbox.userId, messageId,
+        from: headers.get('from') || '', subject: headers.get('subject') || '',
+        snippet: message.snippet || '', receivedAt: toIsoDate(message.internalDate) || toIsoDateFromHeader(headers.get('date')) || new Date().toISOString(),
+      });
+      createdCount += result.taskIds.length;
+    }
+    return createdCount;
   }
 
   private oauthClient(refreshToken: string) {
@@ -162,6 +219,7 @@ interface GmailHistoryResponse {
   nextPageToken?: string;
   history?: { messagesAdded?: { message?: { id?: string } }[] }[];
 }
+interface GmailMessagesPage { messages?: { id?: string }[]; nextPageToken?: string }
 interface GmailMessageResponse {
   id?: string;
   snippet?: string;
@@ -169,6 +227,9 @@ interface GmailMessageResponse {
   payload?: { headers?: { name: string; value: string }[] };
 }
 class GmailHistoryOverflowError extends Error {}
+class GmailHistoryCursorExpiredError extends Error {}
+type GmailMailbox = { tenantId: string; userId: string; email: string; historyId: string };
+type GmailSyncResult = { historyId: string; createdCount: number };
 
 function gmailTokenEntry(tenantId: string, userId: string) {
   return new Entry(keychainService, `tenant-${tenantId}-user-${userId}-gmail-refresh-token`);
@@ -180,6 +241,11 @@ function toIsoDate(value: string | undefined) {
   if (!value || !/^\d{1,16}$/.test(value)) return null;
   const timestamp = Number(value);
   return Number.isSafeInteger(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+function toIsoDateFromHeader(value: string | undefined) {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 function httpStatus(error: unknown) {
   if (!error || typeof error !== 'object') return 0;
