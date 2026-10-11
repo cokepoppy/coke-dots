@@ -1,6 +1,9 @@
 import type { ScheduleSpec } from './scheduling.ts';
 
-export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
+export const selectableEngines = ['model', 'pi', 'dsh'] as const;
+export type Engine = (typeof selectableEngines)[number];
+export type TaskEngine = Engine | 'claude';
+export const isEngine = (value: unknown): value is Engine => typeof value === 'string' && (selectableEngines as readonly string[]).includes(value);
 export type TaskStatus = 'queued' | 'working' | 'delegating' | 'waiting' | 'scheduled' | 'done' | 'failed' | 'paused' | 'stopped';
 export type ActionRuleMode = 'without-asking' | 'when-requested' | 'ask-before' | 'hand-off';
 export type { ScheduleSpec } from './scheduling.ts';
@@ -19,7 +22,7 @@ export interface Task {
   id: string;
   tenantId: string;
   parentTaskId: string | null;
-  engine: Engine;
+  engine: TaskEngine;
   agentSessionId: string | null;
   title: string;
   instruction: string;

@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ActionRuleMode, AttachmentSummary, Engine, Entry, PageActionApproval, ScheduleSpec, ScratchpadPageAction, Snapshot, Task, TaskStatus, TenantActionRule, VoiceCallSession, Watch, WorkspacePage } from '../shared/types.ts';
+import { isEngine, type ActionRuleMode, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskEngine, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -734,6 +734,7 @@ export class Store {
   }
 
   createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], uploaderId = ''): Task {
+    if (!isEngine(engine)) throw new Error('任务内核无效');
     const now = new Date().toISOString();
     const id = randomUUID();
     const title = instruction.trim().split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
@@ -802,13 +803,14 @@ export class Store {
     if (!Array.isArray(delegations) || delegations.length < 1 || delegations.length > 3) throw new Error('代理子任务数量无效');
     for (const child of delegations) {
       if (!child.title.trim() || child.title.trim().length > 120 || !child.instruction.trim() || child.instruction.trim().length > 5000) throw new Error('代理子任务内容无效');
-      if (child.engine !== undefined && !['model', 'claude', 'pi', 'dsh'].includes(child.engine)) throw new Error('代理子任务内核无效');
+      if (child.engine !== undefined && !isEngine(child.engine)) throw new Error('代理子任务内核无效');
     }
     const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const parent = this.getTask(parentId, tenantId);
       if (!parent || parent.status !== 'working' || parent.parentTaskId || scheduleForTask(parent.scheduleSpec, parent.scheduleMinutes)) throw new Error('当前工作不能委派子任务');
+      if (!isEngine(parent.engine)) throw new Error('已停用的内核不能继续委派子任务');
       if (this.delegatedTasks(parentId, tenantId).length) throw new Error('此工作已经委派过子任务');
       const children: Task[] = [];
       for (const delegated of delegations) {
@@ -989,7 +991,7 @@ function toTask(r: Record<string, unknown>): Task {
   scheduleSpec = scheduleForTask(scheduleSpec, scheduleMinutes);
   return {
     id: String(r.id), tenantId: String(r.tenant_id), parentTaskId: r.parent_task_id == null ? null : String(r.parent_task_id), title: String(r.title), instruction: String(r.instruction),
-    engine: r.engine as Engine, agentSessionId: r.agent_session_id == null ? null : String(r.agent_session_id),
+    engine: r.engine as TaskEngine, agentSessionId: r.agent_session_id == null ? null : String(r.agent_session_id),
     status: r.status as TaskStatus, priority: Number(r.priority),
     nextRunAt: r.next_run_at == null ? null : String(r.next_run_at),
     scheduleMinutes: scheduleMinutes !== null ? scheduleMinutes : scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null,

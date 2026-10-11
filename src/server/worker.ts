@@ -48,6 +48,14 @@ export class Worker {
   }
 
   private async run(task: Task, signal: AbortSignal) {
+    if (task.engine === 'claude') {
+      const message = 'Claude Code 内核已停用。原任务历史已保留；请使用模型 API、Pi 或 DeepSeek Harness 新建任务。';
+      this.store.updateTask(task.id, { status: 'failed', error: message, nextRunAt: null }, task.tenantId);
+      this.store.addEntry('system', message, task.id, task.tenantId);
+      this.notifyIfEnabled(task.tenantId, `“${task.title}”需要换用受支持的内核后重新提交。`);
+      this.onChange();
+      return;
+    }
     loadModelSettings(this.store.getSetting('modelBaseUrl', task.tenantId), this.store.getSetting('modelName', task.tenantId), task.tenantId);
     const adapter = adapters[task.engine];
     const computer = this.computerFor?.(task.tenantId);
@@ -169,7 +177,7 @@ function parseRemoteEngines(): Engine[] {
   if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [];
   try {
     const configured = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, unknown>;
-    return (Object.keys(configured) as string[]).filter((engine): engine is Engine => ['claude', 'pi', 'dsh'].includes(engine) && Boolean(configured[engine]));
+    return (Object.keys(configured) as string[]).filter((engine): engine is Engine => ['pi', 'dsh'].includes(engine) && Boolean(configured[engine]));
   } catch { return []; }
 }
 

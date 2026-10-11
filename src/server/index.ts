@@ -5,7 +5,7 @@ import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
-import type { ActionRuleMode, DotAppearance, Engine, ScheduleSpec } from '../shared/types.ts';
+import { isEngine, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 import { loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
@@ -34,7 +34,7 @@ const configuredDesktopEngines = () => {
   if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [] as Engine[];
   try {
     const configured = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, unknown>;
-    return Object.keys(configured).filter((id): id is Engine => ['claude', 'pi', 'dsh'].includes(id) && Boolean(configured[id]));
+    return Object.keys(configured).filter((id): id is Engine => ['pi', 'dsh'].includes(id) && Boolean(configured[id]));
   } catch { return [] as Engine[]; }
 };
 const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...configuredDesktopEngines()])];
@@ -355,8 +355,9 @@ const server = createServer(async (req, res) => {
       if (scheduleSpec?.frequency === 'interval' && requestedMinutes !== null && requestedMinutes !== scheduleSpec.intervalMinutes) return reply(res, 400, { error: 'Schedule interval does not match' });
       if (scheduleSpec && scheduleSpec.frequency !== 'interval' && requestedMinutes !== null) return reply(res, 400, { error: 'Use scheduleSpec for calendar schedules' });
       const minutes = scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null;
-      const engine = String(body.engine || 'model') as Engine;
-      if (!(engine in adapters)) return reply(res, 400, { error: 'Invalid engine' });
+      const requestedEngine = body.engine || 'model';
+      if (!isEngine(requestedEngine)) return reply(res, 400, { error: '不支持此内核。请选择模型 API、Pi 或 DeepSeek Harness。' });
+      const engine = requestedEngine;
       const attachmentIds = body.attachmentIds === undefined ? [] : body.attachmentIds;
       if (!Array.isArray(attachmentIds) || attachmentIds.length > 5 || attachmentIds.some(id => typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id)) || new Set(attachmentIds).size !== attachmentIds.length) {
         return reply(res, 400, { error: '附件列表无效' });
