@@ -109,6 +109,9 @@ export class Store {
         tenant_id TEXT NOT NULL REFERENCES tenants(id), key TEXT NOT NULL, value TEXT NOT NULL,
         PRIMARY KEY(tenant_id,key)
       );
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS tenant_memories (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
         created_by TEXT NOT NULL REFERENCES users(id), note TEXT NOT NULL,
@@ -479,7 +482,7 @@ export class Store {
 
   removeSession(tokenHash: string) { this.db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').run(tokenHash); }
 
-  snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false }, tenantId = 'legacy'): Snapshot {
+  snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false, adminTenantId: null }, tenantId = 'legacy'): Snapshot {
     const p = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory,character,pet,avatar_setup_completed_at AS avatarSetupCompletedAt,onboarding_completed_at AS onboardingCompletedAt,onboarding_completed_name AS onboardingCompletedName FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
     if (!p) throw new Error('Workspace profile is missing');
     return {
@@ -1015,6 +1018,29 @@ export class Store {
   getSetting(key: string, tenantId = 'legacy'): string | null {
     const row = this.db.prepare('SELECT value FROM tenant_settings WHERE tenant_id=? AND key=?').get(tenantId, key) as { value: string } | undefined;
     return row?.value || null;
+  }
+
+  modelSettingsCandidates(): { tenantId: string; baseUrl: string; model: string }[] {
+    return this.db.prepare(`SELECT t.id AS tenantId,
+      COALESCE((SELECT value FROM tenant_settings s WHERE s.tenant_id=t.id AND s.key='modelBaseUrl'), '') AS baseUrl,
+      COALESCE((SELECT value FROM tenant_settings s WHERE s.tenant_id=t.id AND s.key='modelName'), '') AS model
+      FROM tenants t
+      WHERE EXISTS (SELECT 1 FROM tenant_settings s WHERE s.tenant_id=t.id AND s.key IN ('modelBaseUrl','modelName'))
+      ORDER BY CASE WHEN t.id='legacy' THEN 0 ELSE 1 END,t.created_at,t.id`).all() as { tenantId: string; baseUrl: string; model: string }[];
+  }
+
+  getAppSetting(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM app_settings WHERE key=?').get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setAppSetting(key: string, value: string) {
+    this.db.prepare('INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value);
+  }
+
+  claimAppSetting(key: string, value: string): string {
+    this.db.prepare('INSERT OR IGNORE INTO app_settings(key,value) VALUES (?,?)').run(key, value);
+    return this.getAppSetting(key) || value;
   }
 
   setSetting(key: string, value: string, tenantId = 'legacy') {

@@ -32,7 +32,7 @@ import './onboarding-replica.css';
 import './computer-choice.css';
 import './call-timeline.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false, adminTenantId: null } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
@@ -676,6 +676,8 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
   const [editingDraft, setEditingDraft] = useState('');
   const [memoryError, setMemoryError] = useState('');
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const canManageSharedModel = ['owner', 'admin'].includes(auth.tenant.role)
+    && (!state.modelSettings.adminTenantId || state.modelSettings.adminTenantId === auth.tenant.id);
   const refreshMembers = async () => {
     const response = await fetch(`/api/tenants/${auth.tenant.id}/members`);
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
@@ -788,12 +790,20 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
       {membersError && <small className="member-error">{membersError}</small>}
       {!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以添加成员。</small>}
     </div>
-    <div className="section-heading model-heading"><h2>模型 API</h2><p>此 API 密钥只用于当前工作区，并保存在 macOS 钥匙串。</p></div>
-    <div className="profile-card model-card">
-      <label>API 地址<input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} /></label>
-      <label>模型名称<input value={model} onChange={e => setModel(e.target.value)} /></label>
-      <label>API 密钥<input type="password" autoComplete="off" placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label>
-      <button className="primary" onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存模型设置</button>
+    <div className="section-heading model-heading"><h2>共享模型 API</h2><p>所有 Google 账号和工作区共用同一模型地址、名称与 API Key。任务、记忆和工作区数据仍相互隔离。</p></div>
+    <div className="profile-card model-card" data-testid="shared-model-settings">
+      {canManageSharedModel ? <>
+        <label>API 地址<input aria-label="共享模型 API 地址" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} /></label>
+        <label>模型名称<input aria-label="共享模型名称" value={model} onChange={e => setModel(e.target.value)} /></label>
+        <label>API 密钥<input aria-label="共享模型 API 密钥" type="password" autoComplete="off" placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label>
+        <small>{state.modelSettings.adminTenantId ? '此配置由模型管理员工作区维护，并保存在本机钥匙串。' : '保存后，当前工作区将成为共享模型配置管理员。API Key 保存在本机钥匙串。'}</small>
+        <button className="primary" onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存共享模型设置</button>
+      </> : <div data-testid="shared-model-settings-readonly">
+        <p>API 地址：{state.modelSettings.baseUrl || '未配置'}</p>
+        <p>模型名称：{state.modelSettings.model || '未配置'}</p>
+        <p>API 密钥：{state.modelSettings.hasKey ? '已配置' : '未配置'}</p>
+        <small>所有工作区都可以使用这份共享配置；只有模型管理员工作区的所有者或管理员可以修改。</small>
+      </div>}
     </div>
   </section>;
 }
