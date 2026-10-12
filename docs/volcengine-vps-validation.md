@@ -52,6 +52,16 @@ The task follower EventSource must be built with `appPath('/api/events')` becaus
 - A physical-microphone attempt using a short generated Mandarin phrase was contaminated by other room speech and transcribed incorrectly. The call was muted and ended before a task was submitted. SQLite showed no new task and no open voice call afterward. This is a failed manual ASR attempt, not a full voice-to-Pi-to-spoken-result E2E.
 - The automated `voice-agent` Playwright suite has not run: `npm run test:e2e:public-demo:voice-agent` stopped at its preflight guard because the required dedicated Google test-account storage state is absent. Generate that file with `npm run test:e2e:public-demo:auth-setup` before claiming authenticated automated E2E.
 
+## PCM format mismatch and playback check (2026-10-13)
+
+- Root cause found for the reported static: SeedDuplex `session.audio.output.format.type` requested `pcm` (24 kHz float32), while `session.extension.tts.audio_config.format` requested `pcm_s16le` (24 kHz signed 16-bit). The browser's marker-2 path decodes float32. If the provider honored the extension format, those int16 bytes would be interpreted as float samples and sound like static. The server's previous “looks like float32” heuristic was not enough to detect this mismatch.
+- SeedDuplex now sends `pcm` in both format fields. The legacy O2.0 session keeps its existing `pcm_s16le` output.
+- Live SeedDuplex smoke with the aligned format returned first audio at 518 ms, 90,985 float32 samples at 24 kHz, RMS 0.08770, peak 0.29596, with no malformed frames or invalid samples.
+- After deployment, signed-in Chrome on the public URL clicked **拨打 Dot**, opened the real SeedDuplex WebSocket, sent a Chinese speech test to the real provider, and scheduled all 14 returned audio buffers through Web Audio. The provider data used marker 2, contained 129,645 float32 samples at 24 kHz, had no invalid samples, and all 14 browser audio sources ended. Public and local JS both served `index-X1lGPV-L.js`, SHA-256 `7b45370c3163ca676e1586fb542559c65abd6edd4ebd04e24bcfbdbd53f483da`.
+- `npm test`: 133 passed. `npm run test:e2e`: 53 Chrome UI steps and 8 cloud-computer checks passed. `npm run build:demo`: passed.
+- Before restarting, authenticated `/api/state` showed zero active calls and no tasks in a running state. SQLite `PRAGMA quick_check` returned `ok`. The deployment backed up app `src`, `dist`, launch script, package metadata, and the SQLite database to `~/Library/Application Support/Coke Dots Demo/backups/20261012T225705Z-seedduplex-pcm-format/`, synchronized only the Coke Dots runtime, and restarted only `com.coke.dots.demo`.
+- The Chrome probe proves the provider returned finite, non-silent PCM and that Web Audio sources completed. It does not measure acoustic output at the Mac speaker. If static remains after this format fix, the remaining check is a BlackHole/system-output loopback capture to distinguish speaker/device noise from the digital stream.
+
 ## Microphone test caution
 
 Public browser runs override `getUserMedia` before clicking **拨打 Dot** with a zero-gain synthetic track, then feed only the generated WAV into that track. They do not access the physical microphone. Restore the page after the run to remove the temporary browser instrumentation.
