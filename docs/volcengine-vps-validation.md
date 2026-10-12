@@ -29,7 +29,7 @@ The task follower EventSource must be built with `appPath('/api/events')` becaus
 ## Verification (2026-10-12)
 
 - `npm test`: 128 tests passed after the public ASR snapshot correction.
-- `npm run build:demo`: passed; generated bundle `index-Bx17wOuQ.js` and stylesheet `index-B3tLxLCy.css`.
+- `npm run build:demo`: passed; generated bundle `index-DT1FvCLB.js` and stylesheet `index-B3tLxLCy.css`.
 - Local Chrome E2E: 52 browser steps passed, including call UI, task handoff, follow-up, and call end.
 - `npm run test:e2e:demo-path`: passed five checks for `/dots-demo/` asset paths, sign-in, app shell, and Pi default.
 - Live Volcengine synthetic Chinese speech smoke: session created; first audio at 860 ms; 420,544 audio bytes; completed in 2.782 s.
