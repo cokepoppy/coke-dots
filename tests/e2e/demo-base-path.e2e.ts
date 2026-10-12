@@ -97,6 +97,7 @@ try {
   await page.getByTestId('e2e-sign-in').click();
   await page.getByTestId('app-shell').waitFor({ state: 'visible' });
   await page.getByTestId('chat-home').waitFor({ state: 'visible' });
+  assert.equal(await page.getByTestId('engine-select').inputValue(), 'pi', 'The public demo build must default to the Pi Agent kernel');
   const cookies = await context.cookies(`${baseUrl}/dots-demo/`);
   const sessionCookie = cookies.find(cookie => cookie.name === 'coke_dots_session');
   assert(sessionCookie, 'E2E login should issue a session cookie');
@@ -106,7 +107,7 @@ try {
   assert.deepEqual(unexpectedFailedRequests, [], `Browser requests should all load: ${unexpectedFailedRequests.join('\n')}`);
   await page.screenshot({ path: join(artifacts, 'demo-authenticated.png'), fullPage: true });
   await context.close();
-  console.log(JSON.stringify({ ok: true, basePath: '/dots-demo', trustedProxyChecks: 5, browserFlow: ['load prefixed app', 'load prefixed assets', 'E2E sign-in', 'authenticated app shell'], screenshots: [join(artifacts, 'demo-login.png'), join(artifacts, 'demo-authenticated.png')] }, null, 2));
+  console.log(JSON.stringify({ ok: true, basePath: '/dots-demo', trustedProxyChecks: 5, browserFlow: ['load prefixed app', 'load prefixed assets', 'E2E sign-in', 'authenticated app shell', 'Pi selected by default'], screenshots: [join(artifacts, 'demo-login.png'), join(artifacts, 'demo-authenticated.png')] }, null, 2));
 } finally {
   await browser?.close().catch(() => undefined);
   if (server && server.exitCode === null) {

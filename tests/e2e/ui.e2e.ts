@@ -1086,6 +1086,7 @@ try {
     assert.equal(alphaState.availableEngines.includes('claude'), false, 'Claude Code must remain unavailable until explicitly supported');
     const engineOptions = await alphaPage!.locator('.composer-bottom select').evaluate(element => Array.from((element as HTMLSelectElement).options, option => option.value));
     assert.deepEqual(engineOptions, ['model', 'pi', 'dsh'], 'The UI must offer the Model API, Pi, and DeepSeek Harness only');
+    assert.equal(await alphaPage!.getByTestId('engine-select').inputValue(), 'model', 'The local development build should keep Model API as its default');
     assert.equal(await alphaPage!.locator('.icon-rail').evaluate(element => Math.round(element.getBoundingClientRect().width)), 44);
     assert.equal(await alphaPage!.locator('.sidebar').evaluate(element => Math.round(element.getBoundingClientRect().width)), 224);
     const surfaceSwitcher = alphaPage!.getByTestId('surface-switcher');
