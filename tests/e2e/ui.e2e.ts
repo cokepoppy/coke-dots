@@ -351,8 +351,15 @@ async function startMockVolcEngineDuplexProvider() {
       } else if (type === 'speech_text_buffer.replacement.append') {
         if (typeof event.text === 'string') connection.spokenTexts.push(event.text);
       } else if (type === 'speech_text_buffer.replacement.commit') {
+        const sampleCount = 4_800;
+        const pcm = Buffer.alloc(sampleCount * 4);
+        for (let index = 0; index < sampleCount; index += 1) {
+          const fade = Math.min(1, index / 120, (sampleCount - index - 1) / 120);
+          const sample = fade * (0.2 * Math.sin(index * 2 * Math.PI * 440 / 24_000) + 0.05 * Math.sin(index * 2 * Math.PI * 880 / 24_000));
+          pcm.writeFloatLE(sample, index * 4);
+        }
         socket.send(JSON.stringify({ type: 'response.output_audio.started', response_id: 'mock-response' }));
-        socket.send(JSON.stringify({ type: 'response.output_audio.delta', response_id: 'mock-response', delta: Buffer.alloc(960, 1).toString('base64') }));
+        socket.send(JSON.stringify({ type: 'response.output_audio.delta', response_id: 'mock-response', delta: pcm.toString('base64') }));
         socket.send(JSON.stringify({ type: 'response.output_audio.done', response_id: 'mock-response' }));
         connection.audioDeltas += 1;
       } else if (type === 'session.close') {
@@ -2686,6 +2693,31 @@ try {
       DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-secret',
       DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: mockVolcEngineDuplexUrl,
     });
+    await alphaPage!.addInitScript(() => {
+      const audioWindow = window as unknown as { __dotsPlayedAudio?: { sampleRate: number; sampleCount: number; rms: number; peak: number; destinationConnections: number; ended: number }[] };
+      audioWindow.__dotsPlayedAudio = [];
+      const speakerConnected = new WeakSet<AudioBufferSourceNode>();
+      type ConnectAudioNode = (this: AudioBufferSourceNode, destination: AudioNode, output?: number, input?: number) => AudioNode;
+      const originalConnect = AudioBufferSourceNode.prototype.connect as ConnectAudioNode;
+      (AudioBufferSourceNode.prototype as unknown as { connect: ConnectAudioNode }).connect = function(this: AudioBufferSourceNode, destination: AudioNode, output?: number, input?: number) {
+        if (destination === this.context.destination) speakerConnected.add(this);
+        return originalConnect.call(this, destination, output, input);
+      };
+      const originalStart = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function(this: AudioBufferSourceNode, when?: number, offset?: number, duration?: number) {
+        const buffer = this.buffer;
+        if (buffer) {
+          const samples = buffer.getChannelData(0);
+          let sumSquares = 0;
+          let peak = 0;
+          for (const sample of samples) { sumSquares += sample * sample; peak = Math.max(peak, Math.abs(sample)); }
+          const record = { sampleRate: buffer.sampleRate, sampleCount: samples.length, rms: Math.sqrt(sumSquares / samples.length), peak, destinationConnections: speakerConnected.has(this) ? 1 : 0, ended: 0 };
+          audioWindow.__dotsPlayedAudio?.push(record);
+          this.addEventListener('ended', () => { record.ended += 1; }, { once: true });
+        }
+        return originalStart.call(this, when, offset, duration);
+      };
+    });
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
@@ -2716,6 +2748,12 @@ try {
     assert.deepEqual(publicProviderInfo, { provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' }, 'Public provider state must not reveal the API key');
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 30_000 });
     await waitFor(() => providerConnection.audioDeltas > 0, 5_000);
+    await alphaPage!.waitForFunction(() => {
+      const played = (window as unknown as { __dotsPlayedAudio?: { sampleRate: number; sampleCount: number; rms: number; peak: number; destinationConnections: number; ended: number }[] }).__dotsPlayedAudio || [];
+      return played.some(item => item.sampleRate === 24_000 && item.sampleCount === 4_800 && item.rms > 0.05 && item.rms < 0.25 && item.peak > 0.1 && item.peak < 0.4 && item.destinationConnections > 0 && item.ended > 0);
+    }, null, { timeout: 10_000 });
+    const playback = await alphaPage!.evaluate(() => (window as unknown as { __dotsPlayedAudio: { sampleRate: number; sampleCount: number; rms: number; peak: number; destinationConnections: number; ended: number }[] }).__dotsPlayedAudio);
+    assert(playback.some(item => item.sampleRate === 24_000 && item.sampleCount === 4_800 && item.destinationConnections > 0 && item.ended > 0), 'Float32 SeedDuplex audio must be decoded at 24 kHz and played through the browser speaker to completion');
     assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM audio in realtime-sized packets');
     assert(providerConnection.events.includes('session.create') && providerConnection.events.includes('input_audio_buffer.append'), 'SeedDuplex must use JSON session and audio events');
     assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be submitted to SeedDuplex direct text-to-speech events');

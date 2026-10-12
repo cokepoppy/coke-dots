@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { isVolcengineFloat32Pcm } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
@@ -41,6 +42,19 @@ test('SeedDuplex API Key takes precedence over legacy credentials and stays serv
   assert.deepEqual(headers, { 'X-Api-Key': 'seed-duplex-secret', 'X-Api-Request-Id': 'request-id', 'X-Api-Connect-Id': 'connect-id' });
   assert.equal(JSON.stringify(volcengineVoiceInfo({ DOTS_VOLCENGINE_API_KEY: 'seed-duplex-secret' })).includes('seed-duplex-secret'), false);
   assert.throws(() => volcengineVoiceConfig({ DOTS_VOLCENGINE_API_KEY: 'x'.repeat(4097) }), /API Key/);
+});
+
+test('SeedDuplex float32 PCM output is recognized and invalid output is rejected before playback', () => {
+  const pcm = Buffer.alloc(16);
+  [0, 0.1, -0.12, 0.04].forEach((sample, index) => pcm.writeFloatLE(sample, index * 4));
+  assert.equal(isVolcengineFloat32Pcm(pcm), true);
+  assert.equal(isVolcengineFloat32Pcm(Buffer.from([1, 2, 3])), false);
+  const invalid = Buffer.alloc(4);
+  invalid.writeFloatLE(Number.NaN, 0);
+  assert.equal(isVolcengineFloat32Pcm(invalid), false);
+  const outOfRange = Buffer.alloc(4);
+  outOfRange.writeFloatLE(2, 0);
+  assert.equal(isVolcengineFloat32Pcm(outOfRange), false);
 });
 
 test('SeedDuplex handshake entitlement errors are actionable and never expose provider response details', () => {
