@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { updateVolcengineTranscriptSnapshot } from '../src/server/volcengine-duplex-voice-gateway.ts';
+import { updateVolcengineTranscriptSnapshot, volcengineLocalSpeechEventType } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
@@ -33,6 +33,13 @@ test('SeedDuplex transcript follows the latest cumulative snapshot, including re
   const transcript = snapshots.reduce(updateVolcengineTranscriptSnapshot, '');
   assert.equal(transcript, '情之用中文回复，公网火山语音识别测试成功，不要调用工具。');
   assert.equal(updateVolcengineTranscriptSnapshot(transcript, ''), transcript);
+});
+
+test('SeedDuplex distinguishes user speech from assistant TTS sentence boundaries', () => {
+  assert.equal(volcengineLocalSpeechEventType('conversation.item.input_audio_transcription.started'), 'speech-started');
+  assert.equal(volcengineLocalSpeechEventType('response.output_audio.started'), 'assistant-speech-started');
+  assert.equal(volcengineLocalSpeechEventType('response.output_audio.done'), 'speech-ended');
+  assert.equal(volcengineLocalSpeechEventType('response.done'), null);
 });
 
 test('Volcano O2.0 credentials remain compatible and never appear in public provider information', () => {

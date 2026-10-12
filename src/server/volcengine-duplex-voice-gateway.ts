@@ -23,6 +23,13 @@ export function updateVolcengineTranscriptSnapshot(current: string, snapshot: st
   return snapshot || current;
 }
 
+export function volcengineLocalSpeechEventType(providerEventType: string): 'speech-started' | 'assistant-speech-started' | 'speech-ended' | null {
+  if (providerEventType === 'conversation.item.input_audio_transcription.started') return 'speech-started';
+  if (providerEventType === 'response.output_audio.started') return 'assistant-speech-started';
+  if (providerEventType === 'response.output_audio.done') return 'speech-ended';
+  return null;
+}
+
 export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: string, env: NodeJS.ProcessEnv = process.env) {
   const config = volcengineVoiceConfig(env);
   if (config.mode !== 'seedduplex') throw new VolcengineVoiceError('火山引擎 SeedDuplex API Key 未配置', 503);
@@ -184,10 +191,11 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
       if (closeSent || closing) finalize();
       return;
     }
-    if (event.type === 'conversation.item.input_audio_transcription.started') {
+    const localSpeechEventType = volcengineLocalSpeechEventType(event.type);
+    if (localSpeechEventType === 'speech-started') {
       transcript = '';
       turnId = typeof event.item_id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(event.item_id) ? event.item_id : randomUUID();
-      sendLocal({ type: 'speech-started' });
+      sendLocal({ type: localSpeechEventType });
       return;
     }
     if (event.type === 'conversation.item.input_audio_transcription.delta' || event.type === 'conversation.item.input_audio_transcription.result') {
@@ -208,8 +216,10 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
       sendLocal({ type: 'error', error: '语音识别暂不可用，请再说一次。' });
       return;
     }
-    if (event.type === 'response.output_audio.started') { sendLocal({ type: 'speech-started' }); return; }
-    if (event.type === 'response.output_audio.done') { sendLocal({ type: 'speech-ended' }); return; }
+    if (localSpeechEventType === 'assistant-speech-started' || localSpeechEventType === 'speech-ended') {
+      sendLocal({ type: localSpeechEventType });
+      return;
+    }
     if (event.type === 'response.output_audio.delta') {
       const encoded = typeof event.delta === 'string' ? event.delta : '';
       if (!encoded || encoded.length > Math.ceil(MAX_PROVIDER_AUDIO_FRAME * 4 / 3) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
