@@ -248,6 +248,7 @@ async function startMockModel() {
         const isPauseDelegationAggregate = isPauseDelegationParent && prompt.includes('Delegated task results:');
         const isPauseDelegationChild = prompt.includes('E2E global pause delegated child — keep running during pause');
         const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
+        const isChineseVoiceTask = prompt.includes('E2E 语音任务：用中文汇报检查结果');
         const isWebsiteSignIn = prompt.includes('E2E website sign-in — exercise private credential flow');
         const isWebsiteSignInContinuation = prompt.includes('User confirmed: website sign-in was completed in the tenant computer.');
         const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
@@ -304,7 +305,7 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || (isSelfWakeResponsibility && hasSelfWakeCheckpoint) || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPersonalMemoryUpdate || isPersonalMemoryRead || isSharedMemoryIsolation || isSharedModelReuse || isReasoningEffortTask || isPageRequest || isPageUpdate || isPageChangeReview || isPauseTask || isGlobalPauseTask || isPauseDelegationChild || isPauseDelegationAggregate || isStopTask || isVoiceTask || isVoiceResponse || isChineseVoiceTask || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isQuietNotificationCheck || (isSelfWakeResponsibility && hasSelfWakeCheckpoint) || isSlackInboxTask || isSlackMonitorTask || isTeamsInboxTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isPauseDelegationParent && !isPauseDelegationAggregate ? { status: 'delegating', message: 'I started one independent research task.', delegations: [
           { title: 'Independent research', instruction: 'E2E global pause delegated child — keep running during pause', engine: 'model' },
@@ -312,7 +313,7 @@ async function startMockModel() {
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isSharedModelReuse ? 'The second Google account used the Coke Dots instance Model API configuration.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isChineseVoiceTask ? '已检查演示页面，当前状态正常。' : isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isSharedModelReuse ? 'The second Google account used the Coke Dots instance Model API configuration.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
         if (isSelfWakeResponsibility) {
           if (!hasSelfWakeCheckpoint) Object.assign(decision, { status: 'scheduled', message: 'Checkpoint: I reviewed the timeline and will verify the approval response next.', nextMinutes: 30, notifyUser: false });
@@ -1042,7 +1043,7 @@ try {
   mockGoogleProxyOrigin = await startMockGoogleProxy();
   mockWatchProviderOrigin = await startMockWatchProvider();
   server = await startServer(e2ePort);
-  browser = await chromium.launch({ executablePath: chromePath, headless: true });
+  browser = await chromium.launch({ executablePath: chromePath, headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
   alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   betaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   gammaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
@@ -1050,6 +1051,7 @@ try {
   await betaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
   await gammaContext.tracing.start({ screenshots: true, snapshots: true, sources: true });
   alphaPage = await alphaContext.newPage();
+  await alphaContext.grantPermissions(['microphone'], { origin: baseUrl });
   betaPage = await betaContext.newPage();
   gammaPage = await gammaContext.newPage();
   alphaPage.on('pageerror', error => pageErrors.push(`alpha: ${error.message}`));
@@ -1494,7 +1496,7 @@ try {
     await contextPanel.getByRole('region', { name: 'Computers' }).waitFor({ state: 'visible' });
     await contextPanel.getByRole('region', { name: 'Recent activity' }).getByText(alphaPrivateTask).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.timeline .message.user').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(219, 234, 254)');
-    assert.equal(await contextPanel.getByRole('button', { name: 'Call' }).isDisabled(), false);
+    assert.equal(await contextPanel.getByRole('button', { name: 'Call', exact: true }).isDisabled(), false);
     assert.equal(await contextPanel.getByRole('button', { name: 'Slack' }).isDisabled(), false);
     assert.equal(await contextPanel.getByRole('region', { name: 'Skills' }).count(), 0, 'The observed details panel ends after Outputs; do not invent an unverified Skills section');
     assert.equal(await alphaPage!.locator('.topbar .top-actions').count(), 0, 'Account controls should not be rendered in the conversation header');
@@ -2387,10 +2389,11 @@ try {
     await profileCall.waitFor({ state: 'hidden' });
 
     await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
-    await alphaPage!.getByTestId('voice-call-launch').click();
+    await alphaPage!.getByTestId('dot-context-panel').getByRole('button', { name: 'Call', exact: true }).click();
     const call = alphaPage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
     assert.equal(await call.getAttribute('data-variant'), 'desktop');
+    await alphaPage!.getByTestId('dot-context-panel').waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeRecognition));
     await call.getByRole('button', { name: '静音' }).click();
     assert.equal(await call.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
@@ -2451,7 +2454,7 @@ try {
     await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
     await screenshot(alphaPage!, 'voice-call-task-running');
     speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
-    assert(speechOutput.includes('收到，已加入工作队列。'), 'The call should speak its queue acknowledgement when speaker output is enabled');
+    assert(speechOutput.includes('收到，我先处理一下，完成后告诉你。'), 'The call should speak its Chinese queue acknowledgement while the Agent works');
     const responseInstruction = 'E2E voice response — speak actual task result';
     await alphaPage!.evaluate((text: string) => {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
@@ -2474,13 +2477,93 @@ try {
       const snapshot = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; result: string | null }[] };
       return snapshot.tasks.some(task => task.instruction === text && task.status === 'done' && task.result === 'Voice request finished after the call ended.');
     }, instruction, { timeout: 15_000 });
+
+    await alphaPage!.route('**/api/voice/provider', route => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'cache-control': 'no-store' }, body: JSON.stringify({ provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' }) }));
+    const seedDuplexMockScript = [
+      '(() => {',
+      '  const sockets = [];',
+      '  Object.defineProperty(window, "__dotsNativeWebSocket", { configurable: true, value: window.WebSocket });',
+      '  Object.defineProperty(window, "__dotsSeedDuplexSpoken", { configurable: true, value: [] });',
+      '  Object.defineProperty(window, "__dotsSeedDuplexSockets", { configurable: true, value: sockets });',
+      '  class FakeSeedDuplexSocket {',
+      '    static CONNECTING = 0;',
+      '    static OPEN = 1;',
+      '    static CLOSING = 2;',
+      '    static CLOSED = 3;',
+      '    readyState = FakeSeedDuplexSocket.CONNECTING;',
+      '    binaryType = "blob";',
+      '    onopen = null;',
+      '    onmessage = null;',
+      '    onerror = null;',
+      '    onclose = null;',
+      '    constructor(url) {',
+      '      this.url = String(url);',
+      '      sockets.push(this);',
+      '      window.setTimeout(() => {',
+      '        if (this.readyState !== FakeSeedDuplexSocket.CONNECTING) return;',
+      '        this.readyState = FakeSeedDuplexSocket.OPEN;',
+      '        this.onopen?.(new Event("open"));',
+      '        this.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "ready", provider: "volcengine" }) }));',
+      '      }, 20);',
+      '    }',
+      '    send(data) {',
+      '      if (typeof data !== "string") return;',
+      '      const message = JSON.parse(data);',
+      '      if (message.type === "speak" && message.text) window.__dotsSeedDuplexSpoken.push(message.text);',
+      '    }',
+      '    close() { this.readyState = FakeSeedDuplexSocket.CLOSED; this.onclose?.(new CloseEvent("close")); }',
+      '    emitTranscript(text) { this.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "asr-final", transcript: text, turnId: "voice-desktop-agent-handoff-e2e" }) })); }',
+      '  }',
+      '  Object.defineProperty(window, "WebSocket", { configurable: true, value: FakeSeedDuplexSocket });',
+      '})()',
+    ].join('\n');
+    await alphaPage!.evaluate((script: string) => window.eval(script), seedDuplexMockScript);
+    await alphaPage!.getByTestId('dot-context-panel').getByRole('button', { name: 'Call', exact: true }).click();
+    const seedDuplexCall = alphaPage!.getByTestId('voice-call');
+    await seedDuplexCall.waitFor({ state: 'visible' });
+    assert.equal(await seedDuplexCall.getAttribute('data-variant'), 'desktop');
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-provider') === 'volcengine', null, { timeout: 5_000 });
+    assert.equal(await seedDuplexCall.getAttribute('data-voice-provider'), 'volcengine');
+    await alphaPage!.getByTestId('voice-call-transcript').getByText('正在聆听', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 });
+    const chineseVoiceInstruction = 'E2E 语音任务：用中文汇报检查结果';
+    await alphaPage!.waitForFunction(() => {
+      const sockets = (window as Window & { __dotsSeedDuplexSockets?: Array<{ emitTranscript: (text: string) => void }> }).__dotsSeedDuplexSockets || [];
+      return sockets.length > 0;
+    }, null, { timeout: 5_000 });
+    await alphaPage!.evaluate(({ instruction }) => {
+      const socket = (window as unknown as { __dotsSeedDuplexSockets: Array<{ emitTranscript: (text: string) => void }> }).__dotsSeedDuplexSockets[0];
+      socket?.emitTranscript(instruction);
+    }, { instruction: chineseVoiceInstruction });
+    await waitForLiveVoiceText(chineseVoiceInstruction);
+    await waitFor(async () => {
+      const spoken = await alphaPage!.evaluate(() => (window as unknown as { __dotsSeedDuplexSpoken: string[] }).__dotsSeedDuplexSpoken);
+      return spoken.includes('收到，我先处理一下，完成后告诉你。');
+    }, 10_000);
+    await waitFor(async () => {
+      const spoken = await alphaPage!.evaluate(() => (window as unknown as { __dotsSeedDuplexSpoken: string[] }).__dotsSeedDuplexSpoken);
+      return spoken.includes('已检查演示页面，当前状态正常。');
+    }, 15_000);
+    const chineseVoiceTask = await alphaPage!.evaluate(async (instruction: string) => {
+      const snapshot = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; result: string | null }[] };
+      return snapshot.tasks.find(task => task.instruction === instruction);
+    }, chineseVoiceInstruction);
+    assert.equal(chineseVoiceTask?.status, 'done');
+    assert.equal(chineseVoiceTask?.result, '已检查演示页面，当前状态正常。');
+    assert.equal(await alphaPage!.getByTestId('dot-context-panel').isVisible(), true, 'Starting a desktop call from Dot details should keep the right panel visible');
+    await seedDuplexCall.getByRole('button', { name: '结束通话' }).click();
+    await seedDuplexCall.waitFor({ state: 'hidden' });
+    await alphaPage!.evaluate(() => {
+      const nativeWebSocket = (window as unknown as { __dotsNativeWebSocket?: typeof WebSocket }).__dotsNativeWebSocket;
+      if (nativeWebSocket) Object.defineProperty(window, 'WebSocket', { configurable: true, value: nativeWebSocket });
+    });
+    await alphaPage!.unroute('**/api/voice/provider');
     const alphaCalls = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null; durationSeconds: number | null }[];
-    assert.equal(alphaCalls.length, 2, 'Conversation and Dot profile call entry points must each persist a call');
+    assert.equal(alphaCalls.length, 3, 'Profile and Dot detail call entry points must each persist a call');
     assert(alphaCalls.every(item => item.endedAt), 'Ending each call must persist its completion time');
     assert(alphaCalls.some(item => item.durationSeconds !== null && item.durationSeconds >= 1));
 
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 3, null, { timeout: 10_000 });
     await alphaPage!.waitForFunction(() => {
       const timeline = document.querySelector('.timeline');
       const composer = document.querySelector('.composer-wrap');
@@ -2488,14 +2571,14 @@ try {
     }, null, { timeout: 5_000 });
     const timelineTimes = await alphaPage!.locator('.timeline [data-testid="chat-timeline-item"]').evaluateAll(elements => elements.map(element => Date.parse(element.getAttribute('data-timestamp') || '')));
     assert(timelineTimes.every((time, index) => index === 0 || timelineTimes[index - 1]! <= time), 'Conversation entries and ended-call chips must appear in chronological order');
-    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 2, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
-    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 2, 'The ended-call state should retain the optional label visible in the reference');
+    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 3, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
+    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 3, 'The ended-call state should retain the optional label visible in the reference');
     await screenshot(alphaPage!, 'voice-call-ended-in-conversation');
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 3, null, { timeout: 10_000 });
     await alphaPage!.waitForFunction(() => {
       const timeline = document.querySelector('.timeline');
       const composer = document.querySelector('.composer-wrap');
@@ -2505,7 +2588,7 @@ try {
     await selectTenant(alphaPage!, 'Alpha workspace');
     await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 0, null, { timeout: 10_000 });
     await selectTenant(alphaPage!, 'Alpha Shared');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 2, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 3, null, { timeout: 10_000 });
 
     await selectTenant(betaPage!, 'Alpha Shared');
     const betaSharedCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));
@@ -2568,12 +2651,12 @@ try {
     const privateMemoryPromptStart = mockModelPrompts.length;
     await createTask(alphaPage!, privateMemoryTask);
     await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
-    await alphaPage!.locator('.timeline .message.system p').filter({ hasText: 'Dot 记住了：Prefers concise Mandarin updates and uses China Standard Time for milestones.' }).waitFor({ state: 'visible' });
+    await alphaPage!.locator('.timeline .message.system p').filter({ hasText: 'Dot 记住了：Prefers concise Mandarin updates and China Standard Time for milestones.' }).waitFor({ state: 'visible' });
     await waitFor(() => mockModelPrompts.length === privateMemoryPromptStart + 1, 10_000);
     assert.match(mockModelPrompts[privateMemoryPromptStart], /Personal Dot memory is enabled for this account's personal workspace/);
 
     await openProfile(alphaPage!);
-    const privateMemoryRow = privateMemoryManager.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' });
+    const privateMemoryRow = privateMemoryManager.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and China Standard Time for milestones.' });
     await privateMemoryRow.waitFor({ state: 'visible' });
     await privateMemoryRow.getByText('Dot 从个人对话中更新').waitFor({ state: 'visible' });
     await privateMemoryRow.scrollIntoViewIfNeeded();
@@ -2584,7 +2667,7 @@ try {
     await createTask(alphaPage!, usePrivateMemoryTask);
     await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
     await waitFor(() => mockModelPrompts.length === useMemoryPromptStart + 1, 10_000);
-    assert.match(mockModelPrompts[useMemoryPromptStart], /Prefers concise Mandarin updates and uses China Standard Time for milestones\./, "The private Dot note did not reach the next task in the same user's personal workspace");
+    assert.match(mockModelPrompts[useMemoryPromptStart], /Prefers concise Mandarin updates and China Standard Time for milestones\./, "The private Dot note did not reach the next task in the same user's personal workspace");
 
     await selectTenant(alphaPage!, 'Alpha Shared');
     await clickNav(alphaPage!, '你的 dot');
@@ -2593,11 +2676,11 @@ try {
     await createTask(alphaPage!, sharedMemoryTask);
     await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
     await waitFor(() => mockModelPrompts.length === sharedMemoryPromptStart + 1, 10_000);
-    assert.doesNotMatch(mockModelPrompts[sharedMemoryPromptStart], /Prefers concise Mandarin updates and uses China Standard Time for milestones\./, 'A personal note leaked into a shared-workspace model prompt');
+    assert.doesNotMatch(mockModelPrompts[sharedMemoryPromptStart], /Prefers concise Mandarin updates and China Standard Time for milestones\./, 'A personal note leaked into a shared-workspace model prompt');
     await openProfile(alphaPage!);
     await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.getByTestId('memory-row').count(), 0, 'A personal note appeared in shared workspace memory');
-    await alphaPage!.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and China Standard Time for milestones.' }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.getByTestId('personal-dot-memory-row').count(), 1, 'The signed-in account could not manage its own private note while viewing another workspace');
 
     await selectTenant(betaPage!, 'Beta workspace');
@@ -2614,9 +2697,9 @@ try {
     await savedMemory.waitFor({ state: 'visible' });
     await savedMemory.getByRole('button', { name: '删除' }).click();
     await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
-    const savedPersonalMemory = alphaPage!.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' });
+    const savedPersonalMemory = alphaPage!.getByTestId('personal-dot-memory-row').filter({ hasText: 'Prefers concise Mandarin updates and China Standard Time for milestones.' });
     await savedPersonalMemory.waitFor({ state: 'visible' });
-    await savedPersonalMemory.getByRole('button', { name: '删除私有记忆：Prefers concise Mandarin updates and uses China Standard Time for milestones.' }).click();
+    await savedPersonalMemory.getByRole('button', { name: '删除私有记忆：Prefers concise Mandarin updates and China Standard Time for milestones.' }).click();
     await alphaPage!.getByTestId('personal-dot-memory-manager').getByTestId('empty-personal-dot-memory-list').waitFor({ state: 'visible' });
   });
 

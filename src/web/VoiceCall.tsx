@@ -285,7 +285,10 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
           accepted = true;
           if (!activeRef.current) return;
           setTaskStatus(waitingTaskId ? '已回复并继续：' + task.title : '已加入工作队列：' + task.title);
-          if (providerRef.current === 'browser') speak(waitingTaskId ? '收到，我会接着处理。' : '收到，已加入工作队列。');
+          // Qwen's realtime model already gives a brief spoken acknowledgement
+          // from its session instructions. Browser speech and SeedDuplex need
+          // the app to speak one while the selected Agent works in the background.
+          if (providerRef.current !== 'qwen') speak(waitingTaskId ? '好的，我接着处理这个任务。' : '收到，我先处理一下，完成后告诉你。');
           await followTask(task);
         } catch (error) {
           processedVoiceTurns.delete(turnId);
