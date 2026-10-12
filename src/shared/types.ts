@@ -2,6 +2,9 @@ import type { ScheduleSpec } from './scheduling.ts';
 
 // `claude` remains only as a historical stored-task value; current dispatch rejects it.
 export type Engine = 'model' | 'claude' | 'pi' | 'dsh';
+export function isEngine(value: unknown): value is Engine {
+  return typeof value === 'string' && ['model', 'claude', 'pi', 'dsh'].includes(value);
+}
 export type ReasoningEffort = 'medium' | 'high' | 'xhigh';
 export const reasoningEfforts: ReasoningEffort[] = ['medium', 'high', 'xhigh'];
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {

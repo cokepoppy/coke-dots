@@ -2376,6 +2376,13 @@ try {
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     const profileCall = alphaPage!.getByTestId('voice-call');
     await profileCall.waitFor({ state: 'visible' });
+    assert.equal(await profileCall.getAttribute('data-variant'), 'handset');
+    await profileCall.getByRole('button', { name: '关闭扬声器' }).click();
+    assert.equal(await profileCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
+    await profileCall.getByRole('button', { name: '静音' }).click();
+    assert.equal(await profileCall.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
+    await delay(1100);
+    assert.notEqual(await profileCall.getByTestId('voice-call-timer').innerText(), '00:00', 'The handset call timer should advance while connected');
     await profileCall.getByRole('button', { name: '结束通话' }).click();
     await profileCall.waitFor({ state: 'hidden' });
 
@@ -2383,25 +2390,23 @@ try {
     await alphaPage!.getByTestId('voice-call-launch').click();
     const call = alphaPage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
+    assert.equal(await call.getAttribute('data-variant'), 'desktop');
     await alphaPage!.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeRecognition));
-    await call.getByRole('button', { name: '关闭扬声器' }).click();
-    assert.equal(await call.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
     await call.getByRole('button', { name: '静音' }).click();
     assert.equal(await call.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
     await call.getByRole('button', { name: '取消静音' }).click();
-    await call.getByRole('button', { name: '打开扬声器' }).click();
-    await delay(1100);
-    assert.notEqual(await call.getByTestId('voice-call-timer').innerText(), '00:00', 'The call timer should advance while connected');
-
     let speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+    const waitForLiveVoiceText = (expected: string) => alphaPage!.waitForFunction((needle: string) => {
+      return document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes(needle) || false;
+    }, expected, { timeout: 15_000 });
     const clarification = 'E2E voice clarification — ask which launch date to use';
     const clarificationPromptStart = mockModelPrompts.length;
     await alphaPage!.evaluate((text: string) => {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, clarification);
-    await call.getByText(clarification, { exact: true }).waitFor({ state: 'visible' });
-    await call.getByText('等待你的回复', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+    await waitForLiveVoiceText(clarification);
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status') === '等待你的回复', null, { timeout: 15_000 });
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
       return speechOutput.includes('What launch date should I use?');
@@ -2418,7 +2423,7 @@ try {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, 'Use Friday.');
-    await call.getByText('Use Friday.', { exact: true }).waitFor({ state: 'visible' });
+    await waitForLiveVoiceText('Use Friday.');
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: 'Use Friday.' }).waitFor({ state: 'visible' });
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
@@ -2441,7 +2446,7 @@ try {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, instruction);
-    await call.getByText(instruction, { exact: true }).waitFor({ state: 'visible' });
+    await waitForLiveVoiceText(instruction);
     await waitFor(() => Boolean(heldVoiceModelRelease), 10_000);
     await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
     await screenshot(alphaPage!, 'voice-call-task-running');
@@ -2452,7 +2457,7 @@ try {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, responseInstruction);
-    await call.getByText(responseInstruction, { exact: true }).waitFor({ state: 'visible' });
+    await waitForLiveVoiceText(responseInstruction);
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
       return speechOutput.includes('Voice response returned from the model.');

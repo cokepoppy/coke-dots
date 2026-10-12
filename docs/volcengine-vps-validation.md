@@ -1,0 +1,23 @@
+# Volcengine SeedDuplex on the public Dots demo
+
+## Runtime path
+
+The public demo at `https://codex.cokeagent.com/dots-demo/` is served through the existing tunnel to the Mac demo process on `127.0.0.1:14318`. The browser calls the same-origin `/dots-demo/api/voice/provider` and opens `/dots-demo/api/voice-calls/:id/volcengine-stream`; the server holds the SeedDuplex API key from the mode-0600 `demo.env` and proxies the WebSocket to Volcengine. The browser never receives the provider key. Voice transcripts are submitted to the tenant-owned call-turn endpoint and then dispatched to the selected Agent kernel.
+
+The VPS demo default Agent kernel remains **Pi**. Voice provider selection is independent of the Agent kernel.
+
+## SeedDuplex protocol detail
+
+For text-to-speech smoke requests, send the text in the `speech_text_buffer.commit` event. Sending an empty `speech_text_buffer.replacement.commit` after an append can create the session but leave it with no speech to synthesize. A regression test covers the required event payload.
+
+## Verification (2026-10-12)
+
+- `npm test`: 127 tests passed.
+- `npm run build:demo`: passed; generated bundle `index-Bx17wOuQ.js` and stylesheet `index-B3tLxLCy.css`.
+- Local Chrome E2E: 52 browser steps passed, including call UI, task handoff, follow-up, and call end.
+- Live Volcengine synthetic Chinese speech smoke: session created; first audio at 860 ms; 420,544 audio bytes; completed in 2.782 s.
+- Public signed-in Chrome click-through: selected kernel showed Pi; clicked **拨打 Dot**; call UI reached **正在聆听**, which is sent only after the server receives SeedDuplex `session.created`; ended the call and confirmed the SQLite row is closed (140 seconds total). Public JS and CSS both returned HTTP 200. This was a manual signed-in browser test, not the dedicated authenticated Playwright suite.
+
+## Microphone test caution
+
+Clicking **拨打 Dot** invokes `getUserMedia` immediately. When Chrome already grants microphone access, this can stream microphone frames before the call UI settles. In this verification, the browser call was muted after about 23 seconds and then ended; microphone audio may have reached Volcengine during that initial interval. Future public tests must inject deterministic synthetic audio before starting the call or keep the microphone muted from the first frame, and must not describe a click-through handshake as a complete speech-to-Agent test.
