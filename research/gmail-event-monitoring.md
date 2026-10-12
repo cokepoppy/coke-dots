@@ -28,3 +28,10 @@ Reviewed 2026-10-11. This record separates OpenAI's documented workflow, Google'
 - The current Chrome path exercised Gmail OAuth consent, read-only scope, Work setup, Trigger/Condition/Prompt review before confirmation, return-to-edit draft retention, a single create request, expired history cursor recovery, Pi dispatch inside the tenant cloud computer, duplicate suppression, Activity output, Scheduled pause/resume, user and tenant mailbox isolation, and service restart recovery. Screenshot: `artifacts/e2e/2026-10-11T12-08-52-502Z/screenshots/gmail-event-trigger-review.png`.
 - The separately recorded cloud-computer E2E passed all 8 checks before this UI-only change; it was not rerun in this turn. All test artifacts are local and ignored.
 - The E2E uses local Google, Gmail, and cloud-Agent fixtures. It verifies our control flow and isolation; it does not validate live Google OAuth verification, read a real mailbox, prove actual Google push delivery, or establish visual parity with Dots.
+
+## Verification refresh on 2026-10-12
+
+- Re-ran `npm test`: 70/70 tests passed.
+- Re-ran `npm run test:e2e`: production build passed, all 38 Chrome browser steps passed, and all 8 Linux cloud-computer checks passed.
+- The Gmail-specific Chrome flow authorized a local read-only Gmail fixture, recovered an expired history cursor, created a Pi task, and checked tenant isolation. Artifacts: `artifacts/e2e/2026-10-12T16-06-26-830Z/` and `artifacts/e2e/linux-cloud-computer-2026-10-12T16-08-35-311Z/`.
+- This remained a local mock-provider run. It did not authorize or access a real mailbox and does not verify Google's production OAuth consent or delivery.
