@@ -1,7 +1,30 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
-import { configuredDesktopAgentEngines, desktopResourceIdentity, desktopResources, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
+import { classifyKubectlFailure, configuredDesktopAgentEngines, desktopResourceIdentity, desktopResources, kubectlFailureInfo, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
+
+test('kubectl failures expose a safe category without copying stderr into diagnostics', () => {
+  const privateValue = 'private-kubernetes-secret-sentinel';
+  const cases = [
+    ['Error from server (Forbidden): token ' + privateValue, 'access-denied'],
+    ['Error from server (Forbidden): exceeded quota ' + privateValue, 'resource-quota'],
+    ['exceeded quota: requests.cpu', 'resource-quota'],
+    ['Unable to connect to the server: connection refused', 'api-unavailable'],
+    ['context deadline exceeded', 'timeout'],
+    ['field is immutable: ' + privateValue, 'immutable-resource'],
+    ['the object has been modified; please apply your changes to the latest version', 'resource-conflict'],
+    ['strict decoding error: unknown field ' + privateValue, 'invalid-resource'],
+    ['opaque kubectl failure ' + privateValue, 'unknown'],
+  ] as const;
+  for (const [stderr, expected] of cases) {
+    const category = classifyKubectlFailure(stderr);
+    assert.equal(category, expected);
+    assert.equal(category.includes(privateValue), false);
+  }
+  const info = kubectlFailureInfo(['-n', 'dots-coke-dots-private-tenant', 'apply', '-f', '-'], 1, `invalid resource ${privateValue}`);
+  assert.deepEqual(info, { operation: 'apply', category: 'invalid-resource', message: 'kubectl apply failed (exit 1; category=invalid-resource)' });
+  assert.equal(JSON.stringify(info).includes(privateValue), false, 'The error returned to the client must not contain raw stderr');
+});
 
 test('Linux desktop resources isolate tenant namespaces and never publish CDP', () => {
   const alpha = desktopResourceIdentity('alpha-workspace');

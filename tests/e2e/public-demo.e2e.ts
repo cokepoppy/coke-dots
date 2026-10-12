@@ -188,8 +188,8 @@ try {
     screenshots: existsSync(screenshotPath) ? ['public-demo-login.png'] : [],
     videos: videoFiles,
   }, null, 2) + '\n');
-  console.log(`Public demo E2E evidence: ${artifactRoot}`);
+  console.log(`Public anonymous smoke evidence: ${artifactRoot}`);
 }
 
 if (result.failures.length) throw new Error(result.failures.join('\n'));
-console.log(`PASS ${result.checks.length} public demo E2E checks`);
+console.log(`PASS ${result.checks.length} public anonymous smoke checks (signed-in task, computer, and voice flows are not covered)`);

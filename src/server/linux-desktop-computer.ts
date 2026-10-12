@@ -34,6 +34,28 @@ export interface DesktopConnector {
   reset?(tenantId: string): Promise<void>;
 }
 
+export type KubectlFailureCategory = 'access-denied' | 'resource-quota' | 'api-unavailable' | 'timeout' | 'immutable-resource' | 'resource-conflict' | 'invalid-resource' | 'unknown';
+
+/** Return only a low-cardinality category; kubectl stderr can contain Secret data. */
+export function classifyKubectlFailure(stderr: string): KubectlFailureCategory {
+  const diagnostic = stderr.toLowerCase();
+  if (/exceeded quota|resourcequota|too many requests/.test(diagnostic)) return 'resource-quota';
+  if (/forbidden|unauthorized|authentication required|you must be logged in/.test(diagnostic)) return 'access-denied';
+  if (/connection refused|unable to connect to the server|no route to host|i\/o timeout|server is currently unable to handle the request|tls handshake timeout/.test(diagnostic)) return 'api-unavailable';
+  if (/timed out|timeout|context deadline exceeded|deadline exceeded/.test(diagnostic)) return 'timeout';
+  if (/immutable|may not be changed|field is immutable/.test(diagnostic)) return 'immutable-resource';
+  if (/already exists|object has been modified|field manager.*conflict|the object has been modified|conflict/.test(diagnostic)) return 'resource-conflict';
+  if (/invalid|cannot unmarshal|no matches for kind|strict decoding error|failed to decode|unknown field/.test(diagnostic)) return 'invalid-resource';
+  return 'unknown';
+}
+
+export function kubectlFailureInfo(args: string[], exitCode: number, stderr: string) {
+  const safeOperations = ['apply', 'get', 'rollout', 'delete', 'port-forward'];
+  const safeOperation = args.find(argument => safeOperations.includes(argument)) || 'command';
+  const category = classifyKubectlFailure(stderr);
+  return { operation: safeOperation, category, message: `kubectl ${safeOperation} failed (exit ${exitCode}; category=${category})` };
+}
+
 /**
  * K3D/Kubernetes backed desktop. Each workspace receives its own namespace,
  * Secret, Deployment, Service and PVC. Browser and agent commands stay behind
@@ -511,10 +533,11 @@ async function kubectl(args: string[], input?: string) {
     child.once('close', value => resolve(value ?? 1));
   });
   if (code !== 0) {
-    // kubectl diagnostics can include serialized Secret fields. Keep them out
-    // of application responses and logs; the command and exit status suffice.
-    void stderr;
-    throw new Error(`kubectl ${args[0]} failed (exit ${code})`);
+    // Keep raw diagnostics out of application responses and logs: kubectl can
+    // echo serialized Secret fields. The category is safe to show and persist.
+    const failure = kubectlFailureInfo(args, code, stderr);
+    process.stderr.write(`${JSON.stringify({ event: 'dots_kubectl_failure', operation: failure.operation, exitCode: code, category: failure.category, at: new Date().toISOString() })}\n`);
+    throw new Error(failure.message);
   }
   return stdout;
 }
