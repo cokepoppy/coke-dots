@@ -1,5 +1,5 @@
-export function appPath(path: string) {
-  const base = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '');
+export function appPath(path: string, baseUrl = import.meta.env.BASE_URL) {
+  const base = baseUrl === '/' ? '' : baseUrl.replace(/\/$/, '');
   return `${base}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
