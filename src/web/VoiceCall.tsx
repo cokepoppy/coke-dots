@@ -251,7 +251,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
         fallbackTimer = window.setInterval(() => void refreshSnapshot(), 1000);
         return;
       }
-      stream = new EventSource('/api/events');
+      stream = new EventSource(appPath('/api/events'));
       stream.onmessage = event => {
         if (fallbackTimer !== null) { window.clearInterval(fallbackTimer); fallbackTimer = null; }
         try { reconcile(JSON.parse(event.data) as Snapshot); }

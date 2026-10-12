@@ -24,6 +24,8 @@ For text-to-speech smoke requests, send the text in the `speech_text_buffer.comm
 
 For ASR, live SeedDuplex `conversation.item.input_audio_transcription.delta` messages were observed to contain the complete transcript-so-far, not an append-only token. They can revise punctuation or shorten an earlier partial. Keep the newest non-empty snapshot; concatenating these snapshots duplicates earlier words. The `completed` event can omit `transcript`, so retain the latest snapshot as the final fallback.
 
+The task follower EventSource must be built with `appPath('/api/events')` because the public application is mounted under `/dots-demo/`; a root-relative `/api/events` resolves outside the deployment prefix and receives the HTML app shell instead of the event stream.
+
 ## Verification (2026-10-12)
 
 - `npm test`: 128 tests passed after the public ASR snapshot correction.
