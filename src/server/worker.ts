@@ -48,6 +48,7 @@ export class Worker {
   }
 
   private async run(task: Task, signal: AbortSignal) {
+    const gmailEventTask = this.store.isGmailEventTask(task.id, task.tenantId);
     if (task.engine === 'claude') {
       const message = 'Claude Code 内核已停用。原任务历史已保留；请使用模型 API、Pi 或 DeepSeek Harness 新建任务。';
       this.store.updateTask(task.id, { status: 'failed', error: message, nextRunAt: null }, task.tenantId);
@@ -88,8 +89,8 @@ export class Worker {
       const input: AgentRequest = {
         tenantId: task.tenantId, prompt: `${task.instruction}${attachmentContext}`, memories: this.store.tenantMemories(task.tenantId).map(memory => memory.note),
         pages: this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
-        actionRule: this.store.tenantActionRule(task.tenantId),
-        allowDelegation: !task.parentTaskId && children.length === 0,
+        actionRule: gmailEventTask ? null : this.store.tenantActionRule(task.tenantId),
+        allowDelegation: !gmailEventTask && !task.parentTaskId && children.length === 0,
         availableEngines,
         delegatedResults: children.map(child => ({ title: child.title, status: child.status, result: child.result, error: child.error })),
         priorResult: task.result, sessionId: task.agentSessionId,
@@ -102,6 +103,21 @@ export class Worker {
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
+      if (gmailEventTask && decision.pageAction) {
+        const message = '邮件触发任务为只读任务，没有写入 Scratchpad。';
+        this.store.updateTask(task.id, { status: 'failed', error: message, nextRunAt: null }, task.tenantId);
+        this.store.addEntry('system', message, task.id, task.tenantId);
+        this.onChange();
+        return;
+      }
+      if (gmailEventTask && decision.status === 'scheduled') {
+        const message = '邮件触发任务不会创建新的定时任务；如需后续检查，请单独创建 Scheduled 任务。';
+        this.store.updateTask(task.id, { status: 'waiting', error: null, nextRunAt: null }, task.tenantId);
+        this.store.addEntry('dot', `${decision.message}\n\n${message}`, task.id, task.tenantId);
+        this.store.addEntry('system', message, task.id, task.tenantId);
+        this.onChange();
+        return;
+      }
       if (task.parentTaskId && decision.status === 'scheduled') throw new Error('子任务不能创建周期安排');
       if (decision.status === 'delegating') {
         const delegated = this.store.createDelegatedTasks(task.id, task.tenantId, decision.delegations || [], decision.message, decision.sessionId);

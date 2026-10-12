@@ -1,4 +1,33 @@
 import type { ScheduleSpec } from './scheduling.ts';
+export interface GmailConnection {
+  email: string;
+  status: 'connected' | 'needs_reconnect';
+  scopes: string[];
+  connectedAt: string;
+  lastSyncedAt: string | null;
+  error: string | null;
+}
+
+export interface GmailEventTrigger {
+  id: string;
+  fromFilter: string;
+  subjectFilter: string;
+  condition: string;
+  prompt: string;
+  engine: Extract<Engine, 'pi' | 'dsh'>;
+  status: 'active' | 'paused';
+  createdAt: string;
+  updatedAt: string;
+  lastEventAt: string | null;
+  lastTaskId: string | null;
+}
+
+export interface GmailSnapshot {
+  configured: boolean;
+  pollIntervalSeconds: number;
+  connection: GmailConnection | null;
+  triggers: GmailEventTrigger[];
+}
 
 export const selectableEngines = ['model', 'pi', 'dsh'] as const;
 export type Engine = (typeof selectableEngines)[number];
@@ -68,6 +97,7 @@ export interface Snapshot {
   computerAccess: { dotComputer: true; localComputer: boolean; configured: boolean };
   tasks: Task[];
   watches: Watch[];
+  gmail: GmailSnapshot;
   entries: Entry[];
   configured: boolean;
   availableEngines: Engine[];
