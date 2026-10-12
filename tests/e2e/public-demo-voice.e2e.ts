@@ -34,8 +34,11 @@ const result: {
   outputAudioRms: number;
   outputAudioPeak: number;
   outputAudioLagOneCorrelation: number;
-  speakerDestinationConnections: number;
-  speakerOutputPathVerified: boolean;
+  outputAudioDecodedSamples: number;
+  outputAudioDecodeMismatches: number;
+  outputAudioDecodeMaxError: number;
+  webAudioDestinationConnections: number;
+  webAudioPlaybackVerified: boolean;
   agentTaskId: string | null;
   agentTaskCompleted: boolean;
   transcriptVerified: boolean;
@@ -60,8 +63,11 @@ const result: {
   outputAudioRms: 0,
   outputAudioPeak: 0,
   outputAudioLagOneCorrelation: 0,
-  speakerDestinationConnections: 0,
-  speakerOutputPathVerified: false,
+  outputAudioDecodedSamples: 0,
+  outputAudioDecodeMismatches: 0,
+  outputAudioDecodeMaxError: 0,
+  webAudioDestinationConnections: 0,
+  webAudioPlaybackVerified: false,
   agentTaskId: null,
   agentTaskCompleted: false,
   transcriptVerified: false,
@@ -223,7 +229,7 @@ try {
     await page!.addInitScript(({ capturePcm }) => {
       const NativeWebSocket = window.WebSocket;
       const sockets: WebSocket[] = [];
-      type SpeechRun = { text: string; pcmBytes: number; pcmFrames: number; audioFormat: number | null; scheduledSources: number; playbackCompletedSources: number; destinationConnections: number; audioContextState: string | null; ended: boolean; chunks: string[] };
+      type SpeechRun = { text: string; pcmBytes: number; pcmFrames: number; audioFormat: number | null; scheduledSources: number; playbackCompletedSources: number; destinationConnections: number; audioContextState: string | null; ended: boolean; chunks: string[]; expectedPlaybackFrames: Float32Array[]; decodedSamples: number; decodeMismatches: number; decodeMaxError: number };
       const runs: SpeechRun[] = [];
       const capture = { sockets, runs, capturePcm };
       Object.defineProperty(window, '__dotsPublicVoiceCapture', { configurable: false, value: capture });
@@ -237,7 +243,7 @@ try {
               if (typeof data === 'string') {
                 try {
                   const message = JSON.parse(data) as { type?: string; text?: string };
-                  if (message.type === 'speak' && message.text) runs.push({ text: message.text, pcmBytes: 0, pcmFrames: 0, audioFormat: null, scheduledSources: 0, playbackCompletedSources: 0, destinationConnections: 0, audioContextState: null, ended: false, chunks: [] });
+                  if (message.type === 'speak' && message.text) runs.push({ text: message.text, pcmBytes: 0, pcmFrames: 0, audioFormat: null, scheduledSources: 0, playbackCompletedSources: 0, destinationConnections: 0, audioContextState: null, ended: false, chunks: [], expectedPlaybackFrames: [], decodedSamples: 0, decodeMismatches: 0, decodeMaxError: 0 });
                 } catch { /* Audio and control messages are only observed, never changed. */ }
               }
               nativeSend(data);
@@ -257,6 +263,13 @@ try {
                 run.audioFormat = bytes[0];
                 run.pcmBytes += bytes.length - 1;
                 run.pcmFrames += 1;
+                if (bytes[0] === 2 && (bytes.length - 1) % 4 === 0) {
+                  const frame = bytes.subarray(1);
+                  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+                  const samples = new Float32Array(frame.byteLength / 4);
+                  for (let index = 0; index < samples.length; index += 1) samples[index] = view.getFloat32(index * 4, true);
+                  run.expectedPlaybackFrames.push(samples);
+                }
                 if (capturePcm) {
                   let binary = '';
                   const pcm = bytes.subarray(1);
@@ -283,6 +296,19 @@ try {
           const offset = args[1] ?? 0;
           const duration = args[2] ?? Math.max(0, (this.buffer?.duration || 0) - offset);
           const expectedEndAt = actualStartAt + duration;
+          const expectedSamples = run.expectedPlaybackFrames.shift();
+          const decodedSamples = this.buffer?.getChannelData(0);
+          if (!expectedSamples || !decodedSamples || expectedSamples.length !== decodedSamples.length) run.decodeMismatches += 1;
+          else {
+            for (let index = 0; index < expectedSamples.length; index += 1) {
+              const sourceSample = expectedSamples[index];
+              const expected = Number.isFinite(sourceSample) ? Math.max(-1, Math.min(1, sourceSample)) : 0;
+              const error = Math.abs(decodedSamples[index] - expected);
+              run.decodeMaxError = Math.max(run.decodeMaxError, error);
+              if (error > 0.000001) run.decodeMismatches += 1;
+            }
+            run.decodedSamples += decodedSamples.length;
+          }
           this.addEventListener('ended', () => {
             if (audioContext.currentTime + 0.01 >= expectedEndAt) run.playbackCompletedSources += 1;
           }, { once: true });
@@ -404,18 +430,22 @@ try {
       assert.match(computer?.title || '', /Example Domain/i);
 
       await page!.waitForFunction(expectedText => {
-        const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; audioFormat: number | null; scheduledSources: number; playbackCompletedSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null }[] } }).__dotsPublicVoiceCapture;
-        return capture?.runs?.some(run => run.text === expectedText && run.audioFormat === 2 && run.pcmBytes > 10_000 && run.pcmFrames > 2 && run.scheduledSources > 0 && run.playbackCompletedSources === run.scheduledSources && run.destinationConnections > 0 && run.audioContextState === 'running' && run.ended) || false;
+        const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; audioFormat: number | null; scheduledSources: number; playbackCompletedSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null; decodedSamples: number; decodeMismatches: number }[] } }).__dotsPublicVoiceCapture;
+        return capture?.runs?.some(run => run.text === expectedText && run.audioFormat === 2 && run.pcmBytes > 10_000 && run.pcmFrames > 2 && run.scheduledSources > 0 && run.playbackCompletedSources === run.scheduledSources && run.destinationConnections > 0 && run.audioContextState === 'running' && run.decodedSamples === run.pcmBytes / 4 && run.decodeMismatches === 0 && run.ended) || false;
       }, persisted.result || '', { timeout: 60_000, polling: 250 });
       const audioEvidence = await page!.evaluate(expectedText => {
-        const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; audioFormat: number | null; scheduledSources: number; playbackCompletedSources: number; ended: boolean; chunks: string[]; destinationConnections: number; audioContextState: string | null }[] } }).__dotsPublicVoiceCapture;
+        const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; audioFormat: number | null; scheduledSources: number; playbackCompletedSources: number; ended: boolean; chunks: string[]; destinationConnections: number; audioContextState: string | null; decodedSamples: number; decodeMismatches: number; decodeMaxError: number }[] } }).__dotsPublicVoiceCapture;
         const run = capture?.runs?.find(candidate => candidate.text === expectedText);
-        return run ? { text: run.text, pcmBytes: run.pcmBytes, pcmFrames: run.pcmFrames, audioFormat: run.audioFormat, scheduledSources: run.scheduledSources, playbackCompletedSources: run.playbackCompletedSources, destinationConnections: run.destinationConnections, audioContextState: run.audioContextState, ended: run.ended, chunks: run.chunks } : null;
+        return run ? { text: run.text, pcmBytes: run.pcmBytes, pcmFrames: run.pcmFrames, audioFormat: run.audioFormat, scheduledSources: run.scheduledSources, playbackCompletedSources: run.playbackCompletedSources, destinationConnections: run.destinationConnections, audioContextState: run.audioContextState, ended: run.ended, chunks: run.chunks, decodedSamples: run.decodedSamples, decodeMismatches: run.decodeMismatches, decodeMaxError: run.decodeMaxError } : null;
       }, persisted.result || '');
       assert(audioEvidence);
-      assert(audioEvidence.destinationConnections > 0, 'The decoded response must connect to Chrome’s speaker destination');
+      assert(audioEvidence.destinationConnections > 0, 'The decoded response must connect to Chrome’s Web Audio destination');
       assert.equal(audioEvidence.audioContextState, 'running', 'Chrome’s audio output context must be running');
       assert.equal(audioEvidence.audioFormat, 2, 'SeedDuplex PCM must use its float32 browser decoder');
+      assert(audioEvidence.decodedSamples > 0, 'The actual Web Audio buffers must contain decoded assistant speech');
+      assert.equal(audioEvidence.decodedSamples, audioEvidence.pcmBytes / 4, 'Every returned float sample must be scheduled for playback');
+      assert.equal(audioEvidence.decodeMismatches, 0, 'Every scheduled speaker buffer must preserve the returned float32 samples');
+      assert(audioEvidence.decodeMaxError <= 0.000001, `Float32 PCM decoding introduced sample error ${audioEvidence.decodeMaxError}`);
       assert(audioEvidence.chunks.length > 0, 'The returned SeedDuplex PCM must be captured for playback verification');
       assert.match(audioEvidence.text, /Example Domain/i);
       assert.match(audioEvidence.text, /[\u4e00-\u9fff]/);
@@ -424,8 +454,11 @@ try {
       result.outputAudioEncoding = 'pcm_f32le';
       result.outputAudioScheduledSources = audioEvidence.scheduledSources;
       result.outputAudioPlaybackCompletedSources = audioEvidence.playbackCompletedSources;
-      result.speakerDestinationConnections = audioEvidence.destinationConnections;
-      result.speakerOutputPathVerified = audioEvidence.audioContextState === 'running' && audioEvidence.destinationConnections > 0;
+      result.webAudioDestinationConnections = audioEvidence.destinationConnections;
+      result.outputAudioDecodedSamples = audioEvidence.decodedSamples;
+      result.outputAudioDecodeMismatches = audioEvidence.decodeMismatches;
+      result.outputAudioDecodeMaxError = Number(audioEvidence.decodeMaxError.toFixed(8));
+      result.webAudioPlaybackVerified = audioEvidence.audioContextState === 'running' && audioEvidence.destinationConnections > 0 && audioEvidence.playbackCompletedSources === audioEvidence.scheduledSources && audioEvidence.decodeMismatches === 0;
       result.spokenResultVerified = true;
 
       const quality = await saveFloat32AssistantReply(audioEvidence.chunks);
@@ -444,26 +477,33 @@ try {
       socket.send(JSON.stringify({ type: 'speak', text: inputText }));
     }, text);
     await page!.waitForFunction(expectedText => {
-      const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; audioFormat: number | null; scheduledSources: number; playbackCompletedSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null }[] } }).__dotsPublicVoiceCapture;
-      return capture?.runs?.some(run => run.text === expectedText && run.audioFormat === 2 && run.pcmBytes > 10_000 && run.pcmFrames > 2 && run.scheduledSources > 0 && run.playbackCompletedSources === run.scheduledSources && run.destinationConnections > 0 && run.audioContextState === 'running' && run.ended) || false;
+      const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; audioFormat: number | null; scheduledSources: number; playbackCompletedSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null; decodedSamples: number; decodeMismatches: number }[] } }).__dotsPublicVoiceCapture;
+      return capture?.runs?.some(run => run.text === expectedText && run.audioFormat === 2 && run.pcmBytes > 10_000 && run.pcmFrames > 2 && run.scheduledSources > 0 && run.playbackCompletedSources === run.scheduledSources && run.destinationConnections > 0 && run.audioContextState === 'running' && run.decodedSamples === run.pcmBytes / 4 && run.decodeMismatches === 0 && run.ended) || false;
     }, text, { timeout: 25_000, polling: 100 });
     const audioEvidence = await page!.evaluate(expectedText => {
-      const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; audioFormat: number | null; scheduledSources: number; playbackCompletedSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null; chunks: string[] }[] } }).__dotsPublicVoiceCapture;
+      const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; audioFormat: number | null; scheduledSources: number; playbackCompletedSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null; chunks: string[]; decodedSamples: number; decodeMismatches: number; decodeMaxError: number }[] } }).__dotsPublicVoiceCapture;
       const run = capture?.runs?.find(candidate => candidate.text === expectedText);
-      return run ? { text: run.text, pcmBytes: run.pcmBytes, pcmFrames: run.pcmFrames, audioFormat: run.audioFormat, scheduledSources: run.scheduledSources, playbackCompletedSources: run.playbackCompletedSources, destinationConnections: run.destinationConnections, audioContextState: run.audioContextState, ended: run.ended, chunks: run.chunks } : null;
+      return run ? { text: run.text, pcmBytes: run.pcmBytes, pcmFrames: run.pcmFrames, audioFormat: run.audioFormat, scheduledSources: run.scheduledSources, playbackCompletedSources: run.playbackCompletedSources, destinationConnections: run.destinationConnections, audioContextState: run.audioContextState, ended: run.ended, chunks: run.chunks, decodedSamples: run.decodedSamples, decodeMismatches: run.decodeMismatches, decodeMaxError: run.decodeMaxError } : null;
     }, text);
     assert(audioEvidence);
-    assert.equal(audioEvidence.destinationConnections > 0, true, 'The decoded response must reach Chrome’s speaker destination');
+    assert.equal(audioEvidence.destinationConnections > 0, true, 'The decoded response must reach Chrome’s Web Audio destination');
     assert.equal(audioEvidence.audioContextState, 'running', 'Chrome’s audio output context must be running');
     assert.equal(audioEvidence.audioFormat, 2, 'SeedDuplex PCM must use its float32 browser decoder');
+    assert(audioEvidence.decodedSamples > 0, 'The actual Web Audio buffers must contain decoded assistant speech');
+    assert.equal(audioEvidence.decodedSamples, audioEvidence.pcmBytes / 4, 'Every returned float sample must be scheduled for playback');
+    assert.equal(audioEvidence.decodeMismatches, 0, 'Every scheduled speaker buffer must preserve the returned float32 samples');
+    assert(audioEvidence.decodeMaxError <= 0.000001, `Float32 PCM decoding introduced sample error ${audioEvidence.decodeMaxError}`);
     assert(audioEvidence.chunks.length > 0);
     result.outputAudioBytes = audioEvidence.pcmBytes;
     result.outputAudioFrames = audioEvidence.pcmFrames;
     result.outputAudioEncoding = 'pcm_f32le';
     result.outputAudioScheduledSources = audioEvidence.scheduledSources;
     result.outputAudioPlaybackCompletedSources = audioEvidence.playbackCompletedSources;
-    result.speakerDestinationConnections = audioEvidence.destinationConnections;
-    result.speakerOutputPathVerified = audioEvidence.audioContextState === 'running' && audioEvidence.destinationConnections > 0;
+    result.webAudioDestinationConnections = audioEvidence.destinationConnections;
+    result.outputAudioDecodedSamples = audioEvidence.decodedSamples;
+    result.outputAudioDecodeMismatches = audioEvidence.decodeMismatches;
+    result.outputAudioDecodeMaxError = Number(audioEvidence.decodeMaxError.toFixed(8));
+    result.webAudioPlaybackVerified = audioEvidence.audioContextState === 'running' && audioEvidence.destinationConnections > 0 && audioEvidence.playbackCompletedSources === audioEvidence.scheduledSources && audioEvidence.decodeMismatches === 0;
     result.spokenResultVerified = true;
 
     const quality = await saveFloat32AssistantReply(audioEvidence.chunks);

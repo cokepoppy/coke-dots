@@ -1,6 +1,6 @@
 # SeedDuplex audio playback: root cause and verification
 
-Updated: 2026-10-12 (Asia/Shanghai)
+Updated: 2026-10-13 (Asia/Shanghai)
 
 ## Expected path
 
@@ -22,3 +22,11 @@ Commit `313efb0` fixes the boundary in both directions: the gateway validates fl
 ## Local and public version boundary
 
 The main checkout's `src/web/VoiceCall.tsx` still uses browser `SpeechRecognition` and `speechSynthesis`; it does not contain the SeedDuplex audio-stream implementation. A local run from that checkout therefore does not use the Volcengine voice path. The deployed public bundle checked above does contain the SeedDuplex float32 decoder. Confirm the page URL and loaded asset when diagnosing a repeat report; a passing browser audio graph check does not prove what the Mac's physical speaker emitted.
+
+## Decoder regression guard added on 2026-10-13
+
+- The playback conversion is now a small shared function, `decodeVolcengineFloat32Pcm`, with a unit test for exact little-endian float32 values, clipping, invalid values, and malformed frame length. The browser copies those decoded samples directly into each 24 kHz Web Audio buffer.
+- The authenticated public Chrome voice E2E now captures each returned float32 frame and compares every sample with the corresponding `AudioBuffer` immediately before playback. It fails if a frame is dropped, decoded as int16, altered beyond `1e-6`, not connected to the Web Audio destination, or not fully played. This specifically guards against a recurrence of the broadband-static decoder bug.
+- The manifest names this evidence `webAudioPlaybackVerified`; it proves Chrome decoded and scheduled the provider samples through its audio destination. It does not claim a physical speaker or intelligibility check.
+- Local verification after this change: `npm test` passed 131 tests; `npm run build:demo` passed; the public E2E TypeScript file type-checked. The signed-in live Playwright run was not repeated because no dedicated mode-0600 test-account storage state was available. The user-facing Chrome acoustic evidence and its limits are in [the public check](seedduplex-public-acoustic-check-2026-10-13.md).
+- A fresh public GET on 2026-10-13 still served `index-COayIfjo.js`, SHA-256 `1b172450fc42083694ca98b8d26e9fece7046321c3c32f7554b8e71e750b1a27`; the asset contains the float32 playback implementation. A stale Chrome tab can still hold an older bundle, so hard-reload the page before repeating a playback check.

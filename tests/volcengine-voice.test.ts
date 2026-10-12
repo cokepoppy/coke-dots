@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { decodeVolcengineFloat32Pcm } from '../src/shared/volcengine-audio.ts';
 import { isVolcengineFloat32Pcm, updateVolcengineTranscriptSnapshot, volcengineLocalSpeechEventType } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
@@ -53,6 +54,21 @@ test('SeedDuplex float32 PCM output is recognized and invalid output is rejected
   const outOfRange = Buffer.alloc(4);
   outOfRange.writeFloatLE(2, 0);
   assert.equal(isVolcengineFloat32Pcm(outOfRange), false);
+});
+
+test('SeedDuplex playback decodes little-endian float32 as voice samples instead of int16 noise', () => {
+  const pcm = Buffer.alloc(16);
+  [0.125, -0.25, 0.5, -0.75].forEach((sample, index) => pcm.writeFloatLE(sample, index * 4));
+  const arrayBuffer = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer;
+  assert.deepEqual(Array.from(decodeVolcengineFloat32Pcm(arrayBuffer) || []), [0.125, -0.25, 0.5, -0.75]);
+
+  const clipped = Buffer.alloc(12);
+  clipped.writeFloatLE(1.25, 0);
+  clipped.writeFloatLE(Number.NaN, 4);
+  clipped.writeFloatLE(-1.25, 8);
+  const clippedArrayBuffer = clipped.buffer.slice(clipped.byteOffset, clipped.byteOffset + clipped.byteLength) as ArrayBuffer;
+  assert.deepEqual(Array.from(decodeVolcengineFloat32Pcm(clippedArrayBuffer) || []), [1, 0, -1]);
+  assert.equal(decodeVolcengineFloat32Pcm(Buffer.from([0, 1, 2]).buffer.slice(0, 3) as ArrayBuffer), null);
 });
 
 test('Volcano O2.0 credentials remain compatible and never appear in public provider information', () => {

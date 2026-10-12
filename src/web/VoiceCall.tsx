@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DotAppearance, Snapshot, Task, VoiceCallSession } from '../shared/types.ts';
+import { decodeVolcengineFloat32Pcm } from '../shared/volcengine-audio.ts';
 import { appFetch, appPath } from './api.ts';
 import './voice-call.css';
 
@@ -432,14 +433,11 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
 
     const playVolcFloat32 = (bytes: ArrayBuffer) => {
       const context = volcAudioContextRef.current;
-      if (!context || !speakerRef.current || bytes.byteLength < 4 || bytes.byteLength % 4 !== 0) return;
-      const samples = new Float32Array(bytes);
+      if (!context || !speakerRef.current) return;
+      const samples = decodeVolcengineFloat32Pcm(bytes);
+      if (!samples) return;
       const buffer = context.createBuffer(1, samples.length, 24000);
-      const channel = buffer.getChannelData(0);
-      for (let index = 0; index < samples.length; index += 1) {
-        const sample = samples[index];
-        channel[index] = Number.isFinite(sample) ? Math.max(-1, Math.min(1, sample)) : 0;
-      }
+      buffer.getChannelData(0).set(samples);
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(context.destination);
