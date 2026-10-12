@@ -29,4 +29,16 @@ The earlier signed-in browser probe verified valid Float32 frames and completed 
 - The MacBook Air microphone recorded locally while the browser call was open. The recording was not retained and was not speech-transcribed, so it is not evidence that the physical playback was intelligible or that the user heard the right words.
 - Ended the call and restored the default input to MacBook Air microphone. `system_profiler` confirmed MacBook Air microphone as default input and MacBook Air speakers as default output.
 
-The live test now proves microphone injection through BlackHole can reach the public call and start a real Pi task. The remaining gap is an intelligibility check of the physical speaker output. Do not describe this as a complete microphone-to-Pi-to-audible-response pass.
+At this point in the investigation, the live test proved that BlackHole microphone injection could reach the public call and start a real Pi task. It did not yet prove audible playback.
+
+## Later public Chrome round trip
+
+After the check above, a second signed-in Chrome pass used a clean, short Chinese utterance and captured the Mac's physical microphone while the Dot response played:
+
+- The call used the public `doubao-seedduplex-3.0` provider over `wss://codex.cokeagent.com/dots-demo/api/voice-calls/.../volcengine-stream`; Chrome showed `101 Switching Protocols`.
+- A generated “你是谁？” sample was routed to BlackHole 2ch while MacBook Air speakers remained the output. SeedDuplex transcribed “你是谁？” exactly. The tenant's connected Pi computer completed the task and rendered its Chinese answer in the page.
+- DevTools instrumentation observed the playback `AudioContext` in `running` state before and after `resume()`. `AudioBufferSourceNode.start()` ran repeatedly with 24 kHz buffers from 2,048 to 17,408 samples (about 0.085–0.725 seconds each).
+- The MacBook Air microphone captured the physical speaker path during the response. In an 18.12-second recording, the quiet-room baseline RMS was about 0.0033; the final response window (15.8–18.1 seconds) measured RMS 0.0266 and peak 0.195. The capture was only a partial tail and was not independently transcribed, so this proves acoustic output reached the mic, not that every spoken word was intelligible.
+- The test temporarily set Mac output volume to 42% and input to BlackHole. It ended the call and restored MacBook Air microphone input, MacBook Air speaker output, and the original 13% output level.
+
+This was a live Chrome UI pass with automated sample injection and microphone capture, not the signed-in Playwright suite. The Playwright suite still needs its dedicated mode-0600 test-account storage state. The completed test task is titled “你是谁”; the earlier “谢淳” ASR test was resolved as “语音测试结束”.
