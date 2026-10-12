@@ -20,6 +20,12 @@ The suite covers login-screen rendering, Google OAuth through Chrome, the accoun
 
 The private Dot-memory click-through also confirms that a personal task saves a note, the same account can see and edit it in Profile, the next task receives it, and neither a shared-workspace prompt nor a second account receives it. See [the evidence limits and implementation policy](research/personal-dot-memory.md).
 
+## Public VPS verification
+
+`npm run test:e2e:public-demo` runs a headless Chrome smoke test against `https://codex.cokeagent.com/dots-demo/`. It clicks the public Google sign-in link and checks the OAuth redirect and state cookie, but it does not sign in to a Google account or exercise authenticated chat, cloud-computer, or voice flows. A passing result is not a full public-site end-to-end pass.
+
+To exercise the deployed cloud computer with a dedicated Google test account, follow [the authenticated public E2E setup](tests/e2e/public-demo-authenticated.md). That flow saves only the app's session cookie outside the checkout; the authenticated run clicks through the real public UI and verifies the rendered desktop and API state. Keep its result separate from the local fixture suite above. Neither public test currently sends speech to a realtime voice model.
+
 Personal Dot reset follows the official deletion warning and fresh-Dot landing behavior. It is restricted to the sole owner of a personal workspace, clears that Dot’s local activity and runtime data, and preserves account sign-in and provider setup. The public videos do not show the reset dialog, and live K3D namespace deletion is not yet covered by the browser test. See [reset evidence and boundaries](research/personal-dot-reset.md).
 
 Current agent execution includes one-level delegation to up to three independent child tasks. Each child uses an explicitly selected engine only when that engine is available in the tenant's current runtime set; omitted choices inherit the parent's engine. Children cannot delegate recursively and return their outcomes to the parent. Activity cards identify each child's engine. Tenant scope and the existing task-level engine choices are preserved.

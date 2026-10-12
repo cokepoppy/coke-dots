@@ -136,8 +136,10 @@ try {
     const config = await page!.evaluate(async () => await fetch('api/auth/config').then(response => response.json()) as { googleConfigured: boolean });
     assert.equal(config.googleConfigured, true, 'The public demo must keep Google sign-in enabled');
     const googleNavigation = page!.waitForURL(url => url.hostname === 'accounts.google.com', { waitUntil: 'commit', timeout: 20_000 });
-    await page!.getByRole('link', { name: '使用 Google 登录' }).click();
-    await googleNavigation;
+    await Promise.all([
+      page!.getByRole('link', { name: '使用 Google 登录' }).click(),
+      googleNavigation,
+    ]);
     const oauth = new URL(page!.url());
     assert.equal(oauth.searchParams.get('redirect_uri'), `${baseUrl.origin}${basePath}auth/google/callback`);
     const callbackUrl = new URL('auth/google/callback', baseUrl).toString();
@@ -176,6 +178,7 @@ try {
   await browser?.close().catch(() => undefined);
   const videoFiles = await readdir(videoDirectory).then(names => names.filter(name => name.endsWith('.webm')).map(name => `video/${name}`)).catch(() => [] as string[]);
   await writeFile(join(artifactRoot, 'manifest.json'), JSON.stringify({
+    testKind: 'anonymous-public-smoke',
     runAt: new Date().toISOString(),
     origin: baseUrl.origin,
     basePath,
