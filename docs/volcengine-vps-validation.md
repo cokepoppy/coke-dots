@@ -72,3 +72,11 @@ Public browser runs override `getUserMedia` before clicking **拨打 Dot** with 
 - Fresh artifacts: `artifacts/e2e/2026-10-12T20-56-10-436Z/` and `artifacts/e2e/linux-cloud-computer-2026-10-12T20-58-24-379Z/`.
 - Re-fetched the public page and its referenced JS during this run. It still serves `index-BFKMmF3z.js` with SHA-256 `a98829f54aa92954c5a4c50aa49de270daf54c3e62448c539aa3068d36d6419f`, matching the branch's documented Float32 playback build.
 - The dedicated signed-in Playwright storage state is still absent. This rerun therefore does not claim a public authenticated voice E2E or verify the physical Mac speaker output.
+
+## Mac acoustic loopback attempt (2026-10-13)
+
+- The public Chrome page was signed in at `/dots-demo/`. Clicking **拨打 Dot** reached **正在聆听** and opened the microphone; the call was ended without submitting a task.
+- Initial system output was **MacBook Air speakers at 13%**, with **MacBook Air microphone** selected. A 5-second AVFoundation capture of the built-in microphone while `say`/`afplay` played a 5.4-second Chinese calibration phrase showed 0.00298–0.00365 RMS and peak 417/32768. The source AIFF itself had mean level -17.9 dB and peak -3.8 dB, so the capture did not establish that speaker audio reached the microphone.
+- Repeated at 43% output volume: the microphone capture stayed near its baseline (0.00263–0.00335 RMS, peak 424/32768). This still cannot establish speaker audibility or intelligibility.
+- Tried routing both default input and output through **BlackHole 2ch**. AVFoundation captured all-zero samples while the calibration file played, so this host's current BlackHole route is not a usable loopback for this test.
+- Restored the original system audio state and verified it with `system_profiler`: MacBook Air microphone input, MacBook Air speaker output, and 13% output volume. The public authenticated automated voice suite remains unrun because its dedicated Google storage state is absent; the reported hiss is still acoustically unverified.
