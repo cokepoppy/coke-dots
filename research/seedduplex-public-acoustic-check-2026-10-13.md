@@ -20,3 +20,13 @@ This establishes that the public provider is configured and the call can connect
 The existing signed-in public Playwright flow, `npm run test:e2e:public-demo:voice-agent`, injects a synthetic WAV into Chromium and validates the real Pi task result and real SeedDuplex Float32 response. It requires `DOTS_PUBLIC_DEMO_STORAGE_STATE` pointing to a mode-0600 signed-in test state. The documented state file was absent during this check, so that automation was not run and no user Chrome session token was copied into a test artifact.
 
 The earlier signed-in browser probe verified valid Float32 frames and completed Web Audio playback scheduling, but did not capture physical speaker output. A complete acoustic claim still requires a controlled microphone input that reaches the public page and a local loopback or microphone capture of the resulting speaker audio.
+
+## Follow-up with controlled microphone routing
+
+- Temporarily selected the already-installed BlackHole 2ch as the Mac's default input, kept MacBook Air speakers as the output, and started another public Chrome call. The page connected to SeedDuplex and entered “正在聆听”.
+- Generated two short Mandarin inputs with the built-in `Eddy (中文（中国大陆）)` system voice and routed them to BlackHole. Chrome transcribed the input, but inaccurately: “请用中文回答，语音播报赛事进程中不要用中” and then “请回答赛事程中”. This differs from the source audio and demonstrates an ASR/input-fixture limit; it does not establish a SeedDuplex playback defect.
+- The first utterance created one Pi task, which correctly waited for clarification. While the call remained open, a typed clarification completed that same task with the result “语音播报测试成功”. No web or computer tool was requested or used.
+- The MacBook Air microphone recorded locally while the browser call was open. The recording was not retained and was not speech-transcribed, so it is not evidence that the physical playback was intelligible or that the user heard the right words.
+- Ended the call and restored the default input to MacBook Air microphone. `system_profiler` confirmed MacBook Air microphone as default input and MacBook Air speakers as default output.
+
+The live test now proves microphone injection through BlackHole can reach the public call and start a real Pi task. The remaining gap is an intelligibility check of the physical speaker output. Do not describe this as a complete microphone-to-Pi-to-audible-response pass.
