@@ -29,6 +29,7 @@ const result: {
   outputAudioBytes: number;
   outputAudioFrames: number;
   outputAudioScheduledSources: number;
+  outputAudioPlaybackCompletedSources: number;
   outputAudioRms: number;
   outputAudioPeak: number;
   speakerDestinationConnections: number;
@@ -52,6 +53,7 @@ const result: {
   outputAudioBytes: 0,
   outputAudioFrames: 0,
   outputAudioScheduledSources: 0,
+  outputAudioPlaybackCompletedSources: 0,
   outputAudioRms: 0,
   outputAudioPeak: 0,
   speakerDestinationConnections: 0,
@@ -171,7 +173,7 @@ try {
     await page!.addInitScript(({ capturePcm }) => {
       const NativeWebSocket = window.WebSocket;
       const sockets: WebSocket[] = [];
-      type SpeechRun = { text: string; pcmBytes: number; pcmFrames: number; scheduledSources: number; destinationConnections: number; audioContextState: string | null; ended: boolean; chunks: string[] };
+      type SpeechRun = { text: string; pcmBytes: number; pcmFrames: number; scheduledSources: number; playbackCompletedSources: number; destinationConnections: number; audioContextState: string | null; ended: boolean; chunks: string[] };
       const runs: SpeechRun[] = [];
       const capture = { sockets, runs, capturePcm };
       Object.defineProperty(window, '__dotsPublicVoiceCapture', { configurable: false, value: capture });
@@ -185,7 +187,7 @@ try {
               if (typeof data === 'string') {
                 try {
                   const message = JSON.parse(data) as { type?: string; text?: string };
-                  if (message.type === 'speak' && message.text) runs.push({ text: message.text, pcmBytes: 0, pcmFrames: 0, scheduledSources: 0, destinationConnections: 0, audioContextState: null, ended: false, chunks: [] });
+                  if (message.type === 'speak' && message.text) runs.push({ text: message.text, pcmBytes: 0, pcmFrames: 0, scheduledSources: 0, playbackCompletedSources: 0, destinationConnections: 0, audioContextState: null, ended: false, chunks: [] });
                 } catch { /* Audio and control messages are only observed, never changed. */ }
               }
               nativeSend(data);
@@ -223,7 +225,16 @@ try {
         if (runs.length) {
           const run = runs[runs.length - 1];
           run.scheduledSources += 1;
-          run.audioContextState = (this.context as AudioContext).state;
+          const audioContext = this.context as AudioContext;
+          run.audioContextState = audioContext.state;
+          const requestedStartAt = args[0] ?? 0;
+          const actualStartAt = requestedStartAt > 0 ? requestedStartAt : audioContext.currentTime;
+          const offset = args[1] ?? 0;
+          const duration = args[2] ?? Math.max(0, (this.buffer?.duration || 0) - offset);
+          const expectedEndAt = actualStartAt + duration;
+          this.addEventListener('ended', () => {
+            if (audioContext.currentTime + 0.01 >= expectedEndAt) run.playbackCompletedSources += 1;
+          }, { once: true });
         }
         return nativeStart.apply(this, args);
       };
@@ -342,13 +353,13 @@ try {
       assert.match(computer?.title || '', /Example Domain/i);
 
       await page!.waitForFunction(expectedText => {
-        const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; scheduledSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null }[] } }).__dotsPublicVoiceCapture;
-        return capture?.runs?.some(run => run.text === expectedText && run.pcmBytes > 10_000 && run.pcmFrames > 2 && run.scheduledSources > 0 && run.destinationConnections > 0 && run.audioContextState === 'running' && run.ended) || false;
+        const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; scheduledSources: number; playbackCompletedSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null }[] } }).__dotsPublicVoiceCapture;
+        return capture?.runs?.some(run => run.text === expectedText && run.pcmBytes > 10_000 && run.pcmFrames > 2 && run.scheduledSources > 0 && run.playbackCompletedSources === run.scheduledSources && run.destinationConnections > 0 && run.audioContextState === 'running' && run.ended) || false;
       }, persisted.result || '', { timeout: 60_000, polling: 250 });
       const audioEvidence = await page!.evaluate(expectedText => {
-        const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; scheduledSources: number; ended: boolean; chunks: string[]; destinationConnections: number; audioContextState: string | null }[] } }).__dotsPublicVoiceCapture;
+        const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; scheduledSources: number; playbackCompletedSources: number; ended: boolean; chunks: string[]; destinationConnections: number; audioContextState: string | null }[] } }).__dotsPublicVoiceCapture;
         const run = capture?.runs?.find(candidate => candidate.text === expectedText);
-        return run ? { text: run.text, pcmBytes: run.pcmBytes, pcmFrames: run.pcmFrames, scheduledSources: run.scheduledSources, destinationConnections: run.destinationConnections, audioContextState: run.audioContextState, ended: run.ended, chunks: run.chunks } : null;
+        return run ? { text: run.text, pcmBytes: run.pcmBytes, pcmFrames: run.pcmFrames, scheduledSources: run.scheduledSources, playbackCompletedSources: run.playbackCompletedSources, destinationConnections: run.destinationConnections, audioContextState: run.audioContextState, ended: run.ended, chunks: run.chunks } : null;
       }, persisted.result || '');
       assert(audioEvidence);
       assert(audioEvidence.destinationConnections > 0, 'The decoded response must connect to Chrome’s speaker destination');
@@ -359,6 +370,7 @@ try {
       result.outputAudioBytes = audioEvidence.pcmBytes;
       result.outputAudioFrames = audioEvidence.pcmFrames;
       result.outputAudioScheduledSources = audioEvidence.scheduledSources;
+      result.outputAudioPlaybackCompletedSources = audioEvidence.playbackCompletedSources;
       result.speakerDestinationConnections = audioEvidence.destinationConnections;
       result.speakerOutputPathVerified = audioEvidence.audioContextState === 'running' && audioEvidence.destinationConnections > 0;
       result.spokenResultVerified = true;
@@ -397,13 +409,13 @@ try {
       socket.send(JSON.stringify({ type: 'speak', text: inputText }));
     }, text);
     await page!.waitForFunction(expectedText => {
-      const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; scheduledSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null }[] } }).__dotsPublicVoiceCapture;
-      return capture?.runs?.some(run => run.text === expectedText && run.pcmBytes > 10_000 && run.pcmFrames > 2 && run.scheduledSources > 0 && run.destinationConnections > 0 && run.audioContextState === 'running' && run.ended) || false;
+      const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; scheduledSources: number; playbackCompletedSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null }[] } }).__dotsPublicVoiceCapture;
+      return capture?.runs?.some(run => run.text === expectedText && run.pcmBytes > 10_000 && run.pcmFrames > 2 && run.scheduledSources > 0 && run.playbackCompletedSources === run.scheduledSources && run.destinationConnections > 0 && run.audioContextState === 'running' && run.ended) || false;
     }, text, { timeout: 25_000, polling: 100 });
     const audioEvidence = await page!.evaluate(expectedText => {
-      const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; scheduledSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null; chunks: string[] }[] } }).__dotsPublicVoiceCapture;
+      const capture = (window as Window & { __dotsPublicVoiceCapture?: { runs?: { text: string; pcmBytes: number; pcmFrames: number; scheduledSources: number; playbackCompletedSources: number; ended: boolean; destinationConnections: number; audioContextState: string | null; chunks: string[] }[] } }).__dotsPublicVoiceCapture;
       const run = capture?.runs?.find(candidate => candidate.text === expectedText);
-      return run ? { text: run.text, pcmBytes: run.pcmBytes, pcmFrames: run.pcmFrames, scheduledSources: run.scheduledSources, destinationConnections: run.destinationConnections, audioContextState: run.audioContextState, ended: run.ended, chunks: run.chunks } : null;
+      return run ? { text: run.text, pcmBytes: run.pcmBytes, pcmFrames: run.pcmFrames, scheduledSources: run.scheduledSources, playbackCompletedSources: run.playbackCompletedSources, destinationConnections: run.destinationConnections, audioContextState: run.audioContextState, ended: run.ended, chunks: run.chunks } : null;
     }, text);
     assert(audioEvidence);
     assert.equal(audioEvidence.destinationConnections > 0, true, 'The decoded response must reach Chrome’s speaker destination');
@@ -412,6 +424,7 @@ try {
     result.outputAudioBytes = audioEvidence.pcmBytes;
     result.outputAudioFrames = audioEvidence.pcmFrames;
     result.outputAudioScheduledSources = audioEvidence.scheduledSources;
+    result.outputAudioPlaybackCompletedSources = audioEvidence.playbackCompletedSources;
     result.speakerDestinationConnections = audioEvidence.destinationConnections;
     result.speakerOutputPathVerified = audioEvidence.audioContextState === 'running' && audioEvidence.destinationConnections > 0;
     result.spokenResultVerified = true;
