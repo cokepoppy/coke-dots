@@ -17,6 +17,14 @@ const MAX_PROVIDER_AUDIO_FRAME = 512 * 1024;
 type LocalVoiceMessage = { type?: unknown; text?: unknown };
 type ProviderEvent = { type?: unknown; [key: string]: unknown };
 
+export function appendVolcengineTranscript(current: string, delta: string): string {
+  if (!delta) return current;
+  // SeedDuplex may send an updated partial transcript in delta. Accept both
+  // those cumulative snapshots and true incremental fragments.
+  if (current && delta.length > current.length && delta.startsWith(current)) return delta;
+  return current + delta;
+}
+
 export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: string, env: NodeJS.ProcessEnv = process.env) {
   const config = volcengineVoiceConfig(env);
   if (config.mode !== 'seedduplex') throw new VolcengineVoiceError('火山引擎 SeedDuplex API Key 未配置', 503);
@@ -186,7 +194,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     }
     if (event.type === 'conversation.item.input_audio_transcription.delta' || event.type === 'conversation.item.input_audio_transcription.result') {
       const piece = typeof event.delta === 'string' ? event.delta : typeof event.transcript === 'string' ? event.transcript : typeof event.result === 'string' ? event.result : '';
-      if (piece) transcript = event.type.endsWith('.delta') ? transcript + piece : piece;
+      if (piece) transcript = event.type.endsWith('.delta') ? appendVolcengineTranscript(transcript, piece) : piece;
       sendLocal({ type: 'asr', transcript, interim: true });
       return;
     }

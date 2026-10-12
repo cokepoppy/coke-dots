@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { appendVolcengineTranscript } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
@@ -20,6 +21,13 @@ import {
 } from '../src/server/volcengine-voice.ts';
 
 const env = (): NodeJS.ProcessEnv => ({ DOTS_VOLCENGINE_APP_ID: 'test-app', DOTS_VOLCENGINE_ACCESS_TOKEN: 'server-token' });
+
+test('SeedDuplex transcript assembly accepts both cumulative partials and incremental deltas', () => {
+  const cumulative = ['请', '请用', '请用中文', '请用中文回复。'].reduce(appendVolcengineTranscript, '');
+  assert.equal(cumulative, '请用中文回复。');
+  const incremental = ['请用', '中文', '回复。'].reduce(appendVolcengineTranscript, '');
+  assert.equal(incremental, '请用中文回复。');
+});
 
 test('Volcano O2.0 credentials remain compatible and never appear in public provider information', () => {
   assert.deepEqual(volcengineVoiceInfo({}), { provider: 'volcengine', configured: false, model: 'doubao-seedduplex-3.0' });
