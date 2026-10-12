@@ -20,10 +20,9 @@ interface RecognitionLike {
 type RecognitionConstructor = new () => RecognitionLike;
 type SpeechWindow = Window & { SpeechRecognition?: RecognitionConstructor; webkitSpeechRecognition?: RecognitionConstructor };
 
-export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onClose }: {
+export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   dotName: string;
   appearance: DotAppearance;
-  displayMode: 'desktop' | 'handset';
   onTranscript: (text: string, waitingTaskId: string | undefined, callId: string, turnId: string) => Promise<Task>;
   onClose: () => void;
 }) {
@@ -37,7 +36,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   const [voiceProvider, setVoiceProvider] = useState<'browser' | 'qwen' | 'volcengine'>('browser');
   const [voiceModel, setVoiceModel] = useState('');
   const [expanded, setExpanded] = useState(false);
-  const [desktopLayout, setDesktopLayout] = useState(() => displayMode === 'desktop' && window.innerWidth > 700);
+  const [desktopLayout, setDesktopLayout] = useState(() => window.innerWidth > 700);
   const sessionRef = useRef<VoiceCallSession | null>(null);
   const recognitionRef = useRef<RecognitionLike | null>(null);
   const providerRef = useRef<'browser' | 'qwen' | 'volcengine'>('browser');
@@ -97,11 +96,11 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   }
 
   useEffect(() => {
-    const updateLayout = () => setDesktopLayout(displayMode === 'desktop' && window.innerWidth > 700);
+    const updateLayout = () => setDesktopLayout(window.innerWidth > 700);
     updateLayout();
     window.addEventListener('resize', updateLayout);
     return () => window.removeEventListener('resize', updateLayout);
-  }, [displayMode]);
+  }, []);
 
   useEffect(() => {
     activeRef.current = true;
@@ -716,6 +715,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   </section>;
   return <section className={`voice-call-dock${expanded ? ' voice-call-expanded' : ''}`} role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="handset" data-voice-provider={voiceProvider} data-voice-model={voiceModel}>
     <div className="voice-call-screen">
+      <div className="voice-call-screen-content">
       <div className="voice-call-statusbar" aria-hidden="true">
         <span className="voice-call-status-leading"><span className="voice-call-status-time">12:55</span><svg className="voice-call-silent" viewBox="0 0 16 16"><path d="M3.5 11.5h9c-.9-1.2-1.2-2.1-1.2-4.3a3.3 3.3 0 0 0-6.6 0c0 2.2-.3 3.1-1.2 4.3ZM6.6 13.2h2.8M2.5 2.5l11 11" /></svg></span><span className="voice-call-notch" />
         <span className="voice-call-status-icons"><svg className="voice-call-signal" viewBox="0 0 14 12"><path d="M1 11V8.5h2V11zM4.5 11V6h2v5zM8 11V3.5h2V11zM11.5 11V1h2v10z" /></svg><svg className="voice-call-wifi" viewBox="0 0 16 14"><path d="M1.5 4.5c4-3.5 9-3.5 13 0M4 7c2.4-2.1 5.6-2.1 8 0M6.5 9.5c.9-.8 2.1-.8 3 0" /><circle cx="8" cy="12" r=".7" fill="currentColor" /></svg><i className="voice-call-battery" /></span>
@@ -745,6 +745,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       </div>
       <div className="voice-call-a11y" aria-live="polite" aria-atomic="true" data-testid="voice-call-transcript" data-task-status={taskStatus}>
         <span>{status}</span>{transcript && <span>你说：{transcript}</span>}{taskStatus && <span>{taskStatus}</span>}
+      </div>
       </div>
     </div>
   </section>;
