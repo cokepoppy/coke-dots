@@ -2267,7 +2267,6 @@ try {
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
-    await openProfile(alphaPage!);
     const rtcMockScript = String.raw`(() => {
       const view = window;
       view.__dotsQwenSentEvents = [];
@@ -2315,9 +2314,25 @@ try {
       Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async () => ({ getAudioTracks: () => [track], getTracks: () => [track] }) } });
     })()`;
     await alphaPage!.evaluate((script: string) => window.eval(script), rtcMockScript);
-    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    await clickNav(alphaPage!, '你的 dot');
+    const conversation = alphaPage!.locator('.chat-panel');
+    await conversation.waitFor({ state: 'visible' });
+    const contextPanel = alphaPage!.getByTestId('dot-context-panel');
+    await contextPanel.waitFor({ state: 'visible' });
+    await contextPanel.getByTestId('context-call-launch').click();
     const call = alphaPage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
+    assert.equal(await call.getAttribute('data-variant'), 'desktop', 'Calling from the Dot details panel must use the compact desktop call UI');
+    assert.equal(await alphaPage!.locator('.voice-call-dock').count(), 0, 'A desktop call must not open the handset-shaped call screen');
+    assert.equal(await conversation.isVisible(), true, 'The Dot conversation must stay visible during a desktop call');
+    assert.equal(await contextPanel.isVisible(), true, 'The Dot details panel must stay visible during a desktop call');
+    const desktopCallLayout = await call.evaluate(element => {
+      const call = element.getBoundingClientRect();
+      const panel = document.querySelector('[data-testid="dot-context-panel"]')!.getBoundingClientRect();
+      return { callRight: call.right, panelLeft: panel.left };
+    });
+    assert(desktopCallLayout.callRight <= desktopCallLayout.panelLeft, 'Desktop call controls must sit beside, not over, the Dot details panel');
+    await screenshot(alphaPage!, 'qwen-realtime-call-desktop-active');
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-provider') === 'qwen');
     await alphaPage!.waitForFunction(() => (window as unknown as { __dotsQwenSentEvents?: { type: string }[] }).__dotsQwenSentEvents?.some(event => event.type === 'session.update') === true, null, { timeout: 10_000 });
     assert.match(await call.locator('[data-testid="voice-call-transcript"]').innerText(), /正在初始化语音模型/, 'The UI must not report listening before model setup is acknowledged');
@@ -2336,9 +2351,12 @@ try {
       authorization: 'Bearer e2e-qwen-secret', contentType: 'application/sdp',
       sdp: ['v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)),
     });
-    const sessionUpdate = await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenSentEvents: { type: string; session?: { input_audio_transcription?: { model?: string }; turn_detection?: { type?: string } } }[] }).__dotsQwenSentEvents.find(event => event.type === 'session.update'));
+    const sessionUpdate = await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenSentEvents: { type: string; session?: { instructions?: string; input_audio_transcription?: { model?: string }; turn_detection?: { type?: string } } }[] }).__dotsQwenSentEvents.find(event => event.type === 'session.update'));
     assert.equal(sessionUpdate?.session?.input_audio_transcription?.model, 'qwen3-asr-flash-realtime');
     assert.equal(sessionUpdate?.session?.turn_detection?.type, 'server_vad');
+    assert.match(sessionUpdate?.session?.instructions || '', /始终使用中文/);
+    assert.match(sessionUpdate?.session?.instructions || '', /只做简短确认/);
+    assert.match(sessionUpdate?.session?.instructions || '', /独立的 Dots Agent 处理/);
     await call.getByRole('button', { name: '静音' }).click();
     assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), false, 'Mute must disable the live microphone track');
     await call.getByRole('button', { name: '取消静音' }).click();
