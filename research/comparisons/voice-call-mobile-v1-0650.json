@@ -1,0 +1,16 @@
+{
+  "id": "voice-call-mobile-v1-0650-controls",
+  "source": {
+    "video": "https://www.youtube.com/watch?v=V_1Vn2WfpEY",
+    "timeSeconds": 410.9,
+    "label": "06:50.9",
+    "crop": { "width": 560, "height": 1122 },
+    "measurementNote": "Control centers and diameter measured from the retained clear phone frame. YouTube compression and the crop boundary make these normalized targets approximate, not source CSS pixels."
+  },
+  "controls": [
+    { "name": "Speaker", "center": { "x": 138.6, "y": 963.5 }, "diameter": 92 },
+    { "name": "End", "center": { "x": 278.1, "y": 963.4 }, "diameter": 92 },
+    { "name": "Mute", "center": { "x": 417.5, "y": 963.5 }, "diameter": 92 }
+  ],
+  "tolerance": { "normalizedPosition": 0.015, "normalizedDiameter": 0.025 }
+}
