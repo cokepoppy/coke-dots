@@ -22,14 +22,16 @@ The public domain currently reaches the Mac demo process through the existing tu
 
 For text-to-speech smoke requests, send the text in the `speech_text_buffer.commit` event. Sending an empty `speech_text_buffer.replacement.commit` after an append can create the session but leave it with no speech to synthesize. A regression test covers the required event payload.
 
+For ASR, live SeedDuplex `conversation.item.input_audio_transcription.delta` messages were observed to contain the complete transcript-so-far, not an append-only token. They can revise punctuation or shorten an earlier partial. Keep the newest non-empty snapshot; concatenating these snapshots duplicates earlier words. The `completed` event can omit `transcript`, so retain the latest snapshot as the final fallback.
+
 ## Verification (2026-10-12)
 
-- `npm test`: 127 tests passed.
+- `npm test`: 128 tests passed after the public ASR snapshot correction.
 - `npm run build:demo`: passed; generated bundle `index-Bx17wOuQ.js` and stylesheet `index-B3tLxLCy.css`.
 - Local Chrome E2E: 52 browser steps passed, including call UI, task handoff, follow-up, and call end.
 - Live Volcengine synthetic Chinese speech smoke: session created; first audio at 860 ms; 420,544 audio bytes; completed in 2.782 s.
-- Public signed-in Chrome click-through: selected kernel showed Pi; clicked **拨打 Dot**; call UI reached **正在聆听**, which is sent only after the server receives SeedDuplex `session.created`; ended the call and confirmed the SQLite row is closed (140 seconds total). Public JS and CSS both returned HTTP 200. This was a manual signed-in browser test, not the dedicated authenticated Playwright suite.
+- Public signed-in Chrome click-through: selected kernel showed Pi; clicked **拨打 Dot**; call UI reached **正在聆听**, which is sent only after the server receives SeedDuplex `session.created`; fed a prerecorded Chinese synthetic WAV through a synthetic WebAudio microphone and confirmed the voice turn dispatched to Pi in the tenant's cloud computer and completed in Chinese. This is manual signed-in browser evidence, not the dedicated authenticated Playwright suite.
 
 ## Microphone test caution
 
-Clicking **拨打 Dot** invokes `getUserMedia` immediately. When Chrome already grants microphone access, this can stream microphone frames before the call UI settles. In this verification, the browser call was muted after about 23 seconds and then ended; microphone audio may have reached Volcengine during that initial interval. Future public tests must inject deterministic synthetic audio before starting the call or keep the microphone muted from the first frame, and must not describe a click-through handshake as a complete speech-to-Agent test.
+Public browser runs override `getUserMedia` before clicking **拨打 Dot** with a zero-gain synthetic track, then feed only the generated WAV into that track. They do not access the physical microphone. Restore the page after the run to remove the temporary browser instrumentation.

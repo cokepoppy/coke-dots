@@ -17,12 +17,10 @@ const MAX_PROVIDER_AUDIO_FRAME = 512 * 1024;
 type LocalVoiceMessage = { type?: unknown; text?: unknown };
 type ProviderEvent = { type?: unknown; [key: string]: unknown };
 
-export function appendVolcengineTranscript(current: string, delta: string): string {
-  if (!delta) return current;
-  // SeedDuplex may send an updated partial transcript in delta. Accept both
-  // those cumulative snapshots and true incremental fragments.
-  if (current && delta.length > current.length && delta.startsWith(current)) return delta;
-  return current + delta;
+export function updateVolcengineTranscriptSnapshot(current: string, snapshot: string): string {
+  // Live SeedDuplex `.delta` events contain the full transcript so far, and may
+  // revise or shorten earlier text while punctuation and words are corrected.
+  return snapshot || current;
 }
 
 export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: string, env: NodeJS.ProcessEnv = process.env) {
@@ -194,7 +192,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     }
     if (event.type === 'conversation.item.input_audio_transcription.delta' || event.type === 'conversation.item.input_audio_transcription.result') {
       const piece = typeof event.delta === 'string' ? event.delta : typeof event.transcript === 'string' ? event.transcript : typeof event.result === 'string' ? event.result : '';
-      if (piece) transcript = event.type.endsWith('.delta') ? appendVolcengineTranscript(transcript, piece) : piece;
+      if (piece) transcript = updateVolcengineTranscriptSnapshot(transcript, piece);
       sendLocal({ type: 'asr', transcript, interim: true });
       return;
     }
