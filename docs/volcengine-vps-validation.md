@@ -64,3 +64,11 @@ The task follower EventSource must be built with `appPath('/api/events')` becaus
 ## Microphone test caution
 
 Public browser runs override `getUserMedia` before clicking **拨打 Dot** with a zero-gain synthetic track, then feed only the generated WAV into that track. They do not access the physical microphone. Restore the page after the run to remove the temporary browser instrumentation.
+
+## Fresh branch verification (2026-10-13)
+
+- Re-ran `npm test`: 131 tests passed, including SeedDuplex float32 decoding and rejection of malformed audio frames.
+- Re-ran `npm run test:e2e`: build passed, followed by 53 Chrome UI steps and 8 cloud-computer checks. The voice checks covered a spoken Pi task, spoken reply to a waiting task, continued work after hang-up, and Float32 frames scheduled through the browser speaker graph. These use a deterministic local SeedDuplex fixture; they do not establish public live-call acoustic quality.
+- Fresh artifacts: `artifacts/e2e/2026-10-12T20-56-10-436Z/` and `artifacts/e2e/linux-cloud-computer-2026-10-12T20-58-24-379Z/`.
+- Re-fetched the public page and its referenced JS during this run. It still serves `index-BFKMmF3z.js` with SHA-256 `a98829f54aa92954c5a4c50aa49de270daf54c3e62448c539aa3068d36d6419f`, matching the branch's documented Float32 playback build.
+- The dedicated signed-in Playwright storage state is still absent. This rerun therefore does not claim a public authenticated voice E2E or verify the physical Mac speaker output.
