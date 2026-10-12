@@ -31,8 +31,12 @@ The task follower EventSource must be built with `appPath('/api/events')` becaus
 - `npm test`: 128 tests passed after the public ASR snapshot correction.
 - `npm run build:demo`: passed; generated bundle `index-Bx17wOuQ.js` and stylesheet `index-B3tLxLCy.css`.
 - Local Chrome E2E: 52 browser steps passed, including call UI, task handoff, follow-up, and call end.
+- `npm run test:e2e:demo-path`: passed five checks for `/dots-demo/` asset paths, sign-in, app shell, and Pi default.
 - Live Volcengine synthetic Chinese speech smoke: session created; first audio at 860 ms; 420,544 audio bytes; completed in 2.782 s.
-- Public signed-in Chrome click-through: selected kernel showed Pi; clicked **拨打 Dot**; call UI reached **正在聆听**, which is sent only after the server receives SeedDuplex `session.created`; fed a prerecorded Chinese synthetic WAV through a synthetic WebAudio microphone and confirmed the voice turn dispatched to Pi in the tenant's cloud computer and completed in Chinese. This is manual signed-in browser evidence, not the dedicated authenticated Playwright suite.
+- Live SeedDuplex ASR inspection with synthetic WAV: 24 cumulative `.delta` snapshots followed by `completed` without a transcript field. The last snapshot contained the full recognition text.
+- Public signed-in Chrome click-through after deployment: clicked **拨打 Dot**; call reached **正在聆听**; synthetic-only WebAudio input produced the exact transcript `请用中文回复，公网语音测试成功。`; the selected kernel was Pi, the task completed in Chinese, and the UI showed **任务由 Dot 的云电脑运行**. The progress feed completed without the previous EventSource MIME error. Browser console had no errors; it showed one existing `ScriptProcessorNode` deprecation warning.
+- Public JS bundle SHA-256 matched the local release build. The temporary WAV was removed from the public bundle and its URL returned HTTP 404.
+- This was a manual signed-in Chrome E2E. The dedicated authenticated Playwright suite was not run because no dedicated test-account storage-state file was present; it remains available via the command above.
 
 ## Microphone test caution
 
