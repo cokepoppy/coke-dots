@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { updateVolcengineTranscriptSnapshot, volcengineLocalSpeechEventType } from '../src/server/volcengine-duplex-voice-gateway.ts';
+import { isVolcengineFloat32Pcm, updateVolcengineTranscriptSnapshot, volcengineLocalSpeechEventType } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
@@ -40,6 +40,19 @@ test('SeedDuplex distinguishes user speech from assistant TTS sentence boundarie
   assert.equal(volcengineLocalSpeechEventType('response.output_audio.started'), 'assistant-speech-started');
   assert.equal(volcengineLocalSpeechEventType('response.output_audio.done'), 'speech-ended');
   assert.equal(volcengineLocalSpeechEventType('response.done'), null);
+});
+
+test('SeedDuplex float32 PCM output is recognized and invalid output is rejected before playback', () => {
+  const pcm = Buffer.alloc(16);
+  [0, 0.1, -0.12, 0.04].forEach((sample, index) => pcm.writeFloatLE(sample, index * 4));
+  assert.equal(isVolcengineFloat32Pcm(pcm), true);
+  assert.equal(isVolcengineFloat32Pcm(Buffer.from([1, 2, 3])), false);
+  const invalid = Buffer.alloc(4);
+  invalid.writeFloatLE(Number.NaN, 0);
+  assert.equal(isVolcengineFloat32Pcm(invalid), false);
+  const outOfRange = Buffer.alloc(4);
+  outOfRange.writeFloatLE(2, 0);
+  assert.equal(isVolcengineFloat32Pcm(outOfRange), false);
 });
 
 test('Volcano O2.0 credentials remain compatible and never appear in public provider information', () => {

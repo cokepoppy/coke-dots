@@ -13,6 +13,7 @@ import {
 const MAX_CLIENT_AUDIO_FRAME = 20_000;
 const MAX_SPEAK_TEXT = 1200;
 const MAX_PROVIDER_AUDIO_FRAME = 512 * 1024;
+const VOLCENGINE_FLOAT32_AUDIO_MARKER = 2;
 
 type LocalVoiceMessage = { type?: unknown; text?: unknown };
 type ProviderEvent = { type?: unknown; [key: string]: unknown };
@@ -21,6 +22,16 @@ export function updateVolcengineTranscriptSnapshot(current: string, snapshot: st
   // Live SeedDuplex `.delta` events contain the full transcript so far, and may
   // revise or shorten earlier text while punctuation and words are corrected.
   return snapshot || current;
+}
+
+export function isVolcengineFloat32Pcm(pcm: Uint8Array): boolean {
+  if (!pcm.byteLength || pcm.byteLength % 4 !== 0) return false;
+  const bytes = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  for (let offset = 0; offset < bytes.byteLength; offset += 4) {
+    const sample = bytes.readFloatLE(offset);
+    if (!Number.isFinite(sample) || Math.abs(sample) > 1.5) return false;
+  }
+  return true;
 }
 
 export function volcengineLocalSpeechEventType(providerEventType: string): 'speech-started' | 'assistant-speech-started' | 'speech-ended' | null {
@@ -227,11 +238,19 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
         return;
       }
       const pcm = Buffer.from(encoded, 'base64');
-      if (!pcm.length || pcm.byteLength > MAX_PROVIDER_AUDIO_FRAME || pcm.byteLength % 2 !== 0) {
+      if (!pcm.length || pcm.byteLength > MAX_PROVIDER_AUDIO_FRAME || pcm.byteLength % 4 !== 0) {
         fail('火山实时语音返回了无效的音频帧。');
         return;
       }
-      if (client.readyState === WebSocket.OPEN) client.send(Buffer.concat([Buffer.from([1]), pcm]));
+      if (!isVolcengineFloat32Pcm(pcm)) {
+        fail('火山实时语音返回了不支持的音频格式。');
+        return;
+      }
+      // SeedDuplex currently emits normalized float32 PCM for the requested
+      // `audio.output.format.type: "pcm"` response. Preserve that encoding in
+      // the local frame marker so the browser does not interpret each float as
+      // two unrelated int16 samples (which sounds like broadband static).
+      if (client.readyState === WebSocket.OPEN) client.send(Buffer.concat([Buffer.from([VOLCENGINE_FLOAT32_AUDIO_MARKER]), pcm]));
       return;
     }
   });
