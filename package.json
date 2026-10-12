@@ -14,6 +14,7 @@
     "test:e2e:k3d": "npm run build && node --import tsx tests/e2e/k3d-cloud-computer.e2e.ts",
     "test:live-model": "node --import tsx scripts/live-model-smoke.ts",
     "compare:reference": "node --import tsx scripts/compare-reference.ts",
+    "research:capture-dot-v3": "node --import tsx scripts/capture-dot-v3-reference.ts",
     "start": "tsx src/server/index.ts",
     "build:server": "esbuild src/server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=server-dist/index.js",
     "build:electron": "esbuild electron/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=electron-dist/main.cjs",
