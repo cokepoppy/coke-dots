@@ -52,6 +52,14 @@ The task follower EventSource must be built with `appPath('/api/events')` becaus
 - A physical-microphone attempt using a short generated Mandarin phrase was contaminated by other room speech and transcribed incorrectly. The call was muted and ended before a task was submitted. SQLite showed no new task and no open voice call afterward. This is a failed manual ASR attempt, not a full voice-to-Pi-to-spoken-result E2E.
 - The automated `voice-agent` Playwright suite has not run: `npm run test:e2e:public-demo:voice-agent` stopped at its preflight guard because the required dedicated Google test-account storage state is absent. Generate that file with `npm run test:e2e:public-demo:auth-setup` before claiming authenticated automated E2E.
 
+## Verification (2026-10-13)
+
+- `npm test`: 131 tests passed. `npm run build` and `npm run build:demo` passed.
+- The local demo build and the public page both reference `assets/index-BFKMmF3z.js`. The public asset returned HTTP 200, 374,849 bytes, SHA-256 `a98829f54aa92954c5a4c50aa49de270daf54c3e62448c539aa3068d36d6419f`; inspection confirmed the Float32 decoder and format-2 playback marker are present. This ties the live browser test to the current branch's demo bundle.
+- In a signed-in Chrome session on the public domain, the real SeedDuplex WebSocket returned 17 Float32 PCM frames (158,342 samples, about 6.60 seconds at 24 kHz). Chrome decoded the frames without sample mismatches and scheduled the resulting buffers to a running `AudioContext` connected to `AudioDestinationNode`. The response waveform had RMS 0.08366, peak 0.34280, and lag-one correlation 0.93394, consistent with continuous speech audio rather than broadband static.
+- The exact browser bundle and audio stream were verified against the public deployment. This confirms the digital response and browser output graph; it does **not** confirm the acoustic sound from the Mac speakers. The built-in microphone did not capture even a local macOS `say` calibration, so it was not a valid speaker loopback measurement. The Mac output volume was 13% before the check and was restored to 13% afterward.
+- This was a signed-in manual Chrome click-through with temporary in-page diagnostics, not an authenticated Playwright run. The dedicated test-account storage state is absent, so the automated public `voice` and `voice-agent` suites remain unrun. Do not report them as passing until run with `DOTS_PUBLIC_DEMO_STORAGE_STATE`.
+
 ## Microphone test caution
 
 Public browser runs override `getUserMedia` before clicking **拨打 Dot** with a zero-gain synthetic track, then feed only the generated WAV into that track. They do not access the physical microphone. Restore the page after the run to remove the temporary browser instrumentation.
