@@ -80,3 +80,11 @@ Public browser runs override `getUserMedia` before clicking **拨打 Dot** with 
 - Repeated at 43% output volume: the microphone capture stayed near its baseline (0.00263–0.00335 RMS, peak 424/32768). This still cannot establish speaker audibility or intelligibility.
 - Tried routing both default input and output through **BlackHole 2ch**. AVFoundation captured all-zero samples while the calibration file played, so this host's current BlackHole route is not a usable loopback for this test.
 - Restored the original system audio state and verified it with `system_profiler`: MacBook Air microphone input, MacBook Air speaker output, and 13% output volume. The public authenticated automated voice suite remains unrun because its dedicated Google storage state is absent; the reported hiss is still acoustically unverified.
+
+## Raw SeedDuplex output capture (2026-10-13)
+
+- Extended `npm run test:live-volcengine-voice` to save the provider's exact returned Float32 PCM as a mode-0600 WAV and report duration, RMS, peak, clipping ratio, and lag-one correlation. The artifact directory is mode 0700. No API credential or user audio is written to the artifact.
+- Ran one live SeedDuplex text response through the real Speech Console connection: session created, first audio at 511 ms, 380,328 bytes / 3.96 seconds at 24 kHz, RMS 0.07885, peak 0.29602, clipping ratio 0, lag-one correlation 0.92347. The quality guard passed, so the raw provider response is continuous voice-like audio rather than broadband static.
+- Raw response artifact: `artifacts/volcengine-live-smoke/assistant-reply-2026-10-12T21-21-12-634Z.wav` (0600). This isolates the provider output and sample format; it does not prove what the Mac speaker physically emitted.
+- Freshly fetched public HTML still references `index-BFKMmF3z.js`; its SHA-256 matches the local runtime bundle at `a98829f54aa92954c5a4c50aa49de270daf54c3e62448c539aa3068d36d6419f`. The public route is therefore serving the bundle with the Float32 decoder and assistant-speech event fix.
+- `npx tsc --noEmit` passed after the change. `npm test` passed all 131 tests and `npm run build:demo` succeeded during this verification run. The authenticated public Chrome voice suite still requires the dedicated mode-0600 Google test-account storage state; it was not run.

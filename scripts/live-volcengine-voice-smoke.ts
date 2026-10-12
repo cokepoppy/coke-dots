@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { WebSocket } from 'ws';
@@ -32,14 +33,14 @@ let settled = false;
 let sessionCreated = false;
 let audioBytes = 0;
 let firstAudioMs: number | null = null;
-let closeTimer: NodeJS.Timeout | null = null;
+const audioChunks: Buffer[] = [];
+let audioFinalizing = false;
 const timeout = setTimeout(() => finish({ ok: false, stage: 'timeout', sessionCreated, audioBytes }), 30_000);
 
 function finish(result: Record<string, unknown>, exitCode = 0) {
   if (settled) return;
   settled = true;
   clearTimeout(timeout);
-  if (closeTimer) clearTimeout(closeTimer);
   console.log(JSON.stringify({ ...result, elapsedMs: Date.now() - startedAt }));
   process.exitCode = exitCode;
   if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) socket.terminate();
@@ -48,6 +49,85 @@ function finish(result: Record<string, unknown>, exitCode = 0) {
 function send(type: string, payload: Record<string, unknown> = {}) {
   if (socket.readyState !== WebSocket.OPEN) throw new Error('provider socket is not open');
   socket.send(JSON.stringify({ type, event_id: randomUUID(), ...payload }));
+}
+
+async function saveAndInspectAudio() {
+  const floatPcm = Buffer.concat(audioChunks);
+  if (floatPcm.length === 0 || floatPcm.length % 4 !== 0) throw new Error('SeedDuplex returned incomplete float32 audio samples');
+
+  const sampleCount = floatPcm.length / 4;
+  const outputPcm = Buffer.alloc(sampleCount * 2);
+  let sum = 0;
+  let sumSquares = 0;
+  let peak = 0;
+  let clippedSamples = 0;
+  for (let index = 0; index < sampleCount; index += 1) {
+    const sample = floatPcm.readFloatLE(index * 4);
+    if (!Number.isFinite(sample) || Math.abs(sample) > 1.5) throw new Error('SeedDuplex returned a non-normalized float32 sample');
+    sum += sample;
+    sumSquares += sample * sample;
+    peak = Math.max(peak, Math.abs(sample));
+    const clipped = Math.max(-1, Math.min(1, sample));
+    if (Math.abs(clipped) >= 0.999) clippedSamples += 1;
+    outputPcm.writeInt16LE(Math.round(clipped * (clipped < 0 ? 32768 : 32767)), index * 2);
+  }
+
+  const mean = sum / sampleCount;
+  let centeredCovariance = 0;
+  let centeredVariance = 0;
+  for (let index = 1; index < sampleCount; index += 1) {
+    const current = floatPcm.readFloatLE(index * 4) - mean;
+    const prior = floatPcm.readFloatLE((index - 1) * 4) - mean;
+    centeredCovariance += current * prior;
+    centeredVariance += current * current;
+  }
+  const quality = {
+    durationSeconds: Number((sampleCount / 24_000).toFixed(2)),
+    rms: Number(Math.sqrt(sumSquares / sampleCount).toFixed(5)),
+    peak: Number(peak.toFixed(5)),
+    clippedSampleRatio: Number((clippedSamples / sampleCount).toFixed(6)),
+    lagOneCorrelation: Number((centeredVariance > 0 ? centeredCovariance / centeredVariance : 0).toFixed(5)),
+  };
+
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + outputPcm.length, 4); header.write('WAVE', 8);
+  header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(24_000, 24); header.writeUInt32LE(48_000, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+  header.write('data', 36); header.writeUInt32LE(outputPcm.length, 40);
+  const artifactDir = resolve(process.env.DOTS_VOICE_ARTIFACT_DIR || 'artifacts/volcengine-live-smoke');
+  await mkdir(artifactDir, { recursive: true, mode: 0o700 });
+  await chmod(artifactDir, 0o700);
+  const timestamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
+  const audioPath = resolve(artifactDir, `assistant-reply-${timestamp}.wav`);
+  await writeFile(audioPath, Buffer.concat([header, outputPcm]), { mode: 0o600 });
+  await chmod(audioPath, 0o600);
+
+  return {
+    audioPath,
+    quality,
+    qualityPassed: quality.rms > 0.005 && quality.rms < 0.35 && quality.peak > 0.02 && quality.clippedSampleRatio < 0.01 && quality.lagOneCorrelation > 0.2,
+  };
+}
+
+function completeSpeech() {
+  if (audioFinalizing || settled) return;
+  audioFinalizing = true;
+  void saveAndInspectAudio().then(({ audioPath, quality, qualityPassed }) => finish({
+    ok: audioBytes > 0 && qualityPassed,
+    stage: qualityPassed ? 'speech-complete' : 'audio-quality-check-failed',
+    sessionCreated,
+    audioFormat: 'float32-le-24khz-mono',
+    audioBytes,
+    firstAudioMs,
+    audioPath,
+    quality,
+  }, audioBytes > 0 && qualityPassed ? 0 : 1)).catch(error => finish({
+    ok: false,
+    stage: 'audio-artifact-failed',
+    sessionCreated,
+    audioBytes,
+    errorType: error instanceof Error ? error.name : 'Error',
+  }, 1));
 }
 
 socket.on('open', () => {
@@ -104,18 +184,20 @@ socket.on('message', raw => {
         finish({ ok: false, stage: 'unexpected-audio-format', sessionCreated, audioBytes: audioBytes + chunk.length }, 1);
         return;
       }
+      audioChunks.push(chunk);
       audioBytes += chunk.length;
       firstAudioMs ??= Date.now() - startedAt;
     }
     return;
   }
-  if (event.type === 'response.output_audio.done' && closeTimer === null) {
+  if (event.type === 'response.output_audio.done' && !audioFinalizing) {
     try { send('session.close'); } catch { /* The audio response itself is still a successful smoke result. */ }
-    closeTimer = setTimeout(() => finish({ ok: audioBytes > 0, stage: 'speech-complete', sessionCreated, audioFormat: 'float32-le-24khz-mono', audioBytes, firstAudioMs }, audioBytes > 0 ? 0 : 1), 5_000);
+    completeSpeech();
     return;
   }
   if (event.type === 'session.closed') {
-    finish({ ok: audioBytes > 0, stage: audioBytes > 0 ? 'speech-complete' : 'session-closed-without-audio', sessionCreated, audioFormat: audioBytes > 0 ? 'float32-le-24khz-mono' : null, audioBytes, firstAudioMs }, audioBytes > 0 ? 0 : 1);
+    if (audioBytes > 0) completeSpeech();
+    else finish({ ok: false, stage: 'session-closed-without-audio', sessionCreated, audioFormat: null, audioBytes, firstAudioMs }, 1);
   }
 });
 
