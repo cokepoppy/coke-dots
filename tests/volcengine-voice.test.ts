@@ -180,7 +180,8 @@ test('SeedDuplex session.create uses the fixed 3.0 model, 16 kHz input, 24 kHz P
     input: { format: { type: 'pcm', rate: 16000 } },
     output: { format: { type: 'pcm', rate: 24000 }, voice: 'zh_female_vv_jupiter_bigtts' },
   });
-  assert.equal(event.session.extension.tts.audio_config.format, 'pcm_s16le');
+  assert.equal(event.session.extension.tts.audio_config.format, 'pcm');
+  assert.equal(event.session.extension.tts.audio_config.sample_rate, 24000);
   assert.match(event.session.instructions, /简体中文/);
   assert.match(event.session.instructions, /Dots Agent/);
 });

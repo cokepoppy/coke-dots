@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { WebSocket } from 'ws';
+import { isVolcengineFloat32Pcm } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   volcengineDuplexHeaders,
   volcengineDuplexRealtimeUrl,
@@ -99,6 +100,10 @@ socket.on('message', raw => {
   if (event.type === 'response.output_audio.delta' && typeof event.delta === 'string') {
     const chunk = Buffer.from(event.delta, 'base64');
     if (chunk.length > 0) {
+      if (!isVolcengineFloat32Pcm(chunk)) {
+        finish({ ok: false, stage: 'unexpected-audio-format', sessionCreated, audioBytes: audioBytes + chunk.length }, 1);
+        return;
+      }
       audioBytes += chunk.length;
       firstAudioMs ??= Date.now() - startedAt;
     }
@@ -106,11 +111,11 @@ socket.on('message', raw => {
   }
   if (event.type === 'response.output_audio.done' && closeTimer === null) {
     try { send('session.close'); } catch { /* The audio response itself is still a successful smoke result. */ }
-    closeTimer = setTimeout(() => finish({ ok: audioBytes > 0, stage: 'speech-complete', sessionCreated, audioBytes, firstAudioMs }, audioBytes > 0 ? 0 : 1), 5_000);
+    closeTimer = setTimeout(() => finish({ ok: audioBytes > 0, stage: 'speech-complete', sessionCreated, audioFormat: 'float32-le-24khz-mono', audioBytes, firstAudioMs }, audioBytes > 0 ? 0 : 1), 5_000);
     return;
   }
   if (event.type === 'session.closed') {
-    finish({ ok: audioBytes > 0, stage: audioBytes > 0 ? 'speech-complete' : 'session-closed-without-audio', sessionCreated, audioBytes, firstAudioMs }, audioBytes > 0 ? 0 : 1);
+    finish({ ok: audioBytes > 0, stage: audioBytes > 0 ? 'speech-complete' : 'session-closed-without-audio', sessionCreated, audioFormat: audioBytes > 0 ? 'float32-le-24khz-mono' : null, audioBytes, firstAudioMs }, audioBytes > 0 ? 0 : 1);
   }
 });
 

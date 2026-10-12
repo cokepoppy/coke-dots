@@ -219,7 +219,16 @@ export function volcengineDuplexSessionPayload(dotName: string, eventId: string 
         input: { format: { type: 'pcm', rate: 16000 } },
         output: { format: { type: 'pcm', rate: 24000 }, voice: 'zh_female_vv_jupiter_bigtts' },
       },
-      extension,
+      // The duplex response decoder consumes little-endian Float32 samples.
+      // Keep the legacy TTS extension format aligned with audio.output.format;
+      // pcm_s16le here conflicts with the requested 32-bit `pcm` output.
+      extension: {
+        ...extension,
+        tts: {
+          ...extension.tts,
+          audio_config: { ...extension.tts.audio_config, format: 'pcm' },
+        },
+      },
     },
   };
 }
