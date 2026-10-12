@@ -1015,13 +1015,13 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
     const expectedButtonBackground = theme === 'dark' ? 'rgb(184, 232, 210)' : 'rgb(198, 240, 223)';
     assert.equal(await shell.getAttribute('data-theme'), theme);
     assert.equal(await dialog.evaluate(element => getComputedStyle(element).backgroundColor), expectedDialogBackground, `Slack setup dialog should follow the ${theme} theme`);
-    assert.equal(await dialog.getByRole('button', { name: 'Add to Slack', exact: true }).evaluate(element => getComputedStyle(element).backgroundColor), expectedButtonBackground, `Slack setup action should follow the ${theme} theme`);
+    assert.equal(await dialog.getByRole('button', { name: 'Select a workspace', exact: true }).evaluate(element => getComputedStyle(element).backgroundColor), expectedButtonBackground, `Slack setup action should follow the ${theme} theme`);
     await screenshot(page, name);
     return dialog;
   };
   let dialog = await openDialog();
   await page.getByTestId('slack-connect').waitFor({ state: 'visible' });
-  assert.equal(await page.getByTestId('slack-connect').innerText(), 'Add to Slack', 'The unselected Slack state should expose the video-observed action');
+  assert.equal(await page.getByTestId('slack-connect').innerText(), 'Select a workspace', 'The unselected Slack state should expose the video-observed action');
   const workspacePlaceholder = dialog.locator('.slack-current-workspace.is-placeholder');
   await workspacePlaceholder.waitFor({ state: 'visible' });
   assert.match(await workspacePlaceholder.innerText(), /^Workspace/);
@@ -1054,6 +1054,7 @@ async function connectSlackWorkspace(page: Page, screenshotPrefix: string) {
   await callbackPage;
   await dialog.waitFor({ state: 'visible' });
   assert.equal(await dialog.getByLabel('Public Slack channel').isVisible(), false, 'Advanced Slack monitoring controls should stay out of the observed workspace-selection surface');
+  assert.equal(await dialog.getByLabel('Slack workspace').inputValue(), 'TASPIE2E', 'The selected-workspace state should show the OAuth-returned ASPI workspace');
   await dialog.getByLabel('Slack workspace').selectOption('TASPIE2E');
   await dialog.getByRole('button', { name: 'Add to Slack', exact: true }).waitFor({ state: 'visible' });
   const selected = page.waitForResponse(response => response.url().endsWith('/api/slack/contact') && response.request().method() === 'POST');
