@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { WebSocket } from 'ws';
+import { isVolcengineFloat32Pcm } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   volcengineDuplexHeaders,
   volcengineDuplexRealtimeUrl,
@@ -31,6 +33,7 @@ let sessionCreated = false;
 let audioBytes = 0;
 let firstAudioMs: number | null = null;
 let closeTimer: NodeJS.Timeout | null = null;
+const audioChunks: Buffer[] = [];
 const timeout = setTimeout(() => finish({ ok: false, stage: 'timeout', sessionCreated, audioBytes }), 30_000);
 
 function finish(result: Record<string, unknown>, exitCode = 0) {
@@ -89,8 +92,7 @@ socket.on('message', raw => {
   if (event.type === 'session.created' && !sessionCreated) {
     sessionCreated = true;
     try {
-      send('speech_text_buffer.replacement.append', { text: '请用普通话只说：火山实时语音连接成功。' });
-      send('speech_text_buffer.replacement.commit', { text: '' });
+      send('speech_text_buffer.commit', { text: '请用普通话只说：火山实时语音连接成功。' });
     } catch {
       finish({ ok: false, stage: 'session-send-failed', sessionCreated, audioBytes }, 1);
     }
@@ -99,6 +101,7 @@ socket.on('message', raw => {
   if (event.type === 'response.output_audio.delta' && typeof event.delta === 'string') {
     const chunk = Buffer.from(event.delta, 'base64');
     if (chunk.length > 0) {
+      audioChunks.push(chunk);
       audioBytes += chunk.length;
       firstAudioMs ??= Date.now() - startedAt;
     }
@@ -106,11 +109,11 @@ socket.on('message', raw => {
   }
   if (event.type === 'response.output_audio.done' && closeTimer === null) {
     try { send('session.close'); } catch { /* The audio response itself is still a successful smoke result. */ }
-    closeTimer = setTimeout(() => finish({ ok: audioBytes > 0, stage: 'speech-complete', sessionCreated, audioBytes, firstAudioMs }, audioBytes > 0 ? 0 : 1), 5_000);
+    closeTimer = setTimeout(() => void completeSpeech(), 5_000);
     return;
   }
   if (event.type === 'session.closed') {
-    finish({ ok: audioBytes > 0, stage: audioBytes > 0 ? 'speech-complete' : 'session-closed-without-audio', sessionCreated, audioBytes, firstAudioMs }, audioBytes > 0 ? 0 : 1);
+    void completeSpeech();
   }
 });
 
@@ -118,3 +121,50 @@ socket.on('error', error => finish({ ok: false, stage: 'socket-error', errorType
 socket.on('close', (code: number) => {
   if (!settled) finish({ ok: false, stage: 'socket-closed', closeCode: code, sessionCreated, audioBytes }, 1);
 });
+
+async function completeSpeech() {
+  if (settled) return;
+  const pcm = Buffer.concat(audioChunks);
+  if (!isVolcengineFloat32Pcm(pcm)) {
+    finish({ ok: false, stage: audioBytes ? 'invalid-audio-format' : 'session-closed-without-audio', sessionCreated, audioBytes, firstAudioMs }, 1);
+    return;
+  }
+  const sampleCount = pcm.byteLength / 4;
+  const outputPcm = Buffer.alloc(sampleCount * 2);
+  let sumSquares = 0;
+  let peak = 0;
+  let covariance = 0;
+  let variance = 0;
+  let mean = 0;
+  const samples = new Float32Array(sampleCount);
+  for (let index = 0; index < sampleCount; index += 1) {
+    const sample = pcm.readFloatLE(index * 4);
+    samples[index] = sample;
+    mean += sample / sampleCount;
+    sumSquares += sample * sample;
+    peak = Math.max(peak, Math.abs(sample));
+    const clipped = Math.max(-1, Math.min(1, sample));
+    outputPcm.writeInt16LE(Math.round(clipped * (clipped < 0 ? 32768 : 32767)), index * 2);
+  }
+  for (let index = 1; index < sampleCount; index += 1) {
+    covariance += (samples[index] - mean) * (samples[index - 1] - mean);
+    variance += (samples[index] - mean) ** 2;
+  }
+  const rms = Math.sqrt(sumSquares / sampleCount);
+  const lagOneCorrelation = variance > 0 ? covariance / variance : 0;
+  if (rms <= 0.005 || rms >= 0.35 || peak <= 0.02 || peak >= 1.5 || lagOneCorrelation <= 0.2) {
+    finish({ ok: false, stage: 'inaudible-or-noisy-audio', sessionCreated, audioBytes, firstAudioMs, rms, peak, lagOneCorrelation }, 1);
+    return;
+  }
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + outputPcm.length, 4); header.write('WAVE', 8);
+  header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(24_000, 24); header.writeUInt32LE(48_000, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+  header.write('data', 36); header.writeUInt32LE(outputPcm.length, 40);
+  const artifactDir = resolve(process.env.DOTS_VOICE_SMOKE_ARTIFACTS || join(process.cwd(), 'artifacts', 'voice-smoke'));
+  await mkdir(artifactDir, { recursive: true, mode: 0o700 });
+  const audioPath = join(artifactDir, `seedduplex-${new Date().toISOString().replaceAll(':', '-')}.wav`);
+  await writeFile(audioPath, Buffer.concat([header, outputPcm]), { mode: 0o600 });
+  await chmod(audioPath, 0o600);
+  finish({ ok: true, stage: 'speech-complete', sessionCreated, audioBytes, firstAudioMs, pcmEncoding: 'float32-le', sampleRate: 24_000, durationSeconds: sampleCount / 24_000, rms, peak, lagOneCorrelation, audioPath });
+}

@@ -10,6 +10,7 @@ import {
   volcengineDuplexHandshakeErrorMessage,
   volcengineDuplexRealtimeUrl,
   volcengineDuplexSessionPayload,
+  volcengineDuplexSpeechTextEvent,
   volcengineHeaders,
   volcengineRealtimeUrl,
   volcengineSessionId,
@@ -146,4 +147,12 @@ test('SeedDuplex session.create uses the fixed 3.0 model, 16 kHz input, 24 kHz P
   assert.equal(event.session.extension.tts.audio_config.format, 'pcm_s16le');
   assert.match(event.session.instructions, /简体中文/);
   assert.match(event.session.instructions, /Dots Agent/);
+});
+
+test('SeedDuplex direct TTS submits one complete text event and rejects empty or oversized speech', () => {
+  assert.deepEqual(volcengineDuplexSpeechTextEvent('  任务已完成。  ', 'speech-event-id'), {
+    type: 'speech_text_buffer.commit', event_id: 'speech-event-id', text: '任务已完成。',
+  });
+  assert.throws(() => volcengineDuplexSpeechTextEvent('   '), /朗读文本无效/);
+  assert.throws(() => volcengineDuplexSpeechTextEvent('x'.repeat(1201)), /朗读文本无效/);
 });

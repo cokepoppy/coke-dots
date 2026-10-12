@@ -5,6 +5,7 @@ import {
   volcengineDuplexHandshakeErrorMessage,
   volcengineDuplexRealtimeUrl,
   volcengineDuplexSessionPayload,
+  volcengineDuplexSpeechTextEvent,
   volcengineVoiceConfig,
   VolcengineVoiceError,
 } from './volcengine-voice.ts';
@@ -128,8 +129,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     if (!sessionReady) { finalize(1008, 'session is not ready'); return; }
     try {
       if (message.type === 'speak' && typeof message.text === 'string' && message.text.trim() && message.text.length <= MAX_SPEAK_TEXT) {
-        sendUpstream('speech_text_buffer.replacement.append', { text: message.text.trim() });
-        sendUpstream('speech_text_buffer.replacement.commit', { text: '' });
+        upstream.send(JSON.stringify(volcengineDuplexSpeechTextEvent(message.text)));
       } else if (message.type === 'interrupt') sendUpstream('response.cancel');
       else finalize(1008, 'unsupported client message');
     } catch { fail('语音消息未能发送，请稍后重试。'); }
@@ -212,7 +212,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
       sendLocal({ type: 'error', error: '语音识别暂不可用，请再说一次。' });
       return;
     }
-    if (event.type === 'response.output_audio.started') { sendLocal({ type: 'speech-started' }); return; }
+    if (event.type === 'response.output_audio.started') { sendLocal({ type: 'assistant-speech-started' }); return; }
     if (event.type === 'response.output_audio.done') { sendLocal({ type: 'speech-ended' }); return; }
     if (event.type === 'response.output_audio.delta') {
       const encoded = typeof event.delta === 'string' ? event.delta : '';

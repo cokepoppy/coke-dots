@@ -224,6 +224,12 @@ export function volcengineDuplexSessionPayload(dotName: string, eventId: string 
   };
 }
 
+export function volcengineDuplexSpeechTextEvent(textValue: string, eventId: string = randomUUID()) {
+  const text = textValue.trim();
+  if (!text || text.length > 1200) throw new VolcengineVoiceError('朗读文本无效或超过长度限制', 400);
+  return { type: 'speech_text_buffer.commit', event_id: eventId, text };
+}
+
 function volcengineDialogConfiguration(dotName: string) {
   const safeName = dotName.replace(/[\r\n]/g, ' ').slice(0, 20) || 'Dot';
   const systemRole = `你是 ${safeName}，是 Coke Dots 的语音界面。始终使用简体中文。用户在布置工作时，只用一句简短的话确认收到，不要自行回答任务或假称完成。Dots Agent 会在用户所属的独立云电脑中执行工作。收到客户端通过语音合成文本提供的“Dots Agent 状态更新”后，只按原文简洁播报。`;

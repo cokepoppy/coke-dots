@@ -533,6 +533,10 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
             processTranscript(message.transcript, message.turnId);
           } else if (message.type === 'speech-started') {
             stopVolcPlayback();
+          } else if (message.type === 'assistant-speech-started') {
+            setStatus('Dot 正在回答…');
+          } else if (message.type === 'speech-ended') {
+            setStatus(mutedRef.current ? '麦克风已静音' : '正在聆听');
           } else if (message.type === 'error') {
             const error = message.error || '火山实时语音连接失败';
             setCallError(error);

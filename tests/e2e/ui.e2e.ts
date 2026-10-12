@@ -348,9 +348,8 @@ async function startMockVolcEngineDuplexProvider() {
         }
       } else if (type === 'input_audio_mute.commit' || type === 'input_audio_unmute.commit') {
         connection.timeline.push(`mute-control:${type}`);
-      } else if (type === 'speech_text_buffer.replacement.append') {
+      } else if (type === 'speech_text_buffer.commit') {
         if (typeof event.text === 'string') connection.spokenTexts.push(event.text);
-      } else if (type === 'speech_text_buffer.replacement.commit') {
         const sampleCount = 4_800;
         const pcm = Buffer.alloc(sampleCount * 4);
         for (let index = 0; index < sampleCount; index += 1) {
@@ -2757,7 +2756,7 @@ try {
     assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM audio in realtime-sized packets');
     assert(providerConnection.events.includes('session.create') && providerConnection.events.includes('input_audio_buffer.append'), 'SeedDuplex must use JSON session and audio events');
     assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be submitted to SeedDuplex direct text-to-speech events');
-    assert(providerConnection.events.includes('speech_text_buffer.replacement.commit'), 'Agent status speech must use the provider direct-synthesis event sequence');
+    assert(providerConnection.events.includes('speech_text_buffer.commit'), 'Agent status speech must use the provider direct-synthesis event sequence');
     assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Final Chinese speech transcript must start the normal tenant Agent task');
 
     const activeCall = await alphaPage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
