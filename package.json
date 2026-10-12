@@ -18,6 +18,7 @@
     "test:e2e:public-demo:authenticated": "node --import tsx tests/e2e/public-demo-authenticated.e2e.ts",
     "test:e2e:public-demo:voice": "node --import tsx tests/e2e/public-demo-voice.e2e.ts",
     "test:e2e:public-demo:voice-agent": "DOTS_PUBLIC_VOICE_AGENT_TASK=1 node --import tsx tests/e2e/public-demo-voice.e2e.ts",
+    "test:e2e:public-demo:voice-agent-acoustic": "DOTS_PUBLIC_VOICE_AGENT_TASK=1 DOTS_PUBLIC_VOICE_ACOUSTIC_CAPTURE=1 node --import tsx tests/e2e/public-demo-voice.e2e.ts",
     "test:e2e:live-model": "npm run build && node --import tsx tests/e2e/live-model.e2e.ts",
     "test:e2e:live-dsh-delegation": "npm run build && DOTS_LIVE_MODEL_ENGINE=dsh DOTS_LIVE_DSH_DELEGATION=1 node --import tsx tests/e2e/live-model.e2e.ts",
     "test:e2e:k3d": "npm run build && node --import tsx tests/e2e/k3d-cloud-computer.e2e.ts",

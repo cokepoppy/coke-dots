@@ -1,18 +1,22 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page, type Response } from 'playwright-core';
+import { bestRmsEnvelopeCorrelation, parsePcm16Wave, pcmWaveStats } from './voice-acoustic-evidence.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const baseUrl = new URL(process.env.DOTS_PUBLIC_DEMO_URL || 'https://codex.cokeagent.com/dots-demo/');
 const basePath = baseUrl.pathname.endsWith('/') ? baseUrl.pathname : `${baseUrl.pathname}/`;
 const storageState = process.env.DOTS_PUBLIC_DEMO_STORAGE_STATE;
 const agentTaskMode = process.env.DOTS_PUBLIC_VOICE_AGENT_TASK === '1';
+const acousticCaptureEnabled = process.env.DOTS_PUBLIC_VOICE_ACOUSTIC_CAPTURE === '1';
+const acousticCaptureDevice = process.env.DOTS_PUBLIC_VOICE_ACOUSTIC_INPUT_DEVICE || '1';
 const artifactRoot = resolve(process.env.DOTS_E2E_ARTIFACTS || join(projectRoot, 'artifacts', 'e2e', `public-demo-voice-${new Date().toISOString().replace(/[:.]/g, '-')}`));
 const manifestPath = join(artifactRoot, 'manifest.json');
 const browserPath = [process.env.DOTS_CHROME_BIN, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium']
@@ -39,6 +43,13 @@ const result: {
   outputAudioDecodeMaxError: number;
   webAudioDestinationConnections: number;
   webAudioPlaybackVerified: boolean;
+  acousticCaptureEnabled: boolean;
+  acousticCaptureDevice: string | null;
+  acousticCaptureBytes: number;
+  acousticCaptureRms: number;
+  acousticCapturePeak: number;
+  acousticEnvelopeCorrelation: number;
+  physicalSpeakerPlaybackVerified: boolean;
   agentTaskId: string | null;
   agentTaskCompleted: boolean;
   transcriptVerified: boolean;
@@ -68,6 +79,13 @@ const result: {
   outputAudioDecodeMaxError: 0,
   webAudioDestinationConnections: 0,
   webAudioPlaybackVerified: false,
+  acousticCaptureEnabled,
+  acousticCaptureDevice: acousticCaptureEnabled ? acousticCaptureDevice : null,
+  acousticCaptureBytes: 0,
+  acousticCaptureRms: 0,
+  acousticCapturePeak: 0,
+  acousticEnvelopeCorrelation: 0,
+  physicalSpeakerPlaybackVerified: false,
   agentTaskId: null,
   agentTaskCompleted: false,
   transcriptVerified: false,
@@ -129,6 +147,9 @@ if (baseUrl.protocol !== 'https:' || basePath !== baseUrl.pathname) {
 if (!storageState || !existsSync(storageState)) {
   throw new Error('Set DOTS_PUBLIC_DEMO_STORAGE_STATE to a mode-0600 session for a dedicated Dots test account.');
 }
+if (acousticCaptureEnabled && process.platform !== 'darwin') {
+  throw new Error('Physical speaker verification requires macOS AVFoundation microphone capture.');
+}
 if (process.platform !== 'win32' && ((await stat(storageState)).mode & 0o077) !== 0) {
   throw new Error('The Playwright storage-state file is readable by group or other users. Restrict it with chmod 600 before testing.');
 }
@@ -169,7 +190,70 @@ let context: BrowserContext | null = null;
 let page: Page | null = null;
 let voiceTurnResponsePromise: Promise<Response> | null = null;
 let activeCallNeedsClosing = false;
+let acousticRecorder: ChildProcess | null = null;
+let acousticRecorderStart: Promise<void> | null = null;
+let acousticRecorderError: string | null = null;
+const acousticCapturePath = join(artifactRoot, 'speaker-microphone.wav');
 const failures: string[] = [];
+
+function startAcousticCapture() {
+  if (!acousticCaptureEnabled || acousticRecorderStart) return acousticRecorderStart;
+  // Pre-create the capture so ffmpeg truncates a mode-0600 file instead of
+  // briefly exposing the generated assistant audio under the host umask.
+  writeFileSync(acousticCapturePath, Buffer.alloc(0), { mode: 0o600 });
+  acousticRecorderStart = new Promise<void>((resolveStart, rejectStart) => {
+    acousticRecorder = spawn('ffmpeg', [
+      '-hide_banner', '-nostdin', '-y', '-f', 'avfoundation', '-i', `:${acousticCaptureDevice}`,
+      '-ac', '1', '-ar', '48000', '-c:a', 'pcm_s16le', acousticCapturePath,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderrTail = '';
+    acousticRecorder.stderr?.setEncoding('utf8');
+    acousticRecorder.stderr?.on('data', chunk => { stderrTail = (stderrTail + chunk).slice(-2000); });
+    acousticRecorder.once('error', error => {
+      acousticRecorderError = error.message;
+      rejectStart(error);
+    });
+    acousticRecorder.once('spawn', () => resolveStart());
+    acousticRecorder.once('close', code => {
+      if (!acousticRecorderError && code !== 0 && code !== 255) acousticRecorderError = `ffmpeg exited with code ${code}: ${stderrTail.trim()}`;
+    });
+  });
+  return acousticRecorderStart;
+}
+
+async function stopAcousticCapture() {
+  if (!acousticRecorder) return;
+  await acousticRecorderStart;
+  if (acousticRecorder.exitCode === null && acousticRecorder.signalCode === null) {
+    const closed = new Promise<void>(resolveClose => acousticRecorder!.once('close', () => resolveClose()));
+    acousticRecorder.kill('SIGINT');
+    await Promise.race([closed, new Promise<void>(resolveTimeout => setTimeout(resolveTimeout, 8_000))]);
+    if (acousticRecorder.exitCode === null && acousticRecorder.signalCode === null) acousticRecorder.kill('SIGKILL');
+  }
+}
+
+async function verifyAcousticCapture(referencePath: string) {
+  assert(acousticCaptureEnabled);
+  assert(acousticRecorderStart, 'Audio output began without starting the Mac microphone recorder');
+  await acousticRecorderStart;
+  await stopAcousticCapture();
+  assert.equal(acousticRecorderError, null, acousticRecorderError || undefined);
+  assert(existsSync(acousticCapturePath), 'ffmpeg did not produce the physical speaker capture WAV');
+  const captureBytes = await readFile(acousticCapturePath);
+  await chmod(acousticCapturePath, 0o600);
+  const captured = parsePcm16Wave(captureBytes);
+  const reference = parsePcm16Wave(await readFile(referencePath));
+  const stats = pcmWaveStats(captured);
+  const correlation = bestRmsEnvelopeCorrelation(reference, captured);
+  assert(stats.durationSeconds >= 1.5, `Physical capture was too short (${stats.durationSeconds.toFixed(2)} seconds)`);
+  assert(stats.rms > 0.001 && stats.peak > 0.01, `Mac microphone did not record audible speaker output (RMS ${stats.rms.toFixed(5)}, peak ${stats.peak.toFixed(5)})`);
+  assert(correlation > 0.25, `Captured sound did not correlate with SeedDuplex speech envelope (${correlation.toFixed(3)})`);
+  result.acousticCaptureBytes = captureBytes.length;
+  result.acousticCaptureRms = Number(stats.rms.toFixed(5));
+  result.acousticCapturePeak = Number(stats.peak.toFixed(5));
+  result.acousticEnvelopeCorrelation = Number(correlation.toFixed(5));
+  result.physicalSpeakerPlaybackVerified = true;
+}
 
 async function check(name: string, run: () => Promise<void>) {
   await run();
@@ -181,7 +265,7 @@ try {
   await mkdir(artifactRoot, { recursive: true, mode: 0o700 });
   browser = await chromium.launch({
     executablePath: browserPath,
-    headless: process.env.DOTS_E2E_HEADFUL !== '1',
+    headless: acousticCaptureEnabled ? false : process.env.DOTS_E2E_HEADFUL !== '1',
     args: [
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
@@ -192,6 +276,11 @@ try {
   await context.grantPermissions(['microphone'], { origin: baseUrl.origin });
   page = await context.newPage();
   page.on('pageerror', error => failures.push(`pageerror:${error.name}`));
+  page.on('console', message => {
+    if (message.type() === 'debug' && message.text() === 'dots-public-voice-output-start') {
+      void startAcousticCapture()?.catch(error => { acousticRecorderError = error instanceof Error ? error.message : String(error); });
+    }
+  });
   page.on('response', response => {
     const url = new URL(response.url());
     if (url.origin !== baseUrl.origin || !url.pathname.startsWith(basePath)) return;
@@ -243,7 +332,10 @@ try {
               if (typeof data === 'string') {
                 try {
                   const message = JSON.parse(data) as { type?: string; text?: string };
-                  if (message.type === 'speak' && message.text) runs.push({ text: message.text, pcmBytes: 0, pcmFrames: 0, audioFormat: null, scheduledSources: 0, playbackCompletedSources: 0, destinationConnections: 0, audioContextState: null, ended: false, chunks: [], expectedPlaybackFrames: [], decodedSamples: 0, decodeMismatches: 0, decodeMaxError: 0 });
+                  if (message.type === 'speak' && message.text) {
+                    runs.push({ text: message.text, pcmBytes: 0, pcmFrames: 0, audioFormat: null, scheduledSources: 0, playbackCompletedSources: 0, destinationConnections: 0, audioContextState: null, ended: false, chunks: [], expectedPlaybackFrames: [], decodedSamples: 0, decodeMismatches: 0, decodeMaxError: 0 });
+                    if (capturePcm) console.debug('dots-public-voice-output-start');
+                  }
                 } catch { /* Audio and control messages are only observed, never changed. */ }
               }
               nativeSend(data);
@@ -465,6 +557,7 @@ try {
       result.outputAudioRms = Number(quality.rms.toFixed(5));
       result.outputAudioPeak = Number(quality.peak.toFixed(5));
       result.outputAudioLagOneCorrelation = Number(quality.lagOneCorrelation.toFixed(5));
+      if (acousticCaptureEnabled) await check('the Mac microphone records the assistant reply from the physical speakers', async () => verifyAcousticCapture(quality.audioPath));
     });
   } else await check('the public browser sends Chinese speech text to SeedDuplex and receives synthesized audio', async () => {
     assert.equal(await page!.getByRole('button', { name: '关闭扬声器' }).getAttribute('aria-pressed'), 'true', 'The public call must leave its speaker enabled');
@@ -510,6 +603,7 @@ try {
     result.outputAudioRms = Number(quality.rms.toFixed(5));
     result.outputAudioPeak = Number(quality.peak.toFixed(5));
     result.outputAudioLagOneCorrelation = Number(quality.lagOneCorrelation.toFixed(5));
+    if (acousticCaptureEnabled) await check('the Mac microphone records the SeedDuplex reply from the physical speakers', async () => verifyAcousticCapture(quality.audioPath));
   });
 
   await check('the page ends the call and the public tenant history persists the ended state', async () => {
@@ -526,6 +620,7 @@ try {
 
   assert.deepEqual(failures, [], `Browser JavaScript errors: ${failures.join('; ')}`);
 } finally {
+  await stopAcousticCapture().catch(error => { acousticRecorderError = error instanceof Error ? error.message : String(error); });
   if (activeCallNeedsClosing && page) {
     const endButton = page.getByRole('button', { name: '结束通话' });
     if (await endButton.isVisible().catch(() => false)) await endButton.click().catch(() => undefined);
