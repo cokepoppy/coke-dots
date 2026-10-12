@@ -40,15 +40,17 @@ The task follower EventSource must be built with `appPath('/api/events')` becaus
 
 ## Verification (2026-10-12)
 
-- `npm test`: 128 tests passed after the public ASR snapshot correction.
-- `npm run build:demo`: passed; generated bundle `index-DT1FvCLB.js` and stylesheet `index-B3tLxLCy.css`.
+- `npm test`: 129 tests passed, including the assistant/user speech-event regression test.
+- `npm run build:demo`: passed; generated bundle `index-CdRsvOW-.js` and stylesheet `index-B3tLxLCy.css`.
 - Local Chrome E2E: 52 browser steps passed, including call UI, task handoff, follow-up, and call end.
 - `npm run test:e2e:demo-path`: passed five checks for `/dots-demo/` asset paths, sign-in, app shell, and Pi default.
 - Live Volcengine synthetic Chinese speech smoke: session created; first audio at 860 ms; 420,544 audio bytes; completed in 2.782 s.
 - Live SeedDuplex ASR inspection with synthetic WAV: 24 cumulative `.delta` snapshots followed by `completed` without a transcript field. The last snapshot contained the full recognition text.
-- Public signed-in Chrome click-through after deployment: clicked **拨打 Dot**; call reached **正在聆听**; synthetic-only WebAudio input produced the exact transcript `请用中文回复，公网语音测试成功。`; the selected kernel was Pi, the task completed in Chinese, and the UI showed **任务由 Dot 的云电脑运行**. The progress feed completed without the previous EventSource MIME error. Browser console had no errors; it showed one existing `ScriptProcessorNode` deprecation warning.
-- Public JS bundle SHA-256 matched the local release build. The temporary WAV was removed from the public bundle and its URL returned HTTP 404.
-- This was a manual signed-in Chrome E2E. The dedicated authenticated Playwright suite was not run because no dedicated test-account storage-state file was present; it remains available via the command above.
+- Earlier signed-in Chrome click-through on the previous release reached **正在聆听**, dispatched a Pi task, and completed a Chinese response from the tenant cloud computer. Its public bundle was `index-DT1FvCLB.js`; this evidence is not the playback-fix release.
+- Playback fix commit `cb2ac87` was deployed to the existing Mac demo runtime behind the public tunnel. The runtime's previous bundle and the two touched source files were saved under `~/Library/Application Support/Coke Dots Demo/backups/20261012T1012Z-voice-audio-playback/`; the old `dist` directory is also retained as `app/dist.previous-20261012T1012Z` for rollback. Only the `com.coke.dots.demo` service was restarted.
+- After deployment, the public HTML, runtime `app/dist`, and feature build all pointed to `index-CdRsvOW-.js` with SHA-256 `e93ba88e9ab859be5f89059c04475ed4863760a322c25622d58d1428221d9c7f`. Authenticated Chrome showed `provider=volcengine`, `configured=true`, and `model=doubao-seedduplex-3.0`; clicking **Call** reached **正在聆听**.
+- A physical-microphone attempt using a short generated Mandarin phrase was contaminated by other room speech and transcribed incorrectly. The call was muted and ended before a task was submitted. SQLite showed no new task and no open voice call afterward. This is a failed manual ASR attempt, not a full voice-to-Pi-to-spoken-result E2E.
+- The automated `voice-agent` Playwright suite has not run: `npm run test:e2e:public-demo:voice-agent` stopped at its preflight guard because the required dedicated Google test-account storage state is absent. Generate that file with `npm run test:e2e:public-demo:auth-setup` before claiming authenticated automated E2E.
 
 ## Microphone test caution
 
