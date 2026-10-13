@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from '../src/server/keyring.ts';
 import test from 'node:test';
 import { Store } from '../src/server/store.ts';
 

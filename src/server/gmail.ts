@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from './keyring.ts';
 import { CodeChallengeMethod } from 'google-auth-library';
 import type { AuthSession, GmailConnection } from './store.ts';
 import { Store } from './store.ts';

@@ -9,7 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { PNG } from 'pngjs';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from '../../src/server/keyring.ts';
 import { formatAgentPrompt } from '../../src/server/adapters.ts';
 import { desktopResourceIdentity, LinuxDesktopComputer, type DesktopConnector } from '../../src/server/linux-desktop-computer.ts';
 import { Store } from '../../src/server/store.ts';

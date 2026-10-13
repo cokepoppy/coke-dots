@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from '../src/server/keyring.ts';
 import { adapters, agentDecisionOptions, createPiWorkspaceModelRuntime, createTenantDshEnvironment, formatAgentPrompt, isDshSessionCollision, parseDecision, providerReasoningEffort, resolveTenantAgentDirectory, type AgentRequest } from '../src/server/adapters.ts';
 import { loadModelSettings, loadSharedModelSettings, saveModelKey, saveSharedModelKey } from '../src/server/model-settings.ts';
 import { Store } from '../src/server/store.ts';

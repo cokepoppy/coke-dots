@@ -9,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from '../../src/server/keyring.ts';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');

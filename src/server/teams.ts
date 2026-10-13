@@ -1,5 +1,5 @@
 import { createHash, createPublicKey, createVerify, randomBytes } from 'node:crypto';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from './keyring.ts';
 import type { AuthSession, TeamsDeliveryCandidate, TeamsInboundMessage } from './store.ts';
 import { Store } from './store.ts';
 
