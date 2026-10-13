@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AttachmentSummary, DotAppearance, Engine, Entry, PageActionApproval, ScheduleSpec, Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import { selectableEngines, type AttachmentSummary, type DotAppearance, type Engine, type Entry, type PageActionApproval, type ScheduleSpec, type Snapshot, type Task, type TaskEngine, type TaskStatus, type VoiceCallSession } from '../shared/types.ts';
+import { appFetch } from './api.ts';
 import './style.css';
 import './chat-theme.css';
 import './watch.css';
@@ -29,17 +30,21 @@ import { DictationButton } from './DictationButton.tsx';
 import './shell-replica.css';
 import './onboarding-replica.css';
 import './computer-choice.css';
+import './call-timeline.css';
 
-const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false } };
+const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false, adminTenantId: null } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
 type Theme = 'light' | 'dark';
 interface TenantMember { id: string; email: string; name: string; role: string }
 interface WorkspaceInvitation { tenantId: string; tenantName?: string; email: string; role: string; invitedAt: string; expiresAt: string }
 interface TenantMemory { id: string; tenantId: string; note: string; createdBy: string; createdByName: string; createdAt: string; updatedAt: string }
+type ChatTimelineItem =
+  | { id: string; at: string; source: 'entry'; entry: Entry }
+  | { id: string; at: string; source: 'call-ended'; call: VoiceCallSession };
 const statusText: Record<TaskStatus, string> = {
   queued: '排队中', working: '工作中', delegating: '并行处理中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停', stopped: '已停止',
 };
-const engineText: Record<Engine, string> = { model: '模型 API', claude: 'Claude Code', pi: 'Pi', dsh: 'DeepSeek Harness' };
+const engineText: Record<TaskEngine, string> = { model: '模型 API', claude: 'Claude Code（已停用）', pi: 'Pi', dsh: 'DeepSeek Harness' };
 
 async function request(path: string, method: 'POST' | 'PATCH', body: object) {
   const response = await fetch(`/api${path}`, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -73,6 +78,10 @@ function App() {
   const [e2eAuthAvailable, setE2eAuthAvailable] = useState(false);
   const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
   const [state, setState] = useState<Snapshot>(initial);
+  const [voiceCalls, setVoiceCalls] = useState<VoiceCallSession[]>([]);
+  const [voiceCallsScope, setVoiceCallsScope] = useState('');
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const timelineAtBottomRef = useRef(true);
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [avatarSetupOpen, setAvatarSetupOpen] = useState(false);
   const [computerAccessOpen, setComputerAccessOpen] = useState(false);
@@ -157,6 +166,19 @@ function App() {
   }, [authContext?.tenant.id, authContext?.user.id]);
 
   useEffect(() => {
+    setVoiceCalls([]);
+    setVoiceCallsScope('');
+    if (!authContext) return;
+    const scope = `${authContext.tenant.id}:${authContext.user.id}`;
+    const controller = new AbortController();
+    void appFetch('/api/voice-calls', { signal: controller.signal })
+      .then(async response => response.ok ? await response.json() as VoiceCallSession[] : [])
+      .then(items => { setVoiceCalls(items); setVoiceCallsScope(scope); })
+      .catch(error => { if (!(error instanceof Error && error.name === 'AbortError')) { setVoiceCalls([]); setVoiceCallsScope(scope); } });
+    return () => controller.abort();
+  }, [authContext?.tenant.id, authContext?.user.id]);
+
+  useEffect(() => {
     if (!authContext) { setTheme('light'); return; }
     try {
       setTheme(localStorage.getItem(`coke-dots:theme:${authContext.user.id}`) === 'dark' ? 'dark' : 'light');
@@ -185,7 +207,31 @@ function App() {
 
   const selectedTask = state.tasks.find(t => t.id === selected) || null;
   const entries = useMemo(() => selected ? state.entries.filter(e => e.taskId === selected) : state.entries, [state.entries, selected]);
+  const currentVoiceCallScope = authContext ? `${authContext.tenant.id}:${authContext.user.id}` : '';
+  const currentVoiceCalls = voiceCallsScope === currentVoiceCallScope ? voiceCalls : [];
+  const voiceCallsLoaded = voiceCallsScope === currentVoiceCallScope;
+  const timelineItems = useMemo<ChatTimelineItem[]>(() => {
+    const items: ChatTimelineItem[] = entries.map(entry => ({ id: `entry-${entry.id}`, at: entry.createdAt, source: 'entry', entry }));
+    if (!selected) {
+      for (const call of currentVoiceCalls) if (call.endedAt) items.push({ id: `call-${call.id}`, at: call.endedAt, source: 'call-ended', call });
+    }
+    return items.sort((left, right) => Date.parse(left.at) - Date.parse(right.at) || left.id.localeCompare(right.id));
+  }, [entries, selected, currentVoiceCalls]);
+  const hasConversationHistory = entries.length > 0 || timelineItems.some(item => item.source === 'call-ended');
   const active = state.tasks.filter(t => ['queued', 'working', 'waiting', 'scheduled'].includes(t.status));
+
+  useLayoutEffect(() => { timelineAtBottomRef.current = true; }, [view, selected]);
+  useLayoutEffect(() => {
+    const timeline = timelineRef.current;
+    if (timeline && timelineAtBottomRef.current) timeline.scrollTop = timeline.scrollHeight;
+  }, [timelineItems, view, selected, stateLoaded]);
+
+  async function refreshVoiceCalls() {
+    const response = await appFetch('/api/voice-calls');
+    if (!response.ok) throw new Error('读取通话记录失败：HTTP ' + response.status);
+    setVoiceCalls(await response.json() as VoiceCallSession[]);
+    if (authContext) setVoiceCallsScope(`${authContext.tenant.id}:${authContext.user.id}`);
+  }
 
   function openPage(pageId: string, taskId: string | null = null) {
     setSelectedPageId(pageId);
@@ -272,10 +318,8 @@ function App() {
     catch (e) { setError(String(e)); }
   }
 
-  async function submitVoiceTranscript(instruction: string, waitingTaskId?: string) {
-    const task = waitingTaskId
-      ? await request(`/tasks/${waitingTaskId}`, 'PATCH', { action: 'reply', message: instruction }) as Task
-      : await request('/tasks', 'POST', { instruction, scheduleSpec: null, scheduleMinutes: null, engine }) as Task;
+  async function submitVoiceTranscript(instruction: string, waitingTaskId: string | undefined, callId: string, turnId: string) {
+    const task = await request(`/voice-calls/${callId}/turns`, 'POST', { transcript: instruction, turnId, waitingTaskId, engine }) as Task;
     setSelected(task.id); setSelectedPageId(null); setView('chat');
     return task;
   }
@@ -333,10 +377,10 @@ function App() {
   if (!authContext) return <LoginScreen googleConfigured={googleConfigured} e2eAuthAvailable={e2eAuthAvailable} />;
 
   const workSurface = ['activity', 'scheduled', 'computer', 'pages'].includes(view);
-  const onboardingMode = view === 'chat' && !selectedTask && entries.length === 0;
+  const onboardingMode = view === 'chat' && !selectedTask && !hasConversationHistory && voiceCallsLoaded;
   const computerChoiceMode = onboardingMode && !state.computerAccess.configured;
-  const contextMode = view === 'chat' && Boolean(selectedTask || entries.length > 0);
-  return <div className={`shell ${theme === 'dark' ? 'dots-dark' : ''} ${view === 'home' ? 'home-mode' : ''} ${view === 'chat' ? 'dot-chat-mode' : ''} ${contextMode ? 'dot-context-mode' : ''} ${onboardingMode ? 'dot-onboarding-mode' : ''} ${computerChoiceMode ? 'dot-computer-choice-mode' : ''} ${view === 'scheduled' ? 'scheduled-mode' : ''} ${view === 'chat' && selectedPageId ? 'page-open-mode' : ''}`} data-testid="app-shell" data-theme={theme} data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
+  const contextMode = view === 'chat' && Boolean(selectedTask || hasConversationHistory);
+  return <div className={`shell ${theme === 'dark' ? 'dots-dark' : ''} ${view === 'home' ? 'home-mode' : ''} ${view === 'chat' ? 'dot-chat-mode' : ''} ${contextMode ? 'dot-context-mode' : ''} ${contextMode && voiceCallOpen ? 'voice-call-active-mode' : ''} ${onboardingMode ? 'dot-onboarding-mode' : ''} ${computerChoiceMode ? 'dot-computer-choice-mode' : ''} ${view === 'scheduled' ? 'scheduled-mode' : ''} ${view === 'chat' && selectedPageId ? 'page-open-mode' : ''}`} data-testid="app-shell" data-theme={theme} data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
     <aside className="icon-rail" aria-label="主导航">
       <button className={`rail-button ${view === 'home' ? 'selected' : ''}`} aria-label="新聊天" title="新聊天" onClick={() => { setSelectedPageId(null); setSelected(null); setView('home'); }}>⌂</button>
       <button className={`rail-button ${view === 'pages' ? 'selected' : ''}`} aria-label="Scratchpad" title="Scratchpad" onClick={() => { setSelectedPageId(null); setView('pages'); }}>▱</button>
@@ -357,19 +401,21 @@ function App() {
       <button className="profile-link" onClick={() => { setSelectedPageId(null); setView('profile'); }}><DotAvatar appearance={state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
-      <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div></header>
+      <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div>{contextMode && !voiceCallOpen && <div className="dot-conversation-actions"><button type="button" data-testid="conversation-call-launch" className="conversation-call-launch" aria-label="Call" title="Call" onMouseDown={event => event.preventDefault()} onClick={() => setVoiceCallOpen(true)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 3.8 10 7.2 8.2 9.1a13 13 0 0 0 6.7 6.7l1.9-1.8 3.4 2.9-.8 3.2a1.8 1.8 0 0 1-2 1.4C9 20.2 3.8 15 2.5 6.6a1.8 1.8 0 0 1 1.4-2z" /></svg></button></div>}</header>
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {computerConnectedToast && <div className="computer-connected-toast" data-testid="computer-connected-toast" role="status"><span className="computer-connected-icon" aria-hidden="true">✓</span><span>The computer is connected to your dot</span><button type="button" aria-label="Dismiss notification" onClick={() => setComputerConnectedToast(false)}>×</button></div>}
       {(view === 'home' || view === 'chat') && <div className="chat-layout"><section className="chat-panel">
-        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What's on your mind today?</h1></div> : !selectedTask && entries.length === 0 ? <DotOnboarding profile={state.profile} computerAccess={state.computerAccess} onComputerAccess={saveComputerAccess} onEditSetup={openDotCustomizer} /> : <div className="timeline">
+        {!stateLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : view === 'home' ? <div className="welcome chat-home" data-testid="chat-home"><h1>What's on your mind today?</h1></div> : !voiceCallsLoaded ? <div className="workspace-loading" role="status">正在恢复工作区…</div> : !selectedTask && !hasConversationHistory ? <DotOnboarding profile={state.profile} computerAccess={state.computerAccess} onComputerAccess={saveComputerAccess} onEditSetup={openDotCustomizer} /> : <div className="timeline" ref={timelineRef} onScroll={() => { const timeline = timelineRef.current; if (timeline) timelineAtBottomRef.current = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 48; }}>
           {!selectedTask && <div className="timeline-title">最近的对话和进度</div>}
-          {entries.map(entry => <article key={entry.id} className={`message ${entry.kind}`}><div className="message-avatar">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{entry.kind === 'user' ? '你' : entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={entry.body} onOpenPage={id => openPage(id, entry.taskId)} />{Boolean(entry.attachments?.length) && <ul className="message-attachments" data-testid="message-attachments" aria-label="附加文件">{entry.attachments!.map(attachment => <li key={attachment.id}><span aria-hidden="true">▤</span><span>{attachment.name}</span></li>)}</ul>}</div></article>)}
+          {timelineItems.map(item => item.source === 'entry'
+            ? <article key={item.id} data-testid="chat-timeline-item" data-timestamp={item.at} className={`message ${item.entry.kind}`}><div className="message-avatar">{item.entry.kind === 'user' ? '你' : item.entry.kind === 'dot' ? <DotAvatar appearance={state.profile} small /> : '·'}</div><div><div className="message-name">{item.entry.kind === 'user' ? '你' : item.entry.kind === 'dot' ? state.profile.name : '系统'} <time>{new Date(item.entry.createdAt).toLocaleString('zh-CN')}</time></div><MessageBody body={item.entry.body} onOpenPage={id => openPage(id, item.entry.taskId)} />{Boolean(item.entry.attachments?.length) && <ul className="message-attachments" data-testid="message-attachments" aria-label="附加文件">{item.entry.attachments!.map(attachment => <li key={attachment.id}><span aria-hidden="true">▤</span><span>{attachment.name}</span></li>)}</ul>}</div></article>
+            : <article key={item.id} data-testid="chat-timeline-item" data-timestamp={item.at} className="message voice-call-ended" data-call-id={item.call.id}><div className="voice-call-ended-chip"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7.1 3.8 10 7.2 8.2 9.1a13 13 0 0 0 6.7 6.7l1.9-1.8 3.4 2.9-.8 3.2a1.8 1.8 0 0 1-2 1.4C9 20.2 3.8 15 2.5 6.6a1.8 1.8 0 0 1 1.4-2z" fill="currentColor" /></svg>Me: Call ended</div><small>Optional</small></article>)}
           {selectedTask && <TaskControls task={selectedTask} act={act} />}
         </div>}
         <div className="composer-wrap">
           {pendingAttachments.length > 0 && <ul className="pending-attachments" data-testid="pending-attachments" aria-label="待发送附件">{pendingAttachments.map(attachment => <li key={attachment.id} data-testid="pending-attachment"><span aria-hidden="true">▤</span><span className="attachment-name" title={attachment.name}>{attachment.name}</span><button type="button" aria-label={`移除附件 ${attachment.name}`} onClick={() => void removePendingAttachment(attachment)}>×</button></li>)}</ul>}
-          <div className="composer"><input ref={attachmentInputRef} className="attachment-input" data-testid="attachment-input" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.go,.rs,.java,.sql,.sh,.toml,.ini,.log,.c,.h,.cpp,.hpp" onChange={event => void uploadAttachments(event.currentTarget.files)} /><button className="attachment-button" data-testid="attachment-button" type="button" onMouseDown={event => event.preventDefault()} aria-label="添加附件" title="添加附件" disabled={uploadingAttachments || pendingAttachments.length >= 5} onClick={() => attachmentInputRef.current?.click()}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></button><textarea data-testid="task-composer" ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder={view === 'home' ? 'Ask ChatGPT' : 'Type a message'} /><DictationButton draft={draft} setDraft={setDraft} onError={setError} textareaRef={composerRef} /><div className="composer-bottom"><label>内核 <select value={engine} onChange={e => setEngine(e.target.value as Engine)}>{(['model', 'claude', 'pi', 'dsh'] as Engine[]).map(id => <option key={id} value={id}>{id === 'model' ? '模型 API' : id === 'claude' ? 'Claude Code' : id === 'pi' ? 'Pi' : 'DeepSeek Harness'}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="voice-call-launch" data-testid="voice-call-launch" type="button" onMouseDown={event => event.preventDefault()} aria-label={`拨打 ${state.profile.name}`} title={`拨打 ${state.profile.name}`} onClick={() => setVoiceCallOpen(true)}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg></button><button className="send" onMouseDown={event => event.preventDefault()} disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
+          <div className="composer"><input ref={attachmentInputRef} className="attachment-input" data-testid="attachment-input" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.go,.rs,.java,.sql,.sh,.toml,.ini,.log,.c,.h,.cpp,.hpp" onChange={event => void uploadAttachments(event.currentTarget.files)} /><button className="attachment-button" data-testid="attachment-button" type="button" onMouseDown={event => event.preventDefault()} aria-label="添加附件" title="添加附件" disabled={uploadingAttachments || pendingAttachments.length >= 5} onClick={() => attachmentInputRef.current?.click()}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></button><textarea data-testid="task-composer" ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder={view === 'home' ? 'Ask ChatGPT' : 'Type a message'} /><DictationButton draft={draft} setDraft={setDraft} onError={setError} textareaRef={composerRef} /><div className="composer-bottom"><label>内核 <select data-testid="engine-select" value={engine} onChange={e => setEngine(e.target.value as Engine)}>{selectableEngines.map(id => <option key={id} value={id}>{engineText[id]}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="voice-call-launch" data-testid="voice-call-launch" type="button" onMouseDown={event => event.preventDefault()} aria-label={`拨打 ${state.profile.name}`} title={`拨打 ${state.profile.name}`} onClick={() => setVoiceCallOpen(true)}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg></button><button className="send" onMouseDown={event => event.preventDefault()} disabled={!stateLoaded || busy || !draft.trim()} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint">{state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；新任务会显示失败并可在配置后重试。'}</small></div>
       </section>{view === 'chat' && selectedPageId ? <div className="scratchpad-page-split" data-testid="scratchpad-page-split"><ScratchpadNavigationPane tenantId={authContext.tenant.id} selectedPageId={selectedPageId} refreshKey={pageIndexVersion} onOpen={setSelectedPageId} onBack={() => { setSelectedPageId(null); setView('pages'); }} /><PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => { setSelectedPageId(null); setView('pages'); }} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /></div> : view === 'chat' && (selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onStartCall={() => setVoiceCallOpen(true)} onOpenSlack={() => setSlackModalOpen(true)} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
       {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
       {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
@@ -385,7 +431,7 @@ function App() {
     {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, false, true)} />}
     {computerAccessOpen && <DotComputerChoice localComputer={state.computerAccess.localComputer} mode="settings" onSave={saveComputerAccess} onCancel={() => setComputerAccessOpen(false)} />}
     {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, !state.profile.onboardingCompletedAt)} />}
-    {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} onTranscript={submitVoiceTranscript} onClose={() => setVoiceCallOpen(false)} />}
+    {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} displayMode={contextMode ? 'desktop' : 'handset'} onTranscript={submitVoiceTranscript} onClose={() => { setVoiceCallOpen(false); void refreshVoiceCalls().catch(reason => setError(reason instanceof Error ? reason.message : String(reason))); }} />}
     {slackModalOpen && authContext && <SlackSetupModal key={authContext.tenant.id} dotName={state.profile.name} canManage={['owner', 'admin'].includes(authContext.tenant.role)} onClose={() => setSlackModalOpen(false)} onConnectSlack={() => {
       try { sessionStorage.setItem('coke-dots:slack-return-state', JSON.stringify({ view, selected })); } catch { /* Restore the home view if session storage is unavailable. */ }
       window.location.assign(appPath('/api/slack/oauth/start'));
@@ -630,6 +676,8 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
   const [editingDraft, setEditingDraft] = useState('');
   const [memoryError, setMemoryError] = useState('');
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const canManageSharedModel = ['owner', 'admin'].includes(auth.tenant.role)
+    && (!state.modelSettings.adminTenantId || state.modelSettings.adminTenantId === auth.tenant.id);
   const refreshMembers = async () => {
     const response = await fetch(`/api/tenants/${auth.tenant.id}/members`);
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
@@ -742,12 +790,20 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
       {membersError && <small className="member-error">{membersError}</small>}
       {!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以添加成员。</small>}
     </div>
-    <div className="section-heading model-heading"><h2>模型 API</h2><p>此 API 密钥只用于当前工作区，并保存在 macOS 钥匙串。</p></div>
-    <div className="profile-card model-card">
-      <label>API 地址<input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} /></label>
-      <label>模型名称<input value={model} onChange={e => setModel(e.target.value)} /></label>
-      <label>API 密钥<input type="password" autoComplete="off" placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label>
-      <button className="primary" onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存模型设置</button>
+    <div className="section-heading model-heading"><h2>共享模型 API</h2><p>所有 Google 账号和工作区共用同一模型地址、名称与 API Key。任务、记忆和工作区数据仍相互隔离。</p></div>
+    <div className="profile-card model-card" data-testid="shared-model-settings">
+      {canManageSharedModel ? <>
+        <label>API 地址<input aria-label="共享模型 API 地址" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} /></label>
+        <label>模型名称<input aria-label="共享模型名称" value={model} onChange={e => setModel(e.target.value)} /></label>
+        <label>API 密钥<input aria-label="共享模型 API 密钥" type="password" autoComplete="off" placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label>
+        <small>{state.modelSettings.adminTenantId ? '此配置由模型管理员工作区维护，并保存在本机钥匙串。' : '保存后，当前工作区将成为共享模型配置管理员。API Key 保存在本机钥匙串。'}</small>
+        <button className="primary" onClick={async () => { try { await request('/model-settings', 'PATCH', { baseUrl, model, apiKey }); setApiKey(''); } catch (e) { onError(String(e)); } }}>保存共享模型设置</button>
+      </> : <div data-testid="shared-model-settings-readonly">
+        <p>API 地址：{state.modelSettings.baseUrl || '未配置'}</p>
+        <p>模型名称：{state.modelSettings.model || '未配置'}</p>
+        <p>API 密钥：{state.modelSettings.hasKey ? '已配置' : '未配置'}</p>
+        <small>所有工作区都可以使用这份共享配置；只有模型管理员工作区的所有者或管理员可以修改。</small>
+      </div>}
     </div>
   </section>;
 }

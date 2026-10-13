@@ -1,0 +1,14 @@
+{
+  "id": "voice-call-v1-0626",
+  "source": {
+    "videoUrl": "https://www.youtube.com/watch?v=V_1Vn2WfpEY",
+    "title": "I Tested OpenAI's New Personal Assistant Agent: DOTS",
+    "timecode": "06:26"
+  },
+  "reference": "../frames/futurepedia-v1-0626.png",
+  "referenceRect": { "x": 76, "y": 42, "width": 542, "height": 1115 },
+  "implementationRect": { "x": 500, "y": 50, "width": 440, "height": 900 },
+  "output": "../../artifacts/reference-comparison/voice-call-v1-0626",
+  "threshold": 32,
+  "note": "The reference is a compressed YouTube frame with subtitle/player overlays across the lower phone controls. The crop matches the handset bounds and normalizes its aspect ratio; the overlay and pixel metrics are diagnostic only, not a claim that the unknown original viewport or CSS pixels are exact."
+}

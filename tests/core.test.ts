@@ -108,10 +108,10 @@ test('delegated tasks persist, recover after restart, and aggregate only inside 
     store.updateTask(parent.id, { status: 'working' }, owner.tenant.id);
     const children = store.createDelegatedTasks(parent.id, owner.tenant.id, [
       { title: 'Market sizing', instruction: 'Estimate market size from supplied material.' },
-      { title: 'Competitor review', instruction: 'Compare the named competitors.', engine: 'claude' },
+      { title: 'Competitor review', instruction: 'Compare the named competitors.', engine: 'dsh' },
       { title: 'Risk list', instruction: 'Identify the main risks.' },
     ], 'I split the research into three parallel questions.');
-    assert.deepEqual(children.map(task => task.engine), ['model', 'claude', 'model'], 'Children must retain a selected engine or inherit the parent engine');
+    assert.deepEqual(children.map(task => task.engine), ['model', 'dsh', 'model'], 'Children must retain a selected engine or inherit the parent engine');
     assert.throws(() => store.createDelegatedTasks(parent.id, owner.tenant.id, [{ title: 'Invalid engine', instruction: 'Do not insert this task.', engine: 'unknown' as never }], 'Invalid engine test'), /内核无效/);
     assert.equal(store.getTask(parent.id, owner.tenant.id)?.status, 'delegating');
     assert.equal(store.getTask(children[0].id, other.tenant.id), null, 'A different tenant read a child task by guessing its ID');
@@ -350,7 +350,7 @@ test('tenant action rules are admin managed and page approvals do not write unti
     assert.equal(resolved?.page?.title, 'Release notes');
     assert.equal(store.getTask(task.id, workspace.id)?.status, 'done');
     assert.equal(store.tenantPages(workspace.id)[0]?.content, '# Draft\n- Publish Friday');
-    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, workspace.id).entries.some(entry => entry.taskId === task.id && /批准/.test(entry.body)));
+    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false, adminTenantId: null }, workspace.id).entries.some(entry => entry.taskId === task.id && /批准/.test(entry.body)));
 
     const declinedTask = store.createTask('Create an unapproved page', null, 'model', workspace.id);
     store.updateTask(declinedTask.id, { status: 'working' }, workspace.id);
@@ -461,7 +461,7 @@ test('Scratchpad write rules enforce no-ask, explicit-request, and hand-off mode
     await waitFor(() => store.getTask(explicitTask.id, user.tenant.id)?.status === 'waiting');
     assert.equal(store.tenantPages(user.tenant.id).length, 1, 'A non-explicit page write bypassed the runtime check');
     assert.match(prompts[1], /only when the user explicitly requests that action/);
-    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, user.tenant.id).entries.some(entry => entry.taskId === explicitTask.id && /明确要求/.test(entry.body)));
+    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false, adminTenantId: null }, user.tenant.id).entries.some(entry => entry.taskId === explicitTask.id && /明确要求/.test(entry.body)));
 
     store.saveTenantActionRule(user.tenant.id, user.user.id, 'Hand over page changes for manual editing.', 'hand-off');
     const handoffTask = store.createTask('E2E permission mode three', null, 'model', user.tenant.id);
@@ -469,7 +469,7 @@ test('Scratchpad write rules enforce no-ask, explicit-request, and hand-off mode
     await waitFor(() => store.getTask(handoffTask.id, user.tenant.id)?.status === 'waiting');
     assert.equal(store.tenantPages(user.tenant.id).length, 1, 'A hand-off rule allowed the agent page write');
     assert.match(prompts[2], /Do not use pageAction/);
-    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false }, user.tenant.id).entries.some(entry => entry.taskId === handoffTask.id && /自行创建/.test(entry.body)));
+    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false, adminTenantId: null }, user.tenant.id).entries.some(entry => entry.taskId === handoffTask.id && /自行创建/.test(entry.body)));
   } finally {
     worker.stop(); store.close();
     await new Promise<void>(resolve => modelServer.close(() => resolve()));

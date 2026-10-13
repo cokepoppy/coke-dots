@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ActionRuleMode, AttachmentSummary, Engine, Entry, PageActionApproval, ScheduleSpec, ScratchpadPageAction, Snapshot, Task, TaskStatus, TenantActionRule, VoiceCallSession, Watch, WorkspacePage } from '../shared/types.ts';
+import { isEngine, type ActionRuleMode, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskEngine, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -87,6 +87,13 @@ export class Store {
         started_at TEXT NOT NULL, ended_at TEXT, duration_seconds INTEGER CHECK(duration_seconds IS NULL OR duration_seconds >= 0)
       );
       CREATE INDEX IF NOT EXISTS voice_calls_owner ON voice_calls(tenant_id,user_id,started_at DESC);
+      CREATE TABLE IF NOT EXISTS voice_call_turns (
+        call_id TEXT NOT NULL REFERENCES voice_calls(id), turn_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
+        task_id TEXT NOT NULL REFERENCES tasks(id), created_at TEXT NOT NULL,
+        PRIMARY KEY(call_id,turn_id)
+      );
+      CREATE INDEX IF NOT EXISTS voice_call_turns_owner ON voice_call_turns(tenant_id,user_id,call_id);
       CREATE TABLE IF NOT EXISTS watches (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'legacy', url TEXT NOT NULL, interval_minutes INTEGER NOT NULL,
         status TEXT NOT NULL, next_check_at TEXT, last_checked_at TEXT,
@@ -101,6 +108,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS tenant_settings (
         tenant_id TEXT NOT NULL REFERENCES tenants(id), key TEXT NOT NULL, value TEXT NOT NULL,
         PRIMARY KEY(tenant_id,key)
+      );
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS tenant_memories (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -472,7 +482,7 @@ export class Store {
 
   removeSession(tokenHash: string) { this.db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').run(tokenHash); }
 
-  snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false }, tenantId = 'legacy'): Snapshot {
+  snapshot(configured: boolean, availableEngines: Engine[] = [], modelSettings: Snapshot['modelSettings'] = { baseUrl: '', model: '', hasKey: false, adminTenantId: null }, tenantId = 'legacy'): Snapshot {
     const p = this.db.prepare('SELECT name,shape,color,eyes,glasses,accessory,character,pet,avatar_setup_completed_at AS avatarSetupCompletedAt,onboarding_completed_at AS onboardingCompletedAt,onboarding_completed_name AS onboardingCompletedName FROM tenant_profiles WHERE tenant_id=?').get(tenantId) as Snapshot['profile'] | undefined;
     if (!p) throw new Error('Workspace profile is missing');
     return {
@@ -501,6 +511,12 @@ export class Store {
     return { id, tenantId, startedAt: now, endedAt: null, durationSeconds: null };
   }
 
+  getVoiceCall(tenantId: string, userId: string, id: string): VoiceCallSession | null {
+    const row = this.db.prepare('SELECT id,tenant_id,started_at,ended_at,duration_seconds FROM voice_calls WHERE id=? AND tenant_id=? AND user_id=?')
+      .get(id, tenantId, userId) as { id: string; tenant_id: string; started_at: string; ended_at: string | null; duration_seconds: number | null } | undefined;
+    return row ? { id: row.id, tenantId: row.tenant_id, startedAt: row.started_at, endedAt: row.ended_at, durationSeconds: row.duration_seconds } : null;
+  }
+
   endVoiceCall(tenantId: string, userId: string, id: string, durationSeconds: number, now = new Date().toISOString()): VoiceCallSession | null {
     this.db.prepare('UPDATE voice_calls SET ended_at=?,duration_seconds=? WHERE id=? AND tenant_id=? AND user_id=? AND ended_at IS NULL')
       .run(now, durationSeconds, id, tenantId, userId);
@@ -513,6 +529,65 @@ export class Store {
     const rows = this.db.prepare('SELECT id,tenant_id,started_at,ended_at,duration_seconds FROM voice_calls WHERE tenant_id=? AND user_id=? ORDER BY started_at DESC LIMIT ?')
       .all(tenantId, userId, limit) as { id: string; tenant_id: string; started_at: string; ended_at: string | null; duration_seconds: number | null }[];
     return rows.map(row => ({ id: row.id, tenantId: row.tenant_id, startedAt: row.started_at, endedAt: row.ended_at, durationSeconds: row.duration_seconds }));
+  }
+
+  submitVoiceTurn(input: {
+    tenantId: string; userId: string; callId: string; turnId: string; transcript: string;
+    engine: Engine; waitingTaskId?: string;
+  }): { task: Task; duplicate: boolean } {
+    const transcript = input.transcript.trim();
+    if (!transcript || transcript.length > 5000) throw new Error('语音内容需为 1–5000 个字符');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(input.turnId)) throw new Error('语音轮次 ID 无效');
+    if (!isEngine(input.engine)) throw new Error('任务内核无效');
+
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const call = this.db.prepare('SELECT ended_at FROM voice_calls WHERE id=? AND tenant_id=? AND user_id=?')
+        .get(input.callId, input.tenantId, input.userId) as { ended_at: string | null } | undefined;
+      if (!call) throw new Error('语音通话不存在');
+
+      const existing = this.db.prepare('SELECT task_id FROM voice_call_turns WHERE call_id=? AND turn_id=? AND tenant_id=? AND user_id=?')
+        .get(input.callId, input.turnId, input.tenantId, input.userId) as { task_id: string } | undefined;
+      if (existing) {
+        const task = this.getTask(existing.task_id, input.tenantId);
+        if (!task) throw new Error('语音任务记录不完整');
+        this.db.exec('COMMIT');
+        return { task, duplicate: true };
+      }
+      if (call.ended_at) throw new Error('语音通话已结束');
+
+      const now = new Date().toISOString();
+      let task: Task | null;
+      if (input.waitingTaskId) {
+        const old = this.getTask(input.waitingTaskId, input.tenantId);
+        if (!old) throw new Error('等待回复的任务不存在');
+        if (old.status !== 'waiting') throw new Error('任务当前没有等待回复');
+        const instruction = `${old.instruction}\n\nUser reply: ${transcript}`;
+        this.db.prepare("UPDATE tasks SET instruction=?,status='queued',next_run_at=?,error=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status='waiting'")
+          .run(instruction, now, now, input.tenantId, old.id);
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+          .run(input.tenantId, old.id, 'user', transcript, now);
+        task = this.getTask(old.id, input.tenantId);
+      } else {
+        const id = randomUUID();
+        const title = transcript.split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
+        this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(id, input.tenantId, title, transcript, 'queued', 0, now, null, null, null, now, now, input.engine, null, null, null);
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,?)')
+          .run(input.tenantId, id, 'user', transcript, now, '[]');
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,?)')
+          .run(input.tenantId, id, 'system', '已加入工作队列。', now, '[]');
+        task = this.getTask(id, input.tenantId);
+      }
+      if (!task) throw new Error('无法保存语音任务');
+      this.db.prepare('INSERT INTO voice_call_turns(call_id,turn_id,tenant_id,user_id,task_id,created_at) VALUES (?,?,?,?,?,?)')
+        .run(input.callId, input.turnId, input.tenantId, input.userId, task.id, now);
+      this.db.exec('COMMIT');
+      return { task: this.getTask(task.id, input.tenantId)!, duplicate: false };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   activityPage(tenantId: string, beforeId: number | null = null, limit = 50): { entries: Entry[]; nextCursor: number | null } {
@@ -734,6 +809,7 @@ export class Store {
   }
 
   createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], uploaderId = ''): Task {
+    if (!isEngine(engine)) throw new Error('任务内核无效');
     const now = new Date().toISOString();
     const id = randomUUID();
     const title = instruction.trim().split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
@@ -802,13 +878,14 @@ export class Store {
     if (!Array.isArray(delegations) || delegations.length < 1 || delegations.length > 3) throw new Error('代理子任务数量无效');
     for (const child of delegations) {
       if (!child.title.trim() || child.title.trim().length > 120 || !child.instruction.trim() || child.instruction.trim().length > 5000) throw new Error('代理子任务内容无效');
-      if (child.engine !== undefined && !['model', 'claude', 'pi', 'dsh'].includes(child.engine)) throw new Error('代理子任务内核无效');
+      if (child.engine !== undefined && !isEngine(child.engine)) throw new Error('代理子任务内核无效');
     }
     const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const parent = this.getTask(parentId, tenantId);
       if (!parent || parent.status !== 'working' || parent.parentTaskId || scheduleForTask(parent.scheduleSpec, parent.scheduleMinutes)) throw new Error('当前工作不能委派子任务');
+      if (!isEngine(parent.engine)) throw new Error('已停用的内核不能继续委派子任务');
       if (this.delegatedTasks(parentId, tenantId).length) throw new Error('此工作已经委派过子任务');
       const children: Task[] = [];
       for (const delegated of delegations) {
@@ -943,6 +1020,29 @@ export class Store {
     return row?.value || null;
   }
 
+  modelSettingsCandidates(): { tenantId: string; baseUrl: string; model: string }[] {
+    return this.db.prepare(`SELECT t.id AS tenantId,
+      COALESCE((SELECT value FROM tenant_settings s WHERE s.tenant_id=t.id AND s.key='modelBaseUrl'), '') AS baseUrl,
+      COALESCE((SELECT value FROM tenant_settings s WHERE s.tenant_id=t.id AND s.key='modelName'), '') AS model
+      FROM tenants t
+      WHERE EXISTS (SELECT 1 FROM tenant_settings s WHERE s.tenant_id=t.id AND s.key IN ('modelBaseUrl','modelName'))
+      ORDER BY CASE WHEN t.id='legacy' THEN 0 ELSE 1 END,t.created_at,t.id`).all() as { tenantId: string; baseUrl: string; model: string }[];
+  }
+
+  getAppSetting(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM app_settings WHERE key=?').get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setAppSetting(key: string, value: string) {
+    this.db.prepare('INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value);
+  }
+
+  claimAppSetting(key: string, value: string): string {
+    this.db.prepare('INSERT OR IGNORE INTO app_settings(key,value) VALUES (?,?)').run(key, value);
+    return this.getAppSetting(key) || value;
+  }
+
   setSetting(key: string, value: string, tenantId = 'legacy') {
     this.db.prepare('INSERT INTO tenant_settings(tenant_id,key,value) VALUES (?,?,?) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value').run(tenantId, key, value);
   }
@@ -989,7 +1089,7 @@ function toTask(r: Record<string, unknown>): Task {
   scheduleSpec = scheduleForTask(scheduleSpec, scheduleMinutes);
   return {
     id: String(r.id), tenantId: String(r.tenant_id), parentTaskId: r.parent_task_id == null ? null : String(r.parent_task_id), title: String(r.title), instruction: String(r.instruction),
-    engine: r.engine as Engine, agentSessionId: r.agent_session_id == null ? null : String(r.agent_session_id),
+    engine: r.engine as TaskEngine, agentSessionId: r.agent_session_id == null ? null : String(r.agent_session_id),
     status: r.status as TaskStatus, priority: Number(r.priority),
     nextRunAt: r.next_run_at == null ? null : String(r.next_run_at),
     scheduleMinutes: scheduleMinutes !== null ? scheduleMinutes : scheduleSpec?.frequency === 'interval' ? scheduleSpec.intervalMinutes : null,

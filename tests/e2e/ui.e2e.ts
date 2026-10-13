@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { appendFile, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { accessSync, constants, existsSync } from 'node:fs';
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
@@ -20,8 +20,6 @@ const videoDir = join(artifactRoot, 'video');
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-e2e-'));
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
-const e2eClaudeBin = join(tempRoot, 'claude-e2e.js');
-const e2eClaudeRelease = join(tempRoot, 'release-claude-child');
 const fixtureSource = join(projectRoot, 'tests', 'e2e', 'fixtures', 'computer.html');
 const fixtureDestination = join(projectRoot, 'dist', 'e2e-computer-fixture.html');
 const chromePath = findChromePath();
@@ -32,10 +30,16 @@ const pageErrors: string[] = [];
 let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockSlackServer: Server | null = null;
+let mockQwenSignalingServer: Server | null = null;
 let mockSlackProviderOrigin = '';
+let mockQwenSignalingUrl = '';
+let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp: string }[] = [];
 let mockSlackCodeExchanges = 0;
-let e2eSlackTokenAccounts: string[] = [];
+let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
+let mockModelRequests: { prompt: string; authorization: string }[] = [];
+let priorE2ESharedModelKey: string | null = null;
+const e2eSharedModelKeyEntry = new Entry('com.cokepoppy.coke-dots.e2e', 'shared-model-api-key');
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
 let pauseModelHeld = false;
@@ -64,13 +68,6 @@ let e2ePort = 0;
 await mkdir(screenshotsDir, { recursive: true });
 await mkdir(videoDir, { recursive: true });
 await writeFile(emptyEnvFile, '');
-await writeFile(e2eClaudeBin, `const { existsSync } = require('node:fs');
-const release = ${JSON.stringify(e2eClaudeRelease)};
-const prompt = process.argv.at(-1) || '';
-if (!prompt.includes('E2E delegated child — launch risks')) { process.stderr.write('Unexpected delegated child prompt'); process.exit(2); }
-const finish = () => { if (existsSync(release)) process.stdout.write(JSON.stringify({status:'done',message:'Claude Code completed the risks review.'})); else setTimeout(finish, 25); };
-finish();
-`, { mode: 0o600 });
 await copyFile(fixtureSource, fixtureDestination);
 
 function findChromePath() {
@@ -91,6 +88,7 @@ async function reservePort() {
 
 async function startMockModel() {
   mockModelPrompts = [];
+  mockModelRequests = [];
   mockModelServer = createHttpServer((request, response) => {
     let raw = '';
     request.setEncoding('utf8');
@@ -102,6 +100,7 @@ async function startMockModel() {
         const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
         const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
         mockModelPrompts.push(prompt);
+        mockModelRequests.push({ prompt, authorization: String(request.headers.authorization || '') });
         const hasReply = prompt.includes('User reply: Use Friday.');
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
@@ -115,6 +114,7 @@ async function startMockModel() {
         const isParallelTask = prompt.includes('E2E parallel work —');
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
         const isDelegationAggregate = prompt.includes('E2E delegation goal — build a launch packet') && prompt.includes('Delegated task results:');
+        const isSharedModelTask = prompt.includes('E2E shared model call from Beta account');
         const delegatedChild = ['Market scan', 'Competitor scan', 'Launch risks'].find(title => prompt.includes(`E2E delegated child — ${title.toLowerCase()}`));
         if (isPauseTask && !pauseModelHeld) {
           pauseModelHeld = true;
@@ -142,13 +142,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
-          { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'claude' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+          { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -178,8 +178,7 @@ async function startMockSlackProvider() {
       }
       const approve = new URLSearchParams({ redirect_uri: callback.toString(), state: url.searchParams.get('state') || '' });
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      const fields = `<input type="hidden" name="redirect_uri" value="${approve.get('redirect_uri')}"><input type="hidden" name="state" value="${approve.get('state')}">`;
-      response.end(`<!doctype html><html><head><title>Slack authorization</title></head><body><main><h1>Choose a Slack workspace for Coke Dots</h1><p>Permission requested: chat:write</p><form method="get" action="/oauth/approve">${fields}<input type="hidden" name="team_id" value="TASPIE2E"><button type="submit">Allow access</button></form><form method="get" action="/oauth/approve">${fields}<input type="hidden" name="team_id" value="TCOKEE2E"><button type="submit">Allow access to Coke Lab</button></form></main></body></html>`);
+      response.end(`<!doctype html><html><head><title>Slack authorization</title></head><body><main><h1>Authorize Coke Dots for ASPI</h1><p>Permission requested: chat:write</p><form method="get" action="/oauth/approve"><input type="hidden" name="redirect_uri" value="${approve.get('redirect_uri')}"><input type="hidden" name="state" value="${approve.get('state')}"><button type="submit">Allow access</button></form></main></body></html>`);
       return;
     }
     if (request.method === 'GET' && url.pathname === '/oauth/approve') {
@@ -190,13 +189,7 @@ async function startMockSlackProvider() {
         response.end('Invalid Slack OAuth approval');
         return;
       }
-      const teamId = url.searchParams.get('team_id') || 'TASPIE2E';
-      if (!['TASPIE2E', 'TCOKEE2E'].includes(teamId)) {
-        response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
-        response.end('Invalid Slack test workspace');
-        return;
-      }
-      callback.searchParams.set('code', `coke-dots-e2e-code-${teamId}`);
+      callback.searchParams.set('code', 'coke-dots-e2e-authorization-code');
       callback.searchParams.set('state', state);
       response.writeHead(302, { location: callback.toString(), 'cache-control': 'no-store' });
       response.end();
@@ -208,19 +201,14 @@ async function startMockSlackProvider() {
       request.on('data', chunk => { raw += chunk; });
       request.on('end', () => {
         const body = new URLSearchParams(raw);
-        const grants = new Map([
-          ['coke-dots-e2e-code-TASPIE2E', { id: 'TASPIE2E', name: 'ASPI', token: 'xoxb-coke-dots-e2e-aspi-token' }],
-          ['coke-dots-e2e-code-TCOKEE2E', { id: 'TCOKEE2E', name: 'Coke Lab', token: 'xoxb-coke-dots-e2e-coke-lab-token' }],
-        ]);
-        const grant = grants.get(body.get('code') || '');
-        if (!grant || body.get('client_id') !== 'coke-dots-slack-e2e-client' || body.get('client_secret') !== 'coke-dots-slack-e2e-secret' || body.get('redirect_uri') !== `${baseUrl}/auth/slack/callback`) {
+        if (body.get('code') !== 'coke-dots-e2e-authorization-code' || body.get('client_id') !== 'coke-dots-slack-e2e-client' || body.get('client_secret') !== 'coke-dots-slack-e2e-secret' || body.get('redirect_uri') !== `${baseUrl}/auth/slack/callback`) {
           response.writeHead(400, { 'content-type': 'application/json' });
           response.end(JSON.stringify({ ok: false, error: 'invalid_e2e_oauth_exchange' }));
           return;
         }
         mockSlackCodeExchanges += 1;
         response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-        response.end(JSON.stringify({ ok: true, access_token: grant.token, scope: 'chat:write', team: { id: grant.id, name: grant.name } }));
+        response.end(JSON.stringify({ ok: true, access_token: 'xoxb-coke-dots-e2e-only-token', scope: 'chat:write', team: { id: 'TASPIE2E', name: 'ASPI' } }));
       });
       return;
     }
@@ -233,6 +221,29 @@ async function startMockSlackProvider() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function startMockQwenSignaling() {
+  mockQwenSignalingRequests = [];
+  mockQwenSignalingServer = createHttpServer((request, response) => {
+    let raw = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => { raw += chunk; });
+    request.on('end', () => {
+      mockQwenSignalingRequests.push({ authorization: request.headers.authorization || '', contentType: request.headers['content-type'] || '', sdp: raw });
+      if (request.method !== 'POST' || request.url !== '/realtime?model=qwen3.8-omni-flash-realtime' || request.headers.authorization !== 'Bearer e2e-qwen-secret' || request.headers['content-type'] !== 'application/sdp' || !raw.startsWith('v=0')) {
+        response.writeHead(400, { 'content-type': 'text/plain' });
+        response.end('Invalid mock Qwen request');
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/sdp' });
+      response.end(['v=0', 'o=- 2 2 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)));
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => mockQwenSignalingServer!.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  const address = mockQwenSignalingServer.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}/realtime?model=qwen3.8-omni-flash-realtime`;
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -241,7 +252,7 @@ function captureServerOutput(child: ChildProcess) {
   });
 }
 
-async function startServer(port: number) {
+async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/server/index.ts'], {
     cwd: projectRoot,
     env: {
@@ -254,10 +265,9 @@ async function startServer(port: number) {
       DOTS_CHROME_BIN: chromePath,
       GOOGLE_CLIENT_ID: '',
       GOOGLE_CLIENT_SECRET: '',
-      DOTS_MODEL_BASE_URL: testModelBaseUrl,
-      DOTS_MODEL_API_KEY: testModelApiKey,
-      DOTS_MODEL: testModelName,
-      DOTS_CLAUDE_BIN: e2eClaudeBin,
+      DOTS_MODEL_BASE_URL: '',
+      DOTS_MODEL_API_KEY: '',
+      DOTS_MODEL: '',
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
       DOTS_KEYCHAIN_SERVICE: 'com.cokepoppy.coke-dots.e2e',
@@ -265,6 +275,12 @@ async function startServer(port: number) {
       SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
       SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
       DOTS_E2E_SLACK_PROVIDER_URL: mockSlackProviderOrigin,
+      DOTS_VOICE_PROVIDER: '',
+      DOTS_QWEN_API_KEY: '',
+      DOTS_QWEN_WORKSPACE_ID: '',
+      DOTS_QWEN_REGION: '',
+      DASHSCOPE_API_KEY: '',
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -444,6 +460,11 @@ async function restartService() {
 try {
   e2ePort = await reservePort();
   baseUrl = `http://127.0.0.1:${e2ePort}`;
+  try { priorE2ESharedModelKey = e2eSharedModelKeyEntry.getPassword() || null; } catch { priorE2ESharedModelKey = null; }
+  try { e2eSharedModelKeyEntry.deletePassword(); } catch { /* The isolated E2E service may be empty. */ }
+  testModelBaseUrl = await startMockModel();
+  testModelApiKey = 'e2e-shared-model-key';
+  testModelName = 'e2e-shared-model';
   mockSlackProviderOrigin = await startMockSlackProvider();
   server = await startServer(e2ePort);
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
@@ -511,6 +532,17 @@ try {
     assert.equal(await alphaPage!.getByTestId('dictation-button').isVisible(), true, 'The landing composer should expose the separate microphone control seen in V1 at 01:18');
     assert.equal(await alphaPage!.locator('.home-mode .send').isVisible(), false, 'The empty landing composer should show voice instead of a disabled send arrow');
     await screenshot(alphaPage!, '02-alpha-home');
+  });
+
+  await recordStep('Only the supported model, Pi, and DeepSeek Harness choices are selectable', async () => {
+    const options = await alphaPage!.getByTestId('engine-select').locator('option').evaluateAll(elements => elements.map(element => (element as HTMLOptionElement).value));
+    assert.deepEqual(options, ['model', 'pi', 'dsh']);
+    const legacyAttempt = await alphaPage!.evaluate(async () => {
+      const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'E2E legacy Claude engine rejection', engine: 'claude' }) });
+      return { status: response.status, body: await response.json() as { error?: string } };
+    });
+    assert.equal(legacyAttempt.status, 400);
+    assert.match(legacyAttempt.body.error || '', /不支持此内核/);
   });
 
   await recordStep('Switch between light and dark themes and restore the account preference after reload', async () => {
@@ -858,11 +890,7 @@ try {
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
   });
 
-  await recordStep('Install two Slack workspaces in Chrome and switch Alpha’s active contact workspace', async () => {
-    const tenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
-    assert(tenantId, 'The Alpha tenant id must be present before checking tenant-scoped Slack credentials');
-    const keychainAccount = (teamId: string) => `tenant-${createHash('sha256').update(`${tenantId}\0${teamId}`).digest('hex')}-slack-bot-token`;
-    e2eSlackTokenAccounts = ['TASPIE2E', 'TCOKEE2E'].map(keychainAccount);
+  await recordStep('Connect Slack in Chrome, authorize the mock workspace, and select it for the Alpha tenant', async () => {
     const contextPanel = alphaPage!.getByTestId('dot-context-panel');
     await contextPanel.getByRole('button', { name: 'Slack' }).click();
     const modal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
@@ -871,16 +899,10 @@ try {
     const workspacePlaceholder = modal.locator('.slack-current-workspace.is-placeholder');
     await workspacePlaceholder.waitFor({ state: 'visible' });
     assert.match(await workspacePlaceholder.innerText(), /Workspace/);
-    assert.equal(await modal.locator('.slack-setup-mark').count(), 0, 'The reference has no Slack icon above the title');
-    const emptyModalGeometry = await modal.evaluate(element => {
-      const dialog = element.getBoundingClientRect();
-      const card = element.querySelector('.slack-setup-workspace-card')!.getBoundingClientRect();
-      return { width: Math.round(dialog.width), height: Math.round(dialog.height), cardWidth: Math.round(card.width), cardHeight: Math.round(card.height) };
-    });
-    assert.deepEqual(emptyModalGeometry, { width: 440, height: 365, cardWidth: 390, cardHeight: 220 }, 'The setup dialog should match the video frame proportions at 1440 × 1000');
-    const connectButton = modal.getByTestId('slack-connect');
-    assert.equal(await connectButton.innerText(), 'Add to Slack');
+    const connectButton = modal.getByRole('button', { name: 'Select a workspace' });
+    assert.equal(await modal.getByTestId('slack-connect').innerText(), 'Select a workspace');
     assert.equal(await connectButton.isDisabled(), false);
+    assert.equal(await connectButton.evaluate(element => getComputedStyle(element).borderRadius), '22px');
     await screenshot(alphaPage!, 'slack-setup-empty-workspace');
 
     await modal.getByRole('button', { name: 'Close Slack setup' }).click();
@@ -892,6 +914,12 @@ try {
     await darkModal.waitFor({ state: 'visible' });
     assert.equal(await darkModal.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(7, 23, 14)');
     assert.equal(await darkModal.locator('.slack-setup-workspace-card').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(11, 33, 21)');
+    assert.equal(await darkModal.getByTestId('slack-connect').evaluate(element => getComputedStyle(element).borderRadius), '22px');
+    const darkModalBounds = await darkModal.boundingBox();
+    const slackViewport = alphaPage!.viewportSize();
+    assert(darkModalBounds && slackViewport, 'Slack dialog and viewport bounds must be available');
+    assert(Math.abs(darkModalBounds.x - Math.max(20, slackViewport.width * 0.0135)) <= 1, 'Slack dialog should use the observed left inset');
+    assert(Math.abs(darkModalBounds.y - Math.max(20, slackViewport.height * 0.22)) <= 1, 'Slack dialog should use the observed top placement');
     await screenshot(alphaPage!, 'slack-setup-empty-workspace-dark');
     await darkModal.getByRole('button', { name: 'Close Slack setup' }).click();
     await darkModal.waitFor({ state: 'hidden' });
@@ -904,83 +932,66 @@ try {
       alphaPage!.waitForURL(url => url.origin === mockSlackProviderOrigin && url.pathname === '/oauth/v2/authorize', { timeout: 10_000 }),
       connectButton.click(),
     ]);
-    await alphaPage!.getByRole('heading', { name: 'Choose a Slack workspace for Coke Dots' }).waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('heading', { name: 'Authorize Coke Dots for ASPI' }).waitFor({ state: 'visible' });
     await alphaPage!.getByText('Permission requested: chat:write', { exact: true }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'slack-mock-consent');
     await Promise.all([
       alphaPage!.waitForURL(url => url.origin === new URL(baseUrl).origin && url.pathname === '/', { timeout: 15_000 }),
-      alphaPage!.getByRole('button', { name: 'Allow access', exact: true }).click(),
+      alphaPage!.getByRole('button', { name: 'Allow access' }).click(),
     ]);
 
     const connectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
-    const workspaceTrigger = connectedModal.locator('.slack-current-workspace');
-    assert.equal(await workspaceTrigger.locator('.slack-workspace-name').innerText(), 'ASPI');
-    assert.equal(await workspaceTrigger.getAttribute('aria-expanded'), 'false');
-    assert.equal(await connectedModal.getByText('More Slack settings', { exact: true }).count(), 0, 'The sampled dialog does not show an extra settings row');
-    assert.deepEqual(await connectedModal.evaluate(element => {
-      const dialog = element.getBoundingClientRect();
-      const card = element.querySelector('.slack-setup-workspace-card')!.getBoundingClientRect();
-      return { width: Math.round(dialog.width), height: Math.round(dialog.height), cardWidth: Math.round(card.width), cardHeight: Math.round(card.height) };
-    }), { width: 440, height: 365, cardWidth: 390, cardHeight: 220 });
-    await workspaceTrigger.click();
-    const workspaceMenu = connectedModal.getByRole('menu', { name: 'Choose a workspace' });
-    await workspaceMenu.waitFor({ state: 'visible' });
-    assert.deepEqual(await workspaceMenu.getByRole('menuitemradio').allTextContents(), ['ASPI']);
-    assert.equal(await workspaceMenu.getByRole('menuitem', { name: 'Select another' }).isVisible(), true);
+    const workspace = connectedModal.getByRole('button', { name: 'Slack workspace' });
+    await workspace.waitFor({ state: 'visible' });
+    assert.match(await workspace.innerText(), /Workspace/);
     assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
-    await screenshot(alphaPage!, 'slack-workspace-installed');
-    await workspaceTrigger.press('Escape');
-    await workspaceMenu.waitFor({ state: 'hidden' });
-    await connectedModal.waitFor({ state: 'visible' });
-    await workspaceTrigger.click();
+    await screenshot(alphaPage!, 'slack-workspace-available');
+    await workspace.click();
+    const workspaceMenu = connectedModal.getByRole('listbox', { name: 'Choose a Slack workspace' });
     await workspaceMenu.waitFor({ state: 'visible' });
+    assert.deepEqual((await workspaceMenu.getByRole('option').allTextContents()).map(text => text.replace(/^✓/, '')), ['Choose a workspace', 'ASPI', 'Select another']);
+    await workspaceMenu.getByRole('option', { name: 'ASPI' }).hover();
+    await screenshot(alphaPage!, 'slack-workspace-menu-open');
+    await connectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
+    await contextPanel.getByRole('button', { name: 'Slack' }).click();
+    const darkConnectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
+    await darkConnectedModal.waitFor({ state: 'visible' });
+    const darkWorkspace = darkConnectedModal.getByRole('button', { name: 'Slack workspace' });
+    assert.match(await darkWorkspace.innerText(), /Workspace/);
+    assert.equal(await darkConnectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
+    await screenshot(alphaPage!, 'slack-workspace-available-dark');
+    await darkWorkspace.click();
+    const darkWorkspaceMenu = darkConnectedModal.getByRole('listbox', { name: 'Choose a Slack workspace' });
+    await darkWorkspaceMenu.waitFor({ state: 'visible' });
+    await darkWorkspaceMenu.getByRole('option', { name: 'ASPI' }).hover();
+    await screenshot(alphaPage!, 'slack-workspace-menu-open-dark');
+    await darkWorkspaceMenu.getByRole('option', { name: 'ASPI' }).click();
+    assert.match(await darkWorkspace.innerText(), /ASPI/);
+    assert.equal(await darkConnectedModal.getByTestId('slack-connect').innerText(), 'Add to Slack');
+    await screenshot(alphaPage!, 'slack-workspace-installed-dark');
 
-    await workspaceMenu.getByRole('menuitemradio', { name: 'ASPI' }).click();
-    await connectedModal.getByTestId('slack-connect').click();
-    await connectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
-    const aspiToken = new Entry('com.cokepoppy.coke-dots.e2e', keychainAccount('TASPIE2E')).getPassword();
-    assert.equal(aspiToken, 'xoxb-coke-dots-e2e-aspi-token', 'ASPI token should be persisted only in its isolated E2E keychain entry');
-
-    await workspaceTrigger.click();
-    await Promise.all([
-      alphaPage!.waitForURL(url => url.origin === mockSlackProviderOrigin && url.pathname === '/oauth/v2/authorize', { timeout: 10_000 }),
-      connectedModal.getByRole('menuitem', { name: 'Select another' }).click(),
-    ]);
-    await alphaPage!.getByRole('heading', { name: 'Choose a Slack workspace for Coke Dots' }).waitFor({ state: 'visible' });
-    await screenshot(alphaPage!, 'slack-mock-consent-second-workspace');
-    await Promise.all([
-      alphaPage!.waitForURL(url => url.origin === new URL(baseUrl).origin && url.pathname === '/', { timeout: 15_000 }),
-      alphaPage!.getByRole('button', { name: 'Allow access to Coke Lab' }).click(),
-    ]);
-    await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
-    assert.equal(await connectedModal.locator('.slack-current-workspace').getAttribute('aria-expanded'), 'false', 'Installing another workspace should return to the compact state');
-    await connectedModal.locator('.slack-current-workspace').click();
-    const installedWorkspaceMenu = connectedModal.getByRole('menu', { name: 'Choose a workspace' });
-    await installedWorkspaceMenu.waitFor({ state: 'visible' });
-    assert.deepEqual(await installedWorkspaceMenu.getByRole('menuitemradio').allTextContents(), ['ASPI', 'Coke Lab']);
-    await installedWorkspaceMenu.getByRole('menuitemradio', { name: 'Coke Lab' }).click();
-    await connectedModal.getByTestId('slack-connect').click();
-    await connectedModal.getByRole('status').filter({ hasText: /Coke Lab is selected for/ }).waitFor({ state: 'visible' });
-    const cokeLabToken = new Entry('com.cokepoppy.coke-dots.e2e', keychainAccount('TCOKEE2E')).getPassword();
-    assert.equal(cokeLabToken, 'xoxb-coke-dots-e2e-coke-lab-token', 'Coke Lab token should use its separate isolated E2E keychain entry');
-
+    await darkConnectedModal.getByTestId('slack-connect').click();
+    await darkConnectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
+    const tenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    assert(tenantId, 'The Alpha tenant id must be present before checking tenant-scoped Slack credentials');
+    e2eSlackTokenAccount = `tenant-${createHash('sha256').update(`${tenantId}\0TASPIE2E`).digest('hex')}-slack-bot-token`;
+    const storedToken = new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).getPassword();
+    assert.equal(storedToken, 'xoxb-coke-dots-e2e-only-token', 'OAuth token should be persisted only in the isolated E2E keychain');
     const slackState = await alphaPage!.evaluate(async () => await (await fetch('/api/slack')).json()) as { installations: { teamId: string; teamName: string; contactEnabled: boolean }[] };
     assert.deepEqual(slackState.installations.map(item => ({ teamId: item.teamId, teamName: item.teamName, contactEnabled: item.contactEnabled })), [
-      { teamId: 'TASPIE2E', teamName: 'ASPI', contactEnabled: false },
-      { teamId: 'TCOKEE2E', teamName: 'Coke Lab', contactEnabled: true },
-    ], 'The UI should switch the single active Dot contact destination while keeping both installs tenant scoped');
-    assert.equal(JSON.stringify(slackState).includes(aspiToken || ''), false, 'Slack OAuth tokens must not be returned by the API');
-    assert.equal(JSON.stringify(slackState).includes(cokeLabToken || ''), false, 'Slack OAuth tokens must not be returned by the API');
+      { teamId: 'TASPIE2E', teamName: 'ASPI', contactEnabled: true },
+    ]);
+    assert.equal(JSON.stringify(slackState).includes(storedToken), false, 'Slack OAuth token must not be returned by the API');
+    await screenshot(alphaPage!, 'slack-workspace-selected');
+    await darkConnectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
+    await alphaPage!.getByTestId('theme-toggle').click();
     const sqlite = new DatabaseSync(join(testDataDir, 'dots.db'), { readOnly: true });
     const storedInstallation = sqlite.prepare('SELECT team_id,team_name,scopes_json FROM slack_installations').all();
     sqlite.close();
-    assert.equal(JSON.stringify(storedInstallation).includes(aspiToken || ''), false, 'ASPI OAuth token must not be stored in SQLite');
-    assert.equal(JSON.stringify(storedInstallation).includes(cokeLabToken || ''), false, 'Coke Lab OAuth token must not be stored in SQLite');
-    assert.equal(mockSlackCodeExchanges, 2, 'Chrome should complete one OAuth exchange for each Slack workspace installation');
-    await screenshot(alphaPage!, 'slack-workspace-selected');
-    await connectedModal.getByRole('button', { name: 'Close Slack setup' }).click();
-    await connectedModal.waitFor({ state: 'hidden' });
+    assert.equal(JSON.stringify(storedInstallation).includes(storedToken), false, 'Slack OAuth token must not be stored in SQLite');
+    assert.equal(mockSlackCodeExchanges, 1, 'Chrome should complete exactly one Slack OAuth code exchange');
   });
 
   await recordStep('Dot computer shortcut opens the tenant-isolated browser workspace', async () => {
@@ -1096,6 +1107,60 @@ try {
     await weeklyDetail.getByRole('button', { name: 'Cancel schedule' }).click();
   });
 
+  await recordStep('Alpha configures one shared Model API and Beta can read but cannot edit it', async () => {
+    await openProfile(alphaPage!);
+    await alphaPage!.getByLabel('共享模型 API 地址').fill(testModelBaseUrl);
+    await alphaPage!.getByLabel('共享模型名称').fill(testModelName);
+    await alphaPage!.getByLabel('共享模型 API 密钥').fill(testModelApiKey);
+    await alphaPage!.getByRole('button', { name: '保存共享模型设置' }).click();
+    const alphaState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    const alphaTenantId = await alphaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    assert.equal(alphaState.modelSettings.baseUrl, testModelBaseUrl);
+    assert.equal(alphaState.modelSettings.model, testModelName);
+    assert.equal(alphaState.modelSettings.hasKey, true);
+    assert.equal(alphaState.modelSettings.adminTenantId, alphaTenantId);
+    assert(alphaState.availableEngines.includes('model'), 'Saving the shared API must enable Model API tasks in the admin workspace');
+    assert.equal(JSON.stringify(alphaState).includes(testModelApiKey), false, 'The API key must never be returned by the state endpoint');
+    await screenshot(alphaPage!, 'shared-model-settings-admin');
+
+    const betaTenantId = await betaPage!.getByTestId('app-shell').getAttribute('data-tenant-id');
+    const betaState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    assert.equal(betaState.modelSettings.hasKey, true, 'A second Google account must see that the instance Model API is configured');
+    assert.equal(betaState.modelSettings.baseUrl, testModelBaseUrl);
+    assert.equal(betaState.modelSettings.model, testModelName);
+    assert.notEqual(betaState.modelSettings.adminTenantId, betaTenantId, 'The second account must not become the model administrator');
+    assert(betaState.availableEngines.includes('model'), 'A fresh tenant must inherit the instance Model API availability');
+    await openProfile(betaPage!);
+    await betaPage!.getByTestId('shared-model-settings-readonly').waitFor({ state: 'visible' });
+    const deniedModelWrite = await betaPage!.evaluate(async () => {
+      const response = await fetch('/api/model-settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://attacker.example/v1', model: 'other-model', apiKey: '' }) });
+      return { status: response.status, body: await response.json() as { error?: string } };
+    });
+    assert.equal(deniedModelWrite.status, 403, 'A different account must not be allowed to change the shared instance model');
+    await clickNav(betaPage!, '你的 dot');
+
+    const betaComputerChoice = betaPage!.getByTestId('computer-choice');
+    if (await betaComputerChoice.isVisible()) {
+      await betaComputerChoice.getByRole('button', { name: 'Continue' }).click();
+      await betaPage!.getByTestId('dot-onboarding').waitFor({ state: 'visible' });
+      await clickNav(betaPage!, 'Activity');
+      await clickNav(betaPage!, '新聊天');
+    }
+
+    const sharedModelInstruction = 'E2E shared model call from Beta account — 用中文确认模型调用成功';
+    const requestStart = mockModelRequests.length;
+    await createTask(betaPage!, sharedModelInstruction);
+    await betaPage!.waitForFunction(async (instruction: string) => {
+      const snapshot = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; result: string | null; engine: string }[] };
+      const task = snapshot.tasks.find(candidate => candidate.instruction === instruction);
+      return task?.engine === 'model' && task.status === 'done' && task.result?.includes('共享模型 API 已在第二个 Google 账号中成功调用。');
+    }, sharedModelInstruction, { timeout: 20_000 });
+    await waitFor(() => mockModelRequests.slice(requestStart).some(request => request.prompt.includes(sharedModelInstruction)), 5_000);
+    const betaModelRequest = mockModelRequests.slice(requestStart).find(request => request.prompt.includes(sharedModelInstruction));
+    assert.equal(betaModelRequest?.authorization, `Bearer ${testModelApiKey}`, 'Beta must execute a real authenticated model HTTP request with the instance-shared credential');
+    await screenshot(betaPage!, 'shared-model-task-from-beta');
+  });
+
   await recordStep('Dot appearance changes persist within Alpha personal workspace', async () => {
     await openProfile(alphaPage!);
     await alphaPage!.getByLabel('桌面通知').check();
@@ -1167,7 +1232,8 @@ try {
     assert.equal(await gammaPage!.locator('.workspace-switcher option').filter({ hasText: 'Alpha Shared' }).count(), 0, 'A pending invitation exposed the workspace before acceptance');
     await screenshot(gammaPage!, '10b-gamma-pending-invitation');
     await gammaPage!.getByRole('button', { name: '接受并打开工作区' }).click();
-    await (await taskNavigationItem(gammaPage!, 'E2E shared workspace task')).waitFor({ state: 'visible' });
+    await clickNav(gammaPage!, 'Activity');
+    await gammaPage!.locator('.task-card').filter({ hasText: 'E2E shared workspace task' }).waitFor({ state: 'visible' });
     assert.equal(await gammaPage!.locator('.profile-link strong').innerText(), 'Shared Dot');
     await openProfile(gammaPage!);
     await gammaPage!.locator('.member-row').filter({ hasText: 'gamma@example.test' }).waitFor({ state: 'visible' });
@@ -1197,20 +1263,18 @@ try {
     await selectTenant(betaPage!, 'Beta workspace');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
     await assertNoVisibleText(betaPage!, 'E2E shared workspace task — prepare the team review');
-    assert.equal(await betaPage!.locator('.task-links button').count(), 0);
+    await (await taskNavigationItem(betaPage!, 'E2E shared model call from Beta account')).waitFor({ state: 'visible' });
+    assert.equal(await betaPage!.locator('.task-links button').count(), 1, 'Beta should retain its own shared-model test task while Alpha workspace tasks remain isolated');
     await screenshot(betaPage!, '11-beta-personal-isolation');
     await clickNav(betaPage!, 'Activity');
     const activityFeed = betaPage!.getByTestId('activity-feed');
     await activityFeed.waitFor({ state: 'visible' });
-    await activityFeed.getByText('还没有活动记录。', { exact: true }).waitFor({ state: 'visible' });
+    await activityFeed.getByTestId('activity-entry').filter({ hasText: 'E2E shared model call from Beta account' }).first().waitFor({ state: 'visible' });
     assert.equal(await activityFeed.getByTestId('activity-entry').filter({ hasText: alphaPrivateTask }).count(), 0, 'Beta received an Alpha activity entry');
     await screenshot(betaPage!, '11b-beta-private-activity');
   });
 
   await recordStep('Restart the local service and recover both authenticated tenant sessions and task data', async () => {
-    testModelBaseUrl = await startMockModel();
-    testModelApiKey = 'e2e-local-only';
-    testModelName = 'e2e-model';
     await restartService();
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await betaPage!.reload({ waitUntil: 'domcontentloaded' });
@@ -1231,6 +1295,11 @@ try {
     await screenshot(alphaPage!, '12-alpha-after-service-restart');
     await screenshot(betaPage!, '13-beta-after-service-restart');
     await selectTenant(betaPage!, 'Beta workspace');
+    const betaModelState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json());
+    assert.equal(betaModelState.modelSettings.baseUrl, testModelBaseUrl, 'Shared model endpoint did not survive restart');
+    assert.equal(betaModelState.modelSettings.model, testModelName, 'Shared model name did not survive restart');
+    assert.equal(betaModelState.modelSettings.hasKey, true, 'Shared model Keychain credential did not survive restart');
+    assert(betaModelState.availableEngines.includes('model'), 'Beta lost access to the instance model after restart');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
   });
 
@@ -1346,25 +1415,213 @@ try {
     ].join('\n');
     await alphaPage!.evaluate((script: string) => window.eval(script), voiceMockScript);
     await openProfile(alphaPage!);
+    const originalDotName = await alphaPage!.getByLabel('名字').inputValue();
+    assert.equal(originalDotName, 'Shared Dot', 'The shared-workspace profile fixture should be explicit before the reference capture');
+    await alphaPage!.getByLabel('名字').fill('dot');
+    await alphaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
+    await alphaPage!.locator('.profile-link strong').getByText('dot', { exact: true }).waitFor({ state: 'visible' });
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     const profileCall = alphaPage!.getByTestId('voice-call');
     await profileCall.waitFor({ state: 'visible' });
+    const voiceProviderConfig = await alphaPage!.evaluate(async () => await (await fetch('/api/voice/provider')).json()) as { provider: string; configured: boolean; apiKey?: string };
+    assert.deepEqual(voiceProviderConfig, { provider: 'browser', configured: true }, 'The browser fallback must be explicit and must not expose provider credentials');
+    const activeCall = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null }[];
+    const activeCallId = activeCall.find(item => !item.endedAt)?.id;
+    assert(activeCallId, 'The call UI must create its owner-scoped call record before starting its voice transport');
+    const unsupportedRealtimeStatus = await alphaPage!.evaluate(async (id: string) => (await fetch(`/api/voice-calls/${id}/realtime-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'v=0' }) })).status, activeCallId);
+    assert.equal(unsupportedRealtimeStatus, 409, 'The browser provider must not be silently treated as a realtime model session');
+    const crossTenantRealtimeStatus = await betaPage!.evaluate(async (id: string) => (await fetch(`/api/voice-calls/${id}/realtime-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'v=0' }) })).status, activeCallId);
+    assert.equal(crossTenantRealtimeStatus, 404, 'A different tenant cannot negotiate against another user’s active call');
+    assert.equal(await profileCall.getAttribute('data-variant'), 'handset');
+    assert.equal(await profileCall.locator('.voice-call-person > strong').innerText(), 'dot', 'The pixel-comparison frame must use the same visible Dot name as the reference video');
+    const handsetBox = await profileCall.boundingBox();
+    assert(handsetBox && handsetBox.height / handsetBox.width > 1.8 && handsetBox.height / handsetBox.width < 2.2, 'The standalone call should match the tall handset reference proportions');
+    assert.match(await profileCall.locator('.voice-call-screen').evaluate(element => getComputedStyle(element).backgroundImage), /radial-gradient.*linear-gradient/);
+    assert.equal(await profileCall.getByRole('button', { name: '结束通话' }).innerText(), 'End');
+    assert.equal(await profileCall.getByRole('button', { name: '关闭扬声器' }).innerText(), 'Speaker');
+    assert.equal(await profileCall.getByRole('button', { name: '静音' }).innerText(), 'Mute');
+    const handsetReference = JSON.parse(await readFile(join(projectRoot, 'research/comparisons/voice-call-mobile-v1-0650.json'), 'utf8')) as {
+      source: { crop: { width: number; height: number } };
+      controls: { name: string; center: { x: number; y: number }; diameter: number }[];
+      tolerance: { normalizedPosition: number; normalizedDiameter: number };
+    };
+    const handsetGeometry = await profileCall.evaluate(element => {
+      const dock = element.getBoundingClientRect();
+      return Array.from(element.querySelectorAll<HTMLElement>('.voice-call-control-icon')).map(icon => {
+        const box = icon.getBoundingClientRect();
+        return {
+          x: (box.left + box.width / 2 - dock.left) / dock.width,
+          y: (box.top + box.height / 2 - dock.top) / dock.height,
+          diameter: box.width / dock.width,
+        };
+      });
+    });
+    assert.equal(handsetGeometry.length, handsetReference.controls.length);
+    handsetReference.controls.forEach((reference, index) => {
+      const actual = handsetGeometry[index]!;
+      const x = reference.center.x / handsetReference.source.crop.width;
+      const y = reference.center.y / handsetReference.source.crop.height;
+      const diameter = reference.diameter / handsetReference.source.crop.width;
+      assert(Math.abs(actual.x - x) <= handsetReference.tolerance.normalizedPosition,
+        `${reference.name} center should match the 06:50.9 frame horizontally: expected ${x.toFixed(3)}, saw ${actual.x.toFixed(3)}`);
+      assert(Math.abs(actual.y - y) <= handsetReference.tolerance.normalizedPosition,
+        `${reference.name} center should match the 06:50.9 frame vertically: expected ${y.toFixed(3)}, saw ${actual.y.toFixed(3)}`);
+      assert(Math.abs(actual.diameter - diameter) <= handsetReference.tolerance.normalizedDiameter,
+        `${reference.name} diameter should match the 06:50.9 frame: expected ${diameter.toFixed(3)}, saw ${actual.diameter.toFixed(3)}`);
+    });
+    const upperFrameReference = JSON.parse(await readFile(join(projectRoot, 'research/comparisons/voice-call-v1-0626-upper-screen.json'), 'utf8')) as {
+      measuredElements: {
+        statusTimeLeft: number;
+        statusTimeBoxTop: number;
+        notchLeft: number;
+        notchTop: number;
+        notchWidth: number;
+        notchHeight: number;
+        earpieceLeft: number;
+        earpieceTop: number;
+        earpieceWidth: number;
+        earpieceHeight: number;
+        sensorLeft: number;
+        sensorTop: number;
+        sensorDiameter: number;
+        avatarTop: number;
+        avatarDiameter: number;
+        nameBoxTop: number;
+        timerBoxTop: number;
+        tolerancePx: { statusTime: number; notchPosition: number; notchSize: number; notchDetailPosition: number; notchDetailSize: number; avatarTop: number; avatarDiameter: number; textTop: number };
+      };
+    };
+    const upperFrameGeometry = await profileCall.evaluate(element => {
+      const dock = element.getBoundingClientRect();
+      const notch = element.querySelector<HTMLElement>('.voice-call-notch')!.getBoundingClientRect();
+      const notchElement = element.querySelector<HTMLElement>('.voice-call-notch')!;
+      const earpieceStyle = getComputedStyle(notchElement, '::before');
+      const sensorStyle = getComputedStyle(notchElement, '::after');
+      const avatar = element.querySelector<HTMLElement>('.voice-call-avatar')!.getBoundingClientRect();
+      const name = element.querySelector<HTMLElement>('.voice-call-person > strong')!.getBoundingClientRect();
+      const timer = element.querySelector<HTMLElement>('.voice-call-screen-timer')!.getBoundingClientRect();
+      const statusTime = element.querySelector<HTMLElement>('.voice-call-status-time')!.getBoundingClientRect();
+      const statusSilent = element.querySelector<HTMLElement>('.voice-call-status-leading .voice-call-silent')!.getBoundingClientRect();
+      return {
+        statusTimeLeft: statusTime.left - dock.left,
+        statusTimeBoxTop: statusTime.top - dock.top,
+        statusSilentGap: statusSilent.left - statusTime.right,
+        rightStatusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
+        avatarTop: avatar.top - dock.top,
+        avatarDiameter: avatar.width,
+        nameBoxTop: name.top - dock.top,
+        timerBoxTop: timer.top - dock.top,
+        notchLeft: notch.left - dock.left,
+        notchTop: notch.top - dock.top,
+        notchWidth: notch.width,
+        notchHeight: notch.height,
+        earpieceLeft: notch.left - dock.left + Number.parseFloat(earpieceStyle.left),
+        earpieceTop: notch.top - dock.top + Number.parseFloat(earpieceStyle.top),
+        earpieceWidth: Number.parseFloat(earpieceStyle.width),
+        earpieceHeight: Number.parseFloat(earpieceStyle.height),
+        sensorLeft: notch.right - dock.left - Number.parseFloat(sensorStyle.right) - Number.parseFloat(sensorStyle.width),
+        sensorTop: notch.top - dock.top + Number.parseFloat(sensorStyle.top),
+        sensorDiameter: Number.parseFloat(sensorStyle.width),
+      };
+    });
+    const upperTolerance = upperFrameReference.measuredElements.tolerancePx;
+    assert(Math.abs(upperFrameGeometry.statusTimeLeft - upperFrameReference.measuredElements.statusTimeLeft) <= upperTolerance.statusTime,
+      `Status time should match the 06:26 frame horizontally: expected ${upperFrameReference.measuredElements.statusTimeLeft}px, saw ${upperFrameGeometry.statusTimeLeft.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.statusTimeBoxTop - upperFrameReference.measuredElements.statusTimeBoxTop) <= upperTolerance.statusTime,
+      `Status time should match the 06:26 frame vertically: expected ${upperFrameReference.measuredElements.statusTimeBoxTop}px, saw ${upperFrameGeometry.statusTimeBoxTop.toFixed(1)}px`);
+    for (const key of ['notchLeft', 'notchTop'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchPosition,
+        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['notchWidth', 'notchHeight'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchSize,
+        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['earpieceLeft', 'earpieceTop', 'sensorLeft', 'sensorTop'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailPosition,
+        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    for (const key of ['earpieceWidth', 'earpieceHeight', 'sensorDiameter'] as const) {
+      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailSize,
+        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
+    }
+    assert(upperFrameGeometry.statusSilentGap >= 0 && upperFrameGeometry.statusSilentGap <= 6,
+      'The crossed-bell status glyph should sit immediately beside the time as in the 06:26 frame');
+    assert.equal(upperFrameGeometry.rightStatusIconCount, 2, 'Cellular and Wi-Fi status glyphs should remain grouped by the battery on the right');
+    assert(Math.abs(upperFrameGeometry.avatarTop - upperFrameReference.measuredElements.avatarTop) <= upperTolerance.avatarTop,
+      `Avatar top should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarTop}px, saw ${upperFrameGeometry.avatarTop.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.avatarDiameter - upperFrameReference.measuredElements.avatarDiameter) <= upperTolerance.avatarDiameter,
+      `Avatar size should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarDiameter}px, saw ${upperFrameGeometry.avatarDiameter.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.nameBoxTop - upperFrameReference.measuredElements.nameBoxTop) <= upperTolerance.textTop,
+      `Dot name should match the 06:26 frame: expected ${upperFrameReference.measuredElements.nameBoxTop}px, saw ${upperFrameGeometry.nameBoxTop.toFixed(1)}px`);
+    assert(Math.abs(upperFrameGeometry.timerBoxTop - upperFrameReference.measuredElements.timerBoxTop) <= upperTolerance.textTop,
+      `Call timer should match the 06:26 frame: expected ${upperFrameReference.measuredElements.timerBoxTop}px, saw ${upperFrameGeometry.timerBoxTop.toFixed(1)}px`);
+    await waitFor(async () => {
+      const [minutes, seconds] = (await profileCall.getByTestId('voice-call-timer').innerText()).split(':').map(Number);
+      return Number.isFinite(minutes) && Number.isFinite(seconds) && minutes * 60 + seconds >= 6;
+    }, 10_000);
+    await screenshot(alphaPage!, 'voice-call-handset-reference');
+    await profileCall.screenshot({ path: join(screenshotsDir, 'voice-call-handset-phone.png') });
+    screenshotNames.push('voice-call-handset-phone.png');
+    await profileCall.getByRole('button', { name: '展开通话界面' }).click();
+    assert.equal(await profileCall.getByRole('button', { name: '收起通话界面' }).getAttribute('aria-pressed'), 'true');
+    await profileCall.getByRole('button', { name: '收起通话界面' }).click();
+    await profileCall.getByRole('button', { name: '关闭扬声器' }).click();
+    assert.equal(await profileCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
+    await profileCall.getByRole('button', { name: '静音' }).click();
+    assert.equal(await profileCall.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
+    await profileCall.getByRole('button', { name: '取消静音' }).click();
+    await profileCall.getByRole('button', { name: '打开扬声器' }).click();
+    await delay(1100);
+    assert.notEqual(await profileCall.getByTestId('voice-call-timer').innerText(), '0:00');
     await profileCall.getByRole('button', { name: '结束通话' }).click();
     await profileCall.waitFor({ state: 'hidden' });
+    await alphaPage!.getByLabel('名字').fill(originalDotName);
+    await alphaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
+    await alphaPage!.locator('.profile-link strong').getByText(originalDotName, { exact: true }).waitFor({ state: 'visible' });
 
     await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
+    const headerCallLaunch = alphaPage!.getByTestId('conversation-call-launch');
+    await headerCallLaunch.waitFor({ state: 'visible' });
+    const headerCallBox = await headerCallLaunch.boundingBox();
+    const chatContextBox = await alphaPage!.locator('.dot-context-panel').boundingBox();
+    assert(headerCallBox && chatContextBox && headerCallBox.y < 40 && headerCallBox.x + headerCallBox.width <= chatContextBox.x,
+      'The conversation-header call action should sit at the upper right edge of the chat pane, before the Dot details panel');
+    const headerActionsBox = await alphaPage!.locator('.top-actions').boundingBox();
+    assert(headerCallBox && headerActionsBox && headerCallBox.x >= headerActionsBox.x + headerActionsBox.width,
+      'The conversation-header call action should not overlap workspace or theme controls');
+    await screenshot(alphaPage!, 'voice-call-header-entry-idle');
+    await headerCallLaunch.click();
+    const headerCall = alphaPage!.getByTestId('voice-call');
+    await headerCall.waitFor({ state: 'visible' });
+    assert.equal(await headerCall.getAttribute('data-variant'), 'desktop', 'The conversation-header phone action should enter the desktop call flow');
+    assert.equal(await alphaPage!.locator('.top-actions').evaluate(element => getComputedStyle(element).display), 'none',
+      'The compact active call controls should have a clear header row without workspace controls beneath them');
+    await screenshot(alphaPage!, 'voice-call-header-entry');
+    await headerCall.getByRole('button', { name: '结束通话' }).click();
+    await headerCall.waitFor({ state: 'hidden' });
+
+    await alphaPage!.getByTestId('context-call-launch').click();
+    const contextCall = alphaPage!.getByTestId('voice-call');
+    await contextCall.waitFor({ state: 'visible' });
+    assert.equal(await contextCall.getAttribute('data-variant'), 'desktop', 'The Dot details-panel Call action should use the desktop call flow');
+    await contextCall.getByRole('button', { name: '结束通话' }).click();
+    await contextCall.waitFor({ state: 'hidden' });
+
     await alphaPage!.getByTestId('voice-call-launch').click();
     const call = alphaPage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeRecognition));
-    await call.getByRole('button', { name: '关闭扬声器' }).click();
-    assert.equal(await call.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
+    assert.equal(await call.getAttribute('data-variant'), 'desktop');
+    assert.equal(await call.locator('.voice-call-screen').count(), 0, 'Desktop chat calls should use the compact V2 controls, not the handset surface');
+    const inlineBox = await call.boundingBox();
+    const contextBox = await alphaPage!.locator('.dot-context-panel').boundingBox();
+    assert(inlineBox && contextBox && inlineBox.y < 40 && inlineBox.x + inlineBox.width <= contextBox.x, 'Desktop call controls should sit at the upper right of the conversation pane, before the context panel');
+    assert.match(await call.getByRole('button', { name: '静音' }).evaluate(element => getComputedStyle(element).backgroundColor), /rgb\(40, 116, 95\)/);
+    await screenshot(alphaPage!, 'voice-call-active-reference');
     await call.getByRole('button', { name: '静音' }).click();
     assert.equal(await call.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
     await call.getByRole('button', { name: '取消静音' }).click();
-    await call.getByRole('button', { name: '打开扬声器' }).click();
-    await delay(1100);
-    assert.notEqual(await call.getByTestId('voice-call-timer').innerText(), '00:00', 'The call timer should advance while connected');
 
     let speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
     const clarification = 'E2E voice clarification — ask which launch date to use';
@@ -1373,8 +1630,9 @@ try {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, clarification);
-    await call.getByText(clarification, { exact: true }).waitFor({ state: 'visible' });
-    await call.getByText('等待你的回复', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: clarification }).waitFor({ state: 'visible' });
+    await call.getByTestId('voice-call-transcript').waitFor({ state: 'attached' });
+    await waitFor(async () => (await call.getByTestId('voice-call-transcript').getAttribute('data-task-status')) === '等待你的回复', 15_000);
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
       return speechOutput.includes('What launch date should I use?');
@@ -1391,7 +1649,6 @@ try {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, 'Use Friday.');
-    await call.getByText('Use Friday.', { exact: true }).waitFor({ state: 'visible' });
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: 'Use Friday.' }).waitFor({ state: 'visible' });
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
@@ -1409,14 +1666,20 @@ try {
     assert.equal(clarificationPrompts.length, 2, 'The original voice task and its spoken reply should use one task lifecycle');
     assert.match(clarificationPrompts[1] || '', /Task: E2E voice clarification — ask which launch date to use\n\nUser reply: Use Friday\./);
 
+    let voiceStatePollingRequests = 0;
+    const countVoiceStatePolling = (request: { url(): string }) => {
+      if (new URL(request.url()).pathname === '/api/state') voiceStatePollingRequests += 1;
+    };
+    alphaPage!.on('request', countVoiceStatePolling);
     const instruction = 'E2E voice request — finish after the call ends';
     await alphaPage!.evaluate((text: string) => {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, instruction);
-    await call.getByText(instruction, { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: instruction }).waitFor({ state: 'visible' });
     await waitFor(() => Boolean(heldVoiceModelRelease), 10_000);
     await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
+    await waitFor(async () => (await call.getByTestId('voice-call-transcript').getAttribute('data-task-status'))?.includes('Dot 正在处理') || false, 10_000);
     await screenshot(alphaPage!, 'voice-call-task-running');
     speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
     assert(speechOutput.includes('收到，已加入工作队列。'), 'The call should speak its queue acknowledgement when speaker output is enabled');
@@ -1425,12 +1688,14 @@ try {
       const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, responseInstruction);
-    await call.getByText(responseInstruction, { exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: responseInstruction }).waitFor({ state: 'visible' });
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
       return speechOutput.includes('Voice response returned from the model.');
     }, 10_000);
     assert(speechOutput.includes('Voice response returned from the model.'), 'The call should speak the completed task result, not only acknowledge receipt');
+    assert.equal(voiceStatePollingRequests, 0, 'Voice task progress should arrive on the authenticated event stream instead of polling /api/state');
+    alphaPage!.off('request', countVoiceStatePolling);
     const composer = alphaPage!.getByTestId('task-composer');
     await composer.fill('Typed while the voice call is active');
     assert.equal(await composer.inputValue(), 'Typed while the voice call is active');
@@ -1443,9 +1708,37 @@ try {
       return snapshot.tasks.some(task => task.instruction === text && task.status === 'done' && task.result === 'Voice request finished after the call ended.');
     }, instruction, { timeout: 15_000 });
     const alphaCalls = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null; durationSeconds: number | null }[];
-    assert.equal(alphaCalls.length, 2, 'Conversation and Dot profile call entry points must each persist a call');
+    assert.equal(alphaCalls.length, 4, 'Conversation header, context panel, composer, and Dot profile call entry points must each persist a call');
     assert(alphaCalls.every(item => item.endedAt), 'Ending each call must persist its completion time');
     assert(alphaCalls.some(item => item.durationSeconds !== null && item.durationSeconds >= 1));
+
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 4, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => {
+      const timeline = document.querySelector('.timeline');
+      const composer = document.querySelector('.composer-wrap');
+      return Boolean(timeline && timeline.scrollHeight > timeline.clientHeight + 48 && timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 48 && composer && composer.getBoundingClientRect().bottom <= window.innerHeight + 1 && document.documentElement.scrollHeight <= window.innerHeight + 1);
+    }, null, { timeout: 5_000 });
+    const timelineTimes = await alphaPage!.locator('.timeline [data-testid="chat-timeline-item"]').evaluateAll(elements => elements.map(element => Date.parse(element.getAttribute('data-timestamp') || '')));
+    assert(timelineTimes.every((time, index) => index === 0 || timelineTimes[index - 1]! <= time), 'Conversation entries and ended-call chips must appear in chronological order');
+    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 4, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
+    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 4, 'The ended-call state should retain the optional label visible in the reference');
+    await screenshot(alphaPage!, 'voice-call-ended-in-conversation');
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 4, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => {
+      const timeline = document.querySelector('.timeline');
+      const composer = document.querySelector('.composer-wrap');
+      return Boolean(timeline && timeline.scrollHeight > timeline.clientHeight + 48 && timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 48 && composer && composer.getBoundingClientRect().bottom <= window.innerHeight + 1 && document.documentElement.scrollHeight <= window.innerHeight + 1);
+    }, null, { timeout: 5_000 });
+    await screenshot(alphaPage!, 'voice-call-ended-after-reload');
+    await selectTenant(alphaPage!, 'Alpha workspace');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 0, null, { timeout: 10_000 });
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 4, null, { timeout: 10_000 });
 
     await selectTenant(betaPage!, 'Alpha Shared');
     const betaSharedCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));
@@ -1842,13 +2135,12 @@ try {
     await clickNav(alphaPage!, 'Activity');
     const parentCard = alphaPage!.locator('.task-card').filter({ has: alphaPage!.getByRole('heading', { name: parentInstruction, exact: true }) });
     await parentCard.locator('.pill.delegating').waitFor({ state: 'visible', timeout: 15_000 });
-    await waitFor(() => delegatedModelPrompts.length === 2, 15_000);
+    await waitFor(() => delegatedModelPrompts.length === 3, 15_000);
     const delegationPlanPrompt = mockModelPrompts.find(prompt => prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:'));
-    assert.match(delegationPlanPrompt || '', /Available child engines for this tenant: model, claude/, 'Parent prompt did not receive the tenant’s currently available engines');
+    assert.match(delegationPlanPrompt || '', /Available child engines for this tenant: model/, 'Parent prompt did not receive the tenant’s currently available engines');
     const childCards = ['Market scan', 'Competitor scan', 'Launch risks'].map(title => alphaPage!.locator('.task-card').filter({ hasText: title }));
     for (const card of childCards) await card.locator('.pill.working').waitFor({ state: 'visible', timeout: 10_000 });
-    await childCards[0].locator('.delegated-from').getByText('内核：模型 API').waitFor({ state: 'visible' });
-    await childCards[2].locator('.delegated-from').getByText('内核：Claude Code').waitFor({ state: 'visible' });
+    for (const card of childCards) await card.locator('.delegated-from').getByText('内核：模型 API').waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'delegated-three-children-working');
 
     await childCards[0].getByRole('button', { name: '停止工作' }).click();
@@ -1862,7 +2154,7 @@ try {
     await childCards[1].locator('.pill.working').waitFor({ state: 'visible' });
     await childCards[2].locator('.pill.working').waitFor({ state: 'visible' });
     delegatedModelReleases.get('Competitor scan')?.();
-    await writeFile(e2eClaudeRelease, 'release');
+    delegatedModelReleases.get('Launch risks')?.();
     await childCards[1].locator('.pill.done').waitFor({ state: 'visible', timeout: 10_000 });
     await childCards[2].locator('.pill.done').waitFor({ state: 'visible', timeout: 10_000 });
     await parentCard.locator('.pill.paused').waitFor({ state: 'visible' });
@@ -1875,7 +2167,7 @@ try {
     assert.match(aggregatePrompt, /Competitor scan \[done\]/, 'Parent did not receive a successful child result');
     assert.match(aggregatePrompt, /Launch risks \[done\]/, 'Parent did not receive the second successful child result');
     assert.match(aggregatePrompt, /verified findings/, 'Child result text was not returned to the parent');
-    assert.match(aggregatePrompt, /Claude Code completed the risks review/, 'The selected Claude adapter result was not returned to the parent');
+    assert.match(aggregatePrompt, /Launch risks completed with verified findings/, 'The selected child model result was not returned to the parent');
     await screenshot(alphaPage!, 'delegated-parent-aggregate-completed');
 
     await selectTenant(betaPage!, 'Beta workspace');
@@ -1948,6 +2240,173 @@ try {
     await screenshot(alphaPage!, '16-computer-returned');
   });
 
+  await recordStep('Qwen WebRTC call sends Chinese speech to the tenant Agent and speaks its real task result', async () => {
+    mockQwenSignalingUrl = await startMockQwenSignaling();
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'qwen',
+      DOTS_QWEN_API_KEY: '',
+      DOTS_QWEN_WORKSPACE_ID: '',
+      DOTS_QWEN_REGION: '',
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const unconfiguredCall = alphaPage!.getByTestId('voice-call');
+    await unconfiguredCall.getByRole('alert').filter({ hasText: '百炼 API Key 和工作空间 ID；地域默认使用北京' }).waitFor({ state: 'visible' });
+    await unconfiguredCall.getByRole('button', { name: '结束通话' }).click();
+
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'qwen',
+      DOTS_QWEN_API_KEY: 'e2e-qwen-secret',
+      DOTS_QWEN_WORKSPACE_ID: 'e2e-workspace',
+      DOTS_QWEN_REGION: 'beijing',
+      DOTS_E2E_QWEN_SIGNALING_URL: mockQwenSignalingUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    const rtcMockScript = String.raw`(() => {
+      const view = window;
+      view.__dotsQwenSentEvents = [];
+      const track = { kind: 'audio', enabled: true, stopped: false, stop() { this.stopped = true; } };
+      view.__dotsQwenFakeTrack = track;
+      view.__dotsQwenFakeSender = null;
+      class FakeDataChannel {
+        constructor(label) { this.label = label; this.readyState = 'connecting'; this.onopen = null; this.onmessage = null; this.onerror = null; }
+        send(raw) {
+          const event = JSON.parse(raw);
+          view.__dotsQwenSentEvents.push(event);
+          if (event.type === 'response.create') {
+            view.__dotsQwenEventChannel?.emit({ type: 'response.created' });
+            window.setTimeout(() => view.__dotsQwenEventChannel?.emit({ type: 'response.done' }), 60);
+          }
+        }
+        emit(event) { this.onmessage?.({ data: JSON.stringify(event) }); }
+        close() { this.readyState = 'closed'; }
+      }
+      class FakePeerConnection {
+        constructor() { this.iceGatheringState = 'complete'; this.connectionState = 'new'; this.localDescription = null; this.ondatachannel = null; this.ontrack = null; this.onconnectionstatechange = null; this.sendChannel = null; }
+        addTransceiver(kind, options) {
+          if (kind !== 'audio' || options?.direction !== 'sendrecv') throw new Error('Voice call must reserve bidirectional audio before SDP offer');
+          const sender = { track: null, async replaceTrack(nextTrack) { this.track = nextTrack; } };
+          view.__dotsQwenFakeSender = sender;
+          return { sender };
+        }
+        createDataChannel(label) { this.sendChannel = new FakeDataChannel(label); return this.sendChannel; }
+        async createOffer() { return { type: 'offer', sdp: ['v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)) }; }
+        async setLocalDescription(description) { this.localDescription = description; }
+        async setRemoteDescription(description) {
+          if (!description?.sdp?.startsWith('v=0')) throw new Error('Qwen answer SDP was not returned to the browser');
+          const remote = new FakeDataChannel('txt');
+          remote.readyState = 'open';
+          view.__dotsQwenEventChannel = remote;
+          this.ondatachannel?.({ channel: remote });
+          remote.emit({ type: 'session.created' });
+          this.sendChannel.readyState = 'open';
+          this.sendChannel.onopen?.();
+          view.__dotsQwenConfirmSession = () => remote.emit({ type: 'session.updated' });
+        }
+        close() { this.connectionState = 'closed'; }
+      }
+      Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: FakePeerConnection });
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async () => ({ getAudioTracks: () => [track], getTracks: () => [track] }) } });
+    })()`;
+    await alphaPage!.evaluate((script: string) => window.eval(script), rtcMockScript);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-provider') === 'qwen');
+    await alphaPage!.waitForFunction(() => (window as unknown as { __dotsQwenSentEvents?: { type: string }[] }).__dotsQwenSentEvents?.some(event => event.type === 'session.update') === true, null, { timeout: 10_000 });
+    assert.match(await call.locator('[data-testid="voice-call-transcript"]').innerText(), /正在初始化语音模型/, 'The UI must not report listening before model setup is acknowledged');
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeSender: { track: unknown } }).__dotsQwenFakeSender.track), null, 'The microphone must remain detached until session.updated');
+    await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenConfirmSession: () => void }).__dotsQwenConfirmSession());
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 10_000 });
+    const microphoneAttachedAfterSetup = await alphaPage!.evaluate(() => {
+      const view = window as unknown as { __dotsQwenFakeSender: { track: unknown }; __dotsQwenFakeTrack: unknown };
+      return view.__dotsQwenFakeSender.track === view.__dotsQwenFakeTrack;
+    });
+    assert.equal(microphoneAttachedAfterSetup, true, 'The microphone should attach only after model configuration is acknowledged');
+    const config = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as { provider: string; configured: boolean; apiKey?: string };
+    assert.deepEqual(config, { provider: 'qwen', configured: true, model: 'qwen3.8-omni-flash-realtime' });
+    assert.equal(mockQwenSignalingRequests.length, 1, 'The browser must complete server-side Qwen SDP negotiation before listening');
+    assert.deepEqual(mockQwenSignalingRequests[0], {
+      authorization: 'Bearer e2e-qwen-secret', contentType: 'application/sdp',
+      sdp: ['v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0', ''].join(String.fromCharCode(13, 10)),
+    });
+    const sessionUpdate = await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenSentEvents: { type: string; session?: { input_audio_transcription?: { model?: string }; turn_detection?: { type?: string } } }[] }).__dotsQwenSentEvents.find(event => event.type === 'session.update'));
+    assert.equal(sessionUpdate?.session?.input_audio_transcription?.model, 'qwen3-asr-flash-realtime');
+    assert.equal(sessionUpdate?.session?.turn_detection?.type, 'server_vad');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), false, 'Mute must disable the live microphone track');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { enabled: boolean } }).__dotsQwenFakeTrack.enabled), true, 'Unmute must re-enable the live microphone track');
+    const voiceTurnTranscript = 'E2E voice response — speak actual task result';
+    const voiceTurnId = 'item-e2e-qwen-voice-turn-001';
+    await alphaPage!.evaluate(({ transcript, turnId }) => {
+      const view = window as unknown as { __dotsQwenEventChannel: { emit(event: unknown): void } };
+      view.__dotsQwenEventChannel.emit({ type: 'input_audio_buffer.speech_started' });
+      const completed = { type: 'conversation.item.input_audio_transcription.completed', event_id: 'event-e2e-qwen-voice-turn-001', item_id: turnId, transcript };
+      view.__dotsQwenEventChannel.emit(completed);
+      view.__dotsQwenEventChannel.emit(completed);
+      view.__dotsQwenEventChannel.emit({ type: 'response.created' });
+      window.setTimeout(() => view.__dotsQwenEventChannel.emit({ type: 'response.done' }), 700);
+    }, { transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 20_000 });
+    await alphaPage!.waitForFunction(() => (window as unknown as { __dotsQwenSentEvents?: { type: string; item?: { content?: { text?: string }[] } }[] }).__dotsQwenSentEvents?.some(event => event.type === 'conversation.item.create' && event.item?.content?.some(part => part.text?.includes('Voice response returned from the model.'))) === true, null, { timeout: 10_000 });
+    const agentPrompt = mockModelPrompts.find(prompt => prompt.includes('E2E voice response — speak actual task result')) || '';
+    assert(agentPrompt, 'The recognized Chinese speech was not dispatched through the tenant Agent task path');
+    const turnResult = await alphaPage!.evaluate(async ({ transcript, turnId }) => {
+      const callResponse = await fetch('/api/voice-calls');
+      const calls = await callResponse.json() as { id: string; startedAt: string; endedAt: string | null }[];
+      const activeCall = calls.find(candidate => !candidate.endedAt);
+      if (!activeCall) throw new Error('No active call was recorded for the voice turn');
+      const response = await fetch(`/api/voice-calls/${activeCall.id}/turns`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ transcript, turnId, engine: 'pi' }),
+      });
+      return { status: response.status, callId: activeCall.id, callStartedAt: activeCall.startedAt, task: await response.json() as { id: string } };
+    }, { transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    assert.equal(turnResult.status, 200, 'A replayed transcript turn should return the original task');
+    const crossTenantTurnStatus = await betaPage!.evaluate(async ({ callId, transcript, turnId }) => (await fetch(`/api/voice-calls/${callId}/turns`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ transcript, turnId, engine: 'pi' }),
+    })).status, { callId: turnResult.callId, transcript: voiceTurnTranscript, turnId: voiceTurnId });
+    assert.equal(crossTenantTurnStatus, 404, 'A different tenant cannot inspect or replay another user’s voice turn');
+    const voiceTaskCheck = await alphaPage!.evaluate(async ({ transcript, callStartedAt }) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; createdAt: string }[] };
+      const tasks = state.tasks.filter(task => task.instruction === transcript && Date.parse(task.createdAt) >= Date.parse(callStartedAt));
+      return { count: tasks.length, taskId: tasks[0]?.id };
+    }, { transcript: voiceTurnTranscript, callStartedAt: turnResult.callStartedAt });
+    assert.equal(voiceTaskCheck.taskId, turnResult.task.id, 'The replay response must reference the task started for this call');
+    const voiceTaskCount = voiceTaskCheck.count;
+    assert.equal(voiceTaskCount, 1, 'Repeated WebRTC transcript delivery must not start a second Agent task');
+    await screenshot(alphaPage!, 'qwen-realtime-call-agent-result');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsQwenFakeTrack: { stopped: boolean } }).__dotsQwenFakeTrack.stopped), true, 'Ending the call must stop the microphone track');
+    const callHistory = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { endedAt: string | null }[];
+    assert(callHistory.some(item => item.endedAt), 'The Qwen call should be durably recorded when it ends');
+
+    await alphaPage!.evaluate("Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async function () { throw new Error('E2E microphone permission denied'); } } })");
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const failedCall = alphaPage!.getByTestId('voice-call');
+    await failedCall.waitFor({ state: 'visible' });
+    await failedCall.getByRole('alert').filter({ hasText: 'E2E microphone permission denied' }).waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(async () => {
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { endedAt: string | null }[];
+      return Boolean(calls[0]?.endedAt);
+    }, null, { timeout: 10_000 });
+    const failedCallHistory = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { endedAt: string | null }[];
+    assert(failedCallHistory[0]?.endedAt, 'A Qwen call that fails during microphone startup must not remain active in call history');
+    await failedCall.getByRole('button', { name: '结束通话' }).click();
+    await failedCall.waitFor({ state: 'detached' });
+  });
+
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
 } catch (error) {
   failure = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
@@ -1970,9 +2429,14 @@ try {
   await browser?.close().catch(() => undefined);
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
+  try {
+    if (priorE2ESharedModelKey) e2eSharedModelKeyEntry.setPassword(priorE2ESharedModelKey);
+    else e2eSharedModelKeyEntry.deletePassword();
+  } catch { /* Restore only the isolated E2E Keychain service. */ }
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
-  for (const account of e2eSlackTokenAccounts) {
-    try { new Entry('com.cokepoppy.coke-dots.e2e', account).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
+  if (mockQwenSignalingServer) await new Promise<void>(resolvePromise => mockQwenSignalingServer!.close(() => resolvePromise()));
+  if (e2eSlackTokenAccount) {
+    try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
   }
   testModelBaseUrl = '';
   testModelApiKey = '';

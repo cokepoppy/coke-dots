@@ -6,6 +6,7 @@ import { compareRasters, cropRaster, differenceRaster, overlayRasters, resizeRas
 
 interface ComparisonConfig {
   id: string;
+  source?: { videoUrl: string; title?: string; timecode: string };
   reference: string;
   referenceRect: ImageRect;
   implementationRect: ImageRect;
@@ -43,6 +44,7 @@ async function run(configPath: string, implementationPath: string) {
     writePng(join(outputPath, 'difference.png'), differenceRaster(alignedReference, implementationCrop)),
     writeFile(join(outputPath, 'metrics.json'), `${JSON.stringify({
       id: config.id,
+      source: config.source,
       reference: referencePath,
       implementation: implementationPath,
       referenceRect: config.referenceRect,
