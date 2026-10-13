@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { Entry } from '../../src/server/keyring.ts';
 import { PNG } from 'pngjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -42,6 +43,7 @@ const logs: string[] = [];
 
 await writeFile(envFile, '');
 await mkdir(artifacts, { recursive: true });
+new Entry(process.env.DOTS_KEYCHAIN_SERVICE!, 'shared-model-api-key').setPassword('cloud-e2e-shared-api-key');
 
 function makeScreen() {
   const png = new PNG({ width: 1440, height: 900 });
@@ -162,7 +164,7 @@ async function startApp() {
       DOTS_LINUX_DESKTOP_TEST_AGENT_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/agent/`,
       DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
       DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: 'node', args: ['/tmp/dots-dsh-adapter.mjs'] } }),
-      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: '', DOTS_MODEL_API_KEY: '', DOTS_MODEL: '', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
+      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://api.deepseek.com/v1', DOTS_MODEL_API_KEY: '', DOTS_MODEL: 'cloud-e2e-model', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -295,6 +297,7 @@ try {
   assert.equal(agentCalls[0].engine, 'dsh');
   assert.equal(agentCalls[0].cwd, `tasks/${created.task.id}`);
   assert.equal((agentCalls[0].computer as { baseUrl: string }).baseUrl, 'http://127.0.0.1:8082');
+  assert.deepEqual(agentCalls[0].modelConfig, { apiKey: 'cloud-e2e-shared-api-key', baseUrl: 'https://api.deepseek.com/v1', model: 'cloud-e2e-model' }, 'The cloud Agent must receive the shared instance model profile in its task request');
   await page.screenshot({ path: join(artifacts, '03-agent-task-done.png') });
 
   const betaContext = await browser.newContext({ viewport: { width: 1440, height: 980 }, deviceScaleFactor: 1 });
@@ -312,6 +315,13 @@ try {
     const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string }[] };
     return state.tasks.find(task => task.id === id)?.status === 'done';
   }, betaTask.id, { timeout: 20_000 });
+  const betaStateAfterTask = await betaPage.evaluate(async id => {
+    const state = await fetch('/api/state').then(response => response.json()) as { availableEngines: string[]; remoteEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { id: string; engine: string; status: string; error: string | null }[] };
+    return { ...state.tasks.find(task => task.id === id), availableEngines: state.availableEngines, remoteEngines: state.remoteEngines, modelSettings: state.modelSettings };
+  }, betaTask.id);
+  const betaAgentCall = agentCalls.find(call => call.taskId === betaTask.id);
+  assert(betaAgentCall, `The second tenant cloud task must reach its isolated Agent runtime; betaState=${JSON.stringify(betaStateAfterTask)}, alphaTask=${created.task.id}, betaHash=${betaHash}, tenant=${await betaPage.getByTestId('app-shell').getAttribute('data-tenant-id')}, calls=${JSON.stringify(agentCalls.map(call => ({ taskId: call.taskId, engine: call.engine, hasModelConfig: Boolean(call.modelConfig) })))}`);
+  assert.deepEqual(betaAgentCall.modelConfig, { apiKey: 'cloud-e2e-shared-api-key', baseUrl: 'https://api.deepseek.com/v1', model: 'cloud-e2e-model' }, 'A second tenant must reuse the same instance model profile');
   assert.notEqual(agentTokens.get(alphaHash), agentTokens.get(betaHash), 'Tenant Agent runtime bearer tokens were shared');
   assert.notEqual(machines.get(alphaHash), machines.get(betaHash), 'Tenants shared one desktop state object');
   await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });

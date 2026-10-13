@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
-import { Entry } from '../../src/server/keychain.ts';
+import { Entry } from '../../src/server/keyring.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const artifactStamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -20,10 +20,7 @@ const videoDir = join(artifactRoot, 'video');
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-e2e-'));
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
-const testKeychainFile = join(testDataDir, 'test-keychain.json');
-process.env.NODE_ENV = 'test';
-process.env.DOTS_TEST_KEYCHAIN = '1';
-process.env.DOTS_TEST_KEYCHAIN_FILE = testKeychainFile;
+const sharedModelKeychainLockFile = join(tempRoot, 'simulated-shared-model-keychain-lock');
 const fixtureSource = join(projectRoot, 'tests', 'e2e', 'fixtures', 'computer.html');
 const fixtureDestination = join(projectRoot, 'dist', 'e2e-computer-fixture.html');
 const chromePath = findChromePath();
@@ -119,6 +116,7 @@ async function startMockModel() {
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
         const isDelegationAggregate = prompt.includes('E2E delegation goal — build a launch packet') && prompt.includes('Delegated task results:');
         const isSharedModelTask = prompt.includes('E2E shared model call from Beta account');
+        const isKeychainResilienceTask = prompt.includes('E2E keychain resilience — use the retained shared model credential');
         const delegatedChild = ['Market scan', 'Competitor scan', 'Launch risks'].find(title => prompt.includes(`E2E delegated child — ${title.toLowerCase()}`));
         if (isPauseTask && !pauseModelHeld) {
           pauseModelHeld = true;
@@ -146,13 +144,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isKeychainResilienceTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isKeychainResilienceTask ? '登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -265,8 +263,6 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_E2E_AUTH: '1',
       DOTS_ENV_FILE: emptyEnvFile,
       DOTS_DATA_DIR: testDataDir,
-      DOTS_TEST_KEYCHAIN: '1',
-      DOTS_TEST_KEYCHAIN_FILE: testKeychainFile,
       DOTS_PORT: String(port),
       DOTS_CHROME_BIN: chromePath,
       GOOGLE_CLIENT_ID: '',
@@ -277,6 +273,7 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
       DOTS_KEYCHAIN_SERVICE: 'com.cokepoppy.coke-dots.e2e',
+      DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE: sharedModelKeychainLockFile,
       SLACK_CLIENT_ID: 'coke-dots-slack-e2e-client',
       SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
       SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
@@ -1109,53 +1106,51 @@ try {
     assert.match(await weeklyDetail.innerText(), new RegExp(`until ${scheduleEndDate}`));
     await screenshot(alphaPage!, '07c-weekly-scheduled');
     await weeklyDetail.getByRole('button', { name: 'Cancel schedule' }).click();
-  });
 
-  const editableScheduledTask = 'E2E editable schedule — send a morning summary';
-  await recordStep('Scheduled lets the owner edit, pause, resume, and remove a recurring task', async () => {
+    const editableTask = 'E2E editable schedule — send a morning summary';
     await clickNav(alphaPage!, '你的 dot');
-    await createTask(alphaPage!, editableScheduledTask, true);
+    await createTask(alphaPage!, editableTask, true);
     await clickNav(alphaPage!, 'Scheduled');
-    const detail = alphaPage!.getByTestId('scheduled-detail');
-    await alphaPage!.locator('.scheduled-item').filter({ hasText: editableScheduledTask }).click();
-    await detail.getByText('Failed', { exact: true }).waitFor({ state: 'visible' });
-    const taskId = await detail.getAttribute('data-item-id');
-    assert(taskId, 'Scheduled detail must identify the tenant task');
+    const editableDetail = alphaPage!.getByTestId('scheduled-detail');
+    await alphaPage!.locator('.scheduled-item').filter({ hasText: editableTask }).click();
+    await editableDetail.getByText('Failed', { exact: true }).waitFor({ state: 'visible' });
+    const editableTaskId = await editableDetail.getAttribute('data-item-id');
+    assert(editableTaskId, 'Scheduled detail must identify the tenant task');
     const foreignUpdateStatus = await betaPage!.evaluate(async ({ id, scheduleSpec }) => (await fetch(`/api/tasks/${id}`, {
       method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'updateSchedule', scheduleSpec }),
-    })).status, { id: taskId, scheduleSpec: { frequency: 'interval', intervalMinutes: 15 } });
+    })).status, { id: editableTaskId, scheduleSpec: { frequency: 'interval', intervalMinutes: 15 } });
     assert.equal(foreignUpdateStatus, 404, 'Another tenant must not edit this schedule');
 
-    await detail.getByRole('button', { name: 'Edit schedule' }).click();
-    const editor = detail.getByTestId('scheduled-task-editor');
+    await editableDetail.getByRole('button', { name: 'Edit schedule' }).click();
+    const editor = editableDetail.getByTestId('scheduled-task-editor');
     await editor.getByLabel('重复频率').selectOption('daily');
     await editor.getByLabel('定时时间').fill('23:59');
     await editor.getByLabel('时区').selectOption('Asia/Shanghai');
-    const endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    await editor.getByLabel('结束日期').fill(endDate);
+    const editEndDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    await editor.getByLabel('结束日期').fill(editEndDate);
     await editor.getByRole('button', { name: 'Save schedule' }).click();
-    await detail.getByText('Monitoring', { exact: true }).waitFor({ state: 'visible' });
-    await detail.getByText('Daily at 23:59 (Asia/Shanghai)', { exact: false }).waitFor({ state: 'visible' });
-    assert.match(await detail.innerText(), new RegExp(`until ${endDate}`));
+    await editableDetail.getByText('Monitoring', { exact: true }).waitFor({ state: 'visible' });
+    await editableDetail.getByText('Daily at 23:59 (Asia/Shanghai)', { exact: false }).waitFor({ state: 'visible' });
+    assert.match(await editableDetail.innerText(), new RegExp(`until ${editEndDate}`));
     await screenshot(alphaPage!, '07d-edited-daily-schedule');
 
-    await detail.getByRole('button', { name: 'Pause schedule' }).click();
-    await detail.getByText('Paused', { exact: true }).waitFor({ state: 'visible' });
-    assert.match(await detail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
-    await detail.getByRole('button', { name: 'Edit schedule' }).click();
-    const pausedEditor = detail.getByTestId('scheduled-task-editor');
+    await editableDetail.getByRole('button', { name: 'Pause schedule' }).click();
+    await editableDetail.getByText('Paused', { exact: true }).waitFor({ state: 'visible' });
+    assert.match(await editableDetail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
+    await editableDetail.getByRole('button', { name: 'Edit schedule' }).click();
+    const pausedEditor = editableDetail.getByTestId('scheduled-task-editor');
     await pausedEditor.getByLabel('重复频率').selectOption('interval');
     await pausedEditor.getByLabel('间隔分钟数').fill('120');
     await pausedEditor.getByRole('button', { name: 'Save schedule' }).click();
-    await detail.getByText('Paused', { exact: true }).waitFor({ state: 'visible' });
-    await detail.getByText('Every 120 minutes', { exact: true }).waitFor({ state: 'visible' });
-    assert.match(await detail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
+    await editableDetail.getByText('Paused', { exact: true }).waitFor({ state: 'visible' });
+    await editableDetail.getByText('Every 120 minutes', { exact: true }).waitFor({ state: 'visible' });
+    assert.match(await editableDetail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
 
-    await detail.getByRole('button', { name: 'Resume schedule' }).click();
-    await detail.getByText('Monitoring', { exact: true }).waitFor({ state: 'visible' });
-    assert.doesNotMatch(await detail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
-    await detail.getByRole('button', { name: 'Cancel schedule' }).click();
-    await alphaPage!.locator('.scheduled-item').filter({ hasText: editableScheduledTask }).waitFor({ state: 'detached' });
+    await editableDetail.getByRole('button', { name: 'Resume schedule' }).click();
+    await editableDetail.getByText('Monitoring', { exact: true }).waitFor({ state: 'visible' });
+    assert.doesNotMatch(await editableDetail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
+    await editableDetail.getByRole('button', { name: 'Cancel schedule' }).click();
+    await alphaPage!.locator('.scheduled-item').filter({ hasText: editableTask }).waitFor({ state: 'detached' });
   });
 
   await recordStep('Alpha configures one shared Model API and Beta can read but cannot edit it', async () => {
@@ -1210,6 +1205,32 @@ try {
     const betaModelRequest = mockModelRequests.slice(requestStart).find(request => request.prompt.includes(sharedModelInstruction));
     assert.equal(betaModelRequest?.authorization, `Bearer ${testModelApiKey}`, 'Beta must execute a real authenticated model HTTP request with the instance-shared credential');
     await screenshot(betaPage!, 'shared-model-task-from-beta');
+  });
+
+  await recordStep('Chrome completes an Alpha task while the shared Model API Keychain is temporarily unavailable', async () => {
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.locator('.composer-bottom select').selectOption('model');
+    const instruction = 'E2E keychain resilience — use the retained shared model credential';
+    const requestStart = mockModelRequests.length;
+    await writeFile(sharedModelKeychainLockFile, 'simulate a temporarily locked Mac login Keychain');
+    try {
+      const lockedState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean }; availableEngines: string[] };
+      assert.equal(lockedState.modelSettings.hasKey, true, 'The page should keep showing the shared model as configured after a transient Keychain read failure');
+      assert(lockedState.availableEngines.includes('model'), 'A temporary Keychain lock must not remove the Model API kernel from this tenant');
+      await createTask(alphaPage!, instruction);
+      await clickNav(alphaPage!, 'Activity');
+      await alphaPage!.waitForFunction(async (taskInstruction: string) => {
+        const state = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; result: string | null }[] };
+        const task = state.tasks.find(candidate => candidate.instruction === taskInstruction);
+        return task?.status === 'done' && task.result?.includes('登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。');
+      }, instruction, { timeout: 20_000 });
+      await waitFor(() => mockModelRequests.slice(requestStart).some(request => request.prompt.includes(instruction)), 5_000);
+      const request = mockModelRequests.slice(requestStart).find(candidate => candidate.prompt.includes(instruction));
+      assert.equal(request?.authorization, `Bearer ${testModelApiKey}`, 'The task must make an authenticated model call with the retained instance credential');
+      await screenshot(alphaPage!, 'shared-model-task-during-keychain-lock');
+    } finally {
+      await rm(sharedModelKeychainLockFile, { force: true });
+    }
   });
 
   await recordStep('Dot appearance changes persist within Alpha personal workspace', async () => {

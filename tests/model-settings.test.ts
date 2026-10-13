@@ -1,18 +1,14 @@
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
-import { Entry } from '../src/server/keychain.ts';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { test } from 'node:test';
+import { Entry } from '../src/server/keyring.ts';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.ts';
-import { effectiveModelConfig, loadModelSettings, migrateTenantModelKey, publicModelSettings, setModelMetadata } from '../src/server/model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, migrateTenantModelKey, publicModelSettings, saveModelKey, setModelMetadata, sharedModelApiKeyStatus } from '../src/server/model-settings.ts';
 
 const keychainService = () => process.env.DOTS_KEYCHAIN_SERVICE || 'com.cokepoppy.coke-dots.test';
-const isolatedKeychainDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-test-keychain-'));
-process.env.NODE_ENV = 'test';
-process.env.DOTS_TEST_KEYCHAIN = '1';
-process.env.DOTS_TEST_KEYCHAIN_FILE = join(isolatedKeychainDirectory, 'credentials.json');
-after(() => rmSync(isolatedKeychainDirectory, { recursive: true, force: true }));
 const sharedEntry = () => new Entry(keychainService(), 'shared-model-api-key');
 const tenantEntry = (tenantId: string) => new Entry(keychainService(), `tenant-${tenantId}-model-api-key`);
 const localEntry = () => new Entry(keychainService(), 'local-model-api-key');
@@ -50,6 +46,85 @@ test('environment model configuration is shared across tenants and secrets stay 
     assert.equal(effectiveModelConfig('alpha-workspace'), null, 'Test fixture credentials require the E2E gate for every tenant');
   } finally {
     for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2e], ['DOTS_MODEL_API_KEY', old.key], ['DOTS_MODEL', old.model], ['DOTS_MODEL_BASE_URL', old.baseUrl]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('the last readable shared Model API key survives a temporary Keychain read failure and clears when the entry is confirmed missing', () => {
+  const shared = sharedEntry();
+  const testDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-keychain-lock-'));
+  const lockFile = join(testDirectory, 'login-keychain-locked');
+  const old = {
+    nodeEnv: process.env.NODE_ENV,
+    e2e: process.env.DOTS_E2E_AUTH,
+    lockFile: process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE,
+    key: process.env.DOTS_MODEL_API_KEY,
+    model: process.env.DOTS_MODEL,
+    baseUrl: process.env.DOTS_MODEL_BASE_URL,
+  };
+  deletePassword(shared);
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_E2E_AUTH = '0';
+  process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE = lockFile;
+  delete process.env.DOTS_MODEL_API_KEY; delete process.env.DOTS_MODEL; delete process.env.DOTS_MODEL_BASE_URL;
+  try {
+    loadModelSettings('https://api.shared.example.test/v1', 'shared-test-model');
+    saveModelKey('temporary-shared-key-for-cache-test');
+    assert.equal(effectiveModelConfig('first-tenant')?.apiKey, 'temporary-shared-key-for-cache-test');
+
+    writeFileSync(lockFile, 'simulate locked login Keychain');
+    assert.deepEqual(effectiveModelConfig('second-tenant'), {
+      apiKey: 'temporary-shared-key-for-cache-test',
+      model: 'shared-test-model',
+      baseUrl: 'https://api.shared.example.test/v1',
+    });
+    assert.equal(publicModelSettings('second-tenant').hasKey, true);
+
+    rmSync(lockFile, { force: true });
+    deletePassword(shared);
+    assert.equal(publicModelSettings().hasKey, false, 'A successful missing-entry read must clear the process cache');
+    assert.equal(effectiveModelConfig('second-tenant'), null);
+  } finally {
+    deletePassword(shared);
+    rmSync(testDirectory, { recursive: true, force: true });
+    for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2e], ['DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE', old.lockFile], ['DOTS_MODEL_API_KEY', old.key], ['DOTS_MODEL', old.model], ['DOTS_MODEL_BASE_URL', old.baseUrl]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('shared model settings distinguish a missing key from an unreadable Keychain', () => {
+  const testDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-keychain-status-'));
+  const lockFile = join(testDirectory, 'login-keychain-locked');
+  const old = {
+    nodeEnv: process.env.NODE_ENV,
+    e2e: process.env.DOTS_E2E_AUTH,
+    service: process.env.DOTS_KEYCHAIN_SERVICE,
+    lockFile: process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE,
+    key: process.env.DOTS_MODEL_API_KEY,
+    model: process.env.DOTS_MODEL,
+    baseUrl: process.env.DOTS_MODEL_BASE_URL,
+  };
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_E2E_AUTH = '0';
+  process.env.DOTS_KEYCHAIN_SERVICE = `com.cokepoppy.coke-dots.test.${randomUUID()}`;
+  delete process.env.DOTS_MODEL_API_KEY;
+  delete process.env.DOTS_MODEL;
+  delete process.env.DOTS_MODEL_BASE_URL;
+  try {
+    writeFileSync(lockFile, 'simulated unavailable keychain');
+    process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE = lockFile;
+    loadModelSettings('https://api.shared.example.test/v1', 'shared-test-model');
+    assert.equal(sharedModelApiKeyStatus(), 'unreadable');
+    assert.equal(publicModelSettings().hasKey, false);
+
+    rmSync(lockFile, { force: true });
+    assert.equal(sharedModelApiKeyStatus(), 'missing');
+    assert.equal(publicModelSettings().apiKeyStatus, 'missing');
+  } finally {
+    rmSync(testDirectory, { recursive: true, force: true });
+    for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2e], ['DOTS_KEYCHAIN_SERVICE', old.service], ['DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE', old.lockFile], ['DOTS_MODEL_API_KEY', old.key], ['DOTS_MODEL', old.model], ['DOTS_MODEL_BASE_URL', old.baseUrl]] as const) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }

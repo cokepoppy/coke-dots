@@ -52,6 +52,30 @@ function safeWorkspace(value) {
   return target;
 }
 
+function requireModelConfig(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Shared Model API configuration is required for cloud Agent kernels');
+  }
+  const apiKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : '';
+  const baseUrl = typeof value.baseUrl === 'string' ? value.baseUrl.trim().replace(/\/$/, '') : '';
+  const model = typeof value.model === 'string' ? value.model.trim() : '';
+  let endpoint;
+  try { endpoint = new URL(baseUrl); } catch { throw new Error('Shared Model API configuration is invalid for cloud Agent kernels'); }
+  const localHttp = endpoint.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(endpoint.hostname);
+  if (!apiKey || apiKey.length > 5000 || /[\r\n]/.test(apiKey) || !model || model.length > 120 || baseUrl.length > 2048
+      || (!localHttp && endpoint.protocol !== 'https:') || endpoint.username || endpoint.password) {
+    throw new Error('Shared Model API configuration is invalid for cloud Agent kernels');
+  }
+  return { apiKey, baseUrl, model };
+}
+
+function redactSecret(value, secret) {
+  if (typeof value === 'string') return secret ? value.split(secret).join('[redacted]') : value;
+  if (Array.isArray(value)) return value.map(item => redactSecret(item, secret));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactSecret(item, secret)]));
+  return value;
+}
+
 function runKernel(input, requestSignal) {
   return new Promise((resolve, reject) => {
     if (requestSignal?.aborted) return reject(new Error('Agent task was cancelled'));
@@ -93,12 +117,13 @@ async function executeKernel(input, requestSignal, slot) {
   const prompt = String(input.prompt || '').trim();
   if (!prompt || prompt.length > 20_000) throw new Error('Task prompt must contain 1–20000 characters');
   if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
+  const modelConfig = requireModelConfig(input.modelConfig);
   if (await controlOwner() !== 'agent') return { taskId, status: 'waiting', message: '电脑目前由你控制。交还电脑后，请告诉我继续。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
 
   const cwd = safeWorkspace(input.cwd);
   await mkdir(cwd, { recursive: true, mode: 0o700 });
   if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
-  const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'DOTS_AGENT_RUNTIME_TOKEN'));
+  const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)));
   const child = spawn(adapter.command, adapter.args, { cwd, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
   const abort = new AbortController();
   slot.child = child;
@@ -109,6 +134,7 @@ async function executeKernel(input, requestSignal, slot) {
   child.stdin.end(JSON.stringify({
     engine, prompt, cwd, workspace, taskId,
     sessionId: typeof input.sessionId === 'string' ? input.sessionId : null,
+    modelConfig,
     computer: {
       baseUrl: `http://127.0.0.1:${workerPort}`,
       workerToken: process.env.LINUX_DESKTOP_WORKER_TOKEN,
@@ -129,7 +155,7 @@ async function executeKernel(input, requestSignal, slot) {
     if (slot.interruptedByUser) return { taskId, status: 'waiting', message: '我已暂停当前操作，因为你正在接管电脑。交还电脑后，请告诉我继续。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
     if (code !== 0) throw new Error(`Agent adapter exited with code ${code}`);
     let result;
-    try { result = JSON.parse(stdout); } catch { throw new Error('Agent adapter must return a JSON decision'); }
+    try { result = redactSecret(JSON.parse(stdout), modelConfig.apiKey); } catch { throw new Error('Agent adapter must return a JSON decision'); }
     if (!['done', 'waiting', 'scheduled', 'delegating'].includes(result.status) || typeof result.message !== 'string' || !result.message.trim()) throw new Error('Agent adapter returned an invalid decision');
     return { taskId, ...result, engine, message: result.message.slice(0, 20_000), sessionId: typeof result.sessionId === 'string' ? result.sessionId : null };
   } finally {

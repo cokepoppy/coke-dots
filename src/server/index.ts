@@ -8,7 +8,7 @@ import { adapters } from './adapters.ts';
 import { isEngine, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
-import { loadModelSettings, migrateTenantModelKey, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, migrateTenantModelKey, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { apiErrorResponse } from './computer-errors.ts';
@@ -53,13 +53,13 @@ const configuredDesktopEngines = () => {
     return Object.keys(configured).filter((id): id is Engine => ['pi', 'dsh'].includes(id) && Boolean(configured[id]));
   } catch { return [] as Engine[]; }
 };
-const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...configuredDesktopEngines()])];
+const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...(effectiveModelConfig(tenantId) ? configuredDesktopEngines() : [])])];
 
 function snapshot(tenantId: string) {
   const adminTenantId = store.getAppSetting('modelSettingsAdminTenantId');
   loadModelSettings(store.getAppSetting('modelBaseUrl'), store.getAppSetting('modelName'), adminTenantId);
   const available = availableFor(tenantId);
-  return store.snapshot(available.includes('model'), available, publicModelSettings(adminTenantId), tenantId);
+  return store.snapshot(available.includes('model'), available, publicModelSettings(adminTenantId), tenantId, configuredDesktopEngines());
 }
 
 function computerFor(tenantId: string): ComputerRuntime {

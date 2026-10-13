@@ -350,7 +350,7 @@ test('tenant action rules are admin managed and page approvals do not write unti
     assert.equal(resolved?.page?.title, 'Release notes');
     assert.equal(store.getTask(task.id, workspace.id)?.status, 'done');
     assert.equal(store.tenantPages(workspace.id)[0]?.content, '# Draft\n- Publish Friday');
-    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false, adminTenantId: null }, workspace.id).entries.some(entry => entry.taskId === task.id && /批准/.test(entry.body)));
+    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false, adminTenantId: null, apiKeyStatus: 'missing' }, workspace.id).entries.some(entry => entry.taskId === task.id && /批准/.test(entry.body)));
 
     const declinedTask = store.createTask('Create an unapproved page', null, 'model', workspace.id);
     store.updateTask(declinedTask.id, { status: 'working' }, workspace.id);
@@ -461,7 +461,7 @@ test('Scratchpad write rules enforce no-ask, explicit-request, and hand-off mode
     await waitFor(() => store.getTask(explicitTask.id, user.tenant.id)?.status === 'waiting');
     assert.equal(store.tenantPages(user.tenant.id).length, 1, 'A non-explicit page write bypassed the runtime check');
     assert.match(prompts[1], /only when the user explicitly requests that action/);
-    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false, adminTenantId: null }, user.tenant.id).entries.some(entry => entry.taskId === explicitTask.id && /明确要求/.test(entry.body)));
+    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false, adminTenantId: null, apiKeyStatus: 'missing' }, user.tenant.id).entries.some(entry => entry.taskId === explicitTask.id && /明确要求/.test(entry.body)));
 
     store.saveTenantActionRule(user.tenant.id, user.user.id, 'Hand over page changes for manual editing.', 'hand-off');
     const handoffTask = store.createTask('E2E permission mode three', null, 'model', user.tenant.id);
@@ -469,7 +469,7 @@ test('Scratchpad write rules enforce no-ask, explicit-request, and hand-off mode
     await waitFor(() => store.getTask(handoffTask.id, user.tenant.id)?.status === 'waiting');
     assert.equal(store.tenantPages(user.tenant.id).length, 1, 'A hand-off rule allowed the agent page write');
     assert.match(prompts[2], /Do not use pageAction/);
-    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false, adminTenantId: null }, user.tenant.id).entries.some(entry => entry.taskId === handoffTask.id && /自行创建/.test(entry.body)));
+    assert.ok(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false, adminTenantId: null, apiKeyStatus: 'missing' }, user.tenant.id).entries.some(entry => entry.taskId === handoffTask.id && /自行创建/.test(entry.body)));
   } finally {
     worker.stop(); store.close();
     await new Promise<void>(resolve => modelServer.close(() => resolve()));
@@ -499,8 +499,6 @@ test('background worker stores real model result and schedules a future run', as
   process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
   process.env.DOTS_MODEL = 'test-model';
   process.env.DOTS_MODEL_API_KEY = 'test-key';
-  const previousE2eAuth = process.env.DOTS_E2E_AUTH;
-  process.env.DOTS_E2E_AUTH = '1';
   const store = new Store(directory);
   const user = store.signInGoogle({ subject: 'worker-memory', email: 'worker-memory@example.test', name: 'Worker Memory' });
   store.addTenantMemory(user.tenant.id, user.user.id, 'Use short Mandarin summaries.');
@@ -525,8 +523,6 @@ test('background worker stores real model result and schedules a future run', as
     delete process.env.DOTS_MODEL_BASE_URL;
     delete process.env.DOTS_MODEL;
     delete process.env.DOTS_MODEL_API_KEY;
-    if (previousE2eAuth === undefined) delete process.env.DOTS_E2E_AUTH;
-    else process.env.DOTS_E2E_AUTH = previousE2eAuth;
   }
 });
 
@@ -542,8 +538,6 @@ test('background worker persists the next daily occurrence in the selected time 
   process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
   process.env.DOTS_MODEL = 'test-model';
   process.env.DOTS_MODEL_API_KEY = 'test-key';
-  const previousE2eAuth = process.env.DOTS_E2E_AUTH;
-  process.env.DOTS_E2E_AUTH = '1';
   let store = new Store(directory);
   const scheduleSpec = { frequency: 'daily' as const, time: '23:59', timeZone: 'Asia/Shanghai', endDate: null };
   const task = store.createTask('Run the daily check', null, 'model', 'legacy', scheduleSpec, new Date(Date.now() - 1_000).toISOString());
@@ -569,8 +563,6 @@ test('background worker persists the next daily occurrence in the selected time 
     delete process.env.DOTS_MODEL_BASE_URL;
     delete process.env.DOTS_MODEL;
     delete process.env.DOTS_MODEL_API_KEY;
-    if (previousE2eAuth === undefined) delete process.env.DOTS_E2E_AUTH;
-    else process.env.DOTS_E2E_AUTH = previousE2eAuth;
   }
 });
 
