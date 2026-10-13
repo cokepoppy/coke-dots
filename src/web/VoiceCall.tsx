@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DotAppearance, Snapshot, Task, VoiceCallSession } from '../shared/types.ts';
+import { decodeVolcengineFloat32Pcm } from '../shared/volcengine-audio.ts';
 import { appFetch, appPath, appWebSocketUrl } from './api.ts';
 import { DotAvatar } from './DotAvatar.tsx';
 import './voice-call.css';
@@ -404,13 +405,22 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       volcPlaybackAtRef.current = volcAudioContextRef.current?.currentTime || 0;
     };
 
-    const playVolcPcm = (bytes: ArrayBuffer) => {
+    const playVolcPcm = (bytes: ArrayBuffer, format: 1 | 2) => {
       const context = volcAudioContextRef.current;
-      if (!context || !speakerRef.current || bytes.byteLength < 2 || bytes.byteLength % 2 !== 0) return;
-      const samples = new Int16Array(bytes);
+      if (!context || !speakerRef.current) return;
+      let samples: Float32Array;
+      if (format === 2) {
+        const decoded = decodeVolcengineFloat32Pcm(bytes);
+        if (!decoded) return;
+        samples = decoded;
+      } else {
+        if (bytes.byteLength < 2 || bytes.byteLength % 2 !== 0) return;
+        const pcm = new Int16Array(bytes);
+        samples = new Float32Array(pcm.length);
+        for (let index = 0; index < pcm.length; index += 1) samples[index] = pcm[index] / 32768;
+      }
       const buffer = context.createBuffer(1, samples.length, 24000);
-      const channel = buffer.getChannelData(0);
-      for (let index = 0; index < samples.length; index += 1) channel[index] = samples[index] / 32768;
+      buffer.getChannelData(0).set(samples);
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(context.destination);
@@ -485,7 +495,8 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
         socket.onmessage = event => {
           if (typeof event.data !== 'string') {
             const frame = event.data instanceof ArrayBuffer ? event.data : new ArrayBuffer(0);
-            if (new Uint8Array(frame)[0] === 1) playVolcPcm(frame.slice(1));
+            const format = new Uint8Array(frame)[0];
+            if (format === 1 || format === 2) playVolcPcm(frame.slice(1), format);
             return;
           }
           let message: { type?: string; error?: string; transcript?: string; turnId?: string };

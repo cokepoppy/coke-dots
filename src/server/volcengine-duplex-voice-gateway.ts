@@ -12,9 +12,20 @@ import {
 const MAX_CLIENT_AUDIO_FRAME = 20_000;
 const MAX_SPEAK_TEXT = 1200;
 const MAX_PROVIDER_AUDIO_FRAME = 512 * 1024;
+const VOLCENGINE_FLOAT32_AUDIO_MARKER = 2;
 
 type LocalVoiceMessage = { type?: unknown; text?: unknown };
 type ProviderEvent = { type?: unknown; [key: string]: unknown };
+
+export function isVolcengineFloat32Pcm(pcm: Uint8Array): boolean {
+  if (!pcm.byteLength || pcm.byteLength % 4 !== 0) return false;
+  const bytes = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  for (let offset = 0; offset < bytes.byteLength; offset += 4) {
+    const sample = bytes.readFloatLE(offset);
+    if (!Number.isFinite(sample) || Math.abs(sample) > 1.5) return false;
+  }
+  return true;
+}
 
 export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: string, env: NodeJS.ProcessEnv = process.env) {
   const config = volcengineVoiceConfig(env);
@@ -117,8 +128,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     if (!sessionReady) { finalize(1008, 'session is not ready'); return; }
     try {
       if (message.type === 'speak' && typeof message.text === 'string' && message.text.trim() && message.text.length <= MAX_SPEAK_TEXT) {
-        sendUpstream('speech_text_buffer.replacement.append', { text: message.text.trim() });
-        sendUpstream('speech_text_buffer.replacement.commit', { text: '' });
+        sendUpstream('speech_text_buffer.commit', { text: message.text.trim() });
       } else if (message.type === 'interrupt') sendUpstream('response.cancel');
       else finalize(1008, 'unsupported client message');
     } catch { fail('语音消息未能发送，请稍后重试。'); }
@@ -210,11 +220,17 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
         return;
       }
       const pcm = Buffer.from(encoded, 'base64');
-      if (!pcm.length || pcm.byteLength > MAX_PROVIDER_AUDIO_FRAME || pcm.byteLength % 2 !== 0) {
+      if (!pcm.length || pcm.byteLength > MAX_PROVIDER_AUDIO_FRAME || pcm.byteLength % 4 !== 0) {
         fail('火山实时语音返回了无效的音频帧。');
         return;
       }
-      if (client.readyState === WebSocket.OPEN) client.send(Buffer.concat([Buffer.from([1]), pcm]));
+      if (!isVolcengineFloat32Pcm(pcm)) {
+        fail('火山实时语音返回了不支持的音频格式。');
+        return;
+      }
+      // SeedDuplex returns normalized float32 PCM for `audio.output.format.type: "pcm"`.
+      // Keep the encoding explicit so the browser can decode it without turning it into static.
+      if (client.readyState === WebSocket.OPEN) client.send(Buffer.concat([Buffer.from([VOLCENGINE_FLOAT32_AUDIO_MARKER]), pcm]));
       return;
     }
   });

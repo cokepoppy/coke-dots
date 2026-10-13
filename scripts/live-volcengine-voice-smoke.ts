@@ -89,8 +89,7 @@ socket.on('message', raw => {
   if (event.type === 'session.created' && !sessionCreated) {
     sessionCreated = true;
     try {
-      send('speech_text_buffer.replacement.append', { text: '请用普通话只说：火山实时语音连接成功。' });
-      send('speech_text_buffer.replacement.commit', { text: '' });
+      send('speech_text_buffer.commit', { text: '请用普通话只说：火山实时语音连接成功。' });
     } catch {
       finish({ ok: false, stage: 'session-send-failed', sessionCreated, audioBytes }, 1);
     }

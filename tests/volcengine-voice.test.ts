@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { decodeVolcengineFloat32Pcm } from '../src/shared/volcengine-audio.ts';
+import { isVolcengineFloat32Pcm } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
@@ -19,6 +21,31 @@ import {
 } from '../src/server/volcengine-voice.ts';
 
 const env = (): NodeJS.ProcessEnv => ({ DOTS_VOLCENGINE_APP_ID: 'test-app', DOTS_VOLCENGINE_ACCESS_TOKEN: 'server-token' });
+
+test('SeedDuplex float32 PCM decodes little-endian samples and clamps invalid values', () => {
+  const bytes = new ArrayBuffer(16);
+  const view = new DataView(bytes);
+  view.setFloat32(0, -1.25, true);
+  view.setFloat32(4, -0.5, true);
+  view.setFloat32(8, 0.75, true);
+  view.setFloat32(12, Number.NaN, true);
+  assert.deepEqual(Array.from(decodeVolcengineFloat32Pcm(bytes) || []), [-1, -0.5, 0.75, 0]);
+  assert.equal(decodeVolcengineFloat32Pcm(new ArrayBuffer(2)), null);
+  assert.equal(decodeVolcengineFloat32Pcm(new ArrayBuffer(6)), null);
+});
+
+test('SeedDuplex server accepts finite float32 output and rejects malformed or extreme samples', () => {
+  const valid = Buffer.alloc(8);
+  valid.writeFloatLE(-0.75, 0);
+  valid.writeFloatLE(0.5, 4);
+  assert.equal(isVolcengineFloat32Pcm(valid), true);
+  assert.equal(isVolcengineFloat32Pcm(Buffer.alloc(6)), false);
+  const invalid = Buffer.alloc(4);
+  invalid.writeFloatLE(Number.NaN);
+  assert.equal(isVolcengineFloat32Pcm(invalid), false);
+  invalid.writeFloatLE(2);
+  assert.equal(isVolcengineFloat32Pcm(invalid), false);
+});
 
 test('Volcano O2.0 credentials remain compatible and never appear in public provider information', () => {
   assert.deepEqual(volcengineVoiceInfo({}), { provider: 'volcengine', configured: false, model: 'doubao-seedduplex-3.0' });

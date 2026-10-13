@@ -348,11 +348,12 @@ async function startMockVolcEngineDuplexProvider() {
         }
       } else if (type === 'input_audio_mute.commit' || type === 'input_audio_unmute.commit') {
         connection.timeline.push(`mute-control:${type}`);
-      } else if (type === 'speech_text_buffer.replacement.append') {
+      } else if (type === 'speech_text_buffer.commit') {
         if (typeof event.text === 'string') connection.spokenTexts.push(event.text);
-      } else if (type === 'speech_text_buffer.replacement.commit') {
         socket.send(JSON.stringify({ type: 'response.output_audio.started', response_id: 'mock-response' }));
-        socket.send(JSON.stringify({ type: 'response.output_audio.delta', response_id: 'mock-response', delta: Buffer.alloc(960, 1).toString('base64') }));
+        const pcm = Buffer.alloc(960);
+        for (let index = 0; index < pcm.length / 4; index += 1) pcm.writeFloatLE(Math.sin(index * 2 * Math.PI * 440 / 24000) * 0.5, index * 4);
+        socket.send(JSON.stringify({ type: 'response.output_audio.delta', response_id: 'mock-response', delta: pcm.toString('base64') }));
         socket.send(JSON.stringify({ type: 'response.output_audio.done', response_id: 'mock-response' }));
         connection.audioDeltas += 1;
       } else if (type === 'session.close') {
@@ -2635,6 +2636,20 @@ try {
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
     await alphaContext!.grantPermissions(['microphone'], { origin: baseUrl });
     await alphaPage!.evaluate(`(() => {
+      const originalStart = AudioBufferSourceNode.prototype.start;
+      window.__dotsVolcPlaybackCapture = [];
+      AudioBufferSourceNode.prototype.start = function(...args) {
+        const buffer = this.buffer;
+        if (buffer && buffer.sampleRate === 24000) {
+          const data = buffer.getChannelData(0);
+          let peak = 0;
+          for (let index = 0; index < data.length; index += 1) peak = Math.max(peak, Math.abs(data[index]));
+          window.__dotsVolcPlaybackCapture.push({ sampleRate: buffer.sampleRate, length: data.length, peak });
+        }
+        return originalStart.apply(this, args);
+      };
+    })()`);
+    await alphaPage!.evaluate(`(() => {
       const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       Object.defineProperty(window, '__dotsVolcDuplexTrack', { configurable: true, value: null, writable: true });
       Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async constraints => {
@@ -2660,10 +2675,12 @@ try {
     assert.deepEqual(publicProviderInfo, { provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' }, 'Public provider state must not reveal the API key');
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 30_000 });
     await waitFor(() => providerConnection.audioDeltas > 0, 5_000);
+    const playbackFrames = await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcPlaybackCapture: { sampleRate: number; length: number; peak: number }[] }).__dotsVolcPlaybackCapture);
+    assert(playbackFrames.some(frame => frame.sampleRate === 24_000 && frame.length === 240 && frame.peak >= 0.45), 'The browser must decode and schedule SeedDuplex float32 output at 24 kHz instead of dropping it or playing static');
     assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM audio in realtime-sized packets');
     assert(providerConnection.events.includes('session.create') && providerConnection.events.includes('input_audio_buffer.append'), 'SeedDuplex must use JSON session and audio events');
     assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be submitted to SeedDuplex direct text-to-speech events');
-    assert(providerConnection.events.includes('speech_text_buffer.replacement.commit'), 'Agent status speech must use the provider direct-synthesis event sequence');
+    assert(providerConnection.events.includes('speech_text_buffer.commit'), 'Agent status speech must use the provider direct-synthesis event');
     assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Final Chinese speech transcript must start the normal tenant Agent task');
 
     const activeCall = await alphaPage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
