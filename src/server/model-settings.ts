@@ -1,4 +1,4 @@
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from './keyring.ts';
 
 export interface ModelSettings { baseUrl: string; model: string; hasKey: boolean; adminTenantId: string | null }
 

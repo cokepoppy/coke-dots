@@ -8,6 +8,17 @@ import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/server/store.ts';
 import { Worker } from '../src/server/worker.ts';
 
+const modelFixtureEnvKeys = ['DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+function captureModelFixtureEnv() {
+  return new Map(modelFixtureEnvKeys.map(key => [key, process.env[key]]));
+}
+function restoreModelFixtureEnv(previous: Map<string, string | undefined>) {
+  for (const key of modelFixtureEnvKeys) {
+    const value = previous.get(key);
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+}
+
 test('tasks, redirects and profile survive database reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
   try {
@@ -483,6 +494,7 @@ test('Scratchpad write rules enforce no-ask, explicit-request, and hand-off mode
 
 test('background worker stores real model result and schedules a future run', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
+  const previousModelEnv = captureModelFixtureEnv();
   let receivedPrompt = '';
   const modelServer = createServer(async (req, res) => {
     assert.equal(req.url, '/chat/completions');
@@ -496,6 +508,7 @@ test('background worker stores real model result and schedules a future run', as
   await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
   const address = modelServer.address();
   assert.ok(address && typeof address !== 'string');
+  process.env.DOTS_E2E_AUTH = '1';
   process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
   process.env.DOTS_MODEL = 'test-model';
   process.env.DOTS_MODEL_API_KEY = 'test-key';
@@ -520,14 +533,13 @@ test('background worker stores real model result and schedules a future run', as
     worker.stop(); store.close();
     await new Promise<void>(resolve => modelServer.close(() => resolve()));
     rmSync(directory, { recursive: true, force: true });
-    delete process.env.DOTS_MODEL_BASE_URL;
-    delete process.env.DOTS_MODEL;
-    delete process.env.DOTS_MODEL_API_KEY;
+    restoreModelFixtureEnv(previousModelEnv);
   }
 });
 
 test('background worker persists the next daily occurrence in the selected time zone', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-calendar-worker-'));
+  const previousModelEnv = captureModelFixtureEnv();
   const modelServer = createServer(async (_req, res) => {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: 'Daily check completed.' }) } }] }));
@@ -535,6 +547,7 @@ test('background worker persists the next daily occurrence in the selected time 
   await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
   const address = modelServer.address();
   assert.ok(address && typeof address !== 'string');
+  process.env.DOTS_E2E_AUTH = '1';
   process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
   process.env.DOTS_MODEL = 'test-model';
   process.env.DOTS_MODEL_API_KEY = 'test-key';
@@ -560,9 +573,7 @@ test('background worker persists the next daily occurrence in the selected time 
     worker.stop(); store.close();
     await new Promise<void>(resolve => modelServer.close(() => resolve()));
     rmSync(directory, { recursive: true, force: true });
-    delete process.env.DOTS_MODEL_BASE_URL;
-    delete process.env.DOTS_MODEL;
-    delete process.env.DOTS_MODEL_API_KEY;
+    restoreModelFixtureEnv(previousModelEnv);
   }
 });
 

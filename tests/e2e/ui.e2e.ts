@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from '../../src/server/keyring.ts';
 import { WebSocket as NodeWebSocket, WebSocketServer } from 'ws';
 import { decodeVolcengineFrame, encodeVolcengineEvent } from '../../src/server/volcengine-voice.ts';
 
@@ -22,6 +22,8 @@ const videoDir = join(artifactRoot, 'video');
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-e2e-'));
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
+const testKeyringFile = join(testDataDir, 'test-keyring.json');
+process.env.DOTS_TEST_KEYRING_PATH = testKeyringFile;
 const fixtureSource = join(projectRoot, 'tests', 'e2e', 'fixtures', 'computer.html');
 const fixtureDestination = join(projectRoot, 'dist', 'e2e-computer-fixture.html');
 const chromePath = findChromePath();
@@ -440,6 +442,7 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
       DOTS_KEYCHAIN_SERVICE: 'com.cokepoppy.coke-dots.e2e',
+      DOTS_TEST_KEYRING_PATH: testKeyringFile,
       SLACK_CLIENT_ID: 'coke-dots-slack-e2e-client',
       SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
       SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
