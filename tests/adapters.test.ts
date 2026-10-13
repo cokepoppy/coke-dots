@@ -171,6 +171,18 @@ test('read-only reviews mark source content untrusted and reject writes, delegat
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Ask another agent.', delegations: [{ title: 'Review', instruction: 'Inspect the changed paragraph.' }] }), undefined, options), /不能继续委派/);
 });
 
+test('task file output is described only for authorized writable cloud Pi tasks and stays disabled for read-only reviews', () => {
+  const base: AgentRequest = { prompt: 'Create an HTML game.', priorResult: null, sessionId: null, workspace: '/tmp/task-file-policy', onEvent: () => {} };
+  const writable = formatAgentPrompt({ ...base, allowWorkspaceFileWrites: true, executionMode: 'standard' });
+  assert.match(writable, /create_task_file/);
+  assert.match(writable, /never overwrite an existing file/i);
+  assert.match(writable, /For a single-file request, do the work directly/i);
+
+  const readOnly = formatAgentPrompt({ ...base, allowWorkspaceFileWrites: true, executionMode: 'read-only' });
+  assert.doesNotMatch(readOnly, /Isolated task file output is available/);
+  assert.match(readOnly, /Read-only review constraints/);
+});
+
 test('agent Scratchpad actions require bounded page content and a valid tenant page ID', () => {
   const id = '01234567-89ab-cdef-0123-456789abcdef';
   const created = parseDecision(JSON.stringify({ status: 'done', message: 'I created your page.', pageAction: { action: 'create', title: 'Launch notes', content: '# Outline\n- Draft the intro' } }));
