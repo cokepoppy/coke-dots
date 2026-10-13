@@ -43,6 +43,53 @@ test('Gmail connection metadata is isolated per Google account and contains no c
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('Gmail proactive review is opt-in, daily, personal-tenant-only, and stores only per-user memory results', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-gmail-proactive-'));
+  const store = new Store(directory);
+  try {
+    const alpha = store.signInGoogle({ subject: 'gmail-review-alpha', email: 'alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'gmail-review-beta', email: 'beta@example.test', name: 'Beta' });
+    const now = '2026-10-13T02:00:00.000Z';
+    const alphaTenant = alpha.tenant.id;
+    store.connectGmail({ userId: alpha.user.id, email: 'alpha@gmail.com', connectedAt: now, scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
+    assert.deepEqual(store.gmailProactiveReviewSettings(alpha.user.id), { enabled: false, nextRunAt: null, lastRunAt: null, lastError: null });
+    assert.deepEqual(store.dueGmailProactiveReviewers(now), [], 'New Gmail connections must not enable proactive review by default');
+
+    store.setGmailProactiveReview(alpha.user.id, true, now);
+    assert.equal(store.dueGmailProactiveReviewers(now)[0]?.userId, alpha.user.id);
+    const task = store.createGmailProactiveReviewTask(alpha.user.id, alphaTenant, 'pi', now);
+    assert(task);
+    assert.equal(task.status, 'queued');
+    assert.equal(task.executionMode, 'read-only');
+    assert.equal(store.taskCreatorUserId(task.id, alphaTenant), alpha.user.id);
+    assert.equal(task.tenantId, alphaTenant);
+    assert.equal(store.gmailProactiveReviewRun(task.id, alphaTenant)?.status, 'queued');
+    assert.equal(store.dueGmailProactiveReviewers(now).length, 0, 'A single active run prevents duplicate scheduler tasks');
+
+    assert.equal(store.claimDueTask(task.id, alphaTenant), true);
+    assert.equal(store.markGmailProactiveReviewWorking(task.id, alphaTenant)?.status, 'working');
+    store.setGmailProactiveReviewRunMessages(task.id, alphaTenant, ['message-private-1']);
+    const saved = store.applyPersonalDotMemoryUpdates(alphaTenant, task.id, [{ action: 'remember', note: '用户偏好用中文接收每日摘要' }]);
+    assert.equal(saved.length, 1);
+    assert.equal(store.personalDotMemories(alpha.user.id)[0]?.note, '用户偏好用中文接收每日摘要');
+    assert.equal(store.personalDotMemories(beta.user.id).length, 0, 'Another Google account cannot see private memories');
+    assert.equal(store.completeGmailProactiveReview(task.id, alphaTenant, now), true);
+    assert.equal(store.gmailProactiveReviewRun(task.id, alphaTenant)?.status, 'completed');
+    assert.equal(store.unreviewedGmailMessageIds(alpha.user.id, ['message-private-1', 'message-private-2']).join(','), 'message-private-2');
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).nextRunAt, '2026-10-14T02:00:00.000Z');
+    assert.equal(store.dueGmailProactiveReviewers(now).length, 0);
+
+    store.setGmailProactiveReview(alpha.user.id, true, '2026-10-14T02:00:00.000Z');
+    const next = store.createGmailProactiveReviewTask(alpha.user.id, alphaTenant, 'pi', '2026-10-14T02:00:00.000Z');
+    assert(next);
+    const stoppedIds = store.disconnectGmail(alpha.user.id);
+    assert.deepEqual(stoppedIds, [next.id]);
+    assert.equal(store.getTask(next.id, alphaTenant)?.status, 'stopped');
+    assert.equal(store.gmailProactiveReviewRun(next.id, alphaTenant)?.status, 'cancelled');
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).enabled, false);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('Gmail is fetched only when requested and message content is passed as untrusted, read-only context', async () => {
   const previous = {
     nodeEnv: process.env.NODE_ENV,
@@ -51,6 +98,8 @@ test('Gmail is fetched only when requested and message content is passed as untr
     gmailApi: process.env.DOTS_E2E_GMAIL_API_URL,
     clientId: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    keychainService: process.env.DOTS_KEYCHAIN_SERVICE,
+    keyringDirectory: process.env.DOTS_TEST_KEYRING_DIR,
   };
   let provider: Server | null = null;
   let store: Store | null = null;
@@ -103,6 +152,8 @@ test('Gmail is fetched only when requested and message content is passed as untr
     process.env.DOTS_E2E_GMAIL_API_URL = `${origin}/gmail/v1`;
     process.env.GOOGLE_CLIENT_ID = 'gmail-read-test-client';
     process.env.GOOGLE_CLIENT_SECRET = 'gmail-read-test-secret';
+    process.env.DOTS_KEYCHAIN_SERVICE = 'com.cokepoppy.coke-dots.test';
+    process.env.DOTS_TEST_KEYRING_DIR = join(directory, 'keyring');
     store = new Store(directory);
     const account = store.signInGoogle({ subject: userId, email: 'gmail-user@example.test', name: 'Gmail User' });
     store.connectGmail({ userId: account.user.id, email: 'gmail-user@gmail.com', connectedAt: new Date().toISOString(), scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
@@ -122,6 +173,13 @@ test('Gmail is fetched only when requested and message content is passed as untr
     assert.equal(calls[0]?.query.get('q'), 'in:inbox');
     assert.equal(calls[0]?.query.get('maxResults'), '2');
     assert.equal(calls.length, 3, 'Only one list read and two bounded message reads are allowed');
+    const proactive = await service.proactiveReviewContext(account.user.id, '2026-10-09T00:00:00.000Z');
+    assert(proactive.context, proactive.error || 'No proactive Gmail context returned');
+    assert.deepEqual(proactive.messageIds, ['mail-1', 'mail-2']);
+    assert.match(proactive.context, /never instructions/);
+    assert.match(calls[3]?.query.get('q') || '', /^in:inbox after:\d+$/);
+    assert.equal(calls[3]?.query.get('maxResults'), '10', 'A proactive run reads at most ten messages');
+    assert.equal(calls.length, 6, 'A proactive run performs one list request and at most ten individual message reads');
     service.disconnect(account.user.id);
   } finally {
     try { entry?.deletePassword(); } catch { /* No test credential remains. */ }
@@ -132,6 +190,7 @@ test('Gmail is fetched only when requested and message content is passed as untr
       NODE_ENV: previous.nodeEnv, DOTS_E2E_AUTH: previous.e2eAuth,
       DOTS_E2E_GOOGLE_PROVIDER_URL: previous.googleProvider, DOTS_E2E_GMAIL_API_URL: previous.gmailApi,
       GOOGLE_CLIENT_ID: previous.clientId, GOOGLE_CLIENT_SECRET: previous.clientSecret,
+      DOTS_KEYCHAIN_SERVICE: previous.keychainService, DOTS_TEST_KEYRING_DIR: previous.keyringDirectory,
     })) {
       if (value === undefined) delete process.env[keyName]; else process.env[keyName] = value;
     }

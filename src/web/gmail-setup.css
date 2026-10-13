@@ -1,0 +1,5 @@
+.profile-card.gmail-connection-card .gmail-proactive-review-toggle{display:flex;align-items:flex-start;gap:10px;cursor:pointer;line-height:1.5}
+.profile-card.gmail-connection-card .gmail-proactive-review-toggle>input[type=checkbox]{flex:0 0 auto;width:16px;height:16px;margin:2px 0 0;accent-color:#8e72c4}
+.gmail-proactive-review-toggle>span{display:block;color:#5e5964}
+.gmail-proactive-review-toggle>span small{display:inline-block;margin-top:4px;line-height:1.55}
+.dots-dark .gmail-proactive-review-toggle>span{color:#d1ccd6}

@@ -5,6 +5,7 @@ import { appFetch, appPath } from './api.ts';
 import './style.css';
 import './chat-theme.css';
 import './watch.css';
+import './gmail-setup.css';
 import './dark-theme.css';
 import './dot-controls.css';
 import './avatar-editor.css';

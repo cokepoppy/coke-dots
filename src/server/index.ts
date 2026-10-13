@@ -101,7 +101,8 @@ const sessionHeartbeat = setInterval(() => {
 }, 30_000);
 
 const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor,
-  (userId, prompt, signal) => gmail.contextForTask(userId, prompt, signal));
+  (userId, prompt, signal) => gmail.contextForTask(userId, prompt, signal),
+  (userId, sinceAt, signal) => gmail.proactiveReviewContext(userId, sinceAt, signal));
 const watchRunner = new WatchRunner(store, publish, e2eWatchFetcher());
 
 async function tenantRuntimeDirectoriesForReset(tenantId: string) {
@@ -212,9 +213,23 @@ const server = createServer(async (req, res) => {
   if (!session) return reply(res, 401, { error: '请先使用 Google 登录' });
   if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
   if (path === '/api/gmail' && req.method === 'GET') return reply(res, 200, gmail.snapshot(session.user.id));
+  if (path === '/api/gmail/proactive-review' && req.method === 'PATCH') {
+    const body = await readJson(req);
+    if (typeof body.enabled !== 'boolean') return reply(res, 400, { error: 'enabled 必须是布尔值' });
+    try {
+      const taskIds = store.setGmailProactiveReview(session.user.id, body.enabled);
+      for (const taskId of taskIds) worker.stopTask(taskId);
+      if (body.enabled) void worker.tick();
+      publish();
+      return reply(res, 200, gmail.snapshot(session.user.id));
+    } catch (error) {
+      return reply(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
   if (path === '/api/gmail/oauth/start' && req.method === 'GET') return gmail.begin(req, res, session);
   if (path === '/api/gmail' && req.method === 'DELETE') {
-    gmail.disconnect(session.user.id);
+    const taskIds = gmail.disconnect(session.user.id);
+    for (const taskId of taskIds) worker.stopTask(taskId);
     publish();
     return reply(res, 200, { ok: true });
   }
