@@ -2674,7 +2674,13 @@ try {
       const dialog = document.querySelector('[data-testid="voice-call"]');
       return dialog?.getAttribute('data-voice-provider') === 'volcengine' && dialog.getAttribute('data-voice-model') === 'doubao-seedduplex-3.0';
     });
-    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 20_000 });
+    await alphaPage!.waitForFunction(() => {
+      const state = document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-state');
+      return state === 'sent' || state === 'no-frames' || state === 'context-suspended';
+    }, null, { timeout: 20_000 });
+    assert.equal(await call.getAttribute('data-voice-mic-state'), 'sent', 'The browser must start microphone PCM capture after SeedDuplex connects');
+    assert(await alphaPage!.getByTestId('voice-call-transcript').textContent().then(text => text?.includes('正在聆听')), 'The call should report listening only after microphone PCM frames have been sent');
+    assert(await call.getByTestId('voice-call-mic-meter').isVisible(), 'The caller must see microphone input activity during the SeedDuplex call');
     assert.equal(mockVolcEngineDuplexConnections.length, 1, 'The authenticated SeedDuplex call should open one provider connection');
     const providerConnection = mockVolcEngineDuplexConnections[0];
     assert.equal(providerConnection.headers['x-api-key'], 'e2e-seedduplex-secret', 'The shared API key must be sent only from the server');

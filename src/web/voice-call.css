@@ -8,6 +8,7 @@
 .voice-call-card-status i{width:7px;height:7px;flex:none;border-radius:50%;background:#60a77a;box-shadow:0 0 0 3px #60a77a1a}
 .voice-call-card-status i.has-error{background:#d7645e;box-shadow:0 0 0 3px #d7645e1a}
 .voice-call-card-timer{margin-left:auto;color:#77747c;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.voice-call-card-mic{display:flex;align-items:center;gap:7px;margin-top:8px;color:#817d86;font-size:9px;line-height:12px}.voice-call-card-mic>div{width:46px;height:3px;overflow:hidden;border-radius:2px;background:#e9e7eb}.voice-call-card-mic>div>i{display:block;height:100%;border-radius:inherit;background:#9272bd;transition:width .12s linear}.voice-call-card-mic>small{color:#8d8992;font-size:9px}
 .voice-call-card-live{display:grid;gap:4px;max-height:43px;overflow:hidden;margin:10px 0 0;padding:8px 9px;border-radius:9px;background:#f7f6f8;color:#66636c;font-size:10px;line-height:14px}
 .voice-call-card-transcript,.voice-call-card-task{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:1;overflow-wrap:anywhere}
 .voice-call-card-task{color:#8c72b3}
@@ -29,6 +30,7 @@
 .dots-dark .voice-call-card{border-color:#39363d;background:#242227;color:#efedf2;box-shadow:0 10px 32px #0008,0 2px 5px #0005}
 .dots-dark .voice-call-card-identity>strong{color:#efedf2}
 .dots-dark .voice-call-card-status,.dots-dark .voice-call-card-timer{color:#b1adb7}
+.dots-dark .voice-call-card-mic{color:#b1adb7}.dots-dark .voice-call-card-mic>div{background:#48434c}.dots-dark .voice-call-card-mic>small{color:#b1adb7}
 .dots-dark .voice-call-card-live{background:#302d33;color:#d0ccd4}
 .dots-dark .voice-call-card-task{color:#c1a7e8}
 .dots-dark .voice-call-card-secondary{background:#38353c;color:#d2ced7}
