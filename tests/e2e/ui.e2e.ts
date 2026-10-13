@@ -22,6 +22,7 @@ process.env.NODE_ENV ||= 'test';
 process.env.DOTS_TEST_KEYRING_DIR ||= join(tempRoot, 'test-keyring');
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
+const sharedModelKeychainLockFile = join(tempRoot, 'simulated-shared-model-keychain-lock');
 const fixtureSource = join(projectRoot, 'tests', 'e2e', 'fixtures', 'computer.html');
 const fixtureDestination = join(projectRoot, 'dist', 'e2e-computer-fixture.html');
 const chromePath = findChromePath();
@@ -121,6 +122,7 @@ async function startMockModel() {
         const isDelegatedFollowUp = prompt.includes('E2E delegated follow-up — verify competitor source links');
         const competitorChildId = prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Competitor scan \[done\]/)?.[1];
         const isSharedModelTask = prompt.includes('E2E shared model call from Beta account');
+        const isKeychainResilienceTask = prompt.includes('E2E keychain resilience — use the retained shared model credential');
         const delegatedChild = ['Market scan', 'Competitor scan', 'Launch risks'].find(title => prompt.includes(`E2E delegated child — ${title.toLowerCase()}`));
         if (isPauseTask && !pauseModelHeld) {
           pauseModelHeld = true;
@@ -153,13 +155,13 @@ async function startMockModel() {
           }
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || (isDelegationAggregate && !isDelegationFollowUpRequest) || isSharedModelTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || (isDelegationAggregate && !isDelegationFollowUpRequest) || isSharedModelTask || isKeychainResilienceTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : isDelegationFollowUpRequest ? { status: 'delegating', message: 'I asked the competitor thread to verify its source links before I finish the brief.', followUps: [{ taskId: competitorChildId, instruction: 'E2E delegated follow-up — verify competitor source links' }] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? isDelegatedFollowUp ? 'Competitor scan follow-up completed with verified links.' : `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ends.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : isDelegationFollowUpRequest ? { status: 'delegating', message: 'I asked the competitor thread to verify its source links before I finish the brief.', followUps: [{ taskId: competitorChildId, instruction: 'E2E delegated follow-up — verify competitor source links' }] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isKeychainResilienceTask ? '登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? isDelegatedFollowUp ? 'Competitor scan follow-up completed with verified links.' : `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -282,6 +284,7 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
       DOTS_KEYCHAIN_SERVICE: 'com.cokepoppy.coke-dots.e2e',
+      DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE: sharedModelKeychainLockFile,
       SLACK_CLIENT_ID: 'coke-dots-slack-e2e-client',
       SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
       SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
@@ -1174,6 +1177,32 @@ try {
     const betaModelRequest = mockModelRequests.slice(requestStart).find(request => request.prompt.includes(sharedModelInstruction));
     assert.equal(betaModelRequest?.authorization, `Bearer ${testModelApiKey}`, 'Beta must execute a real authenticated model HTTP request with the instance-shared credential');
     await screenshot(betaPage!, 'shared-model-task-from-beta');
+  });
+
+  await recordStep('Chrome completes an Alpha task while the shared Model API Keychain is temporarily unavailable', async () => {
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.locator('.composer-bottom select').selectOption('model');
+    const instruction = 'E2E keychain resilience — use the retained shared model credential';
+    const requestStart = mockModelRequests.length;
+    await writeFile(sharedModelKeychainLockFile, 'simulate a temporarily locked Mac login Keychain');
+    try {
+      const lockedState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean }; availableEngines: string[] };
+      assert.equal(lockedState.modelSettings.hasKey, true, 'The page should keep showing the shared model as configured after a transient Keychain read failure');
+      assert(lockedState.availableEngines.includes('model'), 'A temporary Keychain lock must not remove the Model API kernel from this tenant');
+      await createTask(alphaPage!, instruction);
+      await clickNav(alphaPage!, 'Activity');
+      await alphaPage!.waitForFunction(async (taskInstruction: string) => {
+        const state = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; result: string | null }[] };
+        const task = state.tasks.find(candidate => candidate.instruction === taskInstruction);
+        return task?.status === 'done' && task.result?.includes('登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。');
+      }, instruction, { timeout: 20_000 });
+      await waitFor(() => mockModelRequests.slice(requestStart).some(request => request.prompt.includes(instruction)), 5_000);
+      const request = mockModelRequests.slice(requestStart).find(candidate => candidate.prompt.includes(instruction));
+      assert.equal(request?.authorization, `Bearer ${testModelApiKey}`, 'The task must make an authenticated model call with the retained instance credential');
+      await screenshot(alphaPage!, 'shared-model-task-during-keychain-lock');
+    } finally {
+      await rm(sharedModelKeychainLockFile, { force: true });
+    }
   });
 
   await recordStep('Dot appearance changes persist within Alpha personal workspace', async () => {

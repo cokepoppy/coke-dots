@@ -55,11 +55,14 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       "import { appendFile } from 'node:fs/promises';",
       "let raw = ''; for await (const chunk of process.stdin) raw += chunk;",
       'const input = JSON.parse(raw);',
-      "await appendFile(process.env.DOTS_TEST_MARKER, `start ${input.taskId}\\n`);",
+      "const modelKey = 'cloud-runtime-model-key-never-print';",
+      "const keyInEnv = Object.values(process.env).includes(modelKey) || Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN) || Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN);",
+      "const configDelivered = input.modelConfig?.apiKey === modelKey && input.modelConfig?.baseUrl === 'https://api.example.test/v1' && input.modelConfig?.model === 'runtime-test-model';",
+      "await appendFile(process.env.DOTS_TEST_MARKER, `start ${input.taskId} config=${configDelivered} keyInEnv=${keyInEnv}\\n`);",
       "if (input.prompt === 'hold') await new Promise(resolve => setTimeout(resolve, 30000));",
       'await new Promise(resolve => setTimeout(resolve, 80));',
       "await appendFile(process.env.DOTS_TEST_MARKER, `end ${input.taskId}\\n`);",
-      "process.stdout.write(JSON.stringify({ status: 'done', message: process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'runtime token leaked' : 'runtime token isolated' }));",
+      "process.stdout.write(JSON.stringify({ status: 'done', message: configDelivered && !keyInEnv && !process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'shared model config delivered via stdin; runtime token isolated' : 'shared model config missing', diagnostic: input.modelConfig?.apiKey }));",
       '',
     ].join('\n'));
     child = spawn(process.execPath, [runtimePath], {
@@ -67,6 +70,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       env: {
         ...process.env,
         DOTS_AGENT_RUNTIME_TOKEN: 'agent-test-token-never-print',
+        DOTS_MODEL_API_KEY: 'cloud-runtime-model-key-never-print',
         DOTS_AGENT_RUNTIME_PORT: String(runtimePort),
         DOTS_AGENT_WORKSPACE: workspace,
         DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: process.execPath, args: [adapterPath] }, claude: { command: '/bin/false', args: [] } }),
@@ -92,23 +96,32 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     });
     assert.equal(disabled.status, 400, 'The cloud runtime must reject Claude Code even if an old environment still lists it');
     assert.match((await disabled.json() as { error?: string }).error || '', /not enabled for this workspace/);
-    const submit = async (taskId: string, prompt: string) => {
+    const modelConfig = { apiKey: 'cloud-runtime-model-key-never-print', baseUrl: 'https://api.example.test/v1', model: 'runtime-test-model' };
+    const submit = async (taskId: string, prompt: string, config: typeof modelConfig | null = modelConfig) => {
       const response = await fetch(`${runtimeUrl}/v1/tasks/run`, {
         method: 'POST',
         headers: { authorization: 'Bearer agent-test-token-never-print', 'content-type': 'application/json' },
-        body: JSON.stringify({ engine: 'dsh', taskId, prompt, cwd: `tasks/${taskId}`, sessionId: null }),
+        body: JSON.stringify({ engine: 'dsh', taskId, prompt, cwd: `tasks/${taskId}`, sessionId: null, ...(config ? { modelConfig: config } : {}) }),
       });
       return { status: response.status, body: await response.json() as { status?: string; message?: string; error?: string } };
     };
+
+    const missingConfig = await submit('44444444-4444-4444-8444-444444444444', 'missing config', null);
+    assert.equal(missingConfig.status, 400);
+    assert.match(missingConfig.body.error || '', /Shared Model API configuration is required/);
+    assert.doesNotMatch(await readFile(markerPath, 'utf8').catch(() => ''), /44444444-4444-4444-8444-444444444444/, 'Missing model config must be rejected before starting the adapter');
 
     const firstId = '11111111-1111-4111-8111-111111111111';
     const secondId = '22222222-2222-4222-8222-222222222222';
     const [first, second] = await Promise.all([submit(firstId, 'first'), submit(secondId, 'second')]);
     assert.deepEqual([first.status, second.status], [200, 200]);
     assert.equal(first.body.status, 'done');
-    assert.equal(first.body.message, 'runtime token isolated');
-    assert.equal(second.body.message, 'runtime token isolated');
-    const events = (await readFile(markerPath, 'utf8')).trim().split('\n').map(line => line.split(' ')[0]);
+    assert.equal(first.body.message, 'shared model config delivered via stdin; runtime token isolated');
+    assert.equal(second.body.message, 'shared model config delivered via stdin; runtime token isolated');
+    assert.doesNotMatch(JSON.stringify([first.body, second.body]), /cloud-runtime-model-key-never-print/, 'Agent output must not persist or return the shared API credential');
+    const markers = (await readFile(markerPath, 'utf8')).trim().split('\n');
+    assert(markers.filter(line => line.startsWith('start ')).every(line => line.includes('config=true keyInEnv=false')), 'The adapter must receive model config over stdin, never via environment');
+    const events = markers.map(line => line.split(' ')[0]);
     assert.deepEqual(events, ['start', 'end', 'start', 'end'], 'Only one adapter may use the tenant browser at a time');
     await stat(join(workspace, 'tasks', firstId));
     await stat(join(workspace, 'tasks', secondId));

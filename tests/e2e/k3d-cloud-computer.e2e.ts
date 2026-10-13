@@ -20,7 +20,8 @@ const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `k3d-cloud-computer-$
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
 const tokenSecret = randomBytes(32).toString('base64url');
-const agentAdapterSource = "const fs=require('node:fs');let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const task=JSON.parse(input);fs.writeFileSync('runtime-persistence.txt',task.taskId);console.log(JSON.stringify({status:'done',message:'Adapter completed: '+task.prompt+'; runtime token visible to child: '+Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)}))})";
+const agentAdapterSource = "const fs=require('node:fs');let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const task=JSON.parse(input);const key='k3d-e2e-shared-model-key';const keyInEnv=Object.values(process.env).includes(key)||Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)||Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN);fs.writeFileSync('runtime-persistence.txt',task.taskId);console.log(JSON.stringify({status:'done',message:'Adapter completed: '+task.prompt+'; shared model config received: '+Boolean(task.modelConfig?.apiKey===key&&task.modelConfig?.baseUrl==='https://api.example.test/v1'&&task.modelConfig?.model==='k3d-e2e-model')+'; model key in child environment: '+keyInEnv}))})";
+const k3dModelConfig = { apiKey: 'k3d-e2e-shared-model-key', baseUrl: 'https://api.example.test/v1', model: 'k3d-e2e-model' };
 let appServer: ChildProcess | null = null;
 let agentPortForward: ChildProcess | null = null;
 let browser: Browser | null = null;
@@ -34,6 +35,8 @@ function command(args: string[]) {
   if (result.status !== 0) throw new Error(`${args[0]} ${args[1]} failed (${result.status ?? 'signal'}): ${(result.stderr || result.stdout).slice(-1200)}`);
   return result.stdout.trim();
 }
+
+const desktopImage = process.env.DOTS_LINUX_DESKTOP_IMAGE || `coke-dots-linux-desktop:sha-${command(['git', 'rev-parse', 'HEAD'])}`;
 
 async function freePort() {
   const server = createServer();
@@ -51,13 +54,13 @@ async function startApp(): Promise<ChildProcess> {
       ...process.env,
       NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(appPort),
       DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_LINUX_DESKTOP_TOKEN_SECRET: tokenSecret,
-      DOTS_LINUX_DESKTOP_IMAGE: process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev',
+      DOTS_LINUX_DESKTOP_IMAGE: desktopImage,
       DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE: process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || cluster,
       DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX || '1',
       DOTS_LINUX_DESKTOP_TEST_WORKER_URL: '', DOTS_LINUX_DESKTOP_TEST_NOVNC_URL: '', DOTS_LINUX_DESKTOP_TEST_AGENT_URL: '',
       DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
       DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: 'node', args: ['-e', agentAdapterSource] } }),
-      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: '', DOTS_MODEL_API_KEY: '', DOTS_MODEL: '', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
+      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: k3dModelConfig.baseUrl, DOTS_MODEL_API_KEY: k3dModelConfig.apiKey, DOTS_MODEL: k3dModelConfig.model, DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -111,7 +114,7 @@ try {
   const currentContext = command(['kubectl', 'config', 'current-context']);
   assert.equal(currentContext, `k3d-${cluster}`, 'The K3D smoke test must use the explicitly selected Coke sandbox cluster');
   command(['kubectl', 'get', 'nodes']);
-  command(['docker', 'image', 'inspect', process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev']);
+  command(['docker', 'image', 'inspect', desktopImage]);
   console.log(`K3D preflight passed: ${cluster}`);
   await mkdir(artifacts, { recursive: true });
   await writeFile(envFile, '');
@@ -141,7 +144,7 @@ try {
   assert.equal(computerStatus.status, 200, 'The cloud computer API must connect to the tenant desktop');
   const desktopPod = command(['kubectl', '-n', namespace, 'get', 'pod', '-l', 'app=desktop', '-o', 'jsonpath={.items[0].metadata.name}']);
   assert(desktopPod, `The tenant namespace ${namespace} must contain its desktop Pod`);
-  const expectedWorkerImage = process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev';
+  const expectedWorkerImage = desktopImage;
   const deployment = JSON.parse(command(['kubectl', '-n', namespace, 'get', 'deployment', 'desktop', '-o', 'json'])) as {
     metadata: { annotations?: Record<string, string> };
     spec: { template: { metadata: { annotations?: Record<string, string> }; spec: { containers: { image: string; imagePullPolicy: string }[] } } };
@@ -200,19 +203,71 @@ try {
   const runtimeResponse = await fetch(`http://127.0.0.1:${agentPort}/v1/tasks/run`, {
     method: 'POST',
     headers: { authorization: `Bearer ${agentToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ engine: 'dsh', taskId: runtimeTaskId, prompt: 'real Debian 13 runtime smoke', sessionId: null, cwd: 'tasks/runtime-smoke' }),
+    body: JSON.stringify({ engine: 'dsh', taskId: runtimeTaskId, prompt: 'real Debian 13 runtime smoke', sessionId: null, cwd: 'tasks/runtime-smoke', modelConfig: k3dModelConfig }),
   });
   const runtimeResult = await runtimeResponse.json() as { status?: string; message?: string; engine?: string };
   assert.equal(runtimeResponse.status, 200, `The live Agent runtime must execute its configured adapter: ${JSON.stringify(runtimeResult)}`);
   assert.equal(runtimeResult.status, 'done');
   assert.equal(runtimeResult.engine, 'dsh');
-  assert.match(runtimeResult.message || '', /Adapter completed: real Debian 13 runtime smoke; runtime token visible to child: false/);
+  assert.match(runtimeResult.message || '', /Adapter completed: real Debian 13 runtime smoke; shared model config received: true; model key in child environment: false/);
   const workspacePath = `/workspace/tasks/runtime-smoke/runtime-persistence.txt`;
   assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The real Agent runtime must leave its task artifact in the tenant workspace PVC');
   agentPortForward.kill('SIGTERM');
   agentPortForward = null;
-  console.log('Live Agent runtime executed its configured adapter and kept the runtime token out of the child process');
+  console.log('Live Agent runtime received the shared model profile over stdin and kept it and runtime tokens out of the adapter environment');
 
+  const cloudInstruction = `通过云电脑 Agent 验证共享模型配置 ${randomUUID()}`;
+  await page.getByRole('button', { name: '新聊天', exact: true }).click();
+  await page.getByTestId('task-composer').waitFor({ state: 'visible' });
+  const seedTask = await page.evaluate(async instruction => {
+    const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction, engine: 'dsh' }) });
+    return { status: response.status, task: await response.json() as { id?: string; title?: string } };
+  }, `打开聊天上下文 ${randomUUID()}`);
+  assert.equal(seedTask.status, 201, 'Create a disposable cloud task to open the normal conversation composer');
+  assert(seedTask.task.id && seedTask.task.title);
+  await page.waitForFunction(async taskId => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string }[] };
+    return state.tasks.find(task => task.id === taskId)?.status === 'done';
+  }, seedTask.task.id, { timeout: 120_000 });
+  await page.locator('.task-links button').filter({ hasText: seedTask.task.title }).click();
+  await page.getByTestId('engine-select').waitFor({ state: 'visible' });
+  await page.getByTestId('engine-select').selectOption('dsh');
+  await page.getByTestId('task-composer').fill(cloudInstruction);
+  await page.locator('button.send').click();
+  const cloudTaskId = await page.waitForFunction(async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; engine: string }[] };
+    return state.tasks.find(task => task.instruction === instruction && task.engine === 'dsh')?.id || false;
+  }, cloudInstruction, { timeout: 15_000 }).then(handle => handle.jsonValue()) as string;
+  const cloudTaskDeadline = Date.now() + 180_000;
+  let completedCloudTask: {
+    task: { id: string; status: string; result: string | null; error: string | null } | undefined;
+    dotEntries: string[];
+  } | undefined;
+  while (Date.now() < cloudTaskDeadline) {
+    completedCloudTask = await page.evaluate(async taskId => {
+      const state = await fetch('/api/state', { cache: 'no-store' }).then(response => response.json()) as {
+        tasks: { id: string; status: string; result: string | null; error: string | null }[];
+        entries: { taskId: string | null; kind: string; body: string }[];
+      };
+      return {
+        task: state.tasks.find(task => task.id === taskId),
+        dotEntries: state.entries.filter(entry => entry.taskId === taskId && entry.kind === 'dot').map(entry => entry.body),
+      };
+    }, cloudTaskId);
+    if (completedCloudTask.task?.status === 'done') break;
+    if (completedCloudTask.task?.status === 'failed') throw new Error(`Chrome-created cloud Agent task failed: ${JSON.stringify(completedCloudTask)}`);
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 500));
+  }
+  assert(completedCloudTask?.task?.status === 'done', `The Chrome-created cloud Agent task did not finish: ${JSON.stringify(completedCloudTask)}`);
+  assert(completedCloudTask.task, 'The UI-created cloud task must remain visible in its tenant Activity');
+  assert.match(completedCloudTask.task.result || '', /shared model config received: true; model key in child environment: false/, `Task result should persist the adapter response; task=${JSON.stringify(completedCloudTask.task)} entries=${JSON.stringify(completedCloudTask.dotEntries)}`);
+  assert.deepEqual(completedCloudTask.dotEntries, [completedCloudTask.task.result], 'The visible Dot reply and persisted task result must match');
+  assert.doesNotMatch(completedCloudTask.task.result || '', /k3d-e2e-shared-model-key/, 'The shared API key must not appear in the persisted task result');
+  const cloudTaskArtifact = `/workspace/tasks/${cloudTaskId}/runtime-persistence.txt`;
+  assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', cloudTaskArtifact]), cloudTaskId, 'The UI task must execute in the actual tenant Agent runtime and persist its artifact on that tenant PVC');
+  console.log('Chrome-created cloud task completed through the host service, tenant Agent runtime, and Debian adapter');
+
+  await page.getByRole('button', { name: '电脑', exact: true }).click();
   await page.getByRole('button', { name: 'Take over' }).click();
   const vncCanvas = page.frameLocator('[data-testid="linux-desktop-view"]').locator('canvas').first();
   await vncCanvas.waitFor({ state: 'visible', timeout: 60_000 });
@@ -247,7 +302,7 @@ try {
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The tenant workspace artifact must survive a desktop Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'browser navigate/click/type', 'takeover and return', 'live Agent adapter execution without runtime-token exposure', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'Chrome-created task routed through the host service to the tenant Agent runtime', 'shared Model API profile delivered to the adapter via stdin and excluded from its environment and task result', 'browser navigate/click/type', 'takeover and return', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);

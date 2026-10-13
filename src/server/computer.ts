@@ -24,7 +24,7 @@ export interface ComputerRuntime {
   screenshot(): Promise<Buffer>;
   close(): Promise<void>;
   novncTarget?(): Promise<URL | null>;
-  runAgentTask?(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; followUps?: unknown[] }>;
+  runAgentTask?(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; followUps?: unknown[] }>;
 }
 
 export class ComputerManager implements ComputerRuntime {

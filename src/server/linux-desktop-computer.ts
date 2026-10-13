@@ -110,7 +110,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     return this.connection?.novncUrl ?? null;
   }
 
-  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; signal?: AbortSignal }) {
+  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; signal?: AbortSignal }) {
     await this.ensureConnection();
     const owner = await this.request('/v1/control');
     if (!owner.ok || (await owner.json() as { owner?: string }).owner !== 'agent') throw new Error('用户正在接管这台电脑，Agent 已暂停');
@@ -118,7 +118,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     const response = await fetch(url, {
       method: 'POST',
       headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ engine: input.engine, taskId: input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
+      body: JSON.stringify({ engine: input.engine, taskId: input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, ...(input.modelConfig ? { modelConfig: input.modelConfig } : {}), computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
       signal: input.signal ? AbortSignal.any([AbortSignal.timeout(15 * 60_000), input.signal]) : AbortSignal.timeout(15 * 60_000),
     });
     const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; followUps?: unknown[] };

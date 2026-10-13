@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSy
 import { isAbsolute, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
-/** macOS Keychain in production, private temporary files only in isolated tests. */
+/** Keychain access for application secrets, with a disposable test-only backend. */
 export class Entry {
   private readonly native: NativeEntry | null;
   private readonly testPath: string | null;
@@ -48,8 +48,7 @@ export class Entry {
 
 function testKeyPath(service: string, account: string): string | null {
   const rootValue = process.env.DOTS_TEST_KEYRING_DIR?.trim();
-  const inTestProcess = process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT !== undefined || process.argv.includes('--test');
-  if (!inTestProcess || !rootValue || !/(?:^|[.-])(?:test|e2e)(?:[.-]|$)/i.test(service)) return null;
+  if (process.env.NODE_ENV !== 'test' || !rootValue || !/(?:^|[.-])(?:test|e2e)(?:[.-]|$)/i.test(service)) return null;
 
   const root = resolve(rootValue);
   const fromTemp = relative(resolve(tmpdir()), root);
