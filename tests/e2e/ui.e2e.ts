@@ -42,7 +42,7 @@ let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp
 let mockVolcEngineUrl = '';
 let mockVolcEngineConnections: { headers: Record<string, string>; events: number[]; serverEvents: number[]; timeline: string[]; pcmBytes: number; spokenTexts: string[] }[] = [];
 let mockVolcEngineDuplexUrl = '';
-let mockVolcEngineDuplexConnections: { headers: Record<string, string>; events: string[]; timeline: string[]; pcmBytes: number; spokenTexts: string[]; audioDeltas: number; sendTranscript: (transcript: string, turnId: string) => void }[] = [];
+let mockVolcEngineDuplexConnections: { headers: Record<string, string>; events: string[]; timeline: string[]; pcmBytes: number; pcmPeak: number; nonSilentPcmSamples: number; spokenTexts: string[]; audioDeltas: number; sendTranscript: (transcript: string, turnId: string) => void }[] = [];
 let mockVolcEngineDuplexNextInitialTranscript = '请用中文整理本周人工智能产品更新的三个要点，并说明来源。';
 let mockSlackCodeExchanges = 0;
 let e2eSlackTokenAccount = '';
@@ -329,7 +329,7 @@ async function startMockVolcEngineDuplexProvider() {
     mockVolcEngineDuplexNextInitialTranscript = '请用中文整理本周人工智能产品更新的三个要点，并说明来源。';
     const connection = {
       headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(',') : String(value || '')])),
-      events: [] as string[], timeline: [] as string[], pcmBytes: 0, spokenTexts: [] as string[], audioDeltas: 0,
+      events: [] as string[], timeline: [] as string[], pcmBytes: 0, pcmPeak: 0, nonSilentPcmSamples: 0, spokenTexts: [] as string[], audioDeltas: 0,
       sendTranscript: (transcript: string, turnId: string) => {
         socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.started', item_id: turnId }));
         socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.delta', item_id: turnId, delta: transcript }));
@@ -349,7 +349,15 @@ async function startMockVolcEngineDuplexProvider() {
       if (type === 'session.create') {
         socket.send(JSON.stringify({ type: 'session.created', event_id: 'mock-session-created', session: { id: 'mock-seedduplex-session' } }));
       } else if (type === 'input_audio_buffer.append') {
-        if (typeof event.audio === 'string') connection.pcmBytes += Buffer.from(event.audio, 'base64').byteLength;
+        if (typeof event.audio === 'string') {
+          const pcm = Buffer.from(event.audio, 'base64');
+          connection.pcmBytes += pcm.byteLength;
+          for (let offset = 0; offset + 1 < pcm.byteLength; offset += 2) {
+            const sample = pcm.readInt16LE(offset);
+            connection.pcmPeak = Math.max(connection.pcmPeak, Math.abs(sample));
+            if (sample !== 0) connection.nonSilentPcmSamples += 1;
+          }
+        }
         if (!sentTranscript) {
           sentTranscript = true;
           connection.sendTranscript(initialTranscript, 'duplex-e2e-turn-0001');
@@ -2681,6 +2689,8 @@ try {
     assert.equal(await call.getAttribute('data-voice-mic-state'), 'sent', 'The browser must start microphone PCM capture after SeedDuplex connects');
     assert(await alphaPage!.getByTestId('voice-call-transcript').textContent().then(text => text?.includes('正在聆听')), 'The call should report listening only after microphone PCM frames have been sent');
     assert(await call.getByTestId('voice-call-mic-meter').isVisible(), 'The caller must see microphone input activity during the SeedDuplex call');
+    await alphaPage!.waitForFunction(() => Number(document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-level')) > 0, null, { timeout: 10_000 });
+    assert(Number(await call.getAttribute('data-voice-mic-level')) > 0, 'The UI microphone meter must detect a non-silent input signal');
     assert.equal(mockVolcEngineDuplexConnections.length, 1, 'The authenticated SeedDuplex call should open one provider connection');
     const providerConnection = mockVolcEngineDuplexConnections[0];
     assert.equal(providerConnection.headers['x-api-key'], 'e2e-seedduplex-secret', 'The shared API key must be sent only from the server');
@@ -2692,6 +2702,7 @@ try {
     const playbackFrames = await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcPlaybackCapture: { sampleRate: number; length: number; peak: number }[] }).__dotsVolcPlaybackCapture);
     assert(playbackFrames.some(frame => frame.sampleRate === 24_000 && frame.length === 240 && frame.peak >= 0.45), 'The browser must decode and schedule SeedDuplex float32 output at 24 kHz instead of dropping it or playing static');
     assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM audio in realtime-sized packets');
+    assert(providerConnection.pcmPeak > 0 && providerConnection.nonSilentPcmSamples > 0, 'SeedDuplex must receive non-silent PCM from the selected microphone, not merely zero-filled frames');
     assert(providerConnection.events.includes('session.create') && providerConnection.events.includes('input_audio_buffer.append'), 'SeedDuplex must use JSON session and audio events');
     assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be submitted to SeedDuplex direct text-to-speech events');
     assert(providerConnection.events.includes('speech_text_buffer.commit'), 'Agent status speech must use the provider direct-synthesis event');
