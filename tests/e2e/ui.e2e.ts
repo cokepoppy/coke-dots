@@ -1563,13 +1563,15 @@ try {
       '(() => {',
       '  class FakeSpeechRecognition {',
       '    constructor() { this.onresult = null; this.onerror = null; this.onend = null; }',
-      '    start() { window.__dotsFakeRecognition = this; }',
+      '    start() { window.__dotsRecognitionStarts += 1; window.__dotsVoiceEvents.push("listening"); window.__dotsFakeRecognition = this; }',
       '    abort() {}',
       '    emit(text) { const result = Object.assign([{ transcript: text }], { isFinal: true }); const event = Object.assign(new Event("result"), { resultIndex: 0, results: [result] }); this.onresult(event); }',
       '  }',
       '  Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: FakeSpeechRecognition });',
       '  Object.defineProperty(window, "__dotsSpeechOutput", { configurable: true, value: [] });',
-      '  Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { cancel() {}, speak(utterance) { window.__dotsSpeechOutput.push(utterance.text); window.setTimeout(() => utterance.onend?.(), 0); } } });',
+      '  Object.defineProperty(window, "__dotsVoiceEvents", { configurable: true, value: [] });',
+      '  Object.defineProperty(window, "__dotsRecognitionStarts", { configurable: true, value: 0, writable: true });',
+      '  Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { cancel() {}, speak(utterance) { window.__dotsSpeechOutput.push(utterance.text); window.__dotsVoiceEvents.push("spoken:" + utterance.text); window.setTimeout(() => utterance.onend?.(), 0); } } });',
       '  Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { constructor(text) { this.text = text; } } });',
       '})()',
     ].join('\n');
@@ -1587,10 +1589,25 @@ try {
     await profileCall.waitFor({ state: 'visible' });
     assert.equal(await profileCall.getAttribute('data-variant'), 'desktop', 'A call launched from the Dot profile on a desktop viewport must use the compact desktop UI');
     assert.equal(await profileCall.locator('.voice-call-screen').count(), 0, 'Desktop profile calls must not render the handset UI');
+    const desktopCallBox = await profileCall.boundingBox();
+    assert(desktopCallBox && desktopCallBox.width < 350 && desktopCallBox.height < 220,
+      'The desktop call must render as a compact floating card');
+    assert.equal(await profileCall.locator('.voice-call-card-end').count(), 1, 'The active outgoing call must have exactly one red hang-up action');
+    assert.equal(await profileCall.getByRole('button', { name: /接听|回答/ }).count(), 0, 'An active outgoing call must not offer an answer action');
+    await waitFor(async () => {
+      const output = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+      return output.includes('你好，我是 dot，有什么我可以帮你？');
+    }, 10_000);
+    await alphaPage!.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeRecognition));
+    const desktopGreetingSequence = await alphaPage!.evaluate(() => (window as unknown as { __dotsVoiceEvents: string[] }).__dotsVoiceEvents.slice(0, 2));
+    assert.deepEqual(desktopGreetingSequence, ['spoken:你好，我是 dot，有什么我可以帮你？', 'listening'],
+      'The call must play a Chinese greeting before opening the browser microphone input');
+    await screenshot(alphaPage!, 'voice-call-compact-desktop');
     await profileCall.getByRole('button', { name: '结束通话' }).click();
     await profileCall.waitFor({ state: 'hidden' });
 
     await alphaPage!.setViewportSize({ width: 690, height: 930 });
+    const greetingsBefore690 = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput.length);
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     profileCall = alphaPage!.getByTestId('voice-call');
     await profileCall.waitFor({ state: 'visible' });
@@ -1603,145 +1620,34 @@ try {
     assert.equal(unsupportedRealtimeStatus, 409, 'The browser provider must not be silently treated as a realtime model session');
     const crossTenantRealtimeStatus = await betaPage!.evaluate(async (id: string) => (await fetch(`/api/voice-calls/${id}/realtime-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'v=0' }) })).status, activeCallId);
     assert.equal(crossTenantRealtimeStatus, 404, 'A different tenant cannot negotiate against another user’s active call');
-    assert.equal(await profileCall.getAttribute('data-variant'), 'handset');
-    assert.equal(await profileCall.locator('.voice-call-person > strong').innerText(), 'dot', 'The pixel-comparison frame must use the same visible Dot name as the reference video');
-    const handsetBox = await profileCall.boundingBox();
-    assert(handsetBox && handsetBox.height / handsetBox.width > 1.8 && handsetBox.height / handsetBox.width < 2.2, 'The standalone call should match the tall handset reference proportions');
-    assert.match(await profileCall.locator('.voice-call-screen').evaluate(element => getComputedStyle(element).backgroundImage), /radial-gradient.*linear-gradient/);
-    assert.equal(await profileCall.getByRole('button', { name: '结束通话' }).innerText(), 'End');
-    assert.equal(await profileCall.getByRole('button', { name: '关闭扬声器' }).innerText(), 'Speaker');
-    assert.equal(await profileCall.getByRole('button', { name: '静音' }).innerText(), 'Mute');
-    const handsetReference = JSON.parse(await readFile(join(projectRoot, 'research/comparisons/voice-call-mobile-v1-0650.json'), 'utf8')) as {
-      source: { crop: { width: number; height: number } };
-      controls: { name: string; center: { x: number; y: number }; diameter: number }[];
-      tolerance: { normalizedPosition: number; normalizedDiameter: number };
-    };
-    const handsetGeometry = await profileCall.evaluate(element => {
-      const dock = element.getBoundingClientRect();
-      return Array.from(element.querySelectorAll<HTMLElement>('.voice-call-control-icon')).map(icon => {
-        const box = icon.getBoundingClientRect();
-        return {
-          x: (box.left + box.width / 2 - dock.left) / dock.width,
-          y: (box.top + box.height / 2 - dock.top) / dock.height,
-          diameter: box.width / dock.width,
-        };
-      });
-    });
-    assert.equal(handsetGeometry.length, handsetReference.controls.length);
-    handsetReference.controls.forEach((reference, index) => {
-      const actual = handsetGeometry[index]!;
-      const x = reference.center.x / handsetReference.source.crop.width;
-      const y = reference.center.y / handsetReference.source.crop.height;
-      const diameter = reference.diameter / handsetReference.source.crop.width;
-      assert(Math.abs(actual.x - x) <= handsetReference.tolerance.normalizedPosition,
-        `${reference.name} center should match the 06:50.9 frame horizontally: expected ${x.toFixed(3)}, saw ${actual.x.toFixed(3)}`);
-      assert(Math.abs(actual.y - y) <= handsetReference.tolerance.normalizedPosition,
-        `${reference.name} center should match the 06:50.9 frame vertically: expected ${y.toFixed(3)}, saw ${actual.y.toFixed(3)}`);
-      assert(Math.abs(actual.diameter - diameter) <= handsetReference.tolerance.normalizedDiameter,
-        `${reference.name} diameter should match the 06:50.9 frame: expected ${diameter.toFixed(3)}, saw ${actual.diameter.toFixed(3)}`);
-    });
-    const upperFrameReference = JSON.parse(await readFile(join(projectRoot, 'research/comparisons/voice-call-v1-0626-upper-screen.json'), 'utf8')) as {
-      measuredElements: {
-        statusTimeLeft: number;
-        statusTimeBoxTop: number;
-        notchLeft: number;
-        notchTop: number;
-        notchWidth: number;
-        notchHeight: number;
-        earpieceLeft: number;
-        earpieceTop: number;
-        earpieceWidth: number;
-        earpieceHeight: number;
-        sensorLeft: number;
-        sensorTop: number;
-        sensorDiameter: number;
-        avatarTop: number;
-        avatarDiameter: number;
-        nameBoxTop: number;
-        timerBoxTop: number;
-        tolerancePx: { statusTime: number; notchPosition: number; notchSize: number; notchDetailPosition: number; notchDetailSize: number; avatarTop: number; avatarDiameter: number; textTop: number };
-      };
-    };
-    const upperFrameGeometry = await profileCall.evaluate(element => {
-      const dock = element.getBoundingClientRect();
-      const notch = element.querySelector<HTMLElement>('.voice-call-notch')!.getBoundingClientRect();
-      const notchElement = element.querySelector<HTMLElement>('.voice-call-notch')!;
-      const earpieceStyle = getComputedStyle(notchElement, '::before');
-      const sensorStyle = getComputedStyle(notchElement, '::after');
-      const avatar = element.querySelector<HTMLElement>('.voice-call-avatar')!.getBoundingClientRect();
-      const name = element.querySelector<HTMLElement>('.voice-call-person > strong')!.getBoundingClientRect();
-      const timer = element.querySelector<HTMLElement>('.voice-call-screen-timer')!.getBoundingClientRect();
-      const statusTime = element.querySelector<HTMLElement>('.voice-call-status-time')!.getBoundingClientRect();
-      const statusSilent = element.querySelector<HTMLElement>('.voice-call-status-leading .voice-call-silent')!.getBoundingClientRect();
-      return {
-        statusTimeLeft: statusTime.left - dock.left,
-        statusTimeBoxTop: statusTime.top - dock.top,
-        statusSilentGap: statusSilent.left - statusTime.right,
-        rightStatusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
-        avatarTop: avatar.top - dock.top,
-        avatarDiameter: avatar.width,
-        nameBoxTop: name.top - dock.top,
-        timerBoxTop: timer.top - dock.top,
-        notchLeft: notch.left - dock.left,
-        notchTop: notch.top - dock.top,
-        notchWidth: notch.width,
-        notchHeight: notch.height,
-        earpieceLeft: notch.left - dock.left + Number.parseFloat(earpieceStyle.left),
-        earpieceTop: notch.top - dock.top + Number.parseFloat(earpieceStyle.top),
-        earpieceWidth: Number.parseFloat(earpieceStyle.width),
-        earpieceHeight: Number.parseFloat(earpieceStyle.height),
-        sensorLeft: notch.right - dock.left - Number.parseFloat(sensorStyle.right) - Number.parseFloat(sensorStyle.width),
-        sensorTop: notch.top - dock.top + Number.parseFloat(sensorStyle.top),
-        sensorDiameter: Number.parseFloat(sensorStyle.width),
-      };
-    });
-    const upperTolerance = upperFrameReference.measuredElements.tolerancePx;
-    assert(Math.abs(upperFrameGeometry.statusTimeLeft - upperFrameReference.measuredElements.statusTimeLeft) <= upperTolerance.statusTime,
-      `Status time should match the 06:26 frame horizontally: expected ${upperFrameReference.measuredElements.statusTimeLeft}px, saw ${upperFrameGeometry.statusTimeLeft.toFixed(1)}px`);
-    assert(Math.abs(upperFrameGeometry.statusTimeBoxTop - upperFrameReference.measuredElements.statusTimeBoxTop) <= upperTolerance.statusTime,
-      `Status time should match the 06:26 frame vertically: expected ${upperFrameReference.measuredElements.statusTimeBoxTop}px, saw ${upperFrameGeometry.statusTimeBoxTop.toFixed(1)}px`);
-    for (const key of ['notchLeft', 'notchTop'] as const) {
-      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchPosition,
-        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
-    }
-    for (const key of ['notchWidth', 'notchHeight'] as const) {
-      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchSize,
-        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
-    }
-    for (const key of ['earpieceLeft', 'earpieceTop', 'sensorLeft', 'sensorTop'] as const) {
-      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailPosition,
-        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
-    }
-    for (const key of ['earpieceWidth', 'earpieceHeight', 'sensorDiameter'] as const) {
-      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailSize,
-        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
-    }
-    assert(upperFrameGeometry.statusSilentGap >= 0 && upperFrameGeometry.statusSilentGap <= 6,
-      'The crossed-bell status glyph should sit immediately beside the time as in the 06:26 frame');
-    assert.equal(upperFrameGeometry.rightStatusIconCount, 2, 'Cellular and Wi-Fi status glyphs should remain grouped by the battery on the right');
-    assert(Math.abs(upperFrameGeometry.avatarTop - upperFrameReference.measuredElements.avatarTop) <= upperTolerance.avatarTop,
-      `Avatar top should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarTop}px, saw ${upperFrameGeometry.avatarTop.toFixed(1)}px`);
-    assert(Math.abs(upperFrameGeometry.avatarDiameter - upperFrameReference.measuredElements.avatarDiameter) <= upperTolerance.avatarDiameter,
-      `Avatar size should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarDiameter}px, saw ${upperFrameGeometry.avatarDiameter.toFixed(1)}px`);
-    assert(Math.abs(upperFrameGeometry.nameBoxTop - upperFrameReference.measuredElements.nameBoxTop) <= upperTolerance.textTop,
-      `Dot name should match the 06:26 frame: expected ${upperFrameReference.measuredElements.nameBoxTop}px, saw ${upperFrameGeometry.nameBoxTop.toFixed(1)}px`);
-    assert(Math.abs(upperFrameGeometry.timerBoxTop - upperFrameReference.measuredElements.timerBoxTop) <= upperTolerance.textTop,
-      `Call timer should match the 06:26 frame: expected ${upperFrameReference.measuredElements.timerBoxTop}px, saw ${upperFrameGeometry.timerBoxTop.toFixed(1)}px`);
+    assert.equal(await profileCall.getAttribute('data-variant'), 'desktop', 'Every browser viewport must use the compact desktop call card');
+    const profileCallBox = await profileCall.boundingBox();
+    assert(profileCallBox && profileCallBox.width < 350 && profileCallBox.height < 220,
+      'The active call must stay a small floating card rather than expanding into a phone screen');
+    assert(profileCallBox && profileCallBox.x >= 0 && profileCallBox.y >= 0 && profileCallBox.x + profileCallBox.width <= 690 && profileCallBox.y + profileCallBox.height <= 930,
+      'The compact call card must fit the 690×930 browser viewport');
+    assert.equal(await profileCall.locator('.voice-call-card-end').count(), 1, 'The outgoing call must have one red hang-up action');
+    assert.equal(await profileCall.getByRole('button', { name: /接听|回答/ }).count(), 0, 'An already-connected outgoing call must not show an answer button');
+    assert.equal(await profileCall.locator('.voice-call-screen').count(), 0, 'Web calls must never render the mobile handset frame');
     await waitFor(async () => {
-      const [minutes, seconds] = (await profileCall.getByTestId('voice-call-timer').innerText()).split(':').map(Number);
-      return Number.isFinite(minutes) && Number.isFinite(seconds) && minutes * 60 + seconds >= 6;
+      const output = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+      return output.slice(greetingsBefore690).includes('你好，我是 dot，有什么我可以帮你？');
     }, 10_000);
-    await screenshot(alphaPage!, 'voice-call-handset-reference');
-    await profileCall.screenshot({ path: join(screenshotsDir, 'voice-call-handset-phone.png') });
-    screenshotNames.push('voice-call-handset-phone.png');
-    await profileCall.getByRole('button', { name: '展开通话界面' }).click();
-    assert.equal(await profileCall.getByRole('button', { name: '收起通话界面' }).getAttribute('aria-pressed'), 'true');
-    await profileCall.getByRole('button', { name: '收起通话界面' }).click();
-    await profileCall.getByRole('button', { name: '关闭扬声器' }).click();
-    assert.equal(await profileCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
+    await waitFor(async () => {
+      const events = await alphaPage!.evaluate(() => (window as unknown as { __dotsVoiceEvents: string[] }).__dotsVoiceEvents);
+      return events.slice(-2).join('|') === 'spoken:你好，我是 dot，有什么我可以帮你？|listening';
+    }, 10_000);
+    const greetingSequence = await alphaPage!.evaluate(() => (window as unknown as { __dotsVoiceEvents: string[] }).__dotsVoiceEvents.slice(-2));
+    assert.deepEqual(greetingSequence, ['spoken:你好，我是 dot，有什么我可以帮你？', 'listening'],
+      'The call must play its Chinese greeting before starting browser speech recognition');
+    await screenshot(alphaPage!, 'voice-call-compact-690');
+    await profileCall.screenshot({ path: join(screenshotsDir, 'voice-call-compact-690.png') });
+    screenshotNames.push('voice-call-compact-690.png');
     await profileCall.getByRole('button', { name: '静音' }).click();
     assert.equal(await profileCall.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
     await profileCall.getByRole('button', { name: '取消静音' }).click();
+    await profileCall.getByRole('button', { name: '关闭扬声器' }).click();
+    assert.equal(await profileCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
     await profileCall.getByRole('button', { name: '打开扬声器' }).click();
     await delay(1100);
     assert.notEqual(await profileCall.getByTestId('voice-call-timer').innerText(), '0:00');
@@ -1752,37 +1658,17 @@ try {
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     const narrowCall = alphaPage!.getByTestId('voice-call');
     await narrowCall.waitFor({ state: 'visible' });
-    assert.equal(await narrowCall.getAttribute('data-variant'), 'handset');
-    const narrowHandsetBox = await narrowCall.boundingBox();
-    assert(narrowHandsetBox && narrowHandsetBox.height / narrowHandsetBox.width > 1.95 && narrowHandsetBox.height / narrowHandsetBox.width < 2.1,
-      'A narrow handset viewport must keep the phone frame near the measured 0.49 width-to-height ratio');
-    assert(narrowHandsetBox && narrowHandsetBox.x >= 0 && narrowHandsetBox.y >= 0 && narrowHandsetBox.x + narrowHandsetBox.width <= 390 && narrowHandsetBox.y + narrowHandsetBox.height <= 844,
-      'The handset call must fit fully inside a 390×844 viewport');
-    const narrowControlGeometry = await narrowCall.evaluate(element => {
-      const dock = element.getBoundingClientRect();
-      return Array.from(element.querySelectorAll<HTMLElement>('.voice-call-control-icon')).map(icon => {
-        const box = icon.getBoundingClientRect();
-        return {
-          x: (box.left + box.width / 2 - dock.left) / dock.width,
-          y: (box.top + box.height / 2 - dock.top) / dock.height,
-          diameter: box.width / dock.width,
-        };
-      });
-    });
-    handsetReference.controls.forEach((reference, index) => {
-      const actual = narrowControlGeometry[index]!;
-      const x = reference.center.x / handsetReference.source.crop.width;
-      const y = reference.center.y / handsetReference.source.crop.height;
-      const diameter = reference.diameter / handsetReference.source.crop.width;
-      assert(Math.abs(actual.x - x) <= handsetReference.tolerance.normalizedPosition,
-        `Narrow-screen ${reference.name} control should match the source frame horizontally`);
-      assert(Math.abs(actual.y - y) <= handsetReference.tolerance.normalizedPosition,
-        `Narrow-screen ${reference.name} control should match the source frame vertically`);
-      assert(Math.abs(actual.diameter - diameter) <= handsetReference.tolerance.normalizedDiameter,
-        `Narrow-screen ${reference.name} control should match the source frame size`);
-    });
-    await narrowCall.screenshot({ path: join(screenshotsDir, 'voice-call-handset-narrow-390.png') });
-    screenshotNames.push('voice-call-handset-narrow-390.png');
+    assert.equal(await narrowCall.getAttribute('data-variant'), 'desktop', 'Narrow browser windows must keep the web call card, not switch to a phone mockup');
+    const narrowCallBox = await narrowCall.boundingBox();
+    assert(narrowCallBox && narrowCallBox.width < 350 && narrowCallBox.height < 220,
+      'The narrow browser call must remain a compact card');
+    assert(narrowCallBox && narrowCallBox.x >= 0 && narrowCallBox.y >= 0 && narrowCallBox.x + narrowCallBox.width <= 390 && narrowCallBox.y + narrowCallBox.height <= 844,
+      'The compact call card must fit fully within a 390×844 viewport');
+    assert.equal(await narrowCall.locator('.voice-call-card-end').count(), 1);
+    assert.equal(await narrowCall.getByRole('button', { name: /接听|回答/ }).count(), 0);
+    await screenshot(alphaPage!, 'voice-call-compact-390');
+    await narrowCall.screenshot({ path: join(screenshotsDir, 'voice-call-compact-390.png') });
+    screenshotNames.push('voice-call-compact-390.png');
     await narrowCall.getByRole('button', { name: '结束通话' }).click();
     await narrowCall.waitFor({ state: 'hidden' });
     await alphaPage!.setViewportSize(desktopViewport);
@@ -1819,15 +1705,19 @@ try {
     await contextCall.waitFor({ state: 'hidden' });
 
     await alphaPage!.getByTestId('voice-call-launch').click();
+    const recognitionStartsBeforeTaskCall = await alphaPage!.evaluate(() => (window as unknown as { __dotsRecognitionStarts: number }).__dotsRecognitionStarts);
     const call = alphaPage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
-    await alphaPage!.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeRecognition));
+    await alphaPage!.waitForFunction((previousStarts: number) => (window as unknown as { __dotsRecognitionStarts: number }).__dotsRecognitionStarts > previousStarts,
+      recognitionStartsBeforeTaskCall);
     assert.equal(await call.getAttribute('data-variant'), 'desktop');
     assert.equal(await call.locator('.voice-call-screen').count(), 0, 'Desktop chat calls should use the compact V2 controls, not the handset surface');
     const inlineBox = await call.boundingBox();
-    const contextBox = await alphaPage!.locator('.dot-context-panel').boundingBox();
-    assert(inlineBox && contextBox && inlineBox.y < 40 && inlineBox.x + inlineBox.width <= contextBox.x, 'Desktop call controls should sit at the upper right of the conversation pane, before the context panel');
-    assert.match(await call.getByRole('button', { name: '静音' }).evaluate(element => getComputedStyle(element).backgroundColor), /rgb\(40, 116, 95\)/);
+    assert(inlineBox && inlineBox.x > desktopViewport.width * .5 && inlineBox.x + inlineBox.width <= desktopViewport.width && inlineBox.y >= 0,
+      'The active call card should float on the right side of the browser without leaving the viewport');
+    assert.equal(await call.locator('.voice-call-card-end').count(), 1, 'The card should expose one red hang-up action');
+    assert.notEqual(await call.getByRole('button', { name: '静音' }).evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(40, 116, 95)',
+      'The microphone control must remain a neutral toggle, not an answer button');
     await screenshot(alphaPage!, 'voice-call-active-reference');
     await call.getByRole('button', { name: '静音' }).click();
     assert.equal(await call.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
@@ -1922,7 +1812,7 @@ try {
       return snapshot.tasks.some(task => task.instruction === text && task.status === 'done' && task.result === 'Voice request finished after the call ended.');
     }, instruction, { timeout: 15_000 });
     const alphaCalls = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null; durationSeconds: number | null }[];
-    assert.equal(alphaCalls.length, 6, 'Desktop and handset profile checks plus the conversation header, context panel, and composer must each persist a call');
+    assert.equal(alphaCalls.length, 6, 'Three profile viewport checks plus the conversation header, context panel, and composer must each persist a call');
     assert(alphaCalls.every(item => item.endedAt), 'Ending each call must persist its completion time');
     assert(alphaCalls.some(item => item.durationSeconds !== null && item.durationSeconds >= 1));
 
