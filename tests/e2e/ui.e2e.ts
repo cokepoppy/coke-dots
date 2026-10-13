@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
+import { WebSocketServer } from 'ws';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const artifactStamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -34,6 +35,10 @@ let mockSlackServer: Server | null = null;
 let mockTeamsServer: Server | null = null;
 let mockGoogleProxyServer: Server | null = null;
 let mockWatchServer: Server | null = null;
+let mockSeedDuplexServer: WebSocketServer | null = null;
+let mockSeedDuplexUrl = '';
+let mockSeedDuplexSpeechTexts: string[] = [];
+let serverEnvOverrides: Record<string, string> = {};
 let mockModelPrompts: string[] = [];
 let mockGoogleOrigin = '';
 let mockSlackOrigin = '';
@@ -314,6 +319,7 @@ async function startMockModel() {
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
         ] } : { status: isComplete ? 'done' : 'waiting', message: isSlackInboxTask ? 'Slack connector E2E reply received.' : isTeamsInboxTask ? 'Teams connector E2E reply received.' : isPauseDelegationAggregate ? 'The main task summarized the child result after resume.' : isPauseDelegationChild ? 'The delegated child completed while the Dot was paused.' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isPersonalMemoryUpdate ? 'I will use concise Mandarin updates and China Standard Time for milestones.' : isPersonalMemoryRead ? 'I applied your private Dot preferences.' : isSharedMemoryIsolation ? 'This shared task used only its shared workspace context.' : isSharedModelReuse ? 'The second Google account used the Coke Dots instance Model API configuration.' : isReasoningEffortTask ? 'Completed with the selected extra reasoning level.' : isPageChangeReview ? 'The page-change review found that the launch date changed from October 21 to October 22.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isGlobalPauseTask ? 'The task completed after the Dot resumed.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPersonalMemoryUpdate ? { personalDotMemoryUpdates: [{ action: 'remember', note: 'Prefers concise Mandarin updates and uses China Standard Time for milestones.' }] } : {}), ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isQuietNotificationCheck) Object.assign(decision, { message: 'Routine check completed.', notifyUser: false });
+        if (prompt.includes('E2E 浮点语音播放——询问日期')) Object.assign(decision, { status: 'waiting', message: '你希望我使用哪一个日期？' });
         if (isSelfWakeResponsibility) {
           if (!hasSelfWakeCheckpoint) Object.assign(decision, { status: 'scheduled', message: 'Checkpoint: I reviewed the timeline and will verify the approval response next.', nextMinutes: 30, notifyUser: false });
           else {
@@ -635,6 +641,47 @@ async function startMockWatchProvider() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function startMockSeedDuplexProvider() {
+  mockSeedDuplexSpeechTexts = [];
+  const provider = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  provider.on('connection', socket => {
+    let transcriptSent = false;
+    socket.on('message', raw => {
+      let event: { type?: string; text?: string };
+      try { event = JSON.parse(String(raw)) as typeof event; } catch { return; }
+      if (event.type === 'session.create') {
+        socket.send(JSON.stringify({ type: 'session.created', session: { id: 'e2e-seedduplex-session' } }));
+      } else if (event.type === 'input_audio_buffer.append' && !transcriptSent) {
+        transcriptSent = true;
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.started', item_id: 'e2e-seedduplex-turn' }));
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'e2e-seedduplex-turn', transcript: 'E2E 浮点语音播放——询问日期' }));
+      } else if (event.type === 'speech_text_buffer.commit' && event.text) {
+        mockSeedDuplexSpeechTexts.push(event.text);
+        const sampleCount = 4_800;
+        const pcm = Buffer.alloc(sampleCount * 4);
+        for (let index = 0; index < sampleCount; index += 1) {
+          const fade = Math.min(1, index / 120, (sampleCount - index - 1) / 120);
+          const sample = fade * (0.2 * Math.sin(index * 2 * Math.PI * 440 / 24_000) + 0.05 * Math.sin(index * 2 * Math.PI * 880 / 24_000));
+          pcm.writeFloatLE(sample, index * 4);
+        }
+        socket.send(JSON.stringify({ type: 'response.output_audio.started' }));
+        socket.send(JSON.stringify({ type: 'response.output_audio.delta', delta: pcm.toString('base64') }));
+        socket.send(JSON.stringify({ type: 'response.output_audio.done' }));
+      } else if (event.type === 'session.close') {
+        socket.send(JSON.stringify({ type: 'session.closed' }));
+      }
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    provider.once('error', reject);
+    provider.once('listening', resolvePromise);
+  });
+  mockSeedDuplexServer = provider;
+  const address = provider.address();
+  assert(address && typeof address !== 'string');
+  return `ws://127.0.0.1:${address.port}`;
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -683,6 +730,7 @@ async function startServer(port: number) {
       DOTS_DSH_BIN: localDshPath || process.execPath,
       DOTS_DSH_PROFILE: localDshPath ? 'sdk' : '',
       DOTS_DSH_READ_ONLY_CONFIG: localDshPath ? '' : emptyEnvFile,
+      ...serverEnvOverrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1028,8 +1076,9 @@ async function assertNoVisibleText(page: Page, text: string) {
   assert.equal(await page.getByText(text, { exact: true }).count(), 0, `Unexpected tenant data visible: ${text}`);
 }
 
-async function restartService() {
+async function restartService(overrides: Record<string, string> = {}) {
   await stopServer(server);
+  serverEnvOverrides = overrides;
   server = await startServer(e2ePort);
 }
 
@@ -1042,7 +1091,7 @@ try {
   mockGoogleProxyOrigin = await startMockGoogleProxy();
   mockWatchProviderOrigin = await startMockWatchProvider();
   server = await startServer(e2ePort);
-  browser = await chromium.launch({ executablePath: chromePath, headless: true });
+  browser = await chromium.launch({ executablePath: chromePath, headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
   alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   betaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   gammaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
@@ -2372,19 +2421,35 @@ try {
       '})()',
     ].join('\n');
     await alphaPage!.evaluate((script: string) => window.eval(script), voiceMockScript);
-    await openProfile(alphaPage!);
-    await alphaPage!.getByTestId('profile-voice-call-launch').click();
-    const profileCall = alphaPage!.getByTestId('voice-call');
-    await profileCall.waitFor({ state: 'visible' });
-    assert.equal(await profileCall.getAttribute('data-variant'), 'handset');
-    await profileCall.getByRole('button', { name: '关闭扬声器' }).click();
-    assert.equal(await profileCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
-    await profileCall.getByRole('button', { name: '静音' }).click();
-    assert.equal(await profileCall.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
+    await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
+    const dotContextPanel = alphaPage!.getByTestId('dot-context-panel');
+    await dotContextPanel.waitFor({ state: 'visible' });
+    await dotContextPanel.getByRole('button', { name: 'Call' }).click();
+    const contextPanelCall = alphaPage!.getByTestId('voice-call');
+    await contextPanelCall.waitFor({ state: 'visible' });
+    assert.equal(await contextPanelCall.getAttribute('data-variant'), 'desktop', 'A desktop browser must keep the conversation open instead of showing a handset overlay');
+    assert.equal(await alphaPage!.locator('.voice-call-dock').count(), 0, 'Desktop calls must not render the handset shell');
+    const controlBounds = await alphaPage!.locator('.voice-call-inline').boundingBox();
+    const panelBounds = await dotContextPanel.boundingBox();
+    const identityBounds = await dotContextPanel.locator('.context-agent').boundingBox();
+    const quickActionBounds = await dotContextPanel.locator('.context-quick-actions').boundingBox();
+    assert(controlBounds && panelBounds, 'Desktop call controls and the Dot context panel must be visible');
+    assert(controlBounds.x >= panelBounds.x && controlBounds.x + controlBounds.width <= panelBounds.x + panelBounds.width, 'Call controls should sit inside the Dot context panel');
+    assert(identityBounds && quickActionBounds && controlBounds.y + controlBounds.height <= identityBounds.y && identityBounds.y + identityBounds.height <= quickActionBounds.y, 'Desktop call controls should sit above the Dot identity and Call/Slack/Teams actions');
+    await screenshot(alphaPage!, 'voice-call-desktop-context-panel');
+    await alphaPage!.setViewportSize({ width: 390, height: 844 });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-variant') === 'handset');
+    assert.equal(await contextPanelCall.getByRole('button', { name: '关闭扬声器' }).getAttribute('aria-pressed'), 'true');
+    await contextPanelCall.getByRole('button', { name: '关闭扬声器' }).click();
+    assert.equal(await contextPanelCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
+    await contextPanelCall.getByRole('button', { name: '静音' }).click();
+    assert.equal(await contextPanelCall.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
     await delay(1100);
-    assert.notEqual(await profileCall.getByTestId('voice-call-timer').innerText(), '00:00', 'The handset call timer should advance while connected');
-    await profileCall.getByRole('button', { name: '结束通话' }).click();
-    await profileCall.waitFor({ state: 'hidden' });
+    assert.notEqual(await contextPanelCall.getByTestId('voice-call-timer').innerText(), '00:00', 'The handset timer should advance on a narrow viewport');
+    await alphaPage!.setViewportSize({ width: 1440, height: 1000 });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-variant') === 'desktop');
+    await contextPanelCall.getByRole('button', { name: '结束通话' }).click();
+    await contextPanelCall.waitFor({ state: 'hidden' });
 
     await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
     await alphaPage!.getByTestId('voice-call-launch').click();
@@ -2513,6 +2578,72 @@ try {
     await selectTenant(betaPage!, 'Beta workspace');
     const betaPersonalCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));
     assert.deepEqual(betaPersonalCalls, [], 'A different tenant must not read the call history');
+  });
+
+  await recordStep('Chrome call sends a spoken task and plays SeedDuplex float32 output through the speaker', async () => {
+    const mockSeedDuplexUrl = await startMockSeedDuplexProvider();
+    await restartService({
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-key',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: mockSeedDuplexUrl,
+    });
+    await alphaContext!.grantPermissions(['microphone'], { origin: baseUrl });
+    await alphaPage!.addInitScript(() => {
+      const audioWindow = window as unknown as { __dotsPlayedAudio?: { sampleRate: number; sampleCount: number; rms: number; peak: number; destinationConnections: number; ended: number }[] };
+      audioWindow.__dotsPlayedAudio = [];
+      const speakerConnected = new WeakSet<AudioBufferSourceNode>();
+      type ConnectAudioNode = (this: AudioBufferSourceNode, destination: AudioNode, output?: number, input?: number) => AudioNode;
+      const originalConnect = AudioBufferSourceNode.prototype.connect as ConnectAudioNode;
+      (AudioBufferSourceNode.prototype as unknown as { connect: ConnectAudioNode }).connect = function(this: AudioBufferSourceNode, destination: AudioNode, output?: number, input?: number) {
+        if (destination === this.context.destination) speakerConnected.add(this);
+        return originalConnect.call(this, destination, output, input);
+      };
+      const originalStart = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function(this: AudioBufferSourceNode, when?: number, offset?: number, duration?: number) {
+        const buffer = this.buffer;
+        if (buffer) {
+          const samples = buffer.getChannelData(0);
+          let sumSquares = 0;
+          let peak = 0;
+          for (const sample of samples) { sumSquares += sample * sample; peak = Math.max(peak, Math.abs(sample)); }
+          const record = { sampleRate: buffer.sampleRate, sampleCount: samples.length, rms: Math.sqrt(sumSquares / samples.length), peak, destinationConnections: speakerConnected.has(this) ? 1 : 0, ended: 0 };
+          audioWindow.__dotsPlayedAudio?.push(record);
+          this.addEventListener('ended', () => { record.ended += 1; }, { once: true });
+        }
+        return originalStart.call(this, when, offset, duration);
+      };
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
+    const promptStart = mockModelPrompts.length;
+    await alphaPage!.getByTestId('voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await call.getByText('正在聆听', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+    const transcript = 'E2E 浮点语音播放——询问日期';
+    await alphaPage!.waitForFunction((value: string) => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes(value) || false, transcript, { timeout: 20_000 });
+    await call.getByText('等待你的回复', { exact: true }).waitFor({ state: 'visible', timeout: 20_000 });
+    await waitFor(() => mockModelPrompts.slice(promptStart).some(prompt => prompt.includes(transcript)), 10_000);
+    await waitFor(() => mockSeedDuplexSpeechTexts.includes('你希望我使用哪一个日期？'), 10_000);
+    await alphaPage!.waitForFunction(() => {
+      const played = (window as unknown as { __dotsPlayedAudio?: { sampleRate: number; sampleCount: number; rms: number; peak: number; destinationConnections: number; ended: number }[] }).__dotsPlayedAudio || [];
+      return played.some(item => item.sampleRate === 24_000 && item.sampleCount === 4_800 && item.rms > 0.05 && item.rms < 0.25 && item.peak > 0.1 && item.peak < 0.4 && item.destinationConnections > 0 && item.ended > 0);
+    }, null, { timeout: 10_000 });
+    const playback = await alphaPage!.evaluate(() => (window as unknown as { __dotsPlayedAudio: { sampleRate: number; sampleCount: number; rms: number; peak: number; destinationConnections: number; ended: number }[] }).__dotsPlayedAudio);
+    assert(playback.some(item => item.sampleRate === 24_000 && item.destinationConnections > 0 && item.ended > 0), 'Decoded SeedDuplex audio must be played through the browser speaker and complete');
+    assert(mockSeedDuplexSpeechTexts.includes('你希望我使用哪一个日期？'), 'The Chinese Dot result must be sent to SeedDuplex for spoken playback');
+    await screenshot(alphaPage!, 'seedduplex-float32-audio-playback');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'hidden' });
+    await restartService();
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+    if (mockSeedDuplexServer) await new Promise<void>(resolvePromise => mockSeedDuplexServer!.close(() => resolvePromise()));
+    mockSeedDuplexServer = null;
   });
 
   await recordStep('A user reply resumes a waiting task while retaining the original goal', async () => {
@@ -3631,6 +3762,7 @@ try {
   await gammaContext?.close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
   await stopServer(server);
+  if (mockSeedDuplexServer) await new Promise<void>(resolvePromise => mockSeedDuplexServer!.close(() => resolvePromise()));
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
   if (mockGoogleServer) await new Promise<void>(resolvePromise => mockGoogleServer!.close(() => resolvePromise()));
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));

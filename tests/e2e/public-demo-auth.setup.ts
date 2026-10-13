@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { makeDotsOnlyStorageState } from './public-demo-auth-state.ts';
@@ -23,14 +24,23 @@ if (stateRelativePath === '' || (!stateRelativePath.startsWith('..') && !isAbsol
   throw new Error('The login state must be saved outside the repository.');
 }
 
-const browser = await chromium.launch({ executablePath: browserPath, headless: false });
-const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+const temporaryProfile = await mkdtemp(resolve(tmpdir(), 'coke-dots-public-auth-'));
+await chmod(temporaryProfile, 0o700);
+let context: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | null = null;
 try {
-  const page = await context.newPage();
+  context = await chromium.launchPersistentContext(temporaryProfile, {
+    executablePath: browserPath,
+    headless: false,
+    viewport: { width: 1440, height: 1000 },
+    deviceScaleFactor: 1,
+  });
+  const page = context.pages()[0] || await context.newPage();
   const response = await page.goto(baseUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 45_000 });
+  await page.bringToFront();
   assert.equal(response?.status(), 200, 'The public Dots sign-in page must load');
   await page.getByRole('link', { name: '使用 Google 登录' }).click();
   await page.waitForURL(url => url.hostname === 'accounts.google.com', { waitUntil: 'commit', timeout: 20_000 });
+  await page.bringToFront();
   console.log('Chrome 已打开 Google 登录。请在此窗口完成专用测试账号的登录；脚本不会读取或保存 Google 密码。');
 
   await page.waitForURL(url => url.origin === baseUrl.origin && url.pathname === basePath, { waitUntil: 'domcontentloaded', timeout: 5 * 60_000 });
@@ -51,6 +61,6 @@ try {
   console.log(`已保存仅含 Coke Dots 会话 Cookie 的登录态：${statePath}`);
   console.log('Google 自身 Cookie、OAuth 临时状态和其他来源的本地存储均未写入该文件。');
 } finally {
-  await context.close();
-  await browser.close();
+  if (context) await context.close();
+  await rm(temporaryProfile, { recursive: true, force: true });
 }

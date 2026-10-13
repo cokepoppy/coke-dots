@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { updateVolcengineTranscriptSnapshot } from '../src/server/volcengine-duplex-voice-gateway.ts';
+import { decodeVolcengineFloat32Pcm } from '../src/shared/volcengine-audio.ts';
+import { isVolcengineFloat32Pcm, updateVolcengineTranscriptSnapshot, volcengineLocalSpeechEventType } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
@@ -33,6 +34,41 @@ test('SeedDuplex transcript follows the latest cumulative snapshot, including re
   const transcript = snapshots.reduce(updateVolcengineTranscriptSnapshot, '');
   assert.equal(transcript, '情之用中文回复，公网火山语音识别测试成功，不要调用工具。');
   assert.equal(updateVolcengineTranscriptSnapshot(transcript, ''), transcript);
+});
+
+test('SeedDuplex distinguishes user speech from assistant TTS sentence boundaries', () => {
+  assert.equal(volcengineLocalSpeechEventType('conversation.item.input_audio_transcription.started'), 'speech-started');
+  assert.equal(volcengineLocalSpeechEventType('response.output_audio.started'), 'assistant-speech-started');
+  assert.equal(volcengineLocalSpeechEventType('response.output_audio.done'), 'speech-ended');
+  assert.equal(volcengineLocalSpeechEventType('response.done'), null);
+});
+
+test('SeedDuplex float32 PCM output is recognized and invalid output is rejected before playback', () => {
+  const pcm = Buffer.alloc(16);
+  [0, 0.1, -0.12, 0.04].forEach((sample, index) => pcm.writeFloatLE(sample, index * 4));
+  assert.equal(isVolcengineFloat32Pcm(pcm), true);
+  assert.equal(isVolcengineFloat32Pcm(Buffer.from([1, 2, 3])), false);
+  const invalid = Buffer.alloc(4);
+  invalid.writeFloatLE(Number.NaN, 0);
+  assert.equal(isVolcengineFloat32Pcm(invalid), false);
+  const outOfRange = Buffer.alloc(4);
+  outOfRange.writeFloatLE(2, 0);
+  assert.equal(isVolcengineFloat32Pcm(outOfRange), false);
+});
+
+test('SeedDuplex playback decodes little-endian float32 as voice samples instead of int16 noise', () => {
+  const pcm = Buffer.alloc(16);
+  [0.125, -0.25, 0.5, -0.75].forEach((sample, index) => pcm.writeFloatLE(sample, index * 4));
+  const arrayBuffer = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer;
+  assert.deepEqual(Array.from(decodeVolcengineFloat32Pcm(arrayBuffer) || []), [0.125, -0.25, 0.5, -0.75]);
+
+  const clipped = Buffer.alloc(12);
+  clipped.writeFloatLE(1.25, 0);
+  clipped.writeFloatLE(Number.NaN, 4);
+  clipped.writeFloatLE(-1.25, 8);
+  const clippedArrayBuffer = clipped.buffer.slice(clipped.byteOffset, clipped.byteOffset + clipped.byteLength) as ArrayBuffer;
+  assert.deepEqual(Array.from(decodeVolcengineFloat32Pcm(clippedArrayBuffer) || []), [1, 0, -1]);
+  assert.equal(decodeVolcengineFloat32Pcm(Buffer.from([0, 1, 2]).buffer.slice(0, 3) as ArrayBuffer), null);
 });
 
 test('Volcano O2.0 credentials remain compatible and never appear in public provider information', () => {
@@ -144,7 +180,8 @@ test('SeedDuplex session.create uses the fixed 3.0 model, 16 kHz input, 24 kHz P
     input: { format: { type: 'pcm', rate: 16000 } },
     output: { format: { type: 'pcm', rate: 24000 }, voice: 'zh_female_vv_jupiter_bigtts' },
   });
-  assert.equal(event.session.extension.tts.audio_config.format, 'pcm_s16le');
+  assert.equal(event.session.extension.tts.audio_config.format, event.session.audio.output.format.type);
+  assert.equal(event.session.extension.tts.audio_config.format, 'pcm');
   assert.match(event.session.instructions, /简体中文/);
   assert.match(event.session.instructions, /Dots Agent/);
 });

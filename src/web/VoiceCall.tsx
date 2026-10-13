@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DotAppearance, Snapshot, Task, VoiceCallSession } from '../shared/types.ts';
+import { decodeVolcengineFloat32Pcm } from '../shared/volcengine-audio.ts';
 import { appFetch, appPath } from './api.ts';
 import './voice-call.css';
 
@@ -430,6 +431,24 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       if (context.state === 'suspended') void context.resume().catch(() => setStatus('请点击通话页面以启用扬声器播放'));
     };
 
+    const playVolcFloat32 = (bytes: ArrayBuffer) => {
+      const context = volcAudioContextRef.current;
+      if (!context || !speakerRef.current) return;
+      const samples = decodeVolcengineFloat32Pcm(bytes);
+      if (!samples) return;
+      const buffer = context.createBuffer(1, samples.length, 24000);
+      buffer.getChannelData(0).set(samples);
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      source.onended = () => volcOutputSourcesRef.current.delete(source);
+      volcOutputSourcesRef.current.add(source);
+      const startAt = Math.max(context.currentTime + 0.025, volcPlaybackAtRef.current);
+      volcPlaybackAtRef.current = startAt + buffer.duration;
+      source.start(startAt);
+      if (context.state === 'suspended') void context.resume().catch(() => setStatus('请点击通话页面以启用扬声器播放'));
+    };
+
     const startVolcRealtime = async (call: VoiceCallSession) => {
       if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === 'undefined' || typeof WebSocket === 'undefined') throw new Error('当前浏览器不支持火山引擎实时语音');
       setStatus('正在连接火山实时语音…');
@@ -495,7 +514,9 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
         socket.onmessage = event => {
           if (typeof event.data !== 'string') {
             const frame = event.data instanceof ArrayBuffer ? event.data : new ArrayBuffer(0);
-            if (new Uint8Array(frame)[0] === 1) playVolcPcm(frame.slice(1));
+            const audioFormat = new Uint8Array(frame)[0];
+            if (audioFormat === 1) playVolcPcm(frame.slice(1));
+            else if (audioFormat === 2) playVolcFloat32(frame.slice(1));
             return;
           }
           let message: { type?: string; error?: string; transcript?: string; turnId?: string };
@@ -511,6 +532,13 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
             processTranscript(message.transcript, message.turnId);
           } else if (message.type === 'speech-started') {
             stopVolcPlayback();
+            setStatus('正在聆听');
+          } else if (message.type === 'assistant-speech-started') {
+            // SeedDuplex emits this at assistant TTS sentence boundaries. It
+            // must not clear audio that has already been queued for playback.
+            setStatus('Dot 正在回答…');
+          } else if (message.type === 'speech-ended') {
+            setStatus(mutedRef.current ? '麦克风已静音' : '正在聆听');
           } else if (message.type === 'error') {
             const error = message.error || '火山实时语音连接失败';
             setCallError(error);

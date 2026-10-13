@@ -30,6 +30,11 @@ const socket = new WebSocket(volcengineDuplexRealtimeUrl(process.env), {
 let settled = false;
 let sessionCreated = false;
 let audioBytes = 0;
+let audioSamples = 0;
+let audioSquares = 0;
+let audioPeak = 0;
+let invalidAudioSamples = 0;
+let malformedAudioFrames = 0;
 let firstAudioMs: number | null = null;
 let closeTimer: NodeJS.Timeout | null = null;
 const timeout = setTimeout(() => finish({ ok: false, stage: 'timeout', sessionCreated, audioBytes }), 30_000);
@@ -47,6 +52,23 @@ function finish(result: Record<string, unknown>, exitCode = 0) {
 function send(type: string, payload: Record<string, unknown> = {}) {
   if (socket.readyState !== WebSocket.OPEN) throw new Error('provider socket is not open');
   socket.send(JSON.stringify({ type, event_id: randomUUID(), ...payload }));
+}
+
+function speechResult() {
+  const audioRms = audioSamples ? Math.sqrt(audioSquares / audioSamples) : 0;
+  const validAudio = audioSamples > 0 && malformedAudioFrames === 0 && invalidAudioSamples === 0 && audioPeak > 0.01;
+  return {
+    ok: audioBytes > 0 && validAudio,
+    stage: 'speech-complete',
+    sessionCreated,
+    audioBytes,
+    audioSamples,
+    audioRms: Number(audioRms.toFixed(5)),
+    audioPeak: Number(audioPeak.toFixed(5)),
+    invalidAudioSamples,
+    malformedAudioFrames,
+    firstAudioMs,
+  };
 }
 
 socket.on('open', () => {
@@ -101,16 +123,25 @@ socket.on('message', raw => {
     if (chunk.length > 0) {
       audioBytes += chunk.length;
       firstAudioMs ??= Date.now() - startedAt;
+      if (chunk.byteLength % 4 !== 0) malformedAudioFrames += 1;
+      else for (let offset = 0; offset < chunk.byteLength; offset += 4) {
+        const sample = chunk.readFloatLE(offset);
+        audioSamples += 1;
+        if (!Number.isFinite(sample) || Math.abs(sample) > 1.5) { invalidAudioSamples += 1; continue; }
+        audioSquares += sample * sample;
+        audioPeak = Math.max(audioPeak, Math.abs(sample));
+      }
     }
     return;
   }
   if (event.type === 'response.output_audio.done' && closeTimer === null) {
     try { send('session.close'); } catch { /* The audio response itself is still a successful smoke result. */ }
-    closeTimer = setTimeout(() => finish({ ok: audioBytes > 0, stage: 'speech-complete', sessionCreated, audioBytes, firstAudioMs }, audioBytes > 0 ? 0 : 1), 5_000);
+    closeTimer = setTimeout(() => { const result = speechResult(); finish(result, result.ok ? 0 : 1); }, 5_000);
     return;
   }
   if (event.type === 'session.closed') {
-    finish({ ok: audioBytes > 0, stage: audioBytes > 0 ? 'speech-complete' : 'session-closed-without-audio', sessionCreated, audioBytes, firstAudioMs }, audioBytes > 0 ? 0 : 1);
+    const result = speechResult();
+    finish(audioBytes > 0 ? result : { ...result, stage: 'session-closed-without-audio' }, result.ok ? 0 : 1);
   }
 });
 
