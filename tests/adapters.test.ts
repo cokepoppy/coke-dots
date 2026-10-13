@@ -38,7 +38,20 @@ test('agent can create at most three bounded delegated tasks and children cannot
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Route to Pi.', delegations: [{ title: 'Review', instruction: 'Review the task.', engine: 'pi' }] }), undefined, { availableEngines: ['model'] }), /不可用的内核/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Too many', delegations: Array.from({ length: 4 }, (_, index) => ({ title: `Child ${index}`, instruction: 'Work independently.' })) })), /数量无效/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Invalid child', delegations: [{ title: 'Child', instruction: 'x'.repeat(5001) }] })), /内容无效/);
-  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Recursive', delegations: [{ title: 'Child', instruction: 'Run recursively.' }] }), undefined, { allowDelegation: false }), /不能继续委派/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Recursive', delegations: [{ title: 'Child', instruction: 'Run recursively.' }] }), undefined, { allowDelegation: false }), /不能继续创建子任务/);
+});
+
+test('agent follow-ups must target an explicitly allowed existing child thread', () => {
+  const childTaskId = '01234567-89ab-cdef-0123-456789abcdef';
+  const options = { allowDelegation: false, allowFollowUp: true, allowedFollowUpTaskIds: [childTaskId] };
+  const decision = parseDecision(JSON.stringify({ status: 'delegating', message: 'I asked the competitor thread to verify its sources.', followUps: [{ taskId: childTaskId, instruction: 'Verify the source links and report which ones support the claim.' }] }), undefined, options);
+  assert.deepEqual(decision.followUps, [{ taskId: childTaskId, instruction: 'Verify the source links and report which ones support the claim.' }]);
+  assert.equal(decision.delegations, undefined);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Try another tenant.', followUps: [{ taskId: 'fedcba98-7654-3210-fedc-ba9876543210', instruction: 'Continue.' }] }), undefined, options), /不可用的子任务/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Create a child.', delegations: [{ title: 'Child', instruction: 'Research.' }] }), undefined, options), /不能继续创建/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Not enabled.', followUps: [{ taskId: childTaskId, instruction: 'Continue.' }] }), undefined, { allowFollowUp: false, allowedFollowUpTaskIds: [childTaskId] }), /不能向子任务线程追加/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Ambiguous.', delegations: [{ title: 'Child', instruction: 'Research.' }], followUps: [{ taskId: childTaskId, instruction: 'Continue.' }] }), undefined, options), /只能包含/);
+  assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Too many.', followUps: Array.from({ length: 4 }, () => ({ taskId: childTaskId, instruction: 'Continue.' })) }), undefined, options), /数量无效/);
 });
 
 test('Pi selection persists and historical Claude tasks remain readable but are not selectable', () => {

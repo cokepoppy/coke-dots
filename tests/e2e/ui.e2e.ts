@@ -18,6 +18,8 @@ const artifactRoot = resolve(process.env.DOTS_E2E_ARTIFACTS || join(projectRoot,
 const screenshotsDir = join(artifactRoot, 'screenshots');
 const videoDir = join(artifactRoot, 'video');
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-e2e-'));
+process.env.NODE_ENV ||= 'test';
+process.env.DOTS_TEST_KEYRING_DIR ||= join(tempRoot, 'test-keyring');
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
 const sharedModelKeychainLockFile = join(tempRoot, 'simulated-shared-model-keychain-lock');
@@ -52,6 +54,7 @@ let parallelModelReleases: (() => void)[] = [];
 let delegatedModelReleases = new Map<string, () => void>();
 let delegatedModelPrompts: string[] = [];
 let delegatedModelAborted = new Set<string>();
+let delegatedFollowUpRelease: (() => void) | null = null;
 let testModelBaseUrl = '';
 let testModelApiKey = '';
 let testModelName = '';
@@ -115,6 +118,9 @@ async function startMockModel() {
         const isParallelTask = prompt.includes('E2E parallel work —');
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
         const isDelegationAggregate = prompt.includes('E2E delegation goal — build a launch packet') && prompt.includes('Delegated task results:');
+        const isDelegationFollowUpRequest = isDelegationAggregate && !prompt.includes('Competitor scan follow-up completed with verified links.');
+        const isDelegatedFollowUp = prompt.includes('E2E delegated follow-up — verify competitor source links');
+        const competitorChildId = prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Competitor scan \[done\]/)?.[1];
         const isSharedModelTask = prompt.includes('E2E shared model call from Beta account');
         const isKeychainResilienceTask = prompt.includes('E2E keychain resilience — use the retained shared model credential');
         const delegatedChild = ['Market scan', 'Competitor scan', 'Launch risks'].find(title => prompt.includes(`E2E delegated child — ${title.toLowerCase()}`));
@@ -139,18 +145,23 @@ async function startMockModel() {
         if (isParallelTask) await new Promise<void>(resolvePromise => parallelModelReleases.push(resolvePromise));
         if (delegatedChild) {
           delegatedModelPrompts.push(prompt);
-          response.once('close', () => { if (!response.writableFinished) delegatedModelAborted.add(delegatedChild); });
-          await new Promise<void>(resolvePromise => delegatedModelReleases.set(delegatedChild, resolvePromise));
-          delegatedModelReleases.delete(delegatedChild);
+          if (isDelegatedFollowUp) {
+            await new Promise<void>(resolvePromise => { delegatedFollowUpRelease = resolvePromise; });
+            delegatedFollowUpRelease = null;
+          } else {
+            response.once('close', () => { if (!response.writableFinished) delegatedModelAborted.add(delegatedChild); });
+            await new Promise<void>(resolvePromise => delegatedModelReleases.set(delegatedChild, resolvePromise));
+            delegatedModelReleases.delete(delegatedChild);
+          }
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isKeychainResilienceTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || (isDelegationAggregate && !isDelegationFollowUpRequest) || isSharedModelTask || isKeychainResilienceTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isKeychainResilienceTask ? '登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : isDelegationFollowUpRequest ? { status: 'delegating', message: 'I asked the competitor thread to verify its source links before I finish the brief.', followUps: [{ taskId: competitorChildId, instruction: 'E2E delegated follow-up — verify competitor source links' }] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isKeychainResilienceTask ? '登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? isDelegatedFollowUp ? 'Competitor scan follow-up completed with verified links.' : `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -345,6 +356,12 @@ function releaseHeldVoiceModel() {
 
 function releaseParallelModels() {
   for (const release of parallelModelReleases.splice(0)) release();
+}
+
+function releaseDelegatedFollowUpModel() {
+  const release = delegatedFollowUpRelease as (() => void) | null;
+  if (release) release();
+  delegatedFollowUpRelease = null;
 }
 
 async function recordStep(name: string, action: () => Promise<void>) {
@@ -2153,7 +2170,7 @@ try {
     await screenshot(alphaPage!, 'parallel-three-tasks-completed');
   });
 
-  await recordStep('One goal delegates three parallel tasks, supports a single-child stop, and resumes with their results', async () => {
+  await recordStep('One goal delegates three parallel tasks, follows up in an existing child thread, and aggregates its final results', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await clickNav(alphaPage!, '你的 dot');
     const parentInstruction = 'E2E delegation goal — build a launch packet';
@@ -2187,14 +2204,24 @@ try {
     await parentCard.locator('.pill.paused').waitFor({ state: 'visible' });
     await parentCard.getByRole('button', { name: '继续' }).click();
 
+    await parentCard.locator('.pill.delegating').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => delegatedModelPrompts.some(prompt => prompt.includes('E2E delegated follow-up — verify competitor source links')), 10_000);
+    await childCards[1].locator('.pill.working').waitFor({ state: 'visible', timeout: 10_000 });
+    await childCards[1].getByRole('button', { name: '查看详情' }).click();
+    await alphaPage!.locator('.message.dot').filter({ hasText: 'E2E delegated follow-up — verify competitor source links' }).waitFor({ state: 'visible', timeout: 10_000 });
+    await screenshot(alphaPage!, 'delegated-child-follow-up-thread-visible');
+    await clickNav(alphaPage!, 'Activity');
+    releaseDelegatedFollowUpModel();
+
     await parentCard.locator('.pill.done').waitFor({ state: 'visible', timeout: 15_000 });
-    await waitFor(() => mockModelPrompts.filter(prompt => prompt.includes(parentInstruction)).length === initialParentCalls + 2, 5_000);
+    await waitFor(() => mockModelPrompts.filter(prompt => prompt.includes(parentInstruction)).length === initialParentCalls + 3, 5_000);
     const aggregatePrompt = mockModelPrompts.filter(prompt => prompt.includes('Delegated task results:')).at(-1) || '';
-    assert.match(aggregatePrompt, /Market scan \[stopped\]/, 'Parent did not receive the stopped child state');
-    assert.match(aggregatePrompt, /Competitor scan \[done\]/, 'Parent did not receive a successful child result');
-    assert.match(aggregatePrompt, /Launch risks \[done\]/, 'Parent did not receive the second successful child result');
+    assert.match(aggregatePrompt, /Title: Market scan \[stopped\]/, 'Parent did not receive the stopped child state');
+    assert.match(aggregatePrompt, /Title: Competitor scan \[done\]/, 'Parent did not receive a successful child result');
+    assert.match(aggregatePrompt, /Title: Launch risks \[done\]/, 'Parent did not receive the second successful child result');
     assert.match(aggregatePrompt, /verified findings/, 'Child result text was not returned to the parent');
     assert.match(aggregatePrompt, /Launch risks completed with verified findings/, 'The selected child model result was not returned to the parent');
+    assert.match(aggregatePrompt, /Competitor scan follow-up completed with verified links/, 'The result from the continued child thread was not returned to the parent');
     await screenshot(alphaPage!, 'delegated-parent-aggregate-completed');
 
     await selectTenant(betaPage!, 'Beta workspace');
@@ -2447,6 +2474,7 @@ try {
   releaseHeldVoiceModel();
   releaseParallelModels();
   for (const release of delegatedModelReleases.values()) release();
+  releaseDelegatedFollowUpModel();
   if (alphaContext) await alphaContext.tracing.stop({ path: join(artifactRoot, 'alpha-trace.zip') }).catch(() => undefined);
   if (betaContext) await betaContext.tracing.stop({ path: join(artifactRoot, 'beta-trace.zip') }).catch(() => undefined);
   if (gammaContext) await gammaContext.tracing.stop({ path: join(artifactRoot, 'gamma-trace.zip') }).catch(() => undefined);

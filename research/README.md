@@ -8,7 +8,7 @@ Research updated: 2026-10-12 (initial review 2026-10-05). This ledger separates 
 | --- | --- | --- | --- |
 | O1 | https://openai.com/index/introducing-dots/ | Official product description | Goals, continuity, computers, connected tools, controls |
 | O2 | https://learn.chatgpt.com/docs/dots/getting-started | Official usage documentation | Setup and personalization flow |
-| O3 | https://learn.chatgpt.com/docs/dots/tasks-and-memory | Official usage documentation | Activity, assigned work, background tasks, recurring work |
+| O3 | https://learn.chatgpt.com/docs/dots/tasks-and-memory | Official usage documentation | Activity, assigned work, background tasks, recurring work, visible delegated threads and follow-up instructions |
 | O4 | https://learn.chatgpt.com/docs/dots/computers-and-apps | Official usage documentation | Computer view, Take over, Return control |
 | O5 | https://learn.chatgpt.com/docs/dots/controls | Official usage documentation | Review, approval, pause, delegated task stop |
 | O6 | https://learn.chatgpt.com/docs/dots/channels | Official usage documentation | Call entry points, typing during calls, assigned-work continuity after hang-up |

@@ -16,6 +16,8 @@ export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: str
 export interface SlackOAuthFlow { stateHash: string; tenantId: string; userId: string; expiresAt: string; returnTo: string }
 export interface SlackInstallation { tenantId: string; teamId: string; teamName: string; scopes: string[]; installedAt: string; contactEnabled: boolean }
 export interface StoredTaskAttachment extends AttachmentSummary { tenantId: string; uploadedBy: string; taskId: string | null; content: Uint8Array; createdAt: string }
+export interface DelegationFollowUp { taskId: string; instruction: string }
+const maxDelegationFollowUpsPerParent = 3;
 
 export class Store {
   readonly db: DatabaseSync;
@@ -73,6 +75,11 @@ export class Store {
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT, parent_task_id TEXT
       );
+      CREATE TABLE IF NOT EXISTS delegation_follow_ups (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, parent_task_id TEXT NOT NULL REFERENCES tasks(id),
+        child_task_id TEXT NOT NULL REFERENCES tasks(id), instruction TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS delegation_follow_ups_parent ON delegation_follow_ups(tenant_id,parent_task_id,created_at);
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'legacy', task_id TEXT,
         kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, attachment_ids_json TEXT NOT NULL DEFAULT '[]'
@@ -909,6 +916,61 @@ export class Store {
 
   delegatedTasks(parentId: string, tenantId: string): Task[] {
     return (this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? AND parent_task_id=? ORDER BY rowid').all(tenantId, parentId) as Record<string, unknown>[]).map(toTask);
+  }
+
+  canFollowUpDelegatedTasks(parentId: string, tenantId: string): boolean {
+    const parent = this.getTask(parentId, tenantId);
+    if (!parent || parent.status !== 'working' || parent.parentTaskId || scheduleForTask(parent.scheduleSpec, parent.scheduleMinutes)) return false;
+    const children = this.delegatedTasks(parentId, tenantId);
+    if (!children.length || children.some(child => !['done', 'failed', 'stopped'].includes(child.status))) return false;
+    const count = this.db.prepare('SELECT COUNT(*) AS count FROM delegation_follow_ups WHERE tenant_id=? AND parent_task_id=?').get(tenantId, parentId) as { count: number };
+    return count.count < maxDelegationFollowUpsPerParent;
+  }
+
+  appendDelegationFollowUps(parentId: string, tenantId: string, followUps: DelegationFollowUp[], summaryMessage: string, sessionId?: string): Task[] {
+    if (!Array.isArray(followUps) || followUps.length < 1 || followUps.length > 3) throw new Error('代理追加要求数量无效');
+    for (const followUp of followUps) {
+      if (typeof followUp.taskId !== 'string' || !/^[a-f0-9-]{36}$/i.test(followUp.taskId) || typeof followUp.instruction !== 'string' || !followUp.instruction.trim() || followUp.instruction.trim().length > 5000) throw new Error('代理追加要求内容无效');
+    }
+    if (new Set(followUps.map(followUp => followUp.taskId)).size !== followUps.length) throw new Error('代理追加要求不能重复引用子任务');
+    const now = new Date().toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const parent = this.getTask(parentId, tenantId);
+      if (!parent || parent.status !== 'working' || parent.parentTaskId || scheduleForTask(parent.scheduleSpec, parent.scheduleMinutes)) throw new Error('当前工作不能追加子任务要求');
+      const children = this.delegatedTasks(parentId, tenantId);
+      if (!children.length || children.some(child => !['done', 'failed', 'stopped'].includes(child.status))) throw new Error('所有子任务结束后才能追加要求');
+      const priorCount = this.db.prepare('SELECT COUNT(*) AS count FROM delegation_follow_ups WHERE tenant_id=? AND parent_task_id=?').get(tenantId, parentId) as { count: number };
+      if (priorCount.count + followUps.length > maxDelegationFollowUpsPerParent) throw new Error('此主任务的追加要求次数已用完');
+      const selectedChildren = followUps.map(followUp => {
+        const child = this.getTask(followUp.taskId, tenantId);
+        if (!child || child.parentTaskId !== parentId || !['done', 'failed', 'stopped'].includes(child.status)) throw new Error('追加要求必须指向当前主任务已结束的子任务');
+        return { child, instruction: followUp.instruction.trim() };
+      });
+      for (const { child, instruction } of selectedChildren) {
+        const taskInstruction = `${child.instruction}\n\nDot follow-up:\n${instruction}`;
+        if (taskInstruction.length > 24000) throw new Error('追加要求后的任务上下文过长');
+        const changed = this.db.prepare("UPDATE tasks SET instruction=?,status='queued',next_run_at=?,result=NULL,error=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status IN ('done','failed','stopped')")
+          .run(taskInstruction, now, now, tenantId, child.id);
+        if (Number(changed.changes) !== 1) throw new Error('子任务状态已变化，请稍后重试');
+        this.db.prepare('INSERT INTO delegation_follow_ups(id,tenant_id,parent_task_id,child_task_id,instruction,created_at) VALUES (?,?,?,?,?,?)')
+          .run(randomUUID(), tenantId, parentId, child.id, instruction, now);
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+          .run(tenantId, child.id, 'dot', instruction, now);
+        this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+          .run(tenantId, child.id, 'system', 'Dot 已在此任务线程中追加要求；原有会话将继续。', now);
+      }
+      this.db.prepare("UPDATE tasks SET status='delegating',result=?,next_run_at=NULL,error=NULL,agent_session_id=COALESCE(?,agent_session_id),updated_at=? WHERE tenant_id=? AND id=? AND status='working'")
+        .run(summaryMessage.slice(0, 10000), sessionId || parent.agentSessionId, now, tenantId, parentId);
+      this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
+        .run(tenantId, parentId, 'system', `Dot 已向 ${selectedChildren.length} 个已有子任务线程追加要求；任务完成后主任务会继续汇总。`, now);
+      this.db.exec('COMMIT');
+      return selectedChildren.map(({ child }) => this.getTask(child.id, tenantId)!);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  delegationFollowUpTaskIds(parentId: string, tenantId: string): string[] {
+    return (this.db.prepare('SELECT child_task_id AS taskId FROM delegation_follow_ups WHERE tenant_id=? AND parent_task_id=? ORDER BY created_at,id').all(tenantId, parentId) as { taskId: string }[]).map(row => row.taskId);
   }
 
   releaseReadyDelegations(now = new Date().toISOString()): number {
