@@ -11,6 +11,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 import { Entry } from '@napi-rs/keyring';
+import { WebSocket as NodeWebSocket, WebSocketServer } from 'ws';
+import { decodeVolcengineFrame, encodeVolcengineEvent } from '../../src/server/volcengine-voice.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const artifactStamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -31,9 +33,16 @@ let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockSlackServer: Server | null = null;
 let mockQwenSignalingServer: Server | null = null;
+let mockVolcEngineServer: WebSocketServer | null = null;
+let mockVolcEngineDuplexServer: WebSocketServer | null = null;
+let mockVolcEngineRejectedServer: Server | null = null;
 let mockSlackProviderOrigin = '';
 let mockQwenSignalingUrl = '';
 let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp: string }[] = [];
+let mockVolcEngineUrl = '';
+let mockVolcEngineConnections: { headers: Record<string, string>; events: number[]; serverEvents: number[]; timeline: string[]; pcmBytes: number; spokenTexts: string[] }[] = [];
+let mockVolcEngineDuplexUrl = '';
+let mockVolcEngineDuplexConnections: { headers: Record<string, string>; events: string[]; timeline: string[]; pcmBytes: number; spokenTexts: string[]; audioDeltas: number }[] = [];
 let mockSlackCodeExchanges = 0;
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
@@ -110,6 +119,7 @@ async function startMockModel() {
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
         const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
         const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
+        const isVolcVoiceResponse = prompt.includes('请用中文整理本周人工智能产品更新的三个要点');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
         const isParallelTask = prompt.includes('E2E parallel work —');
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
@@ -142,13 +152,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -244,6 +254,154 @@ async function startMockQwenSignaling() {
   return `http://127.0.0.1:${address.port}/realtime?model=qwen3.8-omni-flash-realtime`;
 }
 
+function encodeVolcServerFrame(eventId: number, payload: unknown, sessionId?: string, audio = false) {
+  const body = audio ? Buffer.from(payload as Uint8Array) : Buffer.from(JSON.stringify(payload), 'utf8');
+  const id = sessionId === undefined ? Buffer.alloc(0) : Buffer.concat([Buffer.from([0, Buffer.byteLength(sessionId)]), Buffer.from(sessionId, 'utf8')]);
+  const header = Buffer.from([0x11, ((audio ? 11 : 9) << 4) | 4, audio ? 0 : 0x10, 0]);
+  const event = Buffer.alloc(4); event.writeUInt32BE(eventId);
+  const payloadLength = Buffer.alloc(4); payloadLength.writeUInt32BE(body.byteLength);
+  return Buffer.concat([header, event, id, payloadLength, body]);
+}
+
+async function startMockVolcEngineProvider() {
+  mockVolcEngineConnections = [];
+  mockVolcEngineServer = new WebSocketServer({ port: 0, host: '127.0.0.1', maxPayload: 1024 * 1024, perMessageDeflate: false });
+  mockVolcEngineServer.on('connection', (socket, request) => {
+    const connection = {
+      headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(',') : String(value || '')])),
+      events: [] as number[], serverEvents: [] as number[], timeline: [] as string[], pcmBytes: 0, spokenTexts: [] as string[],
+    };
+    mockVolcEngineConnections.push(connection);
+    let activeSessionId = '';
+    let sentSpeech = false;
+    socket.on('message', (raw, isBinary) => {
+      if (!isBinary) return;
+      const frame = decodeVolcengineFrame(Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer));
+      if (frame.eventId === null) return;
+      connection.events.push(frame.eventId);
+      connection.timeline.push(`client:${frame.eventId}`);
+      let payload: Record<string, unknown> = {};
+      if (frame.payloadIsJson) {
+        try { payload = JSON.parse(frame.payload.toString('utf8')) as Record<string, unknown>; } catch { /* malformed client JSON is visible in the assertion set */ }
+      }
+      if (frame.eventId === 1) {
+        socket.send(encodeVolcServerFrame(50, {}, frame.sessionId || undefined));
+      } else if (frame.eventId === 100) {
+        activeSessionId = frame.sessionId || '';
+        socket.send(encodeVolcServerFrame(150, { dialog_id: 'mock-volc-dialog' }, activeSessionId));
+      } else if (frame.eventId === 200) {
+        connection.pcmBytes += frame.payload.byteLength;
+        if (!sentSpeech && activeSessionId) {
+          sentSpeech = true;
+          socket.send(encodeVolcServerFrame(450, { question_id: 'volc-question-e2e-0001' }, activeSessionId));
+          socket.send(encodeVolcServerFrame(451, { results: [{ text: '请用中文整理本周人工智能产品更新的三个要点，并说明来源。', is_interim: false }] }, activeSessionId));
+          socket.send(encodeVolcServerFrame(459, {}, activeSessionId));
+        }
+      } else if (frame.eventId === 500) {
+        connection.spokenTexts.push(String(payload.content || ''));
+        socket.send(encodeVolcServerFrame(350, { tts_type: 'chat_tts_text', text: payload.content || '' }, activeSessionId));
+        socket.send(encodeVolcServerFrame(352, Buffer.alloc(960, 1), activeSessionId, true));
+        socket.send(encodeVolcServerFrame(359, {}, activeSessionId));
+      } else if (frame.eventId === 102) {
+        connection.serverEvents.push(152);
+        connection.timeline.push('server:152');
+        socket.send(encodeVolcServerFrame(152, {}, activeSessionId));
+      }
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    mockVolcEngineServer!.once('error', reject);
+    mockVolcEngineServer!.once('listening', resolvePromise);
+  });
+  const address = mockVolcEngineServer.address();
+  assert(address && typeof address !== 'string');
+  return `ws://127.0.0.1:${address.port}/realtime`;
+}
+
+async function startMockVolcEngineDuplexProvider() {
+  mockVolcEngineDuplexConnections = [];
+  mockVolcEngineDuplexServer = new WebSocketServer({ port: 0, host: '127.0.0.1', maxPayload: 1024 * 1024, perMessageDeflate: false });
+  mockVolcEngineDuplexServer.on('connection', (socket, request) => {
+    const connection = {
+      headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(',') : String(value || '')])),
+      events: [] as string[], timeline: [] as string[], pcmBytes: 0, spokenTexts: [] as string[], audioDeltas: 0,
+    };
+    mockVolcEngineDuplexConnections.push(connection);
+    let sentTranscript = false;
+    socket.on('message', (raw, isBinary) => {
+      if (isBinary) { connection.timeline.push('unexpected-binary-client-frame'); return; }
+      let event: Record<string, unknown>;
+      try { event = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw)) as Record<string, unknown>; }
+      catch { connection.timeline.push('invalid-json-client-frame'); return; }
+      const type = typeof event.type === 'string' ? event.type : 'missing-type';
+      connection.events.push(type);
+      connection.timeline.push(`client:${type}`);
+      if (type === 'session.create') {
+        socket.send(JSON.stringify({ type: 'session.created', event_id: 'mock-session-created', session: { id: 'mock-seedduplex-session' } }));
+      } else if (type === 'input_audio_buffer.append') {
+        if (typeof event.audio === 'string') connection.pcmBytes += Buffer.from(event.audio, 'base64').byteLength;
+        if (!sentTranscript) {
+          sentTranscript = true;
+          socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.started', item_id: 'duplex-e2e-turn-0001' }));
+          socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'duplex-e2e-turn-0001', delta: '请用中文整理本周人工智能产品更新的三个要点，并说明来源。' }));
+          socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'duplex-e2e-turn-0001', transcript: '请用中文整理本周人工智能产品更新的三个要点，并说明来源。' }));
+        }
+      } else if (type === 'input_audio_mute.commit' || type === 'input_audio_unmute.commit') {
+        connection.timeline.push(`mute-control:${type}`);
+      } else if (type === 'speech_text_buffer.commit') {
+        if (typeof event.text === 'string') connection.spokenTexts.push(event.text);
+        const sampleCount = 4_800;
+        const pcm = Buffer.alloc(sampleCount * 4);
+        for (let index = 0; index < sampleCount; index += 1) {
+          const fade = Math.min(1, index / 120, (sampleCount - index - 1) / 120);
+          const sample = fade * (0.2 * Math.sin(index * 2 * Math.PI * 440 / 24_000) + 0.05 * Math.sin(index * 2 * Math.PI * 880 / 24_000));
+          pcm.writeFloatLE(sample, index * 4);
+        }
+        socket.send(JSON.stringify({ type: 'response.output_audio.started', response_id: 'mock-response' }));
+        socket.send(JSON.stringify({ type: 'response.output_audio.delta', response_id: 'mock-response', delta: pcm.toString('base64') }));
+        socket.send(JSON.stringify({ type: 'response.output_audio.done', response_id: 'mock-response' }));
+        connection.audioDeltas += 1;
+      } else if (type === 'session.close') {
+        connection.timeline.push('server:session.closed');
+        socket.send(JSON.stringify({ type: 'session.closed', event_id: 'mock-session-closed' }));
+      }
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    mockVolcEngineDuplexServer!.once('error', reject);
+    mockVolcEngineDuplexServer!.once('listening', resolvePromise);
+  });
+  const address = mockVolcEngineDuplexServer.address();
+  assert(address && typeof address !== 'string');
+  return `ws://127.0.0.1:${address.port}/duplex`;
+}
+
+async function startMockVolcEngineEntitlementRejection() {
+  mockVolcEngineRejectedServer = createHttpServer();
+  mockVolcEngineRejectedServer.on('upgrade', (_request, socket) => {
+    const body = JSON.stringify({ error: { code: 45000030, message: 'requested resource not granted [resource_id=volc.speech.dialog]' } });
+    socket.end('HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: ' + Buffer.byteLength(body) + '\r\nConnection: close\r\n\r\n' + body);
+  });
+  await new Promise<void>((resolvePromise, reject) => mockVolcEngineRejectedServer!.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  const address = mockVolcEngineRejectedServer.address();
+  assert(address && typeof address !== 'string');
+  return 'ws://127.0.0.1:' + address.port + '/duplex';
+}
+
+async function websocketUpgradeStatus(url: string, cookie: string) {
+  return await new Promise<number>(resolvePromise => {
+    const origin = new URL(url).origin.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+    const socket = new NodeWebSocket(url, { headers: { cookie, origin }, handshakeTimeout: 5000 });
+    socket.once('unexpected-response', (_request, response) => {
+      const status = response.statusCode || 0;
+      response.resume();
+      resolvePromise(status);
+    });
+    socket.once('open', () => { socket.close(); resolvePromise(101); });
+    socket.once('error', () => resolvePromise(0));
+  });
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -280,6 +438,12 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_QWEN_WORKSPACE_ID: '',
       DOTS_QWEN_REGION: '',
       DASHSCOPE_API_KEY: '',
+      DOTS_VOLCENGINE_API_KEY: '',
+      DOTS_VOLCENGINE_APP_ID: '',
+      DOTS_VOLCENGINE_ACCESS_TOKEN: '',
+      DOTS_VOLCENGINE_RESOURCE_ID: '',
+      DOTS_E2E_VOLCENGINE_WS_URL: '',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: '',
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -358,12 +522,16 @@ async function screenshot(page: Page, name: string) {
 }
 
 async function waitForComputerScreenshot(page: Page) {
-  await page.waitForFunction(() => {
+  const screenshot = await page.waitForFunction(() => {
     const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
-    if (!screenshot?.complete || screenshot.naturalWidth !== 1280 || screenshot.naturalHeight !== 820) return false;
+    if (!screenshot?.complete || screenshot.naturalWidth <= 0 || screenshot.naturalHeight <= 0) return false;
     const bounds = screenshot.getBoundingClientRect();
-    return bounds.width > 0 && bounds.height > 0;
+    if (bounds.width <= 0 || bounds.height <= 0) return false;
+    return { naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight, src: screenshot.currentSrc };
   }, null, { timeout: 20_000 });
+  const frame = await screenshot.jsonValue() as { naturalWidth: number; naturalHeight: number; src: string };
+  await screenshot.dispose();
+  return frame;
 }
 
 async function clickComputerScreen(page: Page, x: number, y: number) {
@@ -467,7 +635,7 @@ try {
   testModelName = 'e2e-shared-model';
   mockSlackProviderOrigin = await startMockSlackProvider();
   server = await startServer(e2ePort);
-  browser = await chromium.launch({ executablePath: chromePath, headless: true });
+  browser = await chromium.launch({ executablePath: chromePath, headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
   alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   betaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   gammaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
@@ -2188,12 +2356,10 @@ try {
     assert.equal(welcomeState.owner, 'agent');
     assert.equal(await alphaPage!.locator('.computer-dock span').count(), 3, 'The source computer view shows three dock icons');
     assert.equal(await alphaPage!.locator('.computer-controlbar.is-user-control').count(), 0, 'The agent-owned screen must keep the takeover affordance');
-    await waitForComputerScreenshot(alphaPage!);
-    const screenAspect = await alphaPage!.getByAltText('独立浏览器画面').evaluate(element => {
-      const image = element as HTMLImageElement;
-      return image.naturalWidth / image.naturalHeight;
-    });
-    assert.ok(Math.abs(screenAspect - 1280 / 820) < 0.001, 'The replicated remote screen aspect ratio changed');
+    const screenImage = await waitForComputerScreenshot(alphaPage!);
+    const screenAspect = screenImage.naturalWidth / screenImage.naturalHeight;
+    assert.ok(Math.abs(screenAspect - 1280 / 820) < 0.002,
+      `The replicated remote screen aspect ratio changed: expected 1280x820, saw ${screenImage.naturalWidth}x${screenImage.naturalHeight} (${screenAspect.toFixed(5)}) from ${screenImage.src}`);
     await screenshot(alphaPage!, '14-computer-dot-control');
   });
 
@@ -2405,6 +2571,211 @@ try {
     await failedCall.waitFor({ state: 'detached' });
   });
 
+  await recordStep('Volcano realtime WebSocket keeps credentials server-side and sends Chinese speech into the tenant Agent', async () => {
+    mockVolcEngineUrl = await startMockVolcEngineProvider();
+    await stopServer(server);
+    server = await startServer(e2ePort, { DOTS_VOICE_PROVIDER: 'volcengine' });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const unconfiguredCall = alphaPage!.getByTestId('voice-call');
+    await unconfiguredCall.getByRole('alert').filter({ hasText: 'SeedDuplex 实时语音 API Key' }).waitFor({ state: 'visible' });
+    await unconfiguredCall.getByRole('button', { name: '结束通话' }).click();
+
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_APP_ID: 'e2e-volc-app-id',
+      DOTS_VOLCENGINE_ACCESS_TOKEN: 'e2e-volc-access-token',
+      DOTS_VOLCENGINE_RESOURCE_ID: 'volc.speech.dialog',
+      DOTS_E2E_VOLCENGINE_WS_URL: mockVolcEngineUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await alphaContext!.grantPermissions(['microphone'], { origin: baseUrl });
+    await alphaPage!.evaluate(`(() => {
+      const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      Object.defineProperty(window, '__dotsVolcTrack', { configurable: true, value: null, writable: true });
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async constraints => {
+        const stream = await getUserMedia(constraints);
+        window.__dotsVolcTrack = stream.getAudioTracks()[0] || null;
+        return stream;
+      } } });
+    })()`);
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-provider') === 'volcengine');
+    await call.locator('[data-testid="voice-call-transcript"]').waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 20_000 });
+    assert.equal(mockVolcEngineConnections.length, 1, 'The authenticated call should establish exactly one provider socket');
+    const providerConnection = mockVolcEngineConnections[0];
+    assert.equal(providerConnection.headers['x-api-app-id'], 'e2e-volc-app-id');
+    assert.equal(providerConnection.headers['x-api-access-key'], 'e2e-volc-access-token');
+    assert.equal(providerConnection.headers['x-api-resource-id'], 'volc.speech.dialog');
+    assert.equal(providerConnection.headers['x-api-app-key'], 'PlgvMymc7f3tQnJ6');
+    const publicProviderInfo = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as Record<string, unknown>;
+    assert.deepEqual(publicProviderInfo, { provider: 'volcengine', configured: true, model: 'doubao-realtime-dialogue-2.0' }, 'Public provider state must not contain Volcano credentials');
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 30_000 });
+    assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM packets to the gateway');
+    assert(providerConnection.events.includes(100) && providerConnection.events.includes(200), 'Provider must see StartSession followed by audio TaskRequest frames');
+    assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be spoken through the provider TTS channel');
+    assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Finalized Chinese Volcano ASR text must start a normal tenant Agent task');
+
+    const activeCall = await alphaPage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
+    assert(activeCall, 'The realtime call must have a user-owned call record');
+    const betaCookie = (await betaContext!.cookies(baseUrl)).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+    const crossTenantUpgrade = await websocketUpgradeStatus(`${baseUrl.replace(/^http/, 'ws')}/api/voice-calls/${activeCall.id}/volcengine-stream`, betaCookie);
+    assert.equal(crossTenantUpgrade, 404, 'A different tenant cannot open another account’s voice stream');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcTrack: MediaStreamTrack }).__dotsVolcTrack.enabled), false, 'Mute must disable the captured microphone track');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcTrack: MediaStreamTrack }).__dotsVolcTrack.enabled), true, 'Unmute must resume microphone capture');
+    await screenshot(alphaPage!, 'volcengine-realtime-call-agent-result');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcTrack: MediaStreamTrack }).__dotsVolcTrack.readyState), 'ended', 'Ending a call must release the microphone');
+    await waitFor(() => {
+      const finishSession = providerConnection.timeline.indexOf('client:102');
+      const sessionFinished = providerConnection.timeline.indexOf('server:152');
+      const finishConnection = providerConnection.timeline.indexOf('client:2');
+      return finishSession >= 0 && sessionFinished > finishSession && finishConnection > sessionFinished;
+    }, 5_000).catch(() => undefined);
+    const finishSession = providerConnection.timeline.indexOf('client:102');
+    const sessionFinished = providerConnection.timeline.indexOf('server:152');
+    const finishConnection = providerConnection.timeline.indexOf('client:2');
+    assert(finishSession >= 0 && sessionFinished > finishSession && finishConnection > sessionFinished, `Call cleanup must await session closure before finishing the provider connection; received ${providerConnection.timeline.join(', ')}`);
+  });
+
+  await recordStep('SeedDuplex explains the observed 45000030 resource entitlement failure in Chinese', async () => {
+    const rejectedUrl = await startMockVolcEngineEntitlementRejection();
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-secret',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: rejectedUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    const alert = call.getByRole('alert').filter({ hasText: '端到端实时语音尚未开通' });
+    await alert.waitFor({ state: 'visible', timeout: 15_000 });
+    const visibleError = await alert.textContent();
+    assert.equal(visibleError?.includes('requested resource not granted'), false, 'Raw provider response text must not reach the browser');
+    assert.equal(visibleError?.includes('volc.speech.dialog'), false, 'Provider resource diagnostics must stay server-side');
+    await screenshot(alphaPage!, 'volcengine-resource-not-enabled');
+    await alphaPage!.waitForFunction(async () => {
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { endedAt: string | null }[];
+      return Boolean(calls[0]?.endedAt);
+    }, null, { timeout: 10_000 });
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
+    if (mockVolcEngineRejectedServer) {
+      await new Promise<void>((resolvePromise, reject) => mockVolcEngineRejectedServer!.close(error => error ? reject(error) : resolvePromise()));
+      mockVolcEngineRejectedServer = null;
+    }
+  });
+
+  await recordStep('SeedDuplex 3.0 JSON WebSocket keeps API Key private and dispatches Chinese speech to the tenant Agent', async () => {
+    mockVolcEngineDuplexUrl = await startMockVolcEngineDuplexProvider();
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-secret',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: mockVolcEngineDuplexUrl,
+    });
+    await alphaPage!.addInitScript(() => {
+      const audioWindow = window as unknown as { __dotsPlayedAudio?: { sampleRate: number; sampleCount: number; rms: number; peak: number; destinationConnections: number; ended: number }[] };
+      audioWindow.__dotsPlayedAudio = [];
+      const speakerConnected = new WeakSet<AudioBufferSourceNode>();
+      type ConnectAudioNode = (this: AudioBufferSourceNode, destination: AudioNode, output?: number, input?: number) => AudioNode;
+      const originalConnect = AudioBufferSourceNode.prototype.connect as ConnectAudioNode;
+      (AudioBufferSourceNode.prototype as unknown as { connect: ConnectAudioNode }).connect = function(this: AudioBufferSourceNode, destination: AudioNode, output?: number, input?: number) {
+        if (destination === this.context.destination) speakerConnected.add(this);
+        return originalConnect.call(this, destination, output, input);
+      };
+      const originalStart = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function(this: AudioBufferSourceNode, when?: number, offset?: number, duration?: number) {
+        const buffer = this.buffer;
+        if (buffer) {
+          const samples = buffer.getChannelData(0);
+          let sumSquares = 0;
+          let peak = 0;
+          for (const sample of samples) { sumSquares += sample * sample; peak = Math.max(peak, Math.abs(sample)); }
+          const record = { sampleRate: buffer.sampleRate, sampleCount: samples.length, rms: Math.sqrt(sumSquares / samples.length), peak, destinationConnections: speakerConnected.has(this) ? 1 : 0, ended: 0 };
+          audioWindow.__dotsPlayedAudio?.push(record);
+          this.addEventListener('ended', () => { record.ended += 1; }, { once: true });
+        }
+        return originalStart.call(this, when, offset, duration);
+      };
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await alphaContext!.grantPermissions(['microphone'], { origin: baseUrl });
+    await alphaPage!.evaluate(`(() => {
+      const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      Object.defineProperty(window, '__dotsVolcDuplexTrack', { configurable: true, value: null, writable: true });
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async constraints => {
+        const stream = await getUserMedia(constraints);
+        window.__dotsVolcDuplexTrack = stream.getAudioTracks()[0] || null;
+        return stream;
+      } } });
+    })()`);
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => {
+      const dialog = document.querySelector('[data-testid="voice-call"]');
+      return dialog?.getAttribute('data-voice-provider') === 'volcengine' && dialog.getAttribute('data-voice-model') === 'doubao-seedduplex-3.0';
+    });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 20_000 });
+    assert.equal(mockVolcEngineDuplexConnections.length, 1, 'The authenticated SeedDuplex call should open one provider connection');
+    const providerConnection = mockVolcEngineDuplexConnections[0];
+    assert.equal(providerConnection.headers['x-api-key'], 'e2e-seedduplex-secret', 'The shared API key must be sent only from the server');
+    assert(providerConnection.headers['x-api-request-id'], 'Each provider connection must carry a traceable request ID');
+    const publicProviderInfo = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as Record<string, unknown>;
+    assert.deepEqual(publicProviderInfo, { provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' }, 'Public provider state must not reveal the API key');
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 30_000 });
+    await waitFor(() => providerConnection.audioDeltas > 0, 5_000);
+    await alphaPage!.waitForFunction(() => {
+      const played = (window as unknown as { __dotsPlayedAudio?: { sampleRate: number; sampleCount: number; rms: number; peak: number; destinationConnections: number; ended: number }[] }).__dotsPlayedAudio || [];
+      return played.some(item => item.sampleRate === 24_000 && item.sampleCount === 4_800 && item.rms > 0.05 && item.rms < 0.25 && item.peak > 0.1 && item.peak < 0.4 && item.destinationConnections > 0 && item.ended > 0);
+    }, null, { timeout: 10_000 });
+    const playback = await alphaPage!.evaluate(() => (window as unknown as { __dotsPlayedAudio: { sampleRate: number; sampleCount: number; rms: number; peak: number; destinationConnections: number; ended: number }[] }).__dotsPlayedAudio);
+    assert(playback.some(item => item.sampleRate === 24_000 && item.sampleCount === 4_800 && item.destinationConnections > 0 && item.ended > 0), 'Float32 SeedDuplex audio must be decoded at 24 kHz and played through the browser speaker to completion');
+    assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM audio in realtime-sized packets');
+    assert(providerConnection.events.includes('session.create') && providerConnection.events.includes('input_audio_buffer.append'), 'SeedDuplex must use JSON session and audio events');
+    assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be submitted to SeedDuplex direct text-to-speech events');
+    assert(providerConnection.events.includes('speech_text_buffer.commit'), 'Agent status speech must use the provider direct-synthesis event sequence');
+    assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Final Chinese speech transcript must start the normal tenant Agent task');
+
+    const activeCall = await alphaPage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
+    assert(activeCall, 'The SeedDuplex voice session must use the authenticated user-owned call record');
+    const betaCookie = (await betaContext!.cookies(baseUrl)).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+    const crossTenantUpgrade = await websocketUpgradeStatus(`${baseUrl.replace(/^http/, 'ws')}/api/voice-calls/${activeCall.id}/volcengine-stream`, betaCookie);
+    assert.equal(crossTenantUpgrade, 404, 'A different tenant cannot open another account’s SeedDuplex stream');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.enabled), false, 'Mute must disable microphone capture');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.enabled), true, 'Unmute must resume microphone capture');
+    await waitFor(() => providerConnection.events.includes('input_audio_mute.commit') && providerConnection.events.includes('input_audio_unmute.commit'), 5_000);
+    await screenshot(alphaPage!, 'volcengine-seedduplex-call-agent-result');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.readyState), 'ended', 'Ending the call must release the microphone');
+    await waitFor(() => providerConnection.events.includes('session.close') && providerConnection.timeline.includes('server:session.closed'), 5_000);
+  });
+
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
 } catch (error) {
   failure = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
@@ -2433,6 +2804,9 @@ try {
   } catch { /* Restore only the isolated E2E Keychain service. */ }
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
   if (mockQwenSignalingServer) await new Promise<void>(resolvePromise => mockQwenSignalingServer!.close(() => resolvePromise()));
+  if (mockVolcEngineServer) await new Promise<void>(resolvePromise => mockVolcEngineServer!.close(() => resolvePromise()));
+  if (mockVolcEngineDuplexServer) await new Promise<void>(resolvePromise => mockVolcEngineDuplexServer!.close(() => resolvePromise()));
+  if (mockVolcEngineRejectedServer) await new Promise<void>(resolvePromise => mockVolcEngineRejectedServer!.close(() => resolvePromise()));
   if (e2eSlackTokenAccount) {
     try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
   }

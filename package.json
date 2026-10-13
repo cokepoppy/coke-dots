@@ -12,7 +12,11 @@
     "test": "DOTS_KEYCHAIN_SERVICE=com.cokepoppy.coke-dots.test node --import tsx --test tests/*.test.ts",
     "test:e2e": "npm run build && node --import tsx tests/e2e/ui.e2e.ts && node --import tsx tests/e2e/cloud-computer.e2e.ts",
     "test:e2e:k3d": "npm run build && node --import tsx tests/e2e/k3d-cloud-computer.e2e.ts",
+    "test:e2e:public-demo:auth-setup": "node --import tsx tests/e2e/public-demo-auth.setup.ts",
+    "test:e2e:public-demo:voice": "node --import tsx tests/e2e/public-demo-voice.e2e.ts",
+    "test:e2e:public-demo:voice-agent": "DOTS_PUBLIC_VOICE_AGENT_TASK=1 node --import tsx tests/e2e/public-demo-voice.e2e.ts",
     "test:live-model": "node --import tsx scripts/live-model-smoke.ts",
+    "test:live-volcengine-voice": "node --import tsx scripts/live-volcengine-voice-smoke.ts",
     "compare:reference": "node --import tsx scripts/compare-reference.ts",
     "research:capture-dot-v3": "node --import tsx scripts/capture-dot-v3-reference.ts",
     "start": "tsx src/server/index.ts",
@@ -26,13 +30,15 @@
     "google-auth-library": "^11.1.0",
     "playwright-core": "^1.56.1",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^5.0.0",
     "concurrently": "^9.2.0",
     "electron": "39.8.10",

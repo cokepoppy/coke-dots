@@ -34,17 +34,26 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
   const [transcript, setTranscript] = useState('');
   const [taskStatus, setTaskStatus] = useState('');
   const [callError, setCallError] = useState('');
-  const [voiceProvider, setVoiceProvider] = useState<'browser' | 'qwen'>('browser');
+  const [voiceProvider, setVoiceProvider] = useState<'browser' | 'qwen' | 'volcengine'>('browser');
+  const [voiceModel, setVoiceModel] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [desktopLayout, setDesktopLayout] = useState(() => displayMode === 'desktop' && window.innerWidth > 700);
   const sessionRef = useRef<VoiceCallSession | null>(null);
   const recognitionRef = useRef<RecognitionLike | null>(null);
-  const providerRef = useRef<'browser' | 'qwen'>('browser');
+  const providerRef = useRef<'browser' | 'qwen' | 'volcengine'>('browser');
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimeSendChannelRef = useRef<RTCDataChannel | null>(null);
   const realtimeEventChannelRef = useRef<RTCDataChannel | null>(null);
+  const volcWebSocketRef = useRef<WebSocket | null>(null);
+  const volcDuplexRef = useRef(false);
+  const volcAudioContextRef = useRef<AudioContext | null>(null);
+  const volcAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const volcAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const volcOutputSourcesRef = useRef(new Set<AudioBufferSourceNode>());
+  const volcSessionReadyRef = useRef(false);
+  const volcPlaybackAtRef = useRef(0);
   const recognitionConstructorRef = useRef<RecognitionConstructor | null>(null);
   const startRecognitionRef = useRef<() => void>(() => {});
   const activeRef = useRef(true);
@@ -71,6 +80,19 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     realtimeSendChannelRef.current = null;
     realtimeEventChannelRef.current?.close();
     realtimeEventChannelRef.current = null;
+    const volcSocket = volcWebSocketRef.current;
+    volcWebSocketRef.current = null;
+    if (volcSocket && (volcSocket.readyState === WebSocket.OPEN || volcSocket.readyState === WebSocket.CONNECTING)) volcSocket.close();
+    volcSessionReadyRef.current = false;
+    for (const source of volcOutputSourcesRef.current) { try { source.stop(); } catch { /* Already ended. */ } }
+    volcOutputSourcesRef.current.clear();
+    volcAudioSourceRef.current?.disconnect();
+    volcAudioSourceRef.current = null;
+    volcAudioProcessorRef.current?.disconnect();
+    volcAudioProcessorRef.current = null;
+    const volcAudioContext = volcAudioContextRef.current;
+    volcAudioContextRef.current = null;
+    if (volcAudioContext && volcAudioContext.state !== 'closed') void volcAudioContext.close();
     if (remoteAudioRef.current) { remoteAudioRef.current.pause(); remoteAudioRef.current.srcObject = null; remoteAudioRef.current = null; }
   }
 
@@ -97,6 +119,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     let qwenModelReady = false;
     let qwenAudioSender: RTCRtpSender | null = null;
     let qwenMicrophoneTrack: MediaStreamTrack | null = null;
+    const volcSpeechQueue: string[] = [];
 
     const flushQwenSpeech = () => {
       if (!qwenModelReady || qwenResponseActive) return;
@@ -141,6 +164,12 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       if (!content || !speakerRef.current) return;
       if (providerRef.current === 'qwen') {
         queueQwenSpeech(content);
+        return;
+      }
+      if (providerRef.current === 'volcengine') {
+        const socket = volcWebSocketRef.current;
+        if (!volcSessionReadyRef.current || !socket || socket.readyState !== WebSocket.OPEN) { volcSpeechQueue.push(content); return; }
+        socket.send(JSON.stringify({ type: 'speak', text: content }));
         return;
       }
       if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) return;
@@ -368,8 +397,159 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       await peer.setRemoteDescription({ type: 'answer', sdp: response.answerSdp });
     };
 
+    const flushVolcSpeech = () => {
+      const socket = volcWebSocketRef.current;
+      if (!volcSessionReadyRef.current || !socket || socket.readyState !== WebSocket.OPEN) return;
+      const next = volcSpeechQueue.shift();
+      if (!next) return;
+      socket.send(JSON.stringify({ type: 'speak', text: next }));
+      if (volcSpeechQueue.length) window.setTimeout(flushVolcSpeech, 80);
+    };
+
+    const stopVolcPlayback = () => {
+      for (const source of volcOutputSourcesRef.current) { try { source.stop(); } catch { /* Already ended. */ } }
+      volcOutputSourcesRef.current.clear();
+      volcPlaybackAtRef.current = volcAudioContextRef.current?.currentTime || 0;
+    };
+
+    const playVolcPcm = (bytes: ArrayBuffer) => {
+      const context = volcAudioContextRef.current;
+      if (!context || !speakerRef.current || bytes.byteLength < 2 || bytes.byteLength % 2 !== 0) return;
+      const samples = new Int16Array(bytes);
+      const buffer = context.createBuffer(1, samples.length, 24000);
+      const channel = buffer.getChannelData(0);
+      for (let index = 0; index < samples.length; index += 1) channel[index] = samples[index] / 32768;
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      source.onended = () => volcOutputSourcesRef.current.delete(source);
+      volcOutputSourcesRef.current.add(source);
+      const startAt = Math.max(context.currentTime + 0.025, volcPlaybackAtRef.current);
+      volcPlaybackAtRef.current = startAt + buffer.duration;
+      source.start(startAt);
+      if (context.state === 'suspended') void context.resume().catch(() => setStatus('请点击通话页面以启用扬声器播放'));
+    };
+
+    const playVolcFloat32 = (bytes: ArrayBuffer) => {
+      const context = volcAudioContextRef.current;
+      if (!context || !speakerRef.current || bytes.byteLength < 4 || bytes.byteLength % 4 !== 0) return;
+      const samples = new Float32Array(bytes);
+      const buffer = context.createBuffer(1, samples.length, 24000);
+      const channel = buffer.getChannelData(0);
+      for (let index = 0; index < samples.length; index += 1) {
+        const sample = samples[index];
+        channel[index] = Number.isFinite(sample) ? Math.max(-1, Math.min(1, sample)) : 0;
+      }
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      source.onended = () => volcOutputSourcesRef.current.delete(source);
+      volcOutputSourcesRef.current.add(source);
+      const startAt = Math.max(context.currentTime + 0.025, volcPlaybackAtRef.current);
+      volcPlaybackAtRef.current = startAt + buffer.duration;
+      source.start(startAt);
+      if (context.state === 'suspended') void context.resume().catch(() => setStatus('请点击通话页面以启用扬声器播放'));
+    };
+
+    const startVolcRealtime = async (call: VoiceCallSession) => {
+      if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === 'undefined' || typeof WebSocket === 'undefined') throw new Error('当前浏览器不支持火山引擎实时语音');
+      setStatus('正在连接火山实时语音…');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      if (!activeRef.current) { stream.getTracks().forEach(track => track.stop()); return; }
+      localStreamRef.current = stream;
+      const context = new AudioContext({ latencyHint: 'interactive' });
+      volcAudioContextRef.current = context;
+      const source = context.createMediaStreamSource(stream);
+      const processor = context.createScriptProcessor(1024, 1, 1);
+      const silentOutput = context.createGain();
+      silentOutput.gain.value = 0;
+      source.connect(processor);
+      processor.connect(silentOutput);
+      silentOutput.connect(context.destination);
+      volcAudioSourceRef.current = source;
+      volcAudioProcessorRef.current = processor;
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const socket = new WebSocket(`${protocol}//${location.host}/api/voice-calls/${call.id}/volcengine-stream`);
+      socket.binaryType = 'arraybuffer';
+      volcWebSocketRef.current = socket;
+      let carry = new Float32Array(0);
+      let sourcePhase = 0;
+      const pcmPending: number[] = [];
+      const sampleStep = context.sampleRate / 16000;
+      processor.onaudioprocess = event => {
+        if (!volcSessionReadyRef.current || mutedRef.current || socket.readyState !== WebSocket.OPEN) return;
+        const input = event.inputBuffer.getChannelData(0);
+        const combined = new Float32Array(carry.length + input.length);
+        combined.set(carry);
+        combined.set(input, carry.length);
+        let position = sourcePhase;
+        while (position + 1 < combined.length) {
+          const left = Math.floor(position);
+          const fraction = position - left;
+          const value = combined[left] * (1 - fraction) + combined[left + 1] * fraction;
+          pcmPending.push(Math.max(-32768, Math.min(32767, Math.round(value * (value < 0 ? 32768 : 32767)))));
+          position += sampleStep;
+        }
+        const consumed = Math.min(combined.length, Math.floor(position));
+        carry = combined.slice(consumed);
+        sourcePhase = position - consumed;
+        while (pcmPending.length >= 320) {
+          const frame = new ArrayBuffer(640);
+          const view = new DataView(frame);
+          for (let index = 0; index < 320; index += 1) view.setInt16(index * 2, pcmPending[index], true);
+          pcmPending.splice(0, 320);
+          socket.send(frame);
+        }
+      };
+      void context.resume().catch(() => setCallError('无法启用麦克风音频处理，请检查浏览器权限。'));
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const timeout = window.setTimeout(() => finish(new Error('火山实时语音连接超时')), 20_000);
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          if (error) reject(error); else resolve();
+        };
+        socket.onopen = () => setStatus('正在初始化火山实时语音…');
+        socket.onmessage = event => {
+          if (typeof event.data !== 'string') {
+            const frame = event.data instanceof ArrayBuffer ? event.data : new ArrayBuffer(0);
+            const audioFormat = new Uint8Array(frame)[0];
+            if (audioFormat === 1) playVolcPcm(frame.slice(1));
+            else if (audioFormat === 2) playVolcFloat32(frame.slice(1));
+            return;
+          }
+          let message: { type?: string; error?: string; transcript?: string; turnId?: string };
+          try { message = JSON.parse(event.data) as typeof message; } catch { return; }
+          if (message.type === 'ready') {
+            volcSessionReadyRef.current = true;
+            setStatus(mutedRef.current ? '麦克风已静音' : '正在聆听');
+            flushVolcSpeech();
+            finish();
+          } else if (message.type === 'asr') {
+            setTranscript(message.transcript || '');
+          } else if (message.type === 'asr-final' && message.transcript) {
+            processTranscript(message.transcript, message.turnId);
+          } else if (message.type === 'speech-started') {
+            stopVolcPlayback();
+          } else if (message.type === 'assistant-speech-started') {
+            setStatus('Dot 正在回答…');
+          } else if (message.type === 'speech-ended') {
+            setStatus(mutedRef.current ? '麦克风已静音' : '正在聆听');
+          } else if (message.type === 'error') {
+            const error = message.error || '火山实时语音连接失败';
+            setCallError(error);
+            finish(new Error(error));
+          }
+        };
+        socket.onerror = () => finish(new Error('无法连接火山实时语音，请检查服务配置和网络。'));
+        socket.onclose = () => finish(new Error('火山实时语音连接已关闭。'));
+      });
+    };
+
     const startRecognition = () => {
-      if (providerRef.current === 'qwen') return;
+      if (providerRef.current !== 'browser') return;
       if (!activeRef.current || mutedRef.current) return;
       if (speakingRef.current) return;
       const Recognition = recognitionConstructorRef.current;
@@ -422,12 +602,17 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       try {
         const providerResponse = await appFetch('/api/voice/provider');
         if (!providerResponse.ok) throw new Error('无法读取语音服务配置');
-        const provider = await providerResponse.json() as { provider?: string; configured?: boolean };
-        if (provider.provider !== 'browser' && provider.provider !== 'qwen') throw new Error('服务端配置了不支持的语音供应商');
-        const selectedProvider = provider.provider === 'qwen' ? 'qwen' : 'browser';
+        const provider = await providerResponse.json() as { provider?: string; configured?: boolean; model?: string };
+        if (provider.provider !== 'browser' && provider.provider !== 'qwen' && provider.provider !== 'volcengine') throw new Error('服务端配置了不支持的语音供应商');
+        const selectedProvider = provider.provider === 'qwen' || provider.provider === 'volcengine' ? provider.provider : 'browser';
         providerRef.current = selectedProvider;
         setVoiceProvider(selectedProvider);
+        setVoiceModel(provider.model || '');
+        volcDuplexRef.current = selectedProvider === 'volcengine' && provider.model === 'doubao-seedduplex-3.0';
         if (selectedProvider === 'qwen' && !provider.configured) throw new Error('服务端尚未配置 Qwen 实时语音所需的百炼 API Key 和工作空间 ID；地域默认使用北京。');
+        if (selectedProvider === 'volcengine' && !provider.configured) throw new Error(provider.model === 'doubao-realtime-dialogue-2.0'
+          ? '服务端尚未配置火山引擎 O2.0 实时语音所需的 App ID 和 Access Token。'
+          : '服务端尚未配置火山引擎 SeedDuplex 实时语音 API Key。');
         const response = await appFetch('/api/voice-calls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
         const call = await response.json() as VoiceCallSession & { error?: string };
         if (!response.ok) throw new Error(call.error || 'HTTP ' + response.status);
@@ -438,13 +623,14 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
           return;
         }
         if (selectedProvider === 'qwen') await startQwenRealtime(call);
+        else if (selectedProvider === 'volcengine') await startVolcRealtime(call);
         else startRecognitionRef.current();
       } catch (error) {
         if (activeRef.current) {
           const message = error instanceof Error ? error.message : '无法启动语音通话';
           setCallError(message);
           setStatus('通话无法启动');
-          if (providerRef.current === 'qwen') {
+          if (providerRef.current === 'qwen' || providerRef.current === 'volcengine') {
             startupFailedRef.current = true;
             stopRealtimeTransport();
             const call = sessionRef.current;
@@ -488,6 +674,10 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     mutedRef.current = next;
     setMuted(next);
     for (const track of localStreamRef.current?.getAudioTracks() || []) track.enabled = !next;
+    if (providerRef.current === 'volcengine' && volcDuplexRef.current) {
+      const socket = volcWebSocketRef.current;
+      if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: next ? 'mute' : 'unmute' }));
+    }
     if (next) {
       if (providerRef.current === 'browser') recognitionRef.current?.abort();
       setStatus('麦克风已静音');
@@ -502,6 +692,12 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
     speakerRef.current = next;
     setSpeakerOn(next);
     if (remoteAudioRef.current) remoteAudioRef.current.muted = !next;
+    if (providerRef.current === 'volcengine' && !next) {
+      for (const source of volcOutputSourcesRef.current) { try { source.stop(); } catch { /* Already ended. */ } }
+      volcOutputSourcesRef.current.clear();
+      volcPlaybackAtRef.current = volcAudioContextRef.current?.currentTime || 0;
+    }
+    if (providerRef.current === 'volcengine' && next && volcAudioContextRef.current?.state === 'suspended') void volcAudioContextRef.current.resume();
     if (providerRef.current === 'browser' && !next && 'speechSynthesis' in window) {
       speechGenerationRef.current += 1;
       speakingRef.current = false;
@@ -533,7 +729,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
 
   const minutes = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0');
   const seconds = (elapsedSeconds % 60).toString().padStart(2, '0');
-  if (desktopLayout) return <section className="voice-call-inline" role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="desktop" data-voice-provider={voiceProvider}>
+  if (desktopLayout) return <section className="voice-call-inline" role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="desktop" data-voice-provider={voiceProvider} data-voice-model={voiceModel}>
     <button type="button" className={`voice-call-inline-mic${muted ? ' is-muted' : ''}`} aria-label={muted ? '取消静音' : '静音'} aria-pressed={muted} title={muted ? '取消静音' : '静音'} onClick={toggleMute}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-4 0h8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>{muted && <path d="m4 4 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>}</svg>
     </button>
@@ -545,7 +741,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
       <span>{status}</span>{transcript && <span>你说：{transcript}</span>}{taskStatus && <span>{taskStatus}</span>}
     </div>
   </section>;
-  return <section className={`voice-call-dock${expanded ? ' voice-call-expanded' : ''}`} role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="handset" data-voice-provider={voiceProvider}>
+  return <section className={`voice-call-dock${expanded ? ' voice-call-expanded' : ''}`} role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant="handset" data-voice-provider={voiceProvider} data-voice-model={voiceModel}>
     <div className="voice-call-screen">
       <div className="voice-call-statusbar" aria-hidden="true">
         <span className="voice-call-status-leading"><span className="voice-call-status-time">12:55</span><svg className="voice-call-silent" viewBox="0 0 16 16"><path d="M3.5 11.5h9c-.9-1.2-1.2-2.1-1.2-4.3a3.3 3.3 0 0 0-6.6 0c0 2.2-.3 3.1-1.2 4.3ZM6.6 13.2h2.8M2.5 2.5l11 11" /></svg></span><span className="voice-call-notch" />
