@@ -64,3 +64,10 @@ This was a live Chrome UI pass with automated sample injection and microphone ca
 - In a signed-in public Chrome Call, generated Chinese microphone input created a Pi task on the tenant computer. Pi opened example.com, example.org, and example.net read-only and returned a Chinese result. That result is sent back to the same SeedDuplex session as speech text; SeedDuplex generates the audio frames and the browser schedules them to the output device.
 - The Mac's built-in microphone recorded 24.15 seconds at 48 kHz while the response played through MacBook Air speakers. Active response windows had RMS around 0.014–0.053; the final quiet windows were around 0.004. This confirms acoustic output reached the physical microphone. It does not prove that the words were intelligible or that the user-perceived sound contained no static: on-device speech recognition was not authorized, and the capture was not retained.
 - System Sound settings were restored and `system_profiler` confirmed MacBook Air microphone and MacBook Air speakers as the defaults. The prior format defect is fixed in the current public source/assets, but the user's latest static-noise report remains unconfirmed at the intelligibility level. A fresh call must capture the actual provider PCM and compare it against the physical microphone loopback before declaring playback quality resolved.
+
+## Current branch verification (2026-10-13)
+
+- `npm test`: 133 unit tests passed.
+- `npm run build:demo`: passed and produced `index-DIC2wYRp.js`, matching the currently served public bundle.
+- `npm run test:e2e`: 53 local Chrome click-through steps and 8 cloud-computer checks passed. The voice path in this suite uses test doubles; this is not the signed-in public SeedDuplex test.
+- The dedicated authenticated public storage state was not present. The signed-in public Chrome manual round trip is recorded above, but the automated public acoustic test and independent speech intelligibility check remain outstanding.
