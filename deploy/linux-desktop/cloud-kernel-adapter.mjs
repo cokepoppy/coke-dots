@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Type } from 'typebox';
+import { parseAgentDecisionJson } from './agent-decision-json.mjs';
 
 const decisionStatuses = new Set(['done', 'waiting', 'scheduled', 'delegating']);
 const maxTaskFileBytes = 512 * 1024;
-const fileOutputGuidance = '\n\n文件输出规则：只有在用户的直接请求明确要求创建本地文件时，才使用 create_task_file。只在当前任务目录创建新文件；不要覆盖已有文件、删除文件或运行 shell 命令。单文件任务直接完成，不要委派。最终用中文简短说明文件路径，不要把整个文件内容贴进聊天。';
+const fileOutputGuidance = '\n\n文件输出规则：只有在用户的直接请求明确要求创建本地文件时，才使用 create_task_file。只在当前任务目录创建新文件；不要覆盖已有文件、删除文件或运行 shell 命令。单文件任务直接完成，不要委派。最终 message 不超过 300 个字符，只说明结果、相对文件路径和已完成的检查；不要把文件内容、长代码或完整工具输出贴进聊天。';
 
 export async function runCloudKernel(input, dependencies = {}) {
   const engine = String(input?.engine || '');
@@ -75,13 +76,21 @@ async function runPi(input, cwd, config, injectedSdk) {
   else input.signal?.addEventListener('abort', abortSession, { once: true });
   try {
     if (input.signal?.aborted) throw input.signal.reason || new Error('Task stopped');
-    await session.prompt(input.prompt);
-    const assistant = [...session.messages].reverse().find(row => row?.role === 'assistant');
+    await session.prompt(`${input.prompt}\n\nPi 最终结果限制：只返回一个有效 JSON 对象；message 不超过 500 个字符。不要把完整文件、代码或长工具输出放进 message，只概述已完成的结果、相对路径及实际做过的检查。`);
+    let assistant = [...session.messages].reverse().find(row => row?.role === 'assistant');
     if (assistant?.stopReason === 'length') {
-      if (createdFiles.length) {
-        return { status: 'done', message: `已在云电脑任务目录创建 ${createdFiles.join('、')}；Pi 的最终回复达到 8192 token 上限，自动校验未完成。`, sessionId: sessionManager.getSessionId() };
+      if (typeof session.setActiveToolsByName !== 'function') {
+        throw new Error('Pi 的回复达到输出上限，当前运行时不能安全关闭工具并整理结果；未把不完整回复标记为完成。');
       }
-      throw new Error('Pi 的回复达到 8192 token 输出上限，未生成完整任务结果。请先检查任务目录是否已产生文件，再决定是否重试。');
+      session.setActiveToolsByName([]);
+      const createdFilesEvidence = createdFiles.length
+        ? `Dot 的受限文件工具已确认新建：${createdFiles.join('、')}。`
+        : 'Dot 的受限文件工具没有记录新建文件。';
+      await session.prompt(`上一条回复达到模型输出上限并被截断。${createdFilesEvidence}现在只根据本会话中已完成的工具调用和工具结果总结状态。不能再调用工具、不能继续执行或重复任何操作；如果现有证据不足以确认任务完成，请返回 status="waiting"。只返回一个有效 JSON 对象，字段为 status 和 message；message 不超过 300 个字符，不要包含代码、文件内容或长工具输出。`);
+      assistant = [...session.messages].reverse().find(row => row?.role === 'assistant');
+      if (!assistant || assistant.stopReason === 'length') {
+        throw new Error('Pi 的简短状态恢复仍达到模型输出上限；未把不完整回复标记为完成。');
+      }
     }
     const text = assistant?.content?.filter(item => item?.type === 'text').map(item => item.text || '').join('\n') || '';
     return { ...parseDecision(text), sessionId: sessionManager.getSessionId() };
@@ -308,13 +317,7 @@ async function checkedChildPath(parent, candidate) {
 }
 
 function parseDecision(text) {
-  if (typeof text !== 'string') throw new Error(`Agent did not return a structured result (response type: ${typeof text})`);
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) {
-    const preview = process.env.NODE_ENV === 'test' ? `: ${text.replace(/\s+/g, ' ').slice(0, 400)}` : '';
-    throw new Error(`Agent did not return a structured result${preview}`);
-  }
-  const value = JSON.parse(match[0]);
+  const value = parseAgentDecisionJson(text);
   if (!decisionStatuses.has(value.status) || typeof value.message !== 'string' || !value.message.trim()) throw new Error('Agent returned an invalid task decision');
   return value;
 }

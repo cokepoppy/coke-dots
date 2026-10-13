@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { runCloudKernel } from '../deploy/linux-desktop/cloud-kernel-adapter.mjs';
+import { parseAgentDecisionJson } from '../src/shared/agent-decision-json.mjs';
 
 const modelConfig = { apiKey: 'shared-cloud-test-key', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash' };
 const decision = JSON.stringify({ status: 'done', message: 'cloud kernel completed' });
@@ -78,25 +79,56 @@ test('Pi file output is create-only, bounded, and confined to its authorized tas
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('Pi output-limit turns return a clear diagnostic, or a persisted file result when creation already succeeded', async () => {
+test('Pi decision JSON accepts multiline messages and output longer than the previous 4202-character failure', () => {
+  const message = `第一行\n第二行\t列\r结束 ${'完成'.repeat(2200)}`;
+  const raw = `Result:\n\`\`\`json\n{"status":"done","message":"${message}"}\n\`\`\``;
+  const parsed = parseAgentDecisionJson(raw) as { status: string; message: string };
+  assert.equal(parsed.status, 'done');
+  assert.equal(parsed.message, message);
+  assert(raw.length > 4202);
+  assert.throws(() => parseAgentDecisionJson('{"status":"done","message":"truncated'), /不完整/);
+});
+
+test('Pi output-limit recovery disables tools and asks for a concise evidence-based status', async () => {
   const { root, task } = await makeWorkspace();
-  const makeSdk = (writeFileFirst: boolean) => ({
+  const makeSdk = (writeFileFirst: boolean, repairText: string, repairStopReason = 'stop') => ({
     AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
     ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
     SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-limited-session' }), open: () => { throw new Error('unexpected'); } },
-    createAgentSession: async (options: Record<string, any>) => ({ session: {
-      messages: [{ role: 'assistant', stopReason: 'length', content: [{ type: 'thinking', thinking: 'truncated' }] }],
-      prompt: async () => { if (writeFileFirst) await options.customTools.find((tool: { name: string }) => tool.name === 'create_task_file').execute('write-1', { path: 'tetris.html', content: '<h1>blocks</h1>' }); },
-      dispose: () => undefined,
-    } }),
+    createAgentSession: async (options: Record<string, any>) => {
+      let activeTools = [...options.tools];
+      let prompts = 0;
+      const messages: any[] = [];
+      return { session: {
+        messages,
+        prompt: async () => {
+          prompts += 1;
+          if (prompts === 1) {
+            if (writeFileFirst) await options.customTools.find((tool: { name: string }) => tool.name === 'create_task_file').execute('write-1', { path: 'tetris.html', content: '<h1>blocks</h1>' });
+            messages.push({ role: 'assistant', stopReason: 'length', content: [{ type: 'text', text: `{"status":"done","message":"${'x'.repeat(4180)}` }] });
+            return;
+          }
+          assert.deepEqual(activeTools, [], 'The status recovery must not be able to repeat file or browser actions');
+          messages.push({ role: 'assistant', stopReason: repairStopReason, content: [{ type: 'text', text: repairText }] });
+        },
+        setActiveToolsByName: (names: string[]) => { activeTools = names; },
+        dispose: () => undefined,
+      } };
+    },
   });
   try {
-    await assert.rejects(runCloudKernel({ engine: 'pi', prompt: 'Analyze only.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig }, { piSdk: makeSdk(false) }), /达到 8192 token 输出上限/);
-    const output = await runCloudKernel({ engine: 'pi', prompt: 'Create a local HTML file.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig, allowWorkspaceFileWrites: true }, { piSdk: makeSdk(true) });
+    const waiting = await runCloudKernel({ engine: 'pi', prompt: 'Analyze only.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig }, { piSdk: makeSdk(false, JSON.stringify({ status: 'waiting', message: '回复被截断，现有证据不足以确认任务完成。' })) });
+    assert.equal(waiting.status, 'waiting', 'An incomplete answer without file evidence must not be reported as completed');
+
+    const output = await runCloudKernel({ engine: 'pi', prompt: 'Create a local HTML file.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig, allowWorkspaceFileWrites: true }, { piSdk: makeSdk(true, JSON.stringify({ status: 'done', message: '已创建 tetris.html。' })) });
     assert.equal(output.status, 'done');
-    assert.match(output.message, /tetris\.html/);
-    assert.match(output.message, /自动校验未完成/);
+    assert.equal(output.message, '已创建 tetris.html。');
     assert.equal(await readFile(join(task, 'tetris.html'), 'utf8'), '<h1>blocks</h1>');
+
+    await assert.rejects(
+      runCloudKernel({ engine: 'pi', prompt: 'Analyze only.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig }, { piSdk: makeSdk(false, '{"status":"done","message":"still truncated', 'length') }),
+      /简短状态恢复仍达到模型输出上限/,
+    );
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
