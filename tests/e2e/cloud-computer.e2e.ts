@@ -533,7 +533,32 @@ try {
   const failedActivity = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task must stop before cloud dispatch' }).first();
   await failedActivity.locator('.context-status.failed').waitFor({ state: 'visible' });
   assert.match(await failedActivity.innerText(), /Failed/);
-  await page.screenshot({ path: join(artifacts, '05-pi-keychain-locked-after-restart-preflight.png') });
+  const unavailablePiState = await page.evaluate(async () => {
+    const state = await fetch('/api/state').then(response => response.json()) as { availableEngines: string[]; remoteEngines: string[] };
+    return { disabled: (document.querySelector('[data-testid="engine-select"] option[value="pi"]') as HTMLOptionElement | null)?.disabled, availableEngines: state.availableEngines, remoteEngines: state.remoteEngines };
+  });
+  assert.equal(unavailablePiState.disabled, true, `Chrome must mark the cloud Pi kernel unavailable while its shared key cannot be read; state=${JSON.stringify(unavailablePiState)}`);
+  await page.evaluate(() => {
+    const select = document.querySelector('[data-testid="engine-select"]') as HTMLSelectElement | null;
+    if (!select) throw new Error('Missing Agent kernel selector');
+    select.value = 'pi';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForFunction(() => (document.querySelector('[data-testid="engine-select"]') as HTMLSelectElement | null)?.value === 'pi');
+  const blockedPrompt = 'E2E must not enqueue a new Pi task while the system keychain is unreadable';
+  await page.getByTestId('task-composer').fill(blockedPrompt);
+  assert.equal(await page.locator('button.send').isDisabled(), true, 'The send control must be disabled while the selected kernel is unavailable');
+  await page.getByTestId('task-composer').press('Enter');
+  await page.getByRole('alert').filter({ hasText: '系统钥匙串无法读取实例共享 API 密钥' }).waitFor({ state: 'visible' });
+  const blockedTaskCreated = await page.evaluate(async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string }[] };
+    return state.tasks.some(task => task.instruction === instruction);
+  }, blockedPrompt);
+  assert.equal(blockedTaskCreated, false, 'Enter must not create a failed task when Chrome knows the selected kernel is unavailable');
+  await page.getByTestId('task-composer').fill('');
+  await page.screenshot({ path: join(artifacts, '05-pi-unreadable-keychain-preflight.png') });
+  await openDotProfile(page);
+  await page.getByTestId('model-keychain-warning').waitFor({ state: 'visible' });
 
   await alphaContext.close();
   console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation', 'a temporary Keychain lock preserves the cached shared key', 'a fresh process fails queued Pi work before cloud dispatch when the Keychain stays locked'], artifacts }, null, 2));
