@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DotAppearance, Snapshot, Task, VoiceCallSession } from '../shared/types.ts';
-import { appFetch } from './api.ts';
+import { appFetch, appPath, appWebSocketUrl } from './api.ts';
 import { DotAvatar } from './DotAvatar.tsx';
 import './voice-call.css';
 
@@ -242,7 +242,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
         fallbackTimer = window.setInterval(() => void refreshSnapshot(), 1000);
         return;
       }
-      stream = new EventSource('/api/events');
+      stream = new EventSource(appPath('/api/events'));
       stream.onmessage = event => {
         if (fallbackTimer !== null) { window.clearInterval(fallbackTimer); fallbackTimer = null; }
         try { reconcile(JSON.parse(event.data) as Snapshot); }
@@ -439,8 +439,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       silentOutput.connect(context.destination);
       volcAudioSourceRef.current = source;
       volcAudioProcessorRef.current = processor;
-      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(`${protocol}//${location.host}/api/voice-calls/${call.id}/volcengine-stream`);
+      const socket = new WebSocket(appWebSocketUrl(`/api/voice-calls/${call.id}/volcengine-stream`));
       socket.binaryType = 'arraybuffer';
       volcWebSocketRef.current = socket;
       let carry = new Float32Array(0);

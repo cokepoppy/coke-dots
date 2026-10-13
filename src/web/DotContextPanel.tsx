@@ -1,3 +1,4 @@
+import { appFetch } from './api.ts';
 import { useEffect, useState } from 'react';
 import type { Snapshot, Task, TaskStatus } from '../shared/types.ts';
 import { DotAvatar } from './DotAvatar.tsx';
@@ -25,7 +26,7 @@ export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSt
   useEffect(() => {
     let current = true;
     const refresh = () => {
-      void fetch('/api/computer').then(async response => response.ok ? await response.json() as ComputerState : null)
+      void appFetch('/api/computer').then(async response => response.ok ? await response.json() as ComputerState : null)
         .then(next => { if (current && next) setComputer(next); })
         .catch(() => { if (current) setComputer(null); });
     };

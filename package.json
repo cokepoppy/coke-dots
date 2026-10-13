@@ -11,6 +11,7 @@
     "build:linux-desktop-image": "bash scripts/build-linux-desktop-image.sh",
     "test": "DOTS_KEYCHAIN_SERVICE=com.cokepoppy.coke-dots.test node --import tsx --test tests/*.test.ts",
     "test:e2e": "npm run build && node --import tsx tests/e2e/ui.e2e.ts && node --import tsx tests/e2e/cloud-computer.e2e.ts",
+    "test:e2e:base-path": "npm run build -- --base=/dots-demo/ && node --import tsx tests/e2e/base-path-auth.e2e.ts",
     "test:e2e:k3d": "npm run build && node --import tsx tests/e2e/k3d-cloud-computer.e2e.ts",
     "test:live-model": "node --import tsx scripts/live-model-smoke.ts",
     "test:live-volcengine-voice": "node --import tsx scripts/live-volcengine-voice-smoke.ts",
