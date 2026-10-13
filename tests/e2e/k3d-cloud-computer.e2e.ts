@@ -215,7 +215,8 @@ try {
   console.log('Live Agent runtime received the shared model profile over stdin and kept it and runtime tokens out of the adapter environment');
 
   const cloudInstruction = `通过云电脑 Agent 验证共享模型配置 ${randomUUID()}`;
-  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  await page.getByRole('button', { name: '新聊天', exact: true }).click();
+  await page.getByTestId('task-composer').waitFor({ state: 'visible' });
   await page.getByTestId('engine-select').selectOption('dsh');
   await page.getByTestId('task-composer').fill(cloudInstruction);
   await page.locator('button.send').click();
