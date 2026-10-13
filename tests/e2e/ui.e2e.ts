@@ -42,7 +42,8 @@ let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp
 let mockVolcEngineUrl = '';
 let mockVolcEngineConnections: { headers: Record<string, string>; events: number[]; serverEvents: number[]; timeline: string[]; pcmBytes: number; spokenTexts: string[] }[] = [];
 let mockVolcEngineDuplexUrl = '';
-let mockVolcEngineDuplexConnections: { headers: Record<string, string>; events: string[]; timeline: string[]; pcmBytes: number; spokenTexts: string[]; audioDeltas: number }[] = [];
+let mockVolcEngineDuplexConnections: { headers: Record<string, string>; events: string[]; timeline: string[]; pcmBytes: number; spokenTexts: string[]; audioDeltas: number; sendTranscript: (transcript: string, turnId: string) => void }[] = [];
+let mockVolcEngineDuplexNextInitialTranscript = '请用中文整理本周人工智能产品更新的三个要点，并说明来源。';
 let mockSlackCodeExchanges = 0;
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
@@ -120,6 +121,8 @@ async function startMockModel() {
         const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
         const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
         const isVolcVoiceResponse = prompt.includes('请用中文整理本周人工智能产品更新的三个要点');
+        const isSeedDuplexClarification = prompt.includes('请用云电脑打开网页并告诉我标题。') && !prompt.includes('User reply:');
+        const isSeedDuplexClarificationReply = prompt.includes('User reply: 请打开 https://example.com/。');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
         const isParallelTask = prompt.includes('E2E parallel work —');
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
@@ -152,13 +155,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -322,9 +325,16 @@ async function startMockVolcEngineDuplexProvider() {
   mockVolcEngineDuplexConnections = [];
   mockVolcEngineDuplexServer = new WebSocketServer({ port: 0, host: '127.0.0.1', maxPayload: 1024 * 1024, perMessageDeflate: false });
   mockVolcEngineDuplexServer.on('connection', (socket, request) => {
+    const initialTranscript = mockVolcEngineDuplexNextInitialTranscript;
+    mockVolcEngineDuplexNextInitialTranscript = '请用中文整理本周人工智能产品更新的三个要点，并说明来源。';
     const connection = {
       headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(',') : String(value || '')])),
       events: [] as string[], timeline: [] as string[], pcmBytes: 0, spokenTexts: [] as string[], audioDeltas: 0,
+      sendTranscript: (transcript: string, turnId: string) => {
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.started', item_id: turnId }));
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.delta', item_id: turnId, delta: transcript }));
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: turnId, transcript }));
+      },
     };
     mockVolcEngineDuplexConnections.push(connection);
     let sentTranscript = false;
@@ -342,9 +352,7 @@ async function startMockVolcEngineDuplexProvider() {
         if (typeof event.audio === 'string') connection.pcmBytes += Buffer.from(event.audio, 'base64').byteLength;
         if (!sentTranscript) {
           sentTranscript = true;
-          socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.started', item_id: 'duplex-e2e-turn-0001' }));
-          socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'duplex-e2e-turn-0001', delta: '请用中文整理本周人工智能产品更新的三个要点，并说明来源。' }));
-          socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'duplex-e2e-turn-0001', transcript: '请用中文整理本周人工智能产品更新的三个要点，并说明来源。' }));
+          connection.sendTranscript(initialTranscript, 'duplex-e2e-turn-0001');
         }
       } else if (type === 'input_audio_mute.commit' || type === 'input_audio_unmute.commit') {
         connection.timeline.push(`mute-control:${type}`);
@@ -2698,6 +2706,66 @@ try {
     await call.waitFor({ state: 'detached' });
     assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.readyState), 'ended', 'Ending the call must release the microphone');
     await waitFor(() => providerConnection.events.includes('session.close') && providerConnection.timeline.includes('server:session.closed'), 5_000);
+  });
+
+  await recordStep('SeedDuplex keeps a spoken clarification in the same task and speaks the resumed result', async () => {
+    const transcript = '请用云电脑打开网页并告诉我标题。';
+    const reply = '请打开 https://example.com/。';
+    mockVolcEngineDuplexNextInitialTranscript = transcript;
+    const profileCallButton = alphaPage!.getByTestId('profile-voice-call-launch');
+    if (!(await profileCallButton.isVisible())) await openProfile(alphaPage!);
+    const playbackBefore = await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcPlaybackCapture: unknown[] }).__dotsVolcPlaybackCapture.length);
+    await profileCallButton.click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 20_000 });
+    await call.locator('.voice-call-card-transcript').filter({ hasText: transcript }).waitFor({ state: 'visible', timeout: 15_000 });
+    await call.locator('.voice-call-card-task').filter({ hasText: '等待你的回复' }).waitFor({ state: 'visible', timeout: 15_000 });
+
+    const waitingState = await alphaPage!.evaluate(async () => {
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[];
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string; engine: string; result: string | null }[] };
+      return { call: calls.find(item => !item.endedAt), task: state.tasks.find(item => item.instruction === '请用云电脑打开网页并告诉我标题。') };
+    });
+    assert(waitingState.call, 'The spoken clarification must belong to an active account-owned call');
+    assert(waitingState.task, 'The spoken request must create one persisted task');
+    assert.equal(waitingState.task.status, 'waiting', 'The Agent must request the missing URL instead of claiming success');
+    const providerConnection = mockVolcEngineDuplexConnections.at(-1);
+    assert(providerConnection, 'The resumed conversation must use the active SeedDuplex connection');
+    await waitFor(() => providerConnection.spokenTexts.includes('请告诉我你要打开的网址。'), 10_000);
+
+    providerConnection.sendTranscript(reply, 'duplex-e2e-turn-0002');
+    providerConnection.sendTranscript(reply, 'duplex-e2e-turn-0002');
+    await call.locator('.voice-call-card-transcript').filter({ hasText: reply }).waitFor({ state: 'visible', timeout: 15_000 });
+    await call.locator('.voice-call-card-task').filter({ hasText: '已完成：请用云电脑打开网页并告诉我标题' }).waitFor({ state: 'visible', timeout: 20_000 });
+    await waitFor(() => providerConnection.audioDeltas >= 2, 10_000);
+
+    const resumedState = await alphaPage!.evaluate(async ({ transcriptText, replyText, callId }) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string; engine: string; result: string | null }[] };
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[];
+      const tasks = state.tasks.filter(task => task.instruction.includes(transcriptText));
+      const task = tasks[0];
+      if (!task) throw new Error('The resumed voice task was not persisted');
+      const replay = await fetch(`/api/voice-calls/${callId}/turns`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ transcript: replyText, turnId: 'duplex-e2e-turn-0002', engine: task.engine }),
+      });
+      return { tasks, task, call: calls.find(item => item.id === callId), replayStatus: replay.status, replay: await replay.json() as { id?: string } };
+    }, { transcriptText: transcript, replyText: reply, callId: waitingState.call.id });
+    assert.equal(resumedState.tasks.length, 1, 'A spoken reply must resume the original task instead of creating a second task');
+    assert.equal(resumedState.task.status, 'done');
+    assert.equal(resumedState.task.result, '网页标题是「Example Domain」。');
+    assert(resumedState.task.instruction.includes(`User reply: ${reply}`), 'The resumed task must preserve the spoken URL reply');
+    assert.equal(resumedState.replayStatus, 200, 'A duplicate provider turn must return the original task');
+    assert.equal(resumedState.replay.id, resumedState.task.id, 'The replay must remain idempotently attached to the original task');
+    assert.equal(resumedState.call?.endedAt, null, 'The call must stay open while the resumed Agent answer is spoken');
+    assert(providerConnection.spokenTexts.includes('请告诉我你要打开的网址。'), 'The call must speak the Agent clarification');
+    assert(providerConnection.spokenTexts.includes('网页标题是「Example Domain」。'), 'The call must speak the completed Agent result');
+    const playbackAfter = await alphaPage!.evaluate(({ initialCount }) => (window as unknown as { __dotsVolcPlaybackCapture: { sampleRate: number; peak: number }[] }).__dotsVolcPlaybackCapture.slice(initialCount), { initialCount: playbackBefore });
+    assert(playbackAfter.length >= 2 && playbackAfter.every(frame => frame.sampleRate === 24_000 && frame.peak > 0), 'Both SeedDuplex responses must reach the browser audio playback path');
+    await screenshot(alphaPage!, 'seedduplex-multiturn-clarification-resumed');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
   });
 
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
