@@ -137,6 +137,70 @@ test('delegated tasks persist, recover after restart, and aggregate only inside 
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('Dot follow-ups continue an existing child thread, survive restart, and stay bounded to its parent tenant', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-delegation-follow-up-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'follow-up-alpha', email: 'follow-up-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'follow-up-beta', email: 'follow-up-beta@example.test', name: 'Beta' });
+    const parent = store.createTask('Prepare a source-backed brief', null, 'pi', alpha.tenant.id);
+    store.updateTask(parent.id, { status: 'working', agentSessionId: 'parent-pi-session' }, alpha.tenant.id);
+    const children = store.createDelegatedTasks(parent.id, alpha.tenant.id, [
+      { title: 'Competitor scan', instruction: 'Compare the competitors.' },
+      { title: 'Risk scan', instruction: 'Find the main risks.' },
+    ], 'I split the work.', 'parent-pi-session');
+    for (const [index, child] of children.entries()) store.updateTask(child.id, { status: 'done', result: `Initial result ${index + 1}.`, agentSessionId: `child-pi-session-${index + 1}` }, alpha.tenant.id);
+    const betaChild = store.createTask('Beta child', null, 'pi', beta.tenant.id);
+    store.updateTask(betaChild.id, { status: 'done' }, beta.tenant.id);
+
+    assert.equal(store.releaseReadyDelegations(), 1);
+    store.updateTask(parent.id, { status: 'working' }, alpha.tenant.id);
+    assert.equal(store.canFollowUpDelegatedTasks(parent.id, alpha.tenant.id), true);
+    assert.throws(() => store.appendDelegationFollowUps(parent.id, alpha.tenant.id, [{ taskId: betaChild.id, instruction: 'Cross-tenant follow-up.' }], 'Invalid.'), /当前主任务已结束的子任务/);
+    assert.equal(store.getTask(children[0].id, alpha.tenant.id)?.status, 'done', 'A rejected cross-tenant follow-up changed the target task');
+
+    const sameChildId = children[0].id;
+    const continued = store.appendDelegationFollowUps(parent.id, alpha.tenant.id, [{ taskId: sameChildId, instruction: 'Verify the source links and correct unsupported claims.' }], 'Dot asked the competitor thread to verify its sources.');
+    assert.equal(continued.length, 1);
+    assert.equal(continued[0].id, sameChildId, 'A Dot follow-up created a new thread instead of continuing the child task');
+    assert.equal(continued[0].status, 'queued');
+    assert.equal(continued[0].agentSessionId, 'child-pi-session-1', 'The child Pi session did not survive the follow-up');
+    assert.equal(continued[0].result, null, 'The stale result was left visible while the task was running again');
+    assert.match(continued[0].instruction, /Compare the competitors\.\n\nDot follow-up:\nVerify the source links/);
+    assert.equal(store.getTask(parent.id, alpha.tenant.id)?.status, 'delegating');
+    assert.equal(store.getTask(parent.id, alpha.tenant.id)?.agentSessionId, 'parent-pi-session');
+    const dotEntry = store.snapshot(false, [], undefined, alpha.tenant.id).entries.find(entry => entry.taskId === sameChildId && entry.kind === 'dot');
+    assert.equal(dotEntry?.body, 'Verify the source links and correct unsupported claims.');
+    assert.deepEqual(store.delegationFollowUpTaskIds(parent.id, alpha.tenant.id), [sameChildId]);
+    store.close();
+
+    store = new Store(directory);
+    assert.equal(store.getTask(sameChildId, alpha.tenant.id)?.status, 'queued', 'The follow-up did not survive a service restart');
+    assert.equal(store.getTask(sameChildId, alpha.tenant.id)?.agentSessionId, 'child-pi-session-1');
+    assert.equal(store.getTask(parent.id, alpha.tenant.id)?.status, 'delegating');
+    assert.equal(store.getTask(betaChild.id, alpha.tenant.id), null, 'A foreign tenant child became readable after restart');
+
+    for (const followUp of [
+      'Check the publication date and source owner.',
+      'Report any remaining unsupported points.',
+    ]) {
+      store.updateTask(sameChildId, { status: 'done', result: `Updated result: ${followUp}`, agentSessionId: 'child-pi-session-1' }, alpha.tenant.id);
+      assert.equal(store.releaseReadyDelegations(), 1);
+      store.updateTask(parent.id, { status: 'working' }, alpha.tenant.id);
+      assert.equal(store.canFollowUpDelegatedTasks(parent.id, alpha.tenant.id), true);
+      const next = store.appendDelegationFollowUps(parent.id, alpha.tenant.id, [{ taskId: sameChildId, instruction: followUp }], 'One bounded follow-up round.');
+      assert.equal(next[0].id, sameChildId);
+      assert.equal(next[0].agentSessionId, 'child-pi-session-1');
+    }
+    store.updateTask(sameChildId, { status: 'done', result: 'Final verified result.' }, alpha.tenant.id);
+    store.releaseReadyDelegations();
+    store.updateTask(parent.id, { status: 'working' }, alpha.tenant.id);
+    assert.equal(store.canFollowUpDelegatedTasks(parent.id, alpha.tenant.id), false, 'The follow-up allowance exceeded three appended instructions');
+    assert.throws(() => store.appendDelegationFollowUps(parent.id, alpha.tenant.id, [{ taskId: sameChildId, instruction: 'Keep going.' }], 'Over the limit.'), /次数已用完/);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('a waiting task accepts a tenant-scoped reply without losing its original goal', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-'));
   try {
