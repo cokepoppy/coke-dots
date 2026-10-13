@@ -63,3 +63,10 @@ The read-only SSH inspection confirmed `/etc/nginx/sites-enabled/coke-openrouter
 Run `npm run test:e2e:public-demo` to check the public redirect, health and auth-config APIs, Chrome-rendered page and prefixed bundles, the enabled Google OAuth redirect, and the expected status/content type for each listed existing route. Set `DOTS_PUBLIC_DEMO_URL` to test another HTTPS Dots base URL. The test requires Google sign-in to be configured and the production E2E fixture to stay disabled. It does not enter account credentials or touch another app's data.
 
 This smoke does not authenticate a Google user, validate OAuth consent, inspect a signed-in tenant, or open the cloud desktop/noVNC socket. The completed real sign-in was a separate manual Chrome acceptance flow; repeat it when OAuth credentials, callback routing, or outbound proxy configuration changes.
+
+## Public anonymous Chrome smoke (2026-10-13)
+
+- `npm run test:e2e:public-demo` passed all 6 checks against `https://codex.cokeagent.com/dots-demo/` using Google Chrome at 1440 × 1000. Google login remained enabled and the production E2E fixture remained disabled.
+- Chrome loaded the prefixed Dots assets and rendered the sign-in page. The public callback state check returned the expected invalid-code result after validating fresh state; it did not complete Google sign-in or access tenant data.
+- The same run verified the existing public routes: Dots health/config and site routes returned their expected statuses, protected gateways stayed 401, and assets/home/download directory routes stayed 403. This was read-only.
+- Run evidence is under the ignored local path `artifacts/e2e/public-demo-2026-10-13T00-31-31-146Z/` (manifest, screenshot, Chrome video, and trace). This is public anonymous smoke evidence only; signed-in tasks, voice, and the cloud computer were not exercised by this script.
