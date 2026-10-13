@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
+import type { GmailProactiveReviewSettings } from '../shared/types.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
 export interface AppUser { id: string; email: string; name: string }
@@ -15,7 +16,6 @@ export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantS
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
 export interface GmailOAuthFlow { stateHash: string; userId: string; codeVerifier: string; expiresAt: string; returnTo: string }
 export interface GmailConnection { userId: string; email: string; connectedAt: string; scopes: string[] }
-export interface GmailProactiveReviewSettings { enabled: boolean; nextRunAt: string | null; lastRunAt: string | null; lastError: string | null }
 export interface GmailProactiveReviewRun { taskId: string; userId: string; tenantId: string; sinceAt: string; throughAt: string; pageToken: string | null; nextPageToken: string | null; messageIds: string[]; status: string }
 export interface SlackOAuthFlow { stateHash: string; tenantId: string; userId: string; expiresAt: string; returnTo: string }
 export interface SlackInstallation { tenantId: string; teamId: string; teamName: string; scopes: string[]; installedAt: string; contactEnabled: boolean }

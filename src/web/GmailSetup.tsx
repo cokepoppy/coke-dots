@@ -1,12 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { appFetch, appPath } from './api.ts';
-
-interface GmailSnapshot {
-  configured: boolean;
-  connected: boolean;
-  connection: { email: string; connectedAt: string; scopes: string[] } | null;
-  proactiveReview: { enabled: boolean; nextRunAt: string | null; lastRunAt: string | null; lastError: string | null };
-}
+import type { GmailSnapshot } from '../shared/types.ts';
 
 export function GmailSetup({ onError }: { onError: (message: string) => void }) {
   const [snapshot, setSnapshot] = useState<GmailSnapshot | null>(null);

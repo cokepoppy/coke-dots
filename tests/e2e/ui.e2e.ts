@@ -3510,6 +3510,14 @@ try {
     const requestStart = mockGoogleGmailRequests.length;
     await toggle.check();
     await alphaPage!.getByText('每天主动复查一次', { exact: false }).waitFor({ state: 'visible' });
+    await clickNav(alphaPage!, 'Scheduled');
+    const gmailReviewRowToOpen = alphaPage!.getByTestId('gmail-review-schedule-row');
+    await gmailReviewRowToOpen.waitFor({ state: 'visible' });
+    await gmailReviewRowToOpen.click();
+    await alphaPage!.locator('article[data-item-id="gmail-proactive-review"]').waitFor({ state: 'visible' });
+    await alphaPage!.getByRole('heading', { name: 'Daily Gmail review', exact: true }).waitFor({ state: 'visible' });
+    await alphaPage!.getByText('Every day', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.getByTestId('gmail-review-pause').isVisible(), true, 'Scheduled must expose a pause control for the active Gmail review');
     await clickNav(alphaPage!, 'Activity');
     const card = alphaPage!.locator('.task-card').filter({ hasText: '主动复查 Gmail 并更新个人记忆' });
     await card.locator('.pill.done').waitFor({ state: 'visible', timeout: 15_000 });
@@ -3583,14 +3591,18 @@ try {
     assert.equal(betaGmail.proactiveReview.enabled, false, 'Another Google account inherited Alpha’s proactive Gmail setting');
     assert.equal(await betaPage!.getByTestId('personal-dot-memory-row').count(), 0, 'Another Google account saw Alpha’s mail-derived private memory');
 
-    await openProfile(alphaPage!);
-    const enabledToggle = alphaPage!.getByTestId('gmail-proactive-review-toggle');
-    await enabledToggle.uncheck();
+    await clickNav(alphaPage!, 'Scheduled');
+    const gmailReviewRowToPause = alphaPage!.getByTestId('gmail-review-schedule-row');
+    await gmailReviewRowToPause.waitFor({ state: 'visible' });
+    await gmailReviewRowToPause.click();
+    await alphaPage!.locator('article[data-item-id="gmail-proactive-review"]').waitFor({ state: 'visible' });
+    await alphaPage!.getByTestId('gmail-review-pause').click();
     await alphaPage!.waitForFunction(async () => {
       const response = await fetch('/api/gmail');
       const body = await response.json() as { proactiveReview?: { enabled: boolean } };
       return body.proactiveReview?.enabled === false;
     });
+    await alphaPage!.getByTestId('gmail-review-schedule-row').waitFor({ state: 'detached' });
     await screenshot(alphaPage!, 'gmail-proactive-review-complete');
   });
 

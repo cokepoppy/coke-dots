@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Task, Watch } from '../shared/types.ts';
+import type { GmailSnapshot, Task, Watch } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask } from '../shared/scheduling.ts';
+import { appFetch } from './api.ts';
 
 type ScheduledItem =
   | { key: string; kind: 'task'; title: string; searchable: string; updatedAt: string; task: Task }
-  | { key: string; kind: 'watch'; title: string; searchable: string; updatedAt: string; watch: Watch };
+  | { key: string; kind: 'watch'; title: string; searchable: string; updatedAt: string; watch: Watch }
+  | { key: string; kind: 'gmail'; title: string; searchable: string; updatedAt: string; gmail: GmailSnapshot };
 
 const statusText: Record<Task['status'], string> = {
   queued: 'Queued', working: 'Working', delegating: 'Parallel work', waiting: 'Needs you', scheduled: 'Monitoring', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
@@ -16,9 +18,10 @@ function taskStatusText(task: Task) {
     : statusText[task.status];
 }
 
-export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onOpenTask, onNewTask, onAddWatch }: {
+export function ScheduledView({ tasks, watches, personalWorkspace, onCancelTask, onWatchAction, onOpenTask, onNewTask, onAddWatch }: {
   tasks: Task[];
   watches: Watch[];
+  personalWorkspace: boolean;
   onCancelTask: (task: Task) => void;
   onWatchAction: (watch: Watch, action: 'pause' | 'resume') => void;
   onOpenTask: (task: Task) => void | Promise<void>;
@@ -35,6 +38,42 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
   const [taskOpenBusy, setTaskOpenBusy] = useState(false);
   const [taskOpenError, setTaskOpenError] = useState(false);
   const [itemPreview, setItemPreview] = useState<{ key: string; top: number; left: number } | null>(null);
+  const [gmailSnapshot, setGmailSnapshot] = useState<GmailSnapshot | null>(null);
+  const [gmailLoadError, setGmailLoadError] = useState('');
+  const [gmailReviewBusy, setGmailReviewBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    if (!personalWorkspace) {
+      setGmailSnapshot(null);
+      setGmailLoadError('');
+      return () => { active = false; };
+    }
+    void appFetch('/api/gmail').then(async response => {
+      const data = await response.json() as GmailSnapshot & { error?: string };
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (active) { setGmailSnapshot(data); setGmailLoadError(''); }
+    }).catch(error => {
+      if (active) setGmailLoadError(error instanceof Error ? error.message : String(error));
+    });
+    return () => { active = false; };
+  }, [personalWorkspace]);
+
+  async function setGmailReviewEnabled(enabled: boolean) {
+    if (gmailReviewBusy) return;
+    setGmailReviewBusy(true);
+    setGmailLoadError('');
+    try {
+      const response = await appFetch('/api/gmail/proactive-review', {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }),
+      });
+      const data = await response.json() as GmailSnapshot & { error?: string };
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setGmailSnapshot(data);
+    } catch (error) {
+      setGmailLoadError(error instanceof Error ? error.message : String(error));
+    } finally { setGmailReviewBusy(false); }
+  }
 
   const items = useMemo<ScheduledItem[]>(() => [
     ...tasks.filter(task => scheduleForTask(task.scheduleSpec, task.scheduleMinutes) !== null || task.status === 'scheduled').map(task => ({
@@ -47,7 +86,12 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
       searchable: `${watch.url} ${watch.lastStatus || ''} ${watch.status}`,
       updatedAt: watch.lastCheckedAt || '', watch,
     })),
-  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [tasks, watches]);
+    ...(personalWorkspace && gmailSnapshot?.connected && gmailSnapshot.proactiveReview.enabled ? [{
+      key: 'gmail:proactive-review', kind: 'gmail' as const, title: 'Daily Gmail review',
+      searchable: 'Gmail email inbox daily read-only review personal memory',
+      updatedAt: gmailSnapshot.proactiveReview.lastRunAt || gmailSnapshot.proactiveReview.nextRunAt || '', gmail: gmailSnapshot,
+    }] : []),
+  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [tasks, watches, personalWorkspace, gmailSnapshot]);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return normalized ? items.filter(item => item.searchable.toLocaleLowerCase().includes(normalized)) : items;
@@ -106,8 +150,8 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
       <div className="scheduled-dot"><span className="scheduled-dot-mark" aria-hidden="true">●</span>Your dot <span aria-hidden="true">⌄</span></div>
       <div className="scheduled-items" aria-label="Scheduled tasks">
         {filtered.map(item => {
-          const status = item.kind === 'task' ? taskStatusText(item.task) : item.watch.status === 'active' ? 'Monitoring' : item.watch.status === 'paused' ? 'Paused' : 'Failed';
-          return <button key={item.key} className={`scheduled-item ${selectedKey === item.key ? 'selected' : ''}`} aria-pressed={selectedKey === item.key} onMouseEnter={event => showItemPreview(event.currentTarget, item)} onMouseLeave={() => clearItemPreview(item.key)} onFocus={event => showItemPreview(event.currentTarget, item)} onBlur={() => clearItemPreview(item.key)} onClick={() => { setSelectedKey(item.key); setTaskOpenError(false); }}>
+          const status = item.kind === 'task' ? taskStatusText(item.task) : item.kind === 'watch' ? item.watch.status === 'active' ? 'Monitoring' : item.watch.status === 'paused' ? 'Paused' : 'Failed' : 'Scheduled';
+          return <button key={item.key} data-testid={item.kind === 'gmail' ? 'gmail-review-schedule-row' : undefined} className={`scheduled-item ${selectedKey === item.key ? 'selected' : ''}`} aria-pressed={selectedKey === item.key} onMouseEnter={event => showItemPreview(event.currentTarget, item)} onMouseLeave={() => clearItemPreview(item.key)} onFocus={event => showItemPreview(event.currentTarget, item)} onBlur={() => clearItemPreview(item.key)} onClick={() => { setSelectedKey(item.key); setTaskOpenError(false); }}>
             <span className="scheduled-item-copy"><strong>{item.title}</strong><small>{status}</small></span>
             <span className="scheduled-item-menu" aria-hidden="true">···</span>
             {itemPreview?.key === item.key && <span className="scheduled-hover-preview" data-testid="scheduled-item-preview" aria-hidden="true" style={{ top: itemPreview.top, left: itemPreview.left }}>
@@ -165,6 +209,18 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
           <button className="scheduled-primary" onClick={() => onWatchAction(selected.watch, selected.watch.status === 'active' ? 'pause' : 'resume')}>{selected.watch.status === 'active' ? 'Pause monitor' : 'Resume monitor'}</button>
         </div>
       </article>}
+      {!taskOpenError && selected?.kind === 'gmail' && <article className="scheduled-detail" data-testid="scheduled-detail" data-item-id="gmail-proactive-review">
+        <div className="scheduled-detail-top"><span className="scheduled-detail-label">Your dot</span><span className="scheduled-status scheduled">Scheduled</span></div>
+        <h2>Daily Gmail review</h2>
+        <p className="scheduled-instruction">Review new inbox messages once a day. This is read-only; Dot can save low-risk lasting preferences or ongoing responsibilities to your personal memory, and will not send or change email.</p>
+        <div className="scheduled-detail-meta"><span>Every day</span><span>Next run: {selected.gmail.proactiveReview.nextRunAt ? new Date(selected.gmail.proactiveReview.nextRunAt).toLocaleString() : 'In progress'}</span></div>
+        {selected.gmail.proactiveReview.lastRunAt && <p className="scheduled-watch-last-status" role="status">Last review: {new Date(selected.gmail.proactiveReview.lastRunAt).toLocaleString()}</p>}
+        {(gmailLoadError || selected.gmail.proactiveReview.lastError) && <p className="scheduled-detail-error" role="alert">{gmailLoadError || selected.gmail.proactiveReview.lastError}</p>}
+        <div className="scheduled-detail-actions">
+          <button className="scheduled-danger" data-testid="gmail-review-pause" type="button" disabled={gmailReviewBusy} onClick={() => void setGmailReviewEnabled(false)}>{gmailReviewBusy ? 'Pausing…' : 'Pause daily review'}</button>
+        </div>
+      </article>}
+      {gmailLoadError && !selected && <p className="scheduled-detail-error" role="alert" data-testid="scheduled-gmail-error">{gmailLoadError}</p>}
       {!taskOpenError && !selected && <div className="scheduled-empty-detail"><div className="scheduled-empty-icon" aria-hidden="true">◷</div><h2>{items.length ? 'No matching tasks' : 'No scheduled tasks yet'}</h2><p>{items.length ? 'Try a different search.' : 'Create a recurring task or monitor a page to see it here.'}</p><button className="scheduled-primary" onClick={onNewTask}>＋ New task</button></div>}
     </div>
   </section>;

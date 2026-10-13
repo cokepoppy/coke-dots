@@ -93,6 +93,20 @@ export interface Snapshot {
   modelSettings: { baseUrl: string; model: string; hasKey: boolean; canManage?: boolean };
 }
 
+export interface GmailProactiveReviewSettings {
+  enabled: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastError: string | null;
+}
+
+export interface GmailSnapshot {
+  configured: boolean;
+  connected: boolean;
+  connection: { email: string; connectedAt: string; scopes: string[] } | null;
+  proactiveReview: GmailProactiveReviewSettings;
+}
+
 export interface Watch {
   id: string;
   tenantId: string;
