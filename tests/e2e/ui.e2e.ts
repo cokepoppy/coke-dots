@@ -657,6 +657,7 @@ async function startServer(port: number) {
       DOTS_ENV_FILE: emptyEnvFile,
       DOTS_DATA_DIR: testDataDir,
       DOTS_KEYCHAIN_SERVICE: testKeychainService,
+      DOTS_TEST_KEYRING_PATH: join(testDataDir, 'test-keyring.json'),
       DOTS_PORT: String(port),
       DOTS_CHROME_BIN: chromePath,
       GOOGLE_CLIENT_ID: 'coke-dots-e2e-client',
@@ -1509,7 +1510,7 @@ try {
     assert.equal(await alphaPage!.getByTestId('app-shell').getAttribute('data-theme'), 'light');
   });
 
-  await recordStep('Slack setup completes OAuth in Chrome, stores the tenant token in Keychain, and links the selected contact workspace', async () => {
+  await recordStep('Slack setup completes OAuth in Chrome, stores the token in the isolated test credential store, and links the selected contact workspace', async () => {
     await connectSlackWorkspace(alphaPage!, 'slack-alpha-personal');
     assert.equal(mockSlackTokenExchanges, 1, 'The Slack authorization code should be exchanged exactly once');
     const linked = await alphaPage!.evaluate(async () => await (await fetch('/api/slack')).json()) as { configured: boolean; eventsConfigured: boolean; installations: { tenantId: string; teamId: string; teamName: string; scopes: string[]; contactEnabled: boolean; accessToken?: string }[] };

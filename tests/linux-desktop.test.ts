@@ -197,11 +197,12 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     await assert.rejects(computer.openPublicPageForAgent('https://research-fixture.dots.test/launch'), /你控制/);
     assert.equal(researchRequests, 1, 'The browser research endpoint must not run during user takeover');
     await computer.returnControl();
-    const result = await computer.runAgentTask({ engine: 'dsh', taskId: 'task-1', prompt: 'continue', sessionId: null });
+    const result = await computer.runAgentTask({ engine: 'pi', taskId: 'task-1', prompt: 'continue', sessionId: null, allowWorkspaceFileWrites: true });
     assert.equal(result.message, 'remote task finished');
     assert.equal(result.sessionId, 'remote-session');
     assert.equal(agentInput[0].cwd, 'tasks/task-1');
     assert.equal(agentInput[0].executionId, 'task-1', 'Remote tasks need a stable execution identity for safe replay');
+    assert.equal(agentInput[0].allowWorkspaceFileWrites, true, 'The control plane must explicitly grant scoped Pi file creation');
     assert.equal('signal' in agentInput[0], false, 'AbortSignal must control the HTTP request, not leak into the runtime payload');
     assert.equal('computer' in agentInput[0], false, 'The control plane must not forward the raw desktop worker token to the Agent runtime');
     assert.equal('workerToken' in agentInput[0], false, 'The Agent runtime must mint its own read-only browser capability');

@@ -60,7 +60,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       "if (input.prompt === 'hold') await new Promise(resolve => setTimeout(resolve, 30000));",
       'await new Promise(resolve => setTimeout(resolve, 80));',
       "await appendFile(process.env.DOTS_TEST_MARKER, `end ${input.taskId}\\n`);",
-      "process.stdout.write(JSON.stringify({ status: 'done', message: `${process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'runtime token leaked' : 'runtime token isolated'}; ${process.env.LINUX_DESKTOP_WORKER_TOKEN ? 'worker token leaked' : 'worker token isolated'}` }));",
+      "process.stdout.write(JSON.stringify({ status: 'done', message: `${process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'runtime token leaked' : 'runtime token isolated'}; ${process.env.LINUX_DESKTOP_WORKER_TOKEN ? 'worker token leaked' : 'worker token isolated'}; file writer ${input.allowWorkspaceFileWrites ? 'enabled' : 'disabled'}` }));",
       '',
     ].join('\n'));
     child = spawn(process.execPath, [runtimePath], {
@@ -70,8 +70,8 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
         DOTS_AGENT_RUNTIME_TOKEN: 'agent-test-token-never-print',
         DOTS_AGENT_RUNTIME_PORT: String(runtimePort),
         DOTS_AGENT_WORKSPACE: workspace,
-        DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: process.execPath, args: [adapterPath] } }),
-        DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
+        DOTS_AGENT_KERNELS_JSON: JSON.stringify({ pi: { command: process.execPath, args: [adapterPath] }, dsh: { command: process.execPath, args: [adapterPath] } }),
+        DOTS_DESKTOP_AGENT_ADAPTERS: 'pi,dsh',
         DOTS_TEST_MARKER: markerPath,
         LINUX_DESKTOP_WORKER_PORT: String(workerPort),
         LINUX_DESKTOP_WORKER_TOKEN: 'worker-test-token',
@@ -85,26 +85,31 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       try { return (await fetch(`${runtimeUrl}/healthz`)).ok; } catch { return false; }
     });
 
-    const submit = async (taskId: string, prompt: string) => {
+    const submit = async (taskId: string, prompt: string, engine = 'dsh', allowWorkspaceFileWrites = false) => {
       const response = await fetch(`${runtimeUrl}/v1/tasks/run`, {
         method: 'POST',
         headers: { authorization: 'Bearer agent-test-token-never-print', 'content-type': 'application/json' },
-        body: JSON.stringify({ engine: 'dsh', taskId, prompt, cwd: `tasks/${taskId}`, sessionId: null }),
+        body: JSON.stringify({ engine, taskId, prompt, cwd: `tasks/${taskId}`, sessionId: null, allowWorkspaceFileWrites }),
       });
       return { status: response.status, body: await response.json() as { status?: string; message?: string; error?: string } };
     };
 
     const firstId = '11111111-1111-4111-8111-111111111111';
     const secondId = '22222222-2222-4222-8222-222222222222';
-    const [first, second] = await Promise.all([submit(firstId, 'first'), submit(secondId, 'second')]);
+    const [first, second] = await Promise.all([submit(firstId, 'first', 'dsh', true), submit(secondId, 'second', 'dsh', true)]);
     assert.deepEqual([first.status, second.status], [200, 200], JSON.stringify([first, second]));
     assert.equal(first.body.status, 'done');
-    assert.equal(first.body.message, 'runtime token isolated; worker token isolated');
-    assert.equal(second.body.message, 'runtime token isolated; worker token isolated');
+    assert.equal(first.body.message, 'runtime token isolated; worker token isolated; file writer disabled', 'A forged file-write flag must not enable writes for DSH');
+    assert.equal(second.body.message, 'runtime token isolated; worker token isolated; file writer disabled');
     const events = (await readFile(markerPath, 'utf8')).trim().split('\n').map(line => line.split(' ')[0]);
     assert.deepEqual(events, ['start', 'end', 'start', 'end'], 'Only one adapter may use the tenant browser at a time');
     await stat(join(workspace, 'tasks', firstId));
     await stat(join(workspace, 'tasks', secondId));
+
+    const piId = '66666666-6666-4666-8666-666666666666';
+    const pi = await submit(piId, 'Create a file.', 'pi', true);
+    assert.equal(pi.status, 200);
+    assert.equal(pi.body.message, 'runtime token isolated; worker token isolated; file writer enabled', 'The control-plane file-write grant must reach only the Pi adapter');
 
     const heldId = '33333333-3333-4333-8333-333333333333';
     const heldPromise = submit(heldId, 'hold');

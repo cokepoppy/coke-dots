@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { test } from 'node:test';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from '../src/server/keyring.ts';
 import { adapters, resolvePiSessionManager, resolveTenantAgentDirectory } from '../src/server/adapters.ts';
 import { loadModelSettings, loadSharedModelSettings, saveModelKey, saveSharedModelKey } from '../src/server/model-settings.ts';
 

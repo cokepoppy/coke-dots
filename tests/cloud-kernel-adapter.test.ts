@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, realpath, rm, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -41,9 +41,62 @@ test('Pi cloud kernel keeps the shared key in memory and the native session insi
     assert.equal(output.sessionId, 'pi-cloud-session');
     assert.equal(runtimeKey, modelConfig.apiKey, 'Pi receives the shared credential through in-memory AuthStorage');
     assert.equal(Boolean(process.env.DEEPSEEK_API_KEY?.includes(modelConfig.apiKey)), false, 'The API key is not added to the cloud adapter process environment');
+    assert.equal(capturedOptions.value?.tools.includes('create_task_file'), false, 'File creation is not available unless the control plane explicitly authorizes a standard Pi task');
     assert(sessionDirectory.startsWith(await realpath(task)), 'The Pi session directory belongs to the task workspace');
     assert(capturedOptions.value?.agentDir.includes('/.coke-dots-agent-runtime/pi'));
     await stat(sessionDirectory);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Pi file output is create-only, bounded, and confined to its authorized task directory', async () => {
+  const { root, task } = await makeWorkspace();
+  const captured: { tool: any } = { tool: null };
+  const sdk = {
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+    ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+    SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-file-session' }), open: () => { throw new Error('unexpected'); } },
+    createAgentSession: async (options: Record<string, any>) => {
+      assert(options.tools.includes('create_task_file'));
+      captured.tool = options.customTools.find((tool: { name: string }) => tool.name === 'create_task_file');
+      return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
+    },
+  };
+  try {
+    await runCloudKernel({ engine: 'pi', prompt: 'Create a local HTML file.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig, allowWorkspaceFileWrites: true }, { piSdk: sdk });
+    const content = '<!doctype html><title>云电脑文件</title>';
+    const result = await captured.tool.execute('write-1', { path: 'games/tetris.html', content });
+    assert.equal(result.details.path, 'games/tetris.html');
+    assert.equal(await readFile(join(task, 'games/tetris.html'), 'utf8'), content);
+    assert.equal((await captured.tool.execute('write-same', { path: 'games/tetris.html', content })).details.alreadyExisted, true);
+    await assert.rejects(captured.tool.execute('write-2', { path: 'games/tetris.html', content: '<h1>replacement</h1>' }), /拒绝覆盖/);
+    await assert.rejects(captured.tool.execute('write-3', { path: '../outside.txt', content }), /安全相对路径/);
+    await assert.rejects(captured.tool.execute('write-4', { path: join(root, 'outside.txt'), content }), /安全相对路径/);
+    await assert.rejects(captured.tool.execute('write-5', { path: '.coke-dots-agent-runtime/secret.txt', content }), /安全相对路径/);
+    await symlink(root, join(task, 'linked-out'));
+    await assert.rejects(captured.tool.execute('write-6', { path: 'linked-out/escape.txt', content }), /符号链接/);
+    await assert.rejects(captured.tool.execute('write-7', { path: 'too-large.txt', content: 'x'.repeat(512 * 1024 + 1) }), /512 KiB/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Pi output-limit turns return a clear diagnostic, or a persisted file result when creation already succeeded', async () => {
+  const { root, task } = await makeWorkspace();
+  const makeSdk = (writeFileFirst: boolean) => ({
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+    ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+    SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-limited-session' }), open: () => { throw new Error('unexpected'); } },
+    createAgentSession: async (options: Record<string, any>) => ({ session: {
+      messages: [{ role: 'assistant', stopReason: 'length', content: [{ type: 'thinking', thinking: 'truncated' }] }],
+      prompt: async () => { if (writeFileFirst) await options.customTools.find((tool: { name: string }) => tool.name === 'create_task_file').execute('write-1', { path: 'tetris.html', content: '<h1>blocks</h1>' }); },
+      dispose: () => undefined,
+    } }),
+  });
+  try {
+    await assert.rejects(runCloudKernel({ engine: 'pi', prompt: 'Analyze only.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig }, { piSdk: makeSdk(false) }), /达到 8192 token 输出上限/);
+    const output = await runCloudKernel({ engine: 'pi', prompt: 'Create a local HTML file.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig, allowWorkspaceFileWrites: true }, { piSdk: makeSdk(true) });
+    assert.equal(output.status, 'done');
+    assert.match(output.message, /tetris\.html/);
+    assert.match(output.message, /自动校验未完成/);
+    assert.equal(await readFile(join(task, 'tetris.html'), 'utf8'), '<h1>blocks</h1>');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

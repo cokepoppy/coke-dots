@@ -1,4 +1,4 @@
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from './keyring.ts';
 
 export interface ModelSettings { baseUrl: string; model: string; hasKey: boolean }
 const keychainService = () => process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots';

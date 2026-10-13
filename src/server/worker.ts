@@ -133,6 +133,7 @@ export class Worker {
         pages: this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
         actionRule: this.store.personalActionRuleForTask(task.tenantId, task.id),
         allowDelegation: task.executionMode !== 'read-only' && !task.parentTaskId && children.length === 0,
+        allowWorkspaceFileWrites: useDesktopRuntime && task.engine === 'pi' && task.executionMode === 'standard' && !task.parentTaskId,
         executionMode: task.executionMode,
         reasoningEffort: task.reasoningEffort,
         context: this.store.taskContext(task.id, task.tenantId),
@@ -176,7 +177,7 @@ export class Worker {
         };
       }
       const decision = useDesktopRuntime
-        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: effectiveModelConfig(task.tenantId) || undefined, signal })), task.agentSessionId || undefined, agentDecisionOptions(input))
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: effectiveModelConfig(task.tenantId) || undefined, allowWorkspaceFileWrites: input.allowWorkspaceFileWrites, signal })), task.agentSessionId || undefined, agentDecisionOptions(input))
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;

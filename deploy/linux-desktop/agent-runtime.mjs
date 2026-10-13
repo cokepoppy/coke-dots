@@ -180,6 +180,7 @@ async function executeKernel(input, slot) {
   const taskInput = {
     engine, prompt, cwd, workspace, taskId, executionId,
     sessionId: typeof input.sessionId === 'string' ? input.sessionId : null,
+    allowWorkspaceFileWrites: engine === 'pi' && input.allowWorkspaceFileWrites === true,
     ...(builtInAdapter ? { modelConfig } : {}),
     ...(browserBridge ? { computer: browserBridge.capability } : {}),
   };

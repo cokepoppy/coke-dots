@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Type } from 'typebox';
 
 const decisionStatuses = new Set(['done', 'waiting', 'scheduled', 'delegating']);
+const maxTaskFileBytes = 512 * 1024;
+const fileOutputGuidance = '\n\n文件输出规则：只有在用户的直接请求明确要求创建本地文件时，才使用 create_task_file。只在当前任务目录创建新文件；不要覆盖已有文件、删除文件或运行 shell 命令。单文件任务直接完成，不要委派。最终用中文简短说明文件路径，不要把整个文件内容贴进聊天。';
 
 export async function runCloudKernel(input, dependencies = {}) {
   const engine = String(input?.engine || '');
@@ -55,15 +57,17 @@ async function runPi(input, cwd, config, injectedSdk) {
     ? sdk.SessionManager.open(await checkedChildPath(sessionDirectory, selected.path), sessionDirectory, cwd)
     : sdk.SessionManager.create(cwd, sessionDirectory);
   const browserTool = publicPageTool(input.computer);
-  const customTools = browserTool ? [browserTool] : undefined;
+  const createdFiles = [];
+  const taskFileTool = input.allowWorkspaceFileWrites === true ? createTaskFileTool(cwd, createdFiles) : null;
+  const customTools = [browserTool, taskFileTool].filter(Boolean);
   const { session } = await sdk.createAgentSession({
     cwd,
     agentDir: await createPrivateDirectory(input.workspace, '.coke-dots-agent-runtime/pi'),
     authStorage,
     modelRegistry,
     model: selectedModel,
-    tools: ['read', 'grep', 'find', 'ls', ...(browserTool ? ['open_public_page'] : [])],
-    ...(customTools ? { customTools } : {}),
+    tools: ['read', 'grep', 'find', 'ls', ...(browserTool ? ['open_public_page'] : []), ...(taskFileTool ? ['create_task_file'] : [])],
+    ...(customTools.length ? { customTools } : {}),
     sessionManager,
   });
   const abortSession = () => session.dispose();
@@ -73,12 +77,71 @@ async function runPi(input, cwd, config, injectedSdk) {
     if (input.signal?.aborted) throw input.signal.reason || new Error('Task stopped');
     await session.prompt(input.prompt);
     const assistant = [...session.messages].reverse().find(row => row?.role === 'assistant');
+    if (assistant?.stopReason === 'length') {
+      if (createdFiles.length) {
+        return { status: 'done', message: `已在云电脑任务目录创建 ${createdFiles.join('、')}；Pi 的最终回复达到 8192 token 上限，自动校验未完成。`, sessionId: sessionManager.getSessionId() };
+      }
+      throw new Error('Pi 的回复达到 8192 token 输出上限，未生成完整任务结果。请先检查任务目录是否已产生文件，再决定是否重试。');
+    }
     const text = assistant?.content?.filter(item => item?.type === 'text').map(item => item.text || '').join('\n') || '';
     return { ...parseDecision(text), sessionId: sessionManager.getSessionId() };
   } finally {
     input.signal?.removeEventListener('abort', abortSession);
     session.dispose();
   }
+}
+
+function createTaskFileTool(cwd, createdFiles) {
+  return {
+    name: 'create_task_file',
+    label: '在当前任务目录创建文件',
+    description: 'Create one UTF-8 text file inside this task directory. It never overwrites existing files, deletes files, or runs commands.',
+    promptSnippet: 'Use this only when the user directly asks for a local file; the path is relative to this task directory.',
+    promptGuidelines: [fileOutputGuidance.trim()],
+    parameters: Type.Object({
+      path: Type.String({ minLength: 1, maxLength: 512, description: 'Relative path inside the current task directory, such as tetris.html' }),
+      content: Type.String({ maxLength: maxTaskFileBytes, description: 'Complete UTF-8 file contents' }),
+    }, { additionalProperties: false }),
+    async execute(_id, params, signal) {
+      if (signal?.aborted) throw signal.reason || new Error('Task was stopped');
+      if (typeof params.path !== 'string' || typeof params.content !== 'string') throw new Error('文件路径和内容都必须是文本');
+      if (Buffer.byteLength(params.content, 'utf8') > maxTaskFileBytes) throw new Error('单个任务文件最多 512 KiB');
+      const root = await realpath(cwd);
+      const parts = params.path.split('/');
+      if (path.isAbsolute(params.path) || params.path.includes('\\') || params.path.includes('\0')
+        || parts.some(part => !part || part === '.' || part === '..' || part === '.git' || part === '.coke-dots-agent-runtime')) {
+        throw new Error('文件只能使用当前任务目录内的安全相对路径');
+      }
+      let parent = root;
+      for (const segment of parts.slice(0, -1)) {
+        parent = path.join(parent, segment);
+        try { await mkdir(parent, { mode: 0o770 }); } catch (error) { if (error?.code !== 'EEXIST') throw error; }
+        const info = await lstat(parent);
+        if (!info.isDirectory() || info.isSymbolicLink() || await realpath(parent) !== parent) throw new Error('文件路径包含不安全的目录或符号链接');
+      }
+      const target = path.join(parent, parts.at(-1));
+      const relativePath = path.relative(root, target);
+      if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) throw new Error('文件路径超出了当前任务目录');
+      try {
+        const info = await lstat(target);
+        if (!info.isFile() || info.isSymbolicLink()) throw new Error('目标路径不是普通文件，拒绝写入');
+        const current = await readFile(target, 'utf8');
+        if (current === params.content) {
+          if (!createdFiles.includes(relativePath)) createdFiles.push(relativePath);
+          return { content: [{ type: 'text', text: `文件已存在且内容一致：${relativePath}` }], details: { path: relativePath, bytes: Buffer.byteLength(current, 'utf8'), alreadyExisted: true } };
+        }
+        throw new Error(`文件已存在，拒绝覆盖：${relativePath}`);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+      const handle = await open(target, 'wx', 0o660);
+      try { await handle.writeFile(params.content, 'utf8'); await handle.sync(); }
+      catch (error) { await handle.close().catch(() => undefined); await rm(target, { force: true }).catch(() => undefined); throw error; }
+      await handle.close();
+      createdFiles.push(relativePath);
+      return { content: [{ type: 'text', text: `已创建文件：${relativePath}` }], details: { path: relativePath, bytes: Buffer.byteLength(params.content, 'utf8'), alreadyExisted: false } };
+    },
+  };
 }
 
 async function runDsh(input, cwd, config, injectedSdk) {

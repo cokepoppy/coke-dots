@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from '../src/server/keyring.ts';
 import { adapters, agentDecisionOptions, createPiWorkspaceModelRuntime, createTenantDshEnvironment, formatAgentPrompt, isDshSessionCollision, parseDecision, providerReasoningEffort, resolveTenantAgentDirectory, type AgentRequest } from '../src/server/adapters.ts';
 import { loadModelSettings, loadSharedModelSettings, saveModelKey, saveSharedModelKey } from '../src/server/model-settings.ts';
 import { Store } from '../src/server/store.ts';
@@ -169,6 +169,18 @@ test('read-only reviews mark source content untrusted and reject writes, delegat
   assert.throws(() => parseDecision(JSON.stringify({ status: 'done', message: 'Done', pageAction: { action: 'create', title: 'New page', content: 'No' } }), undefined, options), /只读任务不能写入/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'scheduled', message: 'Check again later.' }), undefined, options), /只读任务不能安排/);
   assert.throws(() => parseDecision(JSON.stringify({ status: 'delegating', message: 'Ask another agent.', delegations: [{ title: 'Review', instruction: 'Inspect the changed paragraph.' }] }), undefined, options), /不能继续委派/);
+});
+
+test('task file output is described only for authorized writable cloud Pi tasks and stays disabled for read-only reviews', () => {
+  const base: AgentRequest = { prompt: 'Create an HTML game.', priorResult: null, sessionId: null, workspace: '/tmp/task-file-policy', onEvent: () => {} };
+  const writable = formatAgentPrompt({ ...base, allowWorkspaceFileWrites: true, executionMode: 'standard' });
+  assert.match(writable, /create_task_file/);
+  assert.match(writable, /never overwrite an existing file/i);
+  assert.match(writable, /For a single-file request, do the work directly/i);
+
+  const readOnly = formatAgentPrompt({ ...base, allowWorkspaceFileWrites: true, executionMode: 'read-only' });
+  assert.doesNotMatch(readOnly, /Isolated task file output is available/);
+  assert.match(readOnly, /Read-only review constraints/);
 });
 
 test('agent Scratchpad actions require bounded page content and a valid tenant page ID', () => {

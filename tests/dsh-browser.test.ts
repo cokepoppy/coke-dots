@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from '../src/server/keyring.ts';
 import { adapters } from '../src/server/adapters.ts';
 import { startDshPublicPageBridge } from '../src/server/dsh-browser-bridge.ts';
 import { loadModelSettings, loadSharedModelSettings, saveModelKey, saveSharedModelKey } from '../src/server/model-settings.ts';
