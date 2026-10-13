@@ -66,6 +66,8 @@ async function main() {
       DOTS_DATA_DIR: dataDir,
       DOTS_PORT: String(backendPort),
       DOTS_E2E_AUTH: '1',
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-secret',
       GOOGLE_CLIENT_ID: 'coke-dots-base-path-e2e.apps.googleusercontent.com',
       GOOGLE_CLIENT_SECRET: 'coke-dots-base-path-e2e-secret',
       DOTS_COMPUTER_BACKEND: 'mock',
@@ -134,7 +136,7 @@ async function main() {
     return { status: response.status, body: await response.json() };
   });
   assert.equal(providerResponse.status, 200, 'The voice provider API must resolve through the base path');
-  assert.deepEqual(providerResponse.body, { provider: 'browser', configured: true }, 'Test environment provider status should be deterministic');
+  assert.deepEqual(providerResponse.body, { provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' }, 'The prefixed API must report the configured Doubao SeedDuplex provider without exposing its API key');
   await page.screenshot({ path: join(artifactRoot, 'base-path-authenticated-app.png'), fullPage: true });
 
   const apiRequests = requests.filter(item => item.includes('/api/'));
