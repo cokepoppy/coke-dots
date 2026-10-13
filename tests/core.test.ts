@@ -78,6 +78,37 @@ test('profile migration preserves already-completed customization as the earlier
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('task creator migration preserves old tasks and records owners for new and delegated tasks', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-task-owner-migration-'));
+  try {
+    const database = new DatabaseSync(join(directory, 'dots.db'));
+    database.exec(`
+      CREATE TABLE tasks(
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, instruction TEXT NOT NULL, status TEXT NOT NULL,
+        priority INTEGER NOT NULL, next_run_at TEXT, schedule_minutes INTEGER, result TEXT, error TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      INSERT INTO tasks(id,title,instruction,status,priority,created_at,updated_at)
+      VALUES('old-task','Old task','Preserve this existing task','done',0,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z');
+    `);
+    database.close();
+
+    const store = new Store(directory);
+    assert.equal(store.getTask('old-task', 'legacy')?.instruction, 'Preserve this existing task');
+    assert.equal(store.taskCreatorUserId('old-task', 'legacy'), null, 'Legacy tasks keep a null owner');
+
+    const owner = store.signInGoogle({ subject: 'task-owner-migration', email: 'task-owner@example.test', name: 'Task Owner' });
+    const parent = store.createTask('Prepare a Gmail summary', null, 'model', owner.tenant.id, null, null, [], owner.user.id);
+    assert.equal(store.taskCreatorUserId(parent.id, owner.tenant.id), owner.user.id);
+    store.updateTask(parent.id, { status: 'working' }, owner.tenant.id);
+    const children = store.createDelegatedTasks(parent.id, owner.tenant.id, [
+      { title: 'Summarize mail', instruction: 'Summarize the requested messages.' },
+    ], 'I delegated the mail summary.');
+    assert.equal(store.taskCreatorUserId(children[0].id, owner.tenant.id), owner.user.id, 'Delegated tasks inherit the parent creator');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('computer access onboarding is durable and isolated to its workspace', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-computer-choice-'));
   try {
@@ -104,7 +135,7 @@ test('delegated tasks persist, recover after restart, and aggregate only inside 
     let store = new Store(directory);
     const owner = store.signInGoogle({ subject: 'delegation-owner', email: 'delegate@example.test', name: 'Delegate' });
     const other = store.signInGoogle({ subject: 'delegation-other', email: 'other@example.test', name: 'Other' });
-    const parent = store.createTask('Prepare a research brief', null, 'model', owner.tenant.id);
+    const parent = store.createTask('Prepare a research brief', null, 'model', owner.tenant.id, null, null, [], owner.user.id);
     store.updateTask(parent.id, { status: 'working' }, owner.tenant.id);
     const children = store.createDelegatedTasks(parent.id, owner.tenant.id, [
       { title: 'Market sizing', instruction: 'Estimate market size from supplied material.' },
@@ -112,6 +143,7 @@ test('delegated tasks persist, recover after restart, and aggregate only inside 
       { title: 'Risk list', instruction: 'Identify the main risks.' },
     ], 'I split the research into three parallel questions.');
     assert.deepEqual(children.map(task => task.engine), ['model', 'dsh', 'model'], 'Children must retain a selected engine or inherit the parent engine');
+    assert.deepEqual(children.map(task => store.taskCreatorUserId(task.id, owner.tenant.id)), [owner.user.id, owner.user.id, owner.user.id]);
     assert.throws(() => store.createDelegatedTasks(parent.id, owner.tenant.id, [{ title: 'Invalid engine', instruction: 'Do not insert this task.', engine: 'unknown' as never }], 'Invalid engine test'), /内核无效/);
     assert.equal(store.getTask(parent.id, owner.tenant.id)?.status, 'delegating');
     assert.equal(store.getTask(children[0].id, other.tenant.id), null, 'A different tenant read a child task by guessing its ID');

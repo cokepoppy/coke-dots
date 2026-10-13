@@ -52,6 +52,7 @@ test('voice turn dispatch is durable, owner-scoped, and idempotent across task c
     assert.equal(duplicate.duplicate, true);
     assert.equal(duplicate.task.id, first.task.id);
     assert.equal(duplicate.task.instruction, '整理今天的工作进展');
+    assert.equal(store.taskCreatorUserId(first.task.id, alpha.tenant.id), alpha.user.id, 'Voice tasks must retain the authenticated call owner');
     assert.equal((store.db.prepare('SELECT COUNT(*) AS count FROM voice_call_turns WHERE call_id=?').get(call.id) as { count: number }).count, 1);
     assert.equal(store.getTask(first.task.id, beta.tenant.id), null);
     assert.throws(() => store.submitVoiceTurn({ ...request, tenantId: beta.tenant.id, userId: beta.user.id }), /语音通话不存在/);
@@ -73,7 +74,7 @@ test('a repeated voice reply resumes a waiting task exactly once', () => {
     const store = new Store(directory);
     const user = store.signInGoogle({ subject: 'voice-reply-user', email: 'voice-reply@example.test', name: 'Voice User' });
     const call = store.createVoiceCall(user.tenant.id, user.user.id);
-    const waiting = store.createTask('请告诉我会议日期', null, 'pi', user.tenant.id);
+    const waiting = store.createTask('请告诉我会议日期', null, 'pi', user.tenant.id, null, null, [], user.user.id);
     store.updateTask(waiting.id, { status: 'waiting', nextRunAt: null }, user.tenant.id);
     const request = {
       tenantId: user.tenant.id, userId: user.user.id, callId: call.id,
@@ -86,6 +87,7 @@ test('a repeated voice reply resumes a waiting task exactly once', () => {
     assert.equal(duplicate.duplicate, true);
     assert.equal(duplicate.task.id, waiting.id);
     assert.equal(duplicate.task.status, 'queued');
+    assert.equal(store.taskCreatorUserId(waiting.id, user.tenant.id), user.user.id, 'Resuming a waiting voice task must preserve its creator');
     assert.equal(duplicate.task.instruction.match(/User reply: 周五/g)?.length, 1);
     const replies = store.db.prepare("SELECT COUNT(*) AS count FROM entries WHERE tenant_id=? AND task_id=? AND kind='user' AND body=?")
       .get(user.tenant.id, waiting.id, '周五') as { count: number };
