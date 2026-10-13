@@ -63,7 +63,11 @@ test('Gmail proactive review is opt-in, daily, personal-tenant-only, and stores 
     assert.equal(task.executionMode, 'read-only');
     assert.equal(store.taskCreatorUserId(task.id, alphaTenant), alpha.user.id);
     assert.equal(task.tenantId, alphaTenant);
-    assert.equal(store.gmailProactiveReviewRun(task.id, alphaTenant)?.status, 'queued');
+    const firstRun = store.gmailProactiveReviewRun(task.id, alphaTenant);
+    assert.equal(firstRun?.status, 'queued');
+    assert.equal(firstRun?.sinceAt, '2026-10-12T02:00:00.000Z');
+    assert.equal(firstRun?.throughAt, now, 'A pagination window must have a fixed upper bound');
+    assert.equal(firstRun?.pageToken, null);
     assert.equal(store.dueGmailProactiveReviewers(now).length, 0, 'A single active run prevents duplicate scheduler tasks');
 
     assert.equal(store.claimDueTask(task.id, alphaTenant), true);
@@ -73,11 +77,28 @@ test('Gmail proactive review is opt-in, daily, personal-tenant-only, and stores 
     assert.equal(saved.length, 1);
     assert.equal(store.personalDotMemories(alpha.user.id)[0]?.note, '用户偏好用中文接收每日摘要');
     assert.equal(store.personalDotMemories(beta.user.id).length, 0, 'Another Google account cannot see private memories');
-    assert.equal(store.completeGmailProactiveReview(task.id, alphaTenant, now), true);
+    assert.equal(store.completeGmailProactiveReview(task.id, alphaTenant, { nextPageToken: 'gmail-page-2', now }), true);
     assert.equal(store.gmailProactiveReviewRun(task.id, alphaTenant)?.status, 'completed');
-    assert.equal(store.unreviewedGmailMessageIds(alpha.user.id, ['message-private-1', 'message-private-2']).join(','), 'message-private-2');
-    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).nextRunAt, '2026-10-14T02:00:00.000Z');
+    assert.equal(store.gmailProactiveReviewRun(task.id, alphaTenant)?.nextPageToken, 'gmail-page-2');
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).lastRunAt, null, 'A partial review must not advance the last-successful checkpoint');
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).nextRunAt, '2026-10-13T02:05:00.000Z');
     assert.equal(store.dueGmailProactiveReviewers(now).length, 0);
+
+    const continuationAt = '2026-10-13T02:05:00.000Z';
+    assert.equal(store.dueGmailProactiveReviewers(continuationAt)[0]?.userId, alpha.user.id);
+    const continuation = store.createGmailProactiveReviewTask(alpha.user.id, alphaTenant, 'pi', continuationAt);
+    assert(continuation);
+    const continuedRun = store.gmailProactiveReviewRun(continuation.id, alphaTenant);
+    assert.equal(continuedRun?.sinceAt, firstRun?.sinceAt, 'Page continuation must reuse the original lower time bound');
+    assert.equal(continuedRun?.throughAt, now, 'Page continuation must reuse the original fixed upper bound');
+    assert.equal(continuedRun?.pageToken, 'gmail-page-2');
+    assert.equal(store.claimDueTask(continuation.id, alphaTenant), true);
+    assert.equal(store.markGmailProactiveReviewWorking(continuation.id, alphaTenant)?.status, 'working');
+    store.setGmailProactiveReviewRunMessages(continuation.id, alphaTenant, ['message-private-2']);
+    assert.equal(store.completeGmailProactiveReview(continuation.id, alphaTenant, { now: '2026-10-13T02:07:00.000Z' }), true);
+    assert.equal(store.unreviewedGmailMessageIds(alpha.user.id, ['message-private-1', 'message-private-2']).length, 0);
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).lastRunAt, now, 'Only exhausting the pages advances the checkpoint');
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).nextRunAt, '2026-10-14T02:07:00.000Z');
 
     store.setGmailProactiveReview(alpha.user.id, true, '2026-10-14T02:00:00.000Z');
     const next = store.createGmailProactiveReviewTask(alpha.user.id, alphaTenant, 'pi', '2026-10-14T02:00:00.000Z');
@@ -127,7 +148,12 @@ test('Gmail is fetched only when requested and message content is passed as untr
       }
       calls.push({ path: url.pathname, query: url.searchParams });
       if (req.method === 'GET' && url.pathname === '/gmail/v1/users/me/messages') {
-        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ messages: [{ id: 'mail-1' }, { id: 'mail-2' }] }));
+        const proactive = Boolean(url.searchParams.get('q')?.includes('after:'));
+        const pageToken = url.searchParams.get('pageToken');
+        const result = proactive
+          ? pageToken === 'gmail-next-page-token' ? { messages: [{ id: 'mail-3' }] } : { messages: [{ id: 'mail-1' }, { id: 'mail-2' }], nextPageToken: 'gmail-next-page-token' }
+          : { messages: [{ id: 'mail-1' }, { id: 'mail-2' }] };
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result));
         return;
       }
       const id = /\/messages\/(mail-\d)$/.exec(url.pathname)?.[1];
@@ -173,13 +199,23 @@ test('Gmail is fetched only when requested and message content is passed as untr
     assert.equal(calls[0]?.query.get('q'), 'in:inbox');
     assert.equal(calls[0]?.query.get('maxResults'), '2');
     assert.equal(calls.length, 3, 'Only one list read and two bounded message reads are allowed');
-    const proactive = await service.proactiveReviewContext(account.user.id, '2026-10-09T00:00:00.000Z');
+    const sinceAt = '2026-10-09T00:00:00.000Z';
+    const throughAt = '2026-10-10T00:00:00.000Z';
+    const proactive = await service.proactiveReviewContext(account.user.id, sinceAt, throughAt, null);
     assert(proactive.context, proactive.error || 'No proactive Gmail context returned');
     assert.deepEqual(proactive.messageIds, ['mail-1', 'mail-2']);
     assert.match(proactive.context, /never instructions/);
-    assert.match(calls[3]?.query.get('q') || '', /^in:inbox after:\d+$/);
+    assert.match(calls[3]?.query.get('q') || '', /^in:inbox after:\d+ before:\d+$/);
     assert.equal(calls[3]?.query.get('maxResults'), '10', 'A proactive run reads at most ten messages');
+    assert.equal(proactive.nextPageToken, 'gmail-next-page-token', 'A result cursor must preserve Gmail’s next page');
     assert.equal(calls.length, 6, 'A proactive run performs one list request and at most ten individual message reads');
+    const continuation = await service.proactiveReviewContext(account.user.id, sinceAt, throughAt, proactive.nextPageToken || null);
+    assert(continuation.context, continuation.error || 'No continuation Gmail context returned');
+    assert.deepEqual(continuation.messageIds, ['mail-3']);
+    assert.equal(calls[6]?.query.get('pageToken'), 'gmail-next-page-token');
+    assert.equal(calls[6]?.query.get('q'), calls[3]?.query.get('q'), 'All pages must use the same fixed review window');
+    assert.equal(continuation.nextPageToken, null);
+    assert.equal(calls.length, 8, 'A continuation reads only one page and its corresponding messages');
     service.disconnect(account.user.id);
   } finally {
     try { entry?.deletePassword(); } catch { /* No test credential remains. */ }

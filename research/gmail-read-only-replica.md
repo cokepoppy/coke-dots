@@ -1,6 +1,6 @@
 # Gmail read-only connection: evidence and implementation boundary
 
-Research checked 2026-10-10 against OpenAI's public Dots documentation. This is product-behavior evidence, not evidence of OpenAI's internal OAuth implementation.
+Research checked 2026-10-14 against OpenAI's public Dots documentation and Google's public Gmail API documentation. This is product-behavior evidence, not evidence of OpenAI's internal OAuth implementation.
 
 ## Official evidence
 
@@ -8,8 +8,9 @@ Research checked 2026-10-10 against OpenAI's public Dots documentation. This is 
 - [Connect computers and apps to your dot](https://learn.chatgpt.com/docs/dots/computers-and-apps) names Gmail as a connected app for finding relevant email. It says app access follows the connected account and its permissions, and that a user can allow reading email without allowing sending email.
 - [Tasks and memory](https://learn.chatgpt.com/docs/dots/tasks-and-memory) documents recurring tasks that can check sources and supported app events. It also says proactive research can read permitted sources but cannot send messages, modify connected apps, or control a browser/computer.
 - [Control your dot](https://learn.chatgpt.com/docs/dots/controls) describes review and approval when an action affects an account or shares information.
+- Google's [Gmail `users.messages.list` reference](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list) defines `maxResults`, `pageToken`, and `nextPageToken`; a returned next-page token is the documented cursor for retrieving another page.
 
-The docs support a read-only Gmail connector and a future proactive email monitor. They do not establish the exact Gmail OAuth consent screen, connection card, Gmail search syntax, API calls, polling interval, or internal agent architecture. Those details remain implementation choices until captured from a real Dots session or reliable video frame.
+The docs support a read-only Gmail connector and proactive research of permitted sources. They do not establish the exact Gmail OAuth consent screen, connection card, Gmail search syntax, API calls, polling interval, or internal agent architecture. Those details remain implementation choices until captured from a real Dots session or reliable video frame.
 
 ## Coke Dots implementation in this branch
 
@@ -19,15 +20,23 @@ The docs support a read-only Gmail connector and a future proactive email monito
 - SQLite stores only the Gmail address, connection time, and allowed scope. The refresh token is stored under that Google user's Keychain entry; API responses, task records, task prompts, and Kubernetes configuration do not contain it.
 - Gmail is queried only when the task instruction explicitly mentions email, Gmail, 邮件, 邮箱, or 收件箱. A bare `inbox` is deliberately insufficient because it can refer to Slack or another connector. The first version reads up to ten inbox messages, or a smaller explicit count, and may accept a Gmail query after `搜索邮件：` / `查找邮件：` / `查询邮件：`.
 - Message data is labeled untrusted before it is added to the Agent prompt. The Agent kernel continues to run in the tenant's Debian cloud computer; the control plane performs the narrow Gmail read so the refresh token never enters the Pod.
+- Proactive Gmail review is opt-in and limited to a single-member personal workspace. Each batch reads at most ten inbox messages and can add at most two low-risk private Dot memories; mail is never sent, edited, or deleted. Email text cannot grant permissions or change the review rules.
+- The review stores message IDs for deduplication, not message bodies. If Gmail returns `nextPageToken`, the service persists it with a fixed `after`/`before` time window and queues another bounded batch after five minutes. It advances `last_run_at` only after the final page; if Gmail rejects a cursor, it restarts that window and skips already reviewed IDs.
 - If the account has no Gmail connection or the authorization has expired, the task waits and tells the user to connect/reconnect Gmail.
 - Disconnect deletes the local Keychain refresh token and connection metadata. It does not currently revoke the grant on Google's account-security page. The Gmail connector and Google sign-in currently share `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
 
 ## Not implemented or not yet verified
 
-- This branch implements explicit task-directed reading, not proactive Gmail polling or Google push notifications. The official docs support ongoing checks, but the exact Gmail event workflow and UI have not been observed. That follow-up should be its own feature branch after confirming whether to poll or use a supported event source.
+- The proactive Gmail feature polls once per day; it does not use Google push notifications. Official Dots docs do not specify a Gmail-specific event workflow, polling interval, or settings layout. Its cadence and UI are Coke Dots implementation choices and are not pixel-verified against a live Dots session.
 - Do not add remote token revocation to the current Gmail disconnect flow: Google's [OAuth web-server guide](https://developers.google.com/identity/protocols/oauth2/web-server) says revocation removes all OAuth scopes previously granted to a project and invalidates issued tokens; the [OIDC reference](https://developers.google.com/identity/openid-connect/reference) defines the revocation endpoint. Because sign-in and Gmail share the OAuth client today, revoking the Gmail refresh token can also invalidate the user's sign-in grant. Use a separate OAuth project/client for Gmail before adding remote revocation, then test that disconnect preserves the Coke Dots sign-in session.
 - The Chrome E2E uses a local OAuth/Gmail fixture. It verifies click-through, requested scope, account isolation, task context, and disconnect behavior; it does not prove that the production Google OAuth app has passed Gmail-scope verification or that a real Gmail account is authorized.
 - UI positions and interaction timing are not claimed to be pixel-accurate. The inspected official docs do not show the Gmail setup screen; match it only after collecting a clear reference frame.
+
+## Proactive review pagination verification on 2026-10-14
+
+- `npm run build` passed; `npm test` passed 114/114 tests.
+- `npm run test:e2e` passed 55 Chrome click-through steps and all 8 Linux cloud-computer checks. The Gmail E2E returned a second page token, resumed with the same fixed time window, reviewed the continuation batch, and advanced the checkpoint only after the final page.
+- Chrome evidence: `artifacts/e2e/2026-10-13T16-27-52-465Z/`; cloud-computer evidence: `artifacts/e2e/linux-cloud-computer-2026-10-13T16-30-05-708Z/`. These use isolated local OAuth, Gmail, and model fixtures; they do not prove live Gmail authorization, public-VPS release behavior, or a real mailbox response.
 
 ## Verification on 2026-10-11
 

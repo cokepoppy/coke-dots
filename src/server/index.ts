@@ -102,7 +102,7 @@ const sessionHeartbeat = setInterval(() => {
 
 const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor,
   (userId, prompt, signal) => gmail.contextForTask(userId, prompt, signal),
-  (userId, sinceAt, signal) => gmail.proactiveReviewContext(userId, sinceAt, signal));
+  (userId, sinceAt, throughAt, pageToken, signal) => gmail.proactiveReviewContext(userId, sinceAt, throughAt, pageToken, signal));
 const watchRunner = new WatchRunner(store, publish, e2eWatchFetcher());
 
 async function tenantRuntimeDirectoriesForReset(tenantId: string) {

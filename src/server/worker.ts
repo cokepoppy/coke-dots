@@ -29,7 +29,7 @@ export class Worker {
     private notify: DesktopNotifier = sendDesktopNotification,
     private computerFor?: (tenantId: string) => ComputerRuntime,
     private gmailContextForTask?: (userId: string | null, prompt: string, signal: AbortSignal) => Promise<{ error?: string; context?: string } | null>,
-    private gmailProactiveReviewForTask?: (userId: string, sinceAt: string, signal: AbortSignal) => Promise<{ error?: string; requiresReconnect?: boolean; noMessages?: boolean; context?: string; messageIds: string[] }>,
+    private gmailProactiveReviewForTask?: (userId: string, sinceAt: string, throughAt: string, pageToken: string | null, signal: AbortSignal) => Promise<{ error?: string; requiresReconnect?: boolean; noMessages?: boolean; skipPage?: boolean; context?: string; messageIds: string[]; nextPageToken?: string | null }>,
   ) {}
 
   start() { this.stopped = false; this.timer = setInterval(() => void this.tick(), 2000); void this.tick(); }
@@ -169,7 +169,7 @@ export class Worker {
         },
       };
       const gmailReviewContext = gmailReviewRun
-        ? await this.gmailProactiveReviewForTask?.(gmailReviewRun.userId, gmailReviewRun.sinceAt, signal)
+        ? await this.gmailProactiveReviewForTask?.(gmailReviewRun.userId, gmailReviewRun.sinceAt, gmailReviewRun.throughAt, gmailReviewRun.pageToken, signal)
         : null;
       if (gmailReviewRun && !gmailReviewContext) throw new Error('Gmail 主动复查服务不可用。');
       if (gmailReviewContext?.error) {
@@ -185,10 +185,19 @@ export class Worker {
       }
       if (gmailReviewRun && gmailReviewContext?.noMessages) {
         this.store.setGmailProactiveReviewRunMessages(task.id, task.tenantId, []);
-        const message = '今天没有发现新的收件箱邮件，本次只读复查完成。';
+        const message = '本轮 Gmail 只读复查完成。';
         this.store.updateTask(task.id, { status: 'done', result: message, nextRunAt: null, error: null }, task.tenantId);
         this.store.addEntry('dot', message, task.id, task.tenantId);
         this.store.completeGmailProactiveReview(task.id, task.tenantId);
+        this.onChange();
+        return;
+      }
+      if (gmailReviewRun && gmailReviewContext?.skipPage) {
+        this.store.setGmailProactiveReviewRunMessages(task.id, task.tenantId, []);
+        const message = '这页邮件已处理过，正在继续复查后续邮件。';
+        this.store.updateTask(task.id, { status: 'done', result: message, nextRunAt: null, error: null }, task.tenantId);
+        this.store.addEntry('dot', message, task.id, task.tenantId);
+        this.store.completeGmailProactiveReview(task.id, task.tenantId, { nextPageToken: gmailReviewContext.nextPageToken });
         this.onChange();
         return;
       }
@@ -316,7 +325,10 @@ export class Worker {
         status, result: ['done', 'scheduled'].includes(decision.status) ? decision.message : current.result,
         nextRunAt, error: null, agentSessionId: decision.sessionId || current.agentSessionId,
       }, task.tenantId);
-      if (gmailReviewRun && decision.status === 'done') this.store.completeGmailProactiveReview(task.id, task.tenantId);
+      if (gmailReviewRun && decision.status === 'done') {
+        this.store.completeGmailProactiveReview(task.id, task.tenantId, { nextPageToken: gmailReviewContext?.nextPageToken });
+        if (gmailReviewContext?.nextPageToken) this.store.addEntry('system', '本批复查完成，后续邮件已安排自动续查。', task.id, task.tenantId);
+      }
       this.store.addEntry('dot', outputMessage, task.id, task.tenantId);
       if (decision.status === 'waiting') this.notifyIfEnabled(task.tenantId, `“${task.title}”正在等待你的回复。`);
       else if (decision.status === 'done' && decision.notifyUser !== false) this.notifyIfEnabled(task.tenantId, `“${task.title}”已有新结果。`);

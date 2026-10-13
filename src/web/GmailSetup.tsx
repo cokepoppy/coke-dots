@@ -58,7 +58,7 @@ export function GmailSetup({ onError }: { onError: (message: string) => void }) 
         <label className="gmail-proactive-review-toggle">
           <input data-testid="gmail-proactive-review-toggle" type="checkbox" checked={snapshot.proactiveReview.enabled} disabled={reviewBusy}
             onChange={event => void setProactiveReview(event.currentTarget.checked)} />
-          <span><strong>每天主动复查一次</strong><br /><small>最多检查 10 封新邮件，只提炼低风险的长期偏好或持续事项到你的个人 Dot 记忆。默认关闭；不会发送、修改或删除邮件。</small></span>
+          <span><strong>每天主动复查一次</strong><br /><small>每批最多检查 10 封新邮件；超出时会在同一复查窗口继续处理。只提炼低风险的长期偏好或持续事项到你的个人 Dot 记忆。默认关闭；不会发送、修改或删除邮件。</small></span>
         </label>
         {snapshot.proactiveReview.lastRunAt && <small>上次复查：{new Date(snapshot.proactiveReview.lastRunAt).toLocaleString()}</small>}
         {snapshot.proactiveReview.nextRunAt && <small>下次复查：{new Date(snapshot.proactiveReview.nextRunAt).toLocaleString()}</small>}
