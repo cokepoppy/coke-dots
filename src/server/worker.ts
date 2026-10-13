@@ -5,7 +5,7 @@ import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts
 import { Store } from './store.ts';
 import { adapters, formatAgentPrompt, parseDecision, type AgentRequest, type Engine } from './adapters.ts';
 import type { ComputerRuntime } from './computer.ts';
-import { loadModelSettings } from './model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, sharedModelApiKeyStatus } from './model-settings.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
 export class Worker {
@@ -64,7 +64,20 @@ export class Worker {
     const adapter = adapters[task.engine];
     const computer = this.computerFor?.(task.tenantId);
     const remoteEngines = parseRemoteEngines();
-    const useDesktopRuntime = Boolean(computer?.runAgentTask && process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && remoteEngines.includes(task.engine));
+    const requiresDesktopRuntime = Boolean(computer?.runAgentTask && process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && remoteEngines.includes(task.engine));
+    const modelConfig = requiresDesktopRuntime ? effectiveModelConfig(task.tenantId) : null;
+    const useDesktopRuntime = requiresDesktopRuntime && Boolean(modelConfig);
+    if (requiresDesktopRuntime && !modelConfig) {
+      const reason = sharedModelApiKeyStatus() === 'unreadable'
+        ? '无法读取 Coke Dots 实例共享 API 密钥。请解锁运行服务的 Mac 登录钥匙串后重试。'
+        : 'Coke Dots 实例尚未配置共享模型 API。请由实例模型管理员完成配置后重试。';
+      const message = `云电脑内的 ${task.engine} Agent 没有收到模型配置，任务没有执行。${reason}`;
+      this.store.updateTask(task.id, { status: 'failed', error: message }, task.tenantId);
+      this.store.addEntry('system', message, task.id, task.tenantId);
+      this.notifyIfEnabled(task.tenantId, `“${task.title}”无法开始，需要恢复实例共享模型配置。`);
+      this.onChange();
+      return;
+    }
     if (!useDesktopRuntime && !adapter?.available(task.tenantId)) {
       this.store.updateTask(task.id, { status: 'failed', error: `${task.engine} 内核尚未配置或安装。` }, task.tenantId);
       this.store.addEntry('system', `${task.engine} 内核不可用，任务没有执行。配置后可重试。`, task.id, task.tenantId);
@@ -73,7 +86,7 @@ export class Worker {
       return;
     }
     const availableEngines = (Object.keys(adapters) as Engine[]).filter(engine => adapters[engine].available(task.tenantId));
-    for (const engine of remoteEngines) if (!availableEngines.includes(engine)) availableEngines.push(engine);
+    if (modelConfig) for (const engine of remoteEngines) if (!availableEngines.includes(engine)) availableEngines.push(engine);
     this.store.updateTask(task.id, { status: 'working', error: null }, task.tenantId);
     this.store.addEntry('system', `使用 ${task.engine} 开始处理。`, task.id, task.tenantId);
     this.onChange();
@@ -98,7 +111,7 @@ export class Worker {
         onEvent: message => { this.store.addEntry('system', message, task.id, task.tenantId); this.onChange(); },
       };
       const decision = useDesktopRuntime
-        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines })
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines })
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
