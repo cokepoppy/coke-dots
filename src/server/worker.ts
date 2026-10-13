@@ -5,7 +5,7 @@ import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts
 import { Store } from './store.ts';
 import { adapters, formatAgentPrompt, parseDecision, agentDecisionOptions, type AgentRequest, type Engine } from './adapters.ts';
 import type { ComputerRuntime } from './computer.ts';
-import { effectiveModelConfig, loadModelSettings, loadSharedModelSettings, missingModelSettings } from './model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, loadSharedModelSettings, missingModelSettings, sharedModelApiKeyStatus } from './model-settings.ts';
 import { configuredDesktopAgentEngines } from './linux-desktop-computer.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
@@ -96,12 +96,16 @@ export class Worker {
     const adapter = adapters[task.engine];
     const computer = this.computerFor?.(task.tenantId);
     const remoteEngines = parseRemoteEngines();
-    const useDesktopRuntime = Boolean(computer?.runAgentTask && process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && remoteEngines.includes(task.engine));
-    if (!useDesktopRuntime && !adapter?.available(task.tenantId)) {
+    const requiresDesktopRuntime = Boolean(computer?.runAgentTask && process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && remoteEngines.includes(task.engine));
+    const modelConfig = effectiveModelConfig(task.tenantId);
+    const useDesktopRuntime = requiresDesktopRuntime && Boolean(modelConfig);
+    if ((requiresDesktopRuntime && !modelConfig) || (!useDesktopRuntime && !adapter?.available(task.tenantId))) {
       const engineName = ({ model: '模型 API', claude: 'Claude Code', pi: 'Pi', dsh: 'DeepSeek Harness' } as const)[task.engine];
       const missing = ['model', 'pi', 'dsh'].includes(task.engine) ? missingModelSettings(task.tenantId) : [];
       const reason = missing.length
-        ? `当前 Coke Dots 实例缺少${missing.join('和')}。请由实例模型管理员在“模型 API”设置中补全共享配置后重试。`
+        ? sharedModelApiKeyStatus(task.tenantId) === 'unreadable'
+          ? '当前 Coke Dots 实例的系统凭据库无法读取共享 API 密钥。请解锁运行服务设备上的系统钥匙串后重试；若密钥条目不存在，再由实例模型管理员重新保存共享配置。'
+          : `当前 Coke Dots 实例缺少${missing.join('和')}。请由实例模型管理员在“模型 API”设置中补全共享配置后重试。`
         : `${engineName} 尚未配置或安装，请检查本机内核安装和实例模型设置后重试。`;
       const errorMessage = `${engineName} 内核不可用，任务没有执行。${reason}`;
       this.store.updateTask(task.id, { status: 'failed', error: errorMessage }, task.tenantId);
@@ -177,7 +181,7 @@ export class Worker {
         };
       }
       const decision = useDesktopRuntime
-        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: effectiveModelConfig(task.tenantId) || undefined, allowWorkspaceFileWrites: input.allowWorkspaceFileWrites, signal })), task.agentSessionId || undefined, agentDecisionOptions(input))
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, allowWorkspaceFileWrites: input.allowWorkspaceFileWrites, signal })), task.agentSessionId || undefined, agentDecisionOptions(input))
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;

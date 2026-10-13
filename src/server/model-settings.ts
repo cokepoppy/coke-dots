@@ -1,18 +1,23 @@
 import { Entry } from './keyring.ts';
+import type { ModelApiKeyStatus } from '../shared/types.ts';
 
-export interface ModelSettings { baseUrl: string; model: string; hasKey: boolean }
+export interface ModelSettings { baseUrl: string; model: string; hasKey: boolean; apiKeyStatus: ModelApiKeyStatus }
+type StoredModelSettings = Pick<ModelSettings, 'baseUrl' | 'model' | 'hasKey'>;
 const keychainService = () => process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots';
-const stored = new Map<string, ModelSettings>();
+const stored = new Map<string, StoredModelSettings>();
 const keychainFor = (tenantId: string) => new Entry(keychainService(), `tenant-${tenantId}-model-api-key`);
 const sharedKeychainFor = () => new Entry(keychainService(), 'shared-model-api-key');
 const environmentModelAllowed = (tenantId: string) => process.env.NODE_ENV !== 'test' || tenantId === 'legacy' || (process.env.DOTS_E2E_AUTH === '1');
+let sharedKeychainReadFailed = false;
+let cachedSharedModelKey: string | null = null;
 
 /** Load the Coke Dots instance-wide Model API profile. Its secret stays in Keychain. */
 export function loadSharedModelSettings(baseUrl: string | null, model: string | null) {
+  const apiKeyStatus = sharedModelApiKeyStatus('legacy');
   stored.set('shared', {
     baseUrl: baseUrl || '',
     model: model || '',
-    hasKey: Boolean(readSharedKey()),
+    hasKey: apiKeyStatus === 'available',
   });
 }
 
@@ -22,8 +27,11 @@ export function loadModelSettings(baseUrl: string | null, model: string | null, 
 }
 
 export function saveSharedModelKey(value: string) {
-  if (!value.trim()) throw new Error('密钥不能为空');
-  sharedKeychainFor().setPassword(value.trim());
+  const normalizedKey = value.trim();
+  if (!normalizedKey) throw new Error('密钥不能为空');
+  sharedKeychainFor().setPassword(normalizedKey);
+  cachedSharedModelKey = normalizedKey;
+  sharedKeychainReadFailed = false;
   const prior = stored.get('shared') || { baseUrl: '', model: '', hasKey: false };
   stored.set('shared', { ...prior, hasKey: true });
 }
@@ -39,13 +47,14 @@ export function migrateWorkspaceModelToShared(tenantId: string, baseUrl: string,
   const apiKey = readTenantKey(tenantId);
   if (!apiKey || !model.trim()) return false;
   sharedKeychainFor().setPassword(apiKey);
+  cachedSharedModelKey = apiKey;
+  sharedKeychainReadFailed = false;
   stored.set('shared', { baseUrl, model, hasKey: true });
   return true;
 }
 
 export function hasSharedModelKey() {
-  try { return Boolean(sharedKeychainFor().getPassword() || (environmentModelAllowed('legacy') && process.env.DOTS_MODEL_API_KEY?.trim())); }
-  catch { return Boolean(environmentModelAllowed('legacy') && process.env.DOTS_MODEL_API_KEY?.trim()); }
+  return sharedModelApiKeyStatus('legacy') === 'available';
 }
 
 /** Legacy writer retained for migration coverage; runtime adapters never resolve this credential. */
@@ -62,22 +71,31 @@ export function setModelMetadata(baseUrl: string, model: string, tenantId = 'leg
 }
 
 export function publicModelSettings(tenantId = 'legacy'): ModelSettings {
+  const apiKeyStatus = sharedModelApiKeyStatus(tenantId);
   const config = effectiveModelConfig(tenantId);
-  if (config) return { baseUrl: config.baseUrl, model: config.model, hasKey: true };
+  if (config) return { baseUrl: config.baseUrl, model: config.model, hasKey: apiKeyStatus === 'available', apiKeyStatus };
   const shared = sharedSettings(tenantId);
   return {
     baseUrl: shared.baseUrl,
     model: shared.model,
-    hasKey: false,
+    hasKey: apiKeyStatus === 'available',
+    apiKeyStatus,
   };
 }
 
+/** Report availability without returning the credential or native error text. */
+export function sharedModelApiKeyStatus(tenantId = 'legacy'): ModelApiKeyStatus {
+  const apiKey = readSharedKey();
+  const environmentKey = environmentModelAllowed(tenantId) ? process.env.DOTS_MODEL_API_KEY?.trim() : '';
+  if (apiKey || environmentKey) return 'available';
+  return sharedKeychainReadFailed ? 'unreadable' : 'missing';
+}
+
 export function missingModelSettings(tenantId = 'legacy') {
-  const envAllowed = environmentModelAllowed(tenantId);
-  const apiKey = readSharedKey() || (envAllowed ? process.env.DOTS_MODEL_API_KEY?.trim() : '');
+  const apiKeyStatus = sharedModelApiKeyStatus(tenantId);
   const model = sharedSettings(tenantId).model;
   return [
-    ...(!apiKey ? ['API 密钥'] : []),
+    ...(apiKeyStatus !== 'available' ? ['API 密钥'] : []),
     ...(!model ? ['模型名称'] : []),
   ];
 }
@@ -97,19 +115,29 @@ export function configuredInstanceModelConfig(tenantId: string) {
   return effectiveModelConfig(tenantId);
 }
 
-function sharedSettings(tenantId = 'legacy'): ModelSettings {
+function sharedSettings(tenantId = 'legacy'): StoredModelSettings {
   const loaded = stored.get('shared') || { baseUrl: '', model: '', hasKey: false };
   const envAllowed = environmentModelAllowed(tenantId);
+  const apiKeyStatus = sharedModelApiKeyStatus(tenantId);
   return {
     baseUrl: loaded.baseUrl || (envAllowed ? process.env.DOTS_MODEL_BASE_URL?.trim() : '') || '',
     model: loaded.model || (envAllowed ? process.env.DOTS_MODEL?.trim() : '') || '',
-    hasKey: Boolean(readSharedKey() || (envAllowed && process.env.DOTS_MODEL_API_KEY?.trim())),
+    hasKey: apiKeyStatus === 'available',
   };
 }
 
 function readSharedKey(): string | null {
-  try { return sharedKeychainFor().getPassword(); }
-  catch { return null; }
+  try {
+    const key = sharedKeychainFor().getPassword();
+    sharedKeychainReadFailed = false;
+    cachedSharedModelKey = key || null;
+    return cachedSharedModelKey;
+  } catch {
+    sharedKeychainReadFailed = true;
+    // Keep long-running background work alive if the login Keychain locks after
+    // this service has already read the shared credential successfully.
+    return cachedSharedModelKey;
+  }
 }
 
 function readTenantKey(tenantId: string): string | null {

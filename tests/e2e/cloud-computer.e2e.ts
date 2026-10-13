@@ -18,6 +18,8 @@ const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `linux-cloud-computer
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-cloud-e2e-'));
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
+const modelKeychainService = `com.cokepoppy.coke-dots.e2e-cloud-${randomUUID()}`;
+const modelKeychainFile = join(dataDirectory, 'test-keyring.json');
 const signingKey = 'coke-dots-linux-cloud-computer-e2e-signing-key';
 const screen = makeScreen();
 const machines = new Map<string, { owner: 'agent' | 'user'; url: string; title: string }>();
@@ -47,6 +49,10 @@ let releaseRecovery: () => void = () => undefined;
 const recoveryRelease = new Promise<void>(resolvePromise => { releaseRecovery = resolvePromise; });
 
 await writeFile(envFile, '');
+await mkdir(dataDirectory, { recursive: true });
+await writeFile(modelKeychainFile, JSON.stringify({
+  [JSON.stringify([modelKeychainService, 'shared-model-api-key'])]: 'cloud-e2e-shared-api-key',
+}), { mode: 0o600 });
 await mkdir(artifacts, { recursive: true });
 
 function makeScreen() {
@@ -196,14 +202,18 @@ async function startApp() {
     env: {
       ...process.env,
       NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(appPort),
-      DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.e2e-cloud-${randomUUID()}`,
+      DOTS_KEYCHAIN_SERVICE: modelKeychainService,
+      DOTS_TEST_KEYRING: 'memory', DOTS_TEST_KEYRING_PATH: modelKeychainFile,
       DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_LINUX_DESKTOP_TOKEN_SECRET: signingKey,
       DOTS_LINUX_DESKTOP_TEST_WORKER_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/worker/`,
       DOTS_LINUX_DESKTOP_TEST_NOVNC_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/novnc/`,
       DOTS_LINUX_DESKTOP_TEST_AGENT_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/agent/`,
-      DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
-      DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: 'node', args: ['/tmp/dots-dsh-adapter.mjs'] } }),
-      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://api.deepseek.com', DOTS_MODEL_API_KEY: 'cloud-e2e-shared-api-key', DOTS_MODEL: 'deepseek-flash', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
+      DOTS_DESKTOP_AGENT_ADAPTERS: 'pi,dsh',
+      DOTS_AGENT_KERNELS_JSON: JSON.stringify({
+        pi: { command: 'node', args: ['/tmp/dots-pi-adapter.mjs'] },
+        dsh: { command: 'node', args: ['/tmp/dots-dsh-adapter.mjs'] },
+      }),
+      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://api.deepseek.com', DOTS_MODEL_API_KEY: '', DOTS_MODEL: 'deepseek-flash', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -259,6 +269,26 @@ async function chooseComputer(target: Page) {
   }, null, { timeout: 20_000 });
 }
 
+async function openDotProfile(target: Page) {
+  const profileLink = target.locator('.profile-link');
+  if (await profileLink.isVisible()) await profileLink.click();
+  else {
+    await target.getByTestId('account-menu-trigger').click();
+    await target.getByRole('button', { name: 'Dot 设置', exact: true }).click();
+  }
+  await target.getByRole('heading', { name: '你的 dot', exact: true }).waitFor({ state: 'visible' });
+}
+
+async function setDotPaused(target: Page, paused: boolean) {
+  await openDotProfile(target);
+  await target.getByRole('button', { name: 'Dot options' }).click();
+  await target.getByTestId('dot-pause-action').click();
+  await waitFor(async () => {
+    const state = await target.evaluate(async () => await (await fetch('/api/state')).json()) as { dotPaused: boolean };
+    return state.dotPaused === paused;
+  }, 10_000);
+}
+
 try {
   await startRemote();
   appPort = await freePort();
@@ -276,7 +306,9 @@ try {
   await signIn(page, 'cloud-alpha@example.test');
   const engineState = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[] };
   const availableEngines = engineState.availableEngines;
+  assert(availableEngines.includes('pi'), 'The cloud workspace should expose its configured Pi adapter');
   assert(availableEngines.includes('dsh'), 'The cloud workspace should expose its configured DeepSeek Harness adapter');
+  assert(engineState.remoteEngines.includes('pi'), 'The cloud workspace should identify Pi as running in its cloud computer');
   assert(engineState.remoteEngines.includes('dsh'), 'The cloud workspace should identify DeepSeek Harness as running in its cloud computer');
   assert.equal(availableEngines.includes('claude'), false, 'Claude Code must remain unavailable in the cloud workspace UI and API');
   await page.evaluate(async () => {
@@ -412,8 +444,99 @@ try {
   assert.notEqual(machines.get(alphaHash), machines.get(betaHash), 'Tenants shared one desktop state object');
   await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });
   await betaContext.close();
+
+  // A temporary Keychain lock must not interrupt a credential already loaded by the long-running service.
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  await page.locator('[data-testid="engine-select"]').selectOption('pi');
+  assert.equal(await page.locator('small.hint').textContent(), '任务由 Dot 的云电脑运行。');
+  const beforeTemporaryLock = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean } };
+  assert.equal(beforeTemporaryLock.modelSettings.hasKey, true, 'Seed the isolated instance-shared API key before the browser task');
+  await setDotPaused(page, true);
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  const cachedKeyInstruction = 'E2E Pi task continues while the already-loaded shared keychain is temporarily locked';
+  await page.getByTestId('task-composer').fill(cachedKeyInstruction);
+  await page.locator('button.send').click();
+  await waitForAsyncPredicate(page, async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction)?.status === 'queued';
+  }, cachedKeyInstruction, { timeout: 10_000 });
+  const remoteCallsBeforeTemporaryLock = agentCalls.length;
+  await writeFile(modelKeychainFile, '{ locked', { mode: 0o600 });
+  await setDotPaused(page, false);
+  await waitForAsyncPredicate(page, async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction)?.status === 'done';
+  }, cachedKeyInstruction, { timeout: 10_000 });
+  const afterTemporaryLock = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { instruction: string; status: string }[] };
+  assert.equal(afterTemporaryLock.modelSettings.hasKey, true, 'The process-local shared key cache should remain usable while Keychain access is temporarily unavailable');
+  assert.equal(afterTemporaryLock.modelSettings.apiKeyStatus, 'available');
+  assert.equal(afterTemporaryLock.tasks.find(task => task.instruction === cachedKeyInstruction)?.status, 'done');
+  const cachedKeyCall = agentCalls.find(call => call.prompt && String(call.prompt).includes(cachedKeyInstruction));
+  assert(cachedKeyCall, 'The queued Pi task should reach the cloud Agent using the cached credential');
+  assert.equal(cachedKeyCall.engine, 'pi');
+  assert.equal((cachedKeyCall.modelConfig as { apiKey?: string } | undefined)?.apiKey, 'cloud-e2e-shared-api-key');
+  assert.equal(agentCalls.length, remoteCallsBeforeTemporaryLock + 1, 'A temporary Keychain failure should not prevent exactly one cloud Agent dispatch');
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  const cachedActivityRow = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task continues while the already-loaded' }).first();
+  await cachedActivityRow.waitFor({ state: 'visible' });
+  await cachedActivityRow.click();
+  await cachedActivityRow.locator('.context-status.done').waitFor({ state: 'visible' });
+  await page.screenshot({ path: join(artifacts, '05a-pi-temporary-keychain-lock-continues.png') });
+
+  // A fresh service process has no in-memory key. With the Keychain still locked, it must fail queued work before cloud dispatch.
+  await setDotPaused(page, true);
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  const lockedRestartInstruction = 'E2E Pi task must stop before cloud dispatch when the keychain is unreadable after restart';
+  await page.getByTestId('task-composer').fill(lockedRestartInstruction);
+  await page.locator('button.send').click();
+  await waitForAsyncPredicate(page, async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction)?.status === 'queued';
+  }, lockedRestartInstruction, { timeout: 10_000 });
+  const remoteCallsBeforeLockedRestart = agentCalls.length;
+  await restartApp();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByTestId('app-shell').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  const afterLockedRestart = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { instruction: string; status: string }[] };
+  assert.equal(afterLockedRestart.modelSettings.hasKey, false);
+  assert.equal(afterLockedRestart.modelSettings.apiKeyStatus, 'unreadable');
+  assert(afterLockedRestart.remoteEngines.includes('pi'), 'The UI should retain Pi as a configured cloud destination while reporting its credential unavailable');
+  assert.equal(afterLockedRestart.availableEngines.includes('pi'), false);
+  assert.equal(afterLockedRestart.tasks.find(task => task.instruction === lockedRestartInstruction)?.status, 'queued');
+  const rejectedNewPiTask = await page.evaluate(async instruction => {
+    const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction, engine: 'pi' }) });
+    return { status: response.status, body: await response.json() as { error?: string } };
+  }, 'E2E must not enqueue Pi while its shared credential is unreadable after restart');
+  assert.equal(rejectedNewPiTask.status, 400, 'The Chrome-facing task API must reject new cloud Pi work without the shared credential');
+  assert.match(rejectedNewPiTask.body.error || '', /实例级模型 API 配置/);
+  const tasksAfterRejectedPi = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { tasks: { instruction: string }[] };
+  assert.equal(tasksAfterRejectedPi.tasks.some(task => task.instruction === 'E2E must not enqueue Pi while its shared credential is unreadable after restart'), false);
+
+  await setDotPaused(page, false);
+  await waitForAsyncPredicate(page, async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction)?.status === 'failed';
+  }, lockedRestartInstruction, { timeout: 10_000 });
+  assert.equal(agentCalls.length, remoteCallsBeforeLockedRestart, 'A fresh process must fail before sending work to the Debian Agent runtime when it cannot unlock the shared key');
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  const lockedActivityRow = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task must stop before cloud dispatch' }).first();
+  await lockedActivityRow.waitFor({ state: 'visible' });
+  await lockedActivityRow.click();
+  await page.locator('.timeline .message.system p').filter({ hasText: '系统凭据库无法读取共享 API 密钥' }).waitFor({ state: 'visible' });
+  const afterUnavailableTask = await page.evaluate(async instruction => {
+    const state = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; error: string | null }[] };
+    return state.tasks.find(task => task.instruction === instruction) || null;
+  }, lockedRestartInstruction);
+  assert.equal(afterUnavailableTask?.status, 'failed');
+  assert.match(afterUnavailableTask?.error || '', /请解锁运行服务设备上的系统钥匙串/);
+  const failedActivity = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task must stop before cloud dispatch' }).first();
+  await failedActivity.locator('.context-status.failed').waitFor({ state: 'visible' });
+  assert.match(await failedActivity.innerText(), /Failed/);
+  await page.screenshot({ path: join(artifacts, '05-pi-keychain-locked-after-restart-preflight.png') });
+
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation', 'a temporary Keychain lock preserves the cached shared key', 'a fresh process fails queued Pi work before cloud dispatch when the Keychain stays locked'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
