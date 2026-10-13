@@ -1887,8 +1887,9 @@ try {
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, instruction);
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: instruction }).waitFor({ state: 'visible' });
+    await alphaPage!.getByText('最近的对话和进度', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await call.isVisible(), true, 'Recognizing a voice turn must keep the call open over the Dot conversation');
     await waitFor(() => Boolean(heldVoiceModelRelease), 10_000);
-    await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
     await waitFor(async () => (await call.getByTestId('voice-call-transcript').getAttribute('data-task-status'))?.includes('Dot 正在处理') || false, 10_000);
     await screenshot(alphaPage!, 'voice-call-task-running');
     speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
@@ -1899,11 +1900,14 @@ try {
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, responseInstruction);
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: responseInstruction }).waitFor({ state: 'visible' });
+    await alphaPage!.getByText('最近的对话和进度', { exact: true }).waitFor({ state: 'visible' });
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
       return speechOutput.includes('Voice response returned from the model.');
     }, 10_000);
     assert(speechOutput.includes('Voice response returned from the model.'), 'The call should speak the completed task result, not only acknowledge receipt');
+    await alphaPage!.locator('.timeline .message.dot').filter({ hasText: 'Voice response returned from the model.' }).waitFor({ state: 'visible' });
+    assert.equal(await call.isVisible(), true, 'The Agent answer must return to the Dot conversation without navigating away from the active call');
     assert.equal(voiceStatePollingRequests, 0, 'Voice task progress should arrive on the authenticated event stream instead of polling /api/state');
     alphaPage!.off('request', countVoiceStatePolling);
     const composer = alphaPage!.getByTestId('task-composer');
