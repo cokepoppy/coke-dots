@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { Entry } from '@napi-rs/keyring';
+import { after, test } from 'node:test';
+import { Entry } from '../src/server/keychain.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,11 @@ import { Store } from '../src/server/store.ts';
 import { effectiveModelConfig, loadModelSettings, migrateTenantModelKey, publicModelSettings, setModelMetadata } from '../src/server/model-settings.ts';
 
 const keychainService = () => process.env.DOTS_KEYCHAIN_SERVICE || 'com.cokepoppy.coke-dots.test';
+const isolatedKeychainDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-test-keychain-'));
+process.env.NODE_ENV = 'test';
+process.env.DOTS_TEST_KEYCHAIN = '1';
+process.env.DOTS_TEST_KEYCHAIN_FILE = join(isolatedKeychainDirectory, 'credentials.json');
+after(() => rmSync(isolatedKeychainDirectory, { recursive: true, force: true }));
 const sharedEntry = () => new Entry(keychainService(), 'shared-model-api-key');
 const tenantEntry = (tenantId: string) => new Entry(keychainService(), `tenant-${tenantId}-model-api-key`);
 const localEntry = () => new Entry(keychainService(), 'local-model-api-key');

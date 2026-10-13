@@ -499,6 +499,8 @@ test('background worker stores real model result and schedules a future run', as
   process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
   process.env.DOTS_MODEL = 'test-model';
   process.env.DOTS_MODEL_API_KEY = 'test-key';
+  const previousE2eAuth = process.env.DOTS_E2E_AUTH;
+  process.env.DOTS_E2E_AUTH = '1';
   const store = new Store(directory);
   const user = store.signInGoogle({ subject: 'worker-memory', email: 'worker-memory@example.test', name: 'Worker Memory' });
   store.addTenantMemory(user.tenant.id, user.user.id, 'Use short Mandarin summaries.');
@@ -523,6 +525,8 @@ test('background worker stores real model result and schedules a future run', as
     delete process.env.DOTS_MODEL_BASE_URL;
     delete process.env.DOTS_MODEL;
     delete process.env.DOTS_MODEL_API_KEY;
+    if (previousE2eAuth === undefined) delete process.env.DOTS_E2E_AUTH;
+    else process.env.DOTS_E2E_AUTH = previousE2eAuth;
   }
 });
 
@@ -538,6 +542,8 @@ test('background worker persists the next daily occurrence in the selected time 
   process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
   process.env.DOTS_MODEL = 'test-model';
   process.env.DOTS_MODEL_API_KEY = 'test-key';
+  const previousE2eAuth = process.env.DOTS_E2E_AUTH;
+  process.env.DOTS_E2E_AUTH = '1';
   let store = new Store(directory);
   const scheduleSpec = { frequency: 'daily' as const, time: '23:59', timeZone: 'Asia/Shanghai', endDate: null };
   const task = store.createTask('Run the daily check', null, 'model', 'legacy', scheduleSpec, new Date(Date.now() - 1_000).toISOString());
@@ -563,6 +569,8 @@ test('background worker persists the next daily occurrence in the selected time 
     delete process.env.DOTS_MODEL_BASE_URL;
     delete process.env.DOTS_MODEL;
     delete process.env.DOTS_MODEL_API_KEY;
+    if (previousE2eAuth === undefined) delete process.env.DOTS_E2E_AUTH;
+    else process.env.DOTS_E2E_AUTH = previousE2eAuth;
   }
 });
 

@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from '../../src/server/keychain.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const artifactStamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -20,6 +20,10 @@ const videoDir = join(artifactRoot, 'video');
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-e2e-'));
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
+const testKeychainFile = join(testDataDir, 'test-keychain.json');
+process.env.NODE_ENV = 'test';
+process.env.DOTS_TEST_KEYCHAIN = '1';
+process.env.DOTS_TEST_KEYCHAIN_FILE = testKeychainFile;
 const fixtureSource = join(projectRoot, 'tests', 'e2e', 'fixtures', 'computer.html');
 const fixtureDestination = join(projectRoot, 'dist', 'e2e-computer-fixture.html');
 const chromePath = findChromePath();
@@ -261,6 +265,8 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_E2E_AUTH: '1',
       DOTS_ENV_FILE: emptyEnvFile,
       DOTS_DATA_DIR: testDataDir,
+      DOTS_TEST_KEYCHAIN: '1',
+      DOTS_TEST_KEYCHAIN_FILE: testKeychainFile,
       DOTS_PORT: String(port),
       DOTS_CHROME_BIN: chromePath,
       GOOGLE_CLIENT_ID: '',
@@ -1103,6 +1109,53 @@ try {
     assert.match(await weeklyDetail.innerText(), new RegExp(`until ${scheduleEndDate}`));
     await screenshot(alphaPage!, '07c-weekly-scheduled');
     await weeklyDetail.getByRole('button', { name: 'Cancel schedule' }).click();
+  });
+
+  const editableScheduledTask = 'E2E editable schedule — send a morning summary';
+  await recordStep('Scheduled lets the owner edit, pause, resume, and remove a recurring task', async () => {
+    await clickNav(alphaPage!, '你的 dot');
+    await createTask(alphaPage!, editableScheduledTask, true);
+    await clickNav(alphaPage!, 'Scheduled');
+    const detail = alphaPage!.getByTestId('scheduled-detail');
+    await alphaPage!.locator('.scheduled-item').filter({ hasText: editableScheduledTask }).click();
+    await detail.getByText('Failed', { exact: true }).waitFor({ state: 'visible' });
+    const taskId = await detail.getAttribute('data-item-id');
+    assert(taskId, 'Scheduled detail must identify the tenant task');
+    const foreignUpdateStatus = await betaPage!.evaluate(async ({ id, scheduleSpec }) => (await fetch(`/api/tasks/${id}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'updateSchedule', scheduleSpec }),
+    })).status, { id: taskId, scheduleSpec: { frequency: 'interval', intervalMinutes: 15 } });
+    assert.equal(foreignUpdateStatus, 404, 'Another tenant must not edit this schedule');
+
+    await detail.getByRole('button', { name: 'Edit schedule' }).click();
+    const editor = detail.getByTestId('scheduled-task-editor');
+    await editor.getByLabel('重复频率').selectOption('daily');
+    await editor.getByLabel('定时时间').fill('23:59');
+    await editor.getByLabel('时区').selectOption('Asia/Shanghai');
+    const endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    await editor.getByLabel('结束日期').fill(endDate);
+    await editor.getByRole('button', { name: 'Save schedule' }).click();
+    await detail.getByText('Monitoring', { exact: true }).waitFor({ state: 'visible' });
+    await detail.getByText('Daily at 23:59 (Asia/Shanghai)', { exact: false }).waitFor({ state: 'visible' });
+    assert.match(await detail.innerText(), new RegExp(`until ${endDate}`));
+    await screenshot(alphaPage!, '07d-edited-daily-schedule');
+
+    await detail.getByRole('button', { name: 'Pause schedule' }).click();
+    await detail.getByText('Paused', { exact: true }).waitFor({ state: 'visible' });
+    assert.match(await detail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
+    await detail.getByRole('button', { name: 'Edit schedule' }).click();
+    const pausedEditor = detail.getByTestId('scheduled-task-editor');
+    await pausedEditor.getByLabel('重复频率').selectOption('interval');
+    await pausedEditor.getByLabel('间隔分钟数').fill('120');
+    await pausedEditor.getByRole('button', { name: 'Save schedule' }).click();
+    await detail.getByText('Paused', { exact: true }).waitFor({ state: 'visible' });
+    await detail.getByText('Every 120 minutes', { exact: true }).waitFor({ state: 'visible' });
+    assert.match(await detail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
+
+    await detail.getByRole('button', { name: 'Resume schedule' }).click();
+    await detail.getByText('Monitoring', { exact: true }).waitFor({ state: 'visible' });
+    assert.doesNotMatch(await detail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
+    await detail.getByRole('button', { name: 'Cancel schedule' }).click();
+    await alphaPage!.locator('.scheduled-item').filter({ hasText: editableScheduledTask }).waitFor({ state: 'detached' });
   });
 
   await recordStep('Alpha configures one shared Model API and Beta can read but cannot edit it', async () => {

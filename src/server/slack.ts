@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { Entry } from '@napi-rs/keyring';
+import { Entry } from './keychain.ts';
 import type { AuthSession } from './store.ts';
 import { Store } from './store.ts';
 
