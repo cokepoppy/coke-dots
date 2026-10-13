@@ -12,6 +12,14 @@ function useMemoryKeyring() {
   return process.env.NODE_ENV === 'test' && process.env.DOTS_TEST_KEYRING === 'memory';
 }
 
+function useUnavailableTestKeyring() {
+  return process.env.NODE_ENV === 'test' && process.env.DOTS_TEST_KEYRING === 'unavailable';
+}
+
+function unavailableTestKeyringError() {
+  return Object.assign(new Error('Test credential store is unavailable'), { code: 'GenericFailure' });
+}
+
 function testKeyringFile() {
   const configured = process.env.DOTS_TEST_KEYRING_PATH?.trim();
   return configured ? configured : null;
@@ -43,8 +51,15 @@ export class Entry {
   private readonly native?: NativeEntry;
   private readonly memory?: string;
   private readonly memoryFile: string | null;
+  private readonly unavailableForTest: boolean;
 
   constructor(service: string, username: string) {
+    if (useUnavailableTestKeyring()) {
+      this.unavailableForTest = true;
+      this.memoryFile = null;
+      return;
+    }
+    this.unavailableForTest = false;
     if (useMemoryKeyring()) {
       this.memory = memoryKey(service, username);
       this.memoryFile = testKeyringFile();
@@ -55,6 +70,7 @@ export class Entry {
   }
 
   setPassword(password: string) {
+    if (this.unavailableForTest) throw unavailableTestKeyringError();
     if (this.memory !== undefined) {
       const entries = readTestEntries(this.memoryFile);
       entries.set(this.memory, password);
@@ -65,11 +81,13 @@ export class Entry {
   }
 
   getPassword() {
+    if (this.unavailableForTest) throw unavailableTestKeyringError();
     if (this.memory !== undefined) return readTestEntries(this.memoryFile).get(this.memory) ?? null;
     return this.native!.getPassword();
   }
 
   deletePassword() {
+    if (this.unavailableForTest) throw unavailableTestKeyringError();
     if (this.memory !== undefined) {
       const entries = readTestEntries(this.memoryFile);
       const deleted = entries.delete(this.memory);

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Entry } from '../src/server/keyring.ts';
 import { Store } from '../src/server/store.ts';
-import { configuredInstanceModelConfig, effectiveModelConfig, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, missingModelSettings, publicModelSettings, saveModelKey, saveSharedModelKey, setModelMetadata } from '../src/server/model-settings.ts';
+import { configuredInstanceModelConfig, effectiveModelConfig, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, missingModelSettings, publicModelSettings, saveModelKey, saveSharedModelKey, setModelMetadata, sharedModelApiKeyStatus } from '../src/server/model-settings.ts';
 
 process.env.DOTS_KEYCHAIN_SERVICE = `${process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots.test'}.model-settings-${process.pid}`;
 
@@ -68,13 +68,36 @@ test('tenant-local legacy model settings are not used as runtime credentials or 
     saveModelKey('legacy-tenant-only-secret', tenantId);
     assert.deepEqual(missingModelSettings(tenantId), ['API 密钥', '模型名称'], 'Old workspace settings do not satisfy the shared instance profile');
     assert.equal(effectiveModelConfig(tenantId), null, 'A workspace-only key must not activate a tenant-specific runtime');
-    assert.deepEqual(publicModelSettings(tenantId), { baseUrl: '', model: '', hasKey: false }, 'The UI shows only the instance profile');
+    assert.deepEqual(publicModelSettings(tenantId), { baseUrl: '', model: '', hasKey: false, apiKeyStatus: 'missing' }, 'The UI shows only the instance profile');
   } finally {
     new Entry(process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots', `tenant-${tenantId}-model-api-key`).deletePassword();
     loadSharedModelSettings(null, null);
     for (const [key, value] of previousEnv) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
+  }
+});
+
+test('shared model settings distinguish an unreadable system credential store from a missing key', () => {
+  const keys = ['NODE_ENV', 'DOTS_TEST_KEYRING', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previous = new Map(keys.map(key => [key, process.env[key]]));
+  const tenantId = `keychain-unavailable-${randomUUID()}`;
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_TEST_KEYRING = 'unavailable';
+  for (const key of ['DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY']) delete process.env[key];
+  try {
+    loadSharedModelSettings('https://api.example.test/v1', 'shared-test-model');
+    loadModelSettings(null, null, tenantId);
+    assert.equal(sharedModelApiKeyStatus(tenantId), 'unreadable');
+    assert.deepEqual(missingModelSettings(tenantId), ['API 密钥']);
+    assert.deepEqual(publicModelSettings(tenantId), {
+      baseUrl: 'https://api.example.test/v1', model: 'shared-test-model', hasKey: false, apiKeyStatus: 'unreadable',
+    });
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    loadSharedModelSettings(null, null);
   }
 });
 
@@ -123,7 +146,7 @@ test('Model API shared default is available to a newly signed-in tenant without 
       apiKey: 'shared-secret-for-test-only', model: 'shared-model', baseUrl: 'https://api.shared.example.test/v1',
     });
     assert.deepEqual(publicModelSettings(tenantId), {
-      baseUrl: 'https://api.shared.example.test/v1', model: 'shared-model', hasKey: true,
+      baseUrl: 'https://api.shared.example.test/v1', model: 'shared-model', hasKey: true, apiKeyStatus: 'available',
     });
     assert.equal(JSON.stringify(publicModelSettings(tenantId)).includes('shared-secret-for-test-only'), false);
   } finally {

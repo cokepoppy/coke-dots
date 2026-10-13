@@ -8,7 +8,7 @@ import { Store } from '../src/server/store.ts';
 import { Worker } from '../src/server/worker.ts';
 import type { ComputerRuntime } from '../src/server/computer.ts';
 
-test('cloud Agent tasks fail before dispatch when the shared Model API key is unavailable', async () => {
+async function runCloudConfigPreflight(keyringMode: 'memory' | 'unavailable') {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-cloud-model-config-'));
   const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_DESKTOP_AGENT_ADAPTERS', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_KEYRING'] as const;
   const previous = new Map(envKeys.map(key => [key, process.env[key]]));
@@ -19,7 +19,7 @@ test('cloud Agent tasks fail before dispatch when the shared Model API key is un
   process.env.DOTS_DESKTOP_AGENT_ADAPTERS = 'pi';
   process.env.DOTS_AGENT_KERNELS_JSON = JSON.stringify({ pi: { command: '/bin/false', args: [] } });
   process.env.DOTS_KEYCHAIN_SERVICE = `com.cokepoppy.coke-dots.test.${randomUUID()}`;
-  process.env.DOTS_TEST_KEYRING = 'memory';
+  process.env.DOTS_TEST_KEYRING = keyringMode;
 
   const store = new Store(directory);
   const account = store.signInGoogle({ subject: `cloud-config-${randomUUID()}`, email: 'cloud-config@example.test', name: 'Test Dot' });
@@ -37,9 +37,7 @@ test('cloud Agent tasks fail before dispatch when the shared Model API key is un
 
   try {
     await worker.tick();
-    assert.equal(store.getTask(task.id, account.tenant.id)?.status, 'failed');
-    assert.match(store.getTask(task.id, account.tenant.id)?.error || '', /实例缺少API 密钥/);
-    assert.equal(remoteDispatches, 0, 'The Agent pod must not receive a request without shared credentials');
+    return { task: store.getTask(task.id, account.tenant.id), remoteDispatches };
   } finally {
     worker.stop();
     store.close();
@@ -48,4 +46,18 @@ test('cloud Agent tasks fail before dispatch when the shared Model API key is un
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }
+}
+
+test('cloud Agent tasks fail before dispatch when the shared Model API key is missing', async () => {
+  const result = await runCloudConfigPreflight('memory');
+  assert.equal(result.task?.status, 'failed');
+  assert.match(result.task?.error || '', /实例缺少API 密钥/);
+  assert.equal(result.remoteDispatches, 0, 'The Agent pod must not receive a request without shared credentials');
+});
+
+test('cloud Agent tasks explain an unreadable system credential store before dispatch', async () => {
+  const result = await runCloudConfigPreflight('unavailable');
+  assert.equal(result.task?.status, 'failed');
+  assert.match(result.task?.error || '', /系统凭据库无法读取共享 API 密钥/);
+  assert.equal(result.remoteDispatches, 0, 'The Agent pod must not receive a request when Keychain access fails');
 });

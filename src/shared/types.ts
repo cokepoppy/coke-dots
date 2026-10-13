@@ -90,8 +90,10 @@ export interface Snapshot {
   configured: boolean;
   availableEngines: Engine[];
   remoteEngines: Engine[];
-  modelSettings: { baseUrl: string; model: string; hasKey: boolean; canManage?: boolean };
+  modelSettings: { baseUrl: string; model: string; hasKey: boolean; apiKeyStatus?: ModelApiKeyStatus; canManage?: boolean };
 }
+
+export type ModelApiKeyStatus = 'available' | 'missing' | 'unreadable';
 
 export interface Watch {
   id: string;

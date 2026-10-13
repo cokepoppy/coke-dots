@@ -5,7 +5,7 @@ import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts
 import { Store } from './store.ts';
 import { adapters, formatAgentPrompt, parseDecision, agentDecisionOptions, type AgentRequest, type Engine } from './adapters.ts';
 import type { ComputerRuntime } from './computer.ts';
-import { effectiveModelConfig, loadModelSettings, loadSharedModelSettings, missingModelSettings } from './model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, loadSharedModelSettings, missingModelSettings, sharedModelApiKeyStatus } from './model-settings.ts';
 import { configuredDesktopAgentEngines } from './linux-desktop-computer.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
@@ -103,7 +103,9 @@ export class Worker {
       const engineName = ({ model: '模型 API', claude: 'Claude Code', pi: 'Pi', dsh: 'DeepSeek Harness' } as const)[task.engine];
       const missing = ['model', 'pi', 'dsh'].includes(task.engine) ? missingModelSettings(task.tenantId) : [];
       const reason = missing.length
-        ? `当前 Coke Dots 实例缺少${missing.join('和')}。请由实例模型管理员在“模型 API”设置中补全共享配置后重试。`
+        ? sharedModelApiKeyStatus(task.tenantId) === 'unreadable'
+          ? '当前 Coke Dots 实例的系统凭据库无法读取共享 API 密钥。请解锁运行服务设备上的系统钥匙串后重试；若密钥条目不存在，再由实例模型管理员重新保存共享配置。'
+          : `当前 Coke Dots 实例缺少${missing.join('和')}。请由实例模型管理员在“模型 API”设置中补全共享配置后重试。`
         : `${engineName} 尚未配置或安装，请检查本机内核安装和实例模型设置后重试。`;
       const errorMessage = `${engineName} 内核不可用，任务没有执行。${reason}`;
       this.store.updateTask(task.id, { status: 'failed', error: errorMessage }, task.tenantId);

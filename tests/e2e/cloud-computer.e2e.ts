@@ -454,41 +454,45 @@ try {
   assert.equal(beforeMissingKey.modelSettings.hasKey, true, 'Seed the isolated instance-shared API key before the browser task');
   await setDotPaused(page, true);
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
-  const missingKeyInstruction = 'E2E Pi task must stop before cloud dispatch when the shared API key disappears';
-  await page.getByTestId('task-composer').fill(missingKeyInstruction);
+  const unreadableKeyInstruction = 'E2E Pi task must stop before cloud dispatch when the system keychain is unreadable';
+  await page.getByTestId('task-composer').fill(unreadableKeyInstruction);
   await page.locator('button.send').click();
   await waitFor(async () => Boolean(await page!.evaluate(async instruction => {
     const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string }[] };
     return state.tasks.find(task => task.instruction === instruction);
-  }, missingKeyInstruction)), 10_000);
-  const missingKeyTask = await page.evaluate(async instruction => {
+  }, unreadableKeyInstruction)), 10_000);
+  const unreadableKeyTask = await page.evaluate(async instruction => {
     const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string }[] };
     return state.tasks.find(task => task.instruction === instruction) || null;
-  }, missingKeyInstruction);
-  assert(missingKeyTask, 'The Chrome composer must create the Pi task while Dot is paused');
-  assert.equal(missingKeyTask.status, 'queued', 'The paused Dot must leave the task queued during the credential change');
+  }, unreadableKeyInstruction);
+  assert(unreadableKeyTask, 'The Chrome composer must create the Pi task while Dot is paused');
+  assert.equal(unreadableKeyTask.status, 'queued', 'The paused Dot must leave the task queued during the credential-store failure');
   const remoteCallsBeforeMissingKey = agentCalls.length;
   const remotePathCountBeforeMissingKey = remoteHttpPaths.length;
-  await writeFile(modelKeychainFile, '{}', { mode: 0o600 });
+  await writeFile(modelKeychainFile, '{ locked', { mode: 0o600 });
   await setDotPaused(page, false);
   await waitForAsyncPredicate(page, async id => {
     const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string }[] };
     return state.tasks.find(task => task.id === id)?.status === 'failed';
-  }, missingKeyTask.id, { timeout: 10_000 });
+  }, unreadableKeyTask.id, { timeout: 10_000 });
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
-  await page.locator('.timeline .message.system p').filter({ hasText: '当前 Coke Dots 实例缺少API 密钥' }).waitFor({ state: 'visible' });
+  await page.locator('.timeline .message.system p').filter({ hasText: '系统凭据库无法读取共享 API 密钥' }).waitFor({ state: 'visible' });
   const failedActivity = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task must stop' }).first();
   await failedActivity.locator('.context-status.failed').waitFor({ state: 'visible' });
   assert.match(await failedActivity.innerText(), /Failed/, 'The right-side Recent activity row must show the failed task status');
-  const afterMissingKey = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean }; tasks: { id: string; status: string; error: string | null }[] };
-  assert.equal(afterMissingKey.modelSettings.hasKey, false, 'The UI state must report that the shared key is unavailable');
-  assert.equal(afterMissingKey.tasks.find(task => task.id === missingKeyTask.id)?.status, 'failed');
+  const afterUnreadableKey = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { id: string; status: string; error: string | null }[] };
+  assert.equal(afterUnreadableKey.modelSettings.hasKey, false, 'The UI state must report that the shared key is unavailable');
+  assert.equal(afterUnreadableKey.modelSettings.apiKeyStatus, 'unreadable', 'The UI state must distinguish an unreadable system credential store from a missing key');
+  assert.equal(afterUnreadableKey.tasks.find(task => task.id === unreadableKeyTask.id)?.status, 'failed');
   assert.equal(agentCalls.length, remoteCallsBeforeMissingKey, 'Pi must fail its shared-config preflight without dispatching to the cloud Agent runtime');
-  assert.equal(remoteHttpPaths.slice(remotePathCountBeforeMissingKey).some(path => path.includes(`${alphaHash}/agent/v1/tasks/run`)), false, 'No remote Agent task request may be sent after the shared key disappears');
-  await page.screenshot({ path: join(artifacts, '05-pi-missing-shared-key-preflight.png') });
+  assert.equal(remoteHttpPaths.slice(remotePathCountBeforeMissingKey).some(path => path.includes(`${alphaHash}/agent/v1/tasks/run`)), false, 'No remote Agent task request may be sent while the system credential store is unreadable');
+  await page.getByTestId('composer-hint').filter({ hasText: '无法读取实例共享 API 密钥' }).waitFor({ state: 'visible' });
+  await page.screenshot({ path: join(artifacts, '05-pi-unreadable-keychain-preflight.png') });
+  await openDotProfile(page);
+  await page.getByTestId('model-keychain-warning').waitFor({ state: 'visible' });
 
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation', 'Chrome Pi task shows shared-key preflight failure without cloud Agent dispatch'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation', 'Chrome Pi task explains an unreadable system keychain without cloud Agent dispatch'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
