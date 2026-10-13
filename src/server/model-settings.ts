@@ -1,4 +1,5 @@
-import { Entry } from '@napi-rs/keyring';
+import { existsSync } from 'node:fs';
+import { Entry } from './keyring.ts';
 
 export interface ModelSettings { baseUrl: string; model: string; hasKey: boolean; adminTenantId: string | null }
 
@@ -10,6 +11,7 @@ const legacyKeychainEntry = () => new Entry(keychainService(), 'local-model-api-
 const testModelFixtureEnabled = () => process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1';
 
 let stored: ModelSettings = { baseUrl: '', model: '', hasKey: false, adminTenantId: null };
+const lastReadableSharedKeys = new Map<string, string>();
 
 /** Endpoint, model name, and API credential are shared by all Coke Dots tenants. */
 export function loadModelSettings(baseUrl: string | null, model: string | null, adminTenantId: string | null = null) {
@@ -27,6 +29,7 @@ export function migrateTenantModelKey(tenantIds: readonly string[]): string | nu
     if (!key) continue;
     try {
       sharedKeychainEntry().setPassword(key);
+      lastReadableSharedKeys.set(keychainService(), key);
       return tenantId === 'legacy' ? null : tenantId;
     } catch {
       // A locked or unavailable Keychain leaves the shared model unavailable until it is configured.
@@ -35,14 +38,19 @@ export function migrateTenantModelKey(tenantIds: readonly string[]): string | nu
   }
   try {
     const legacyKey = legacyKeychainEntry().getPassword();
-    if (legacyKey) sharedKeychainEntry().setPassword(legacyKey);
+    if (legacyKey) {
+      sharedKeychainEntry().setPassword(legacyKey);
+      lastReadableSharedKeys.set(keychainService(), legacyKey);
+    }
   } catch { /* A missing legacy entry is expected on new installations. */ }
   return null;
 }
 
 export function saveModelKey(value: string) {
   if (!value.trim()) throw new Error('密钥不能为空');
-  sharedKeychainEntry().setPassword(value.trim());
+  const key = value.trim();
+  sharedKeychainEntry().setPassword(key);
+  lastReadableSharedKeys.set(keychainService(), key);
   stored = { ...stored, hasKey: true };
 }
 
@@ -67,6 +75,20 @@ function environmentModelKey(): string | null {
 }
 
 function readSharedKey(): string | null {
-  try { return sharedKeychainEntry().getPassword() || null; }
-  catch { return null; }
+  const service = keychainService();
+  try {
+    // Browser E2E can simulate a locked Keychain without changing the host login Keychain.
+    const simulatedLockFile = process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE?.trim();
+    if (process.env.NODE_ENV === 'test' && simulatedLockFile && existsSync(simulatedLockFile)) {
+      throw new Error('Simulated unavailable shared Model API Keychain');
+    }
+    const value = new Entry(service, 'shared-model-api-key').getPassword() || null;
+    if (value) lastReadableSharedKeys.set(service, value);
+    else lastReadableSharedKeys.delete(service);
+    return value;
+  } catch {
+    // macOS can temporarily make the login Keychain unreadable while it is locked.
+    // Retain only the last value read or saved successfully in this service process.
+    return lastReadableSharedKeys.get(service) || null;
+  }
 }
