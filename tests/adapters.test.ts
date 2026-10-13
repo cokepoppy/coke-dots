@@ -20,6 +20,11 @@ test('agent output must specify a real task state', () => {
   assert.throws(() => parseDecision('{"status":"done","message":""}'));
 });
 
+test('agent decision parsing escapes literal control characters inside JSON strings', () => {
+  const raw = '{"status":"done","message":"第一行\n第二行\t结束"}';
+  assert.equal(parseDecision(raw).message, '第一行\n第二行\t结束');
+});
+
 test('website sign-in requests wait for the user and contain only a safe public login address', () => {
   const result = parseDecision(JSON.stringify({
     status: 'waiting', message: 'Please sign in to continue.',
