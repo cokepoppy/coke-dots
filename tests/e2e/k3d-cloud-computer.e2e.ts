@@ -54,7 +54,9 @@ async function configureLiveAgentKernels() {
     || new Entry(sourceKeychainService, 'tenant-legacy-model-api-key').getPassword() || '';
   assert(baseUrl && model && apiKey, 'Live cloud-kernel E2E needs the configured shared model endpoint, model, and Keychain credential.');
   assert.equal(new URL(baseUrl).protocol, 'https:', 'Live cloud-kernel E2E requires an HTTPS model endpoint.');
-  new Entry(testKeychainService, 'shared-model-api-key').setPassword(apiKey);
+  process.env.DOTS_MODEL_BASE_URL = baseUrl;
+  process.env.DOTS_MODEL = model;
+  process.env.DOTS_MODEL_API_KEY = apiKey;
   const setupStore = new Store(dataDirectory);
   setupStore.setSetting('sharedModelBaseUrl', baseUrl, 'legacy');
   setupStore.setSetting('sharedModelName', model, 'legacy');
@@ -93,7 +95,11 @@ async function startApp(): Promise<ChildProcess> {
       DOTS_LINUX_DESKTOP_TEST_WORKER_URL: '', DOTS_LINUX_DESKTOP_TEST_NOVNC_URL: '', DOTS_LINUX_DESKTOP_TEST_AGENT_URL: '',
       DOTS_DESKTOP_AGENT_ADAPTERS: runLiveAgentKernels ? 'pi,dsh' : 'dsh',
       DOTS_AGENT_KERNELS_JSON: runLiveAgentKernels ? '{}' : JSON.stringify({ dsh: { command: 'node', args: ['-e', agentAdapterSource] } }),
-      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: '', DOTS_MODEL_API_KEY: '', DOTS_MODEL: '', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
+      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '',
+      DOTS_MODEL_BASE_URL: runLiveAgentKernels ? process.env.DOTS_MODEL_BASE_URL || '' : '',
+      DOTS_MODEL_API_KEY: runLiveAgentKernels ? process.env.DOTS_MODEL_API_KEY || '' : '',
+      DOTS_MODEL: runLiveAgentKernels ? process.env.DOTS_MODEL || '' : '',
+      DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -308,21 +314,79 @@ try {
     assert.match(runtimeResult.message || '', /cloud-kernel-ok-dsh/i, 'DeepSeek Harness must make a real model request from the Debian Agent container');
     const dshFiles = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'find', `/workspace/tasks/${runtimeTaskId}/.coke-dots-agent-runtime`, '-type', 'f', '-printf', '%P\n']);
     assert(dshFiles.trim(), 'DeepSeek Harness must persist its session inside the tenant cloud computer workspace');
-    const piTaskId = randomUUID();
-    const piResponse = await fetch(`http://127.0.0.1:${agentPort}/v1/tasks/run`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${agentToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ engine: 'pi', taskId: piTaskId, executionId: randomUUID(), prompt: formatAgentPrompt({ prompt: 'Do not use tools. Finish this check and return the result exactly as JSON with status done and message cloud-kernel-ok-pi.', priorResult: null, sessionId: null, workspace: `/workspace/tasks/${piTaskId}`, onEvent: () => {}, allowDelegation: false, executionMode: 'read-only' }), sessionId: null, cwd: `tasks/${piTaskId}`, modelConfig: liveModelConfig }),
-      signal: AbortSignal.timeout(14 * 60_000),
-    });
-    const piResult = await piResponse.json() as { status?: string; message?: string; engine?: string };
-    assert.equal(piResponse.status, 200, `The Pi kernel must execute inside the Debian Agent container: ${JSON.stringify(piResult)}`);
-    assert.equal(piResult.status, 'done');
-    assert.equal(piResult.engine, 'pi');
-    assert.match(piResult.message || '', /cloud-kernel-ok-pi/i, 'Pi must make a real model request from the Debian Agent container');
-    const piFiles = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'find', `/workspace/tasks/${piTaskId}/.coke-dots-agent-runtime`, '-type', 'f', '-printf', '%P\n']);
+    const piInstruction = '请在云电脑当前任务目录新建 pi-file-e2e.txt，文件内容必须严格为：Pi 云电脑文件写入验证成功。只创建这个文件，不要委派任务；完成后用中文回复文件路径。';
+    assert.equal(await page.getByRole('button', { name: 'New chat', exact: true }).count(), 1, 'The live task must be submitted through the Chrome chat UI');
+    await page.getByRole('button', { name: 'New chat', exact: true }).click();
+    await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+    const computerChoiceHeading = page.getByText('Choose where your dot can work', { exact: true });
+    await computerChoiceHeading.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => undefined);
+    if (await computerChoiceHeading.isVisible().catch(() => false)) {
+      await page.getByRole('button', { name: 'Continue', exact: true }).click();
+      await computerChoiceHeading.waitFor({ state: 'hidden', timeout: 10_000 });
+    }
+    await page.getByTestId('task-composer').waitFor({ state: 'visible', timeout: 10_000 });
+    const enginePicker = page.getByTestId('engine-select');
+    assert.equal(await enginePicker.inputValue(), 'pi', 'The public-demo build default must select the Pi kernel on a fresh Dot');
+    const availableEngines = await page.evaluate(async () => (await (await fetch('/api/state')).json() as { availableEngines: string[] }).availableEngines);
+    assert(availableEngines.includes('pi'), 'The tenant must see Pi as an available remote engine');
+    await page.getByTestId('task-composer').fill(piInstruction);
+    await page.locator('button.send').click();
+    await page.locator('.timeline .message.user p').filter({ hasText: piInstruction }).waitFor({ state: 'visible', timeout: 10_000 });
+    try {
+      await page.waitForFunction(async instruction => {
+        const state = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string }[] };
+        const task = state.tasks.find(item => item.instruction === instruction);
+        return task?.status === 'done' || task?.status === 'failed';
+      }, piInstruction, { timeout: 150_000, polling: 500 });
+    } catch (error) {
+      const currentTask = await page.evaluate(async instruction => {
+        const state = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string; status: string; engine: string; result: string | null; error: string | null }[] };
+        return state.tasks.find(item => item.instruction === instruction) || null;
+      }, piInstruction);
+      const runtimeResultPath = currentTask
+        ? `/workspace/.coke-dots-agent-runtime-state/${createHash('sha256').update(currentTask.id).digest('hex')}.json`
+        : '';
+      const probe = (args: string[]) => {
+        const result = spawnSync(args[0], args.slice(1), { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+        return { exitCode: result.status, stdout: result.stdout.trim().slice(0, 3000), stderr: result.stderr.trim().slice(-1000) };
+      };
+      const runtimeResult = runtimeResultPath
+        ? probe(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'node', '-e', `const fs=require('node:fs');try{const v=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));console.log(JSON.stringify({status:v.result?.status,message:v.result?.message?.slice(0,500),sessionIdPresent:typeof v.result?.sessionId==='string'}))}catch(e){console.log('MISSING_OR_INVALID:'+e.code)}`, runtimeResultPath])
+        : { exitCode: null, stdout: 'task record missing', stderr: '' };
+      const piSessionSummary = currentTask
+        ? probe(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'node', '-e', `const fs=require('node:fs'),p=require('node:path');const d='/workspace/tasks/'+process.argv[1]+'/.coke-dots-agent-runtime/pi-sessions';try{const f=fs.readdirSync(d).filter(n=>n.endsWith('.jsonl')).map(n=>p.join(d,n)).sort().at(-1);if(!f){console.log('NO_SESSION');process.exit(0)}const rows=fs.readFileSync(f,'utf8').trim().split('\\n').map(JSON.parse);console.log(JSON.stringify({file:p.basename(f),assistant:rows.filter(r=>r.message?.role==='assistant').map(r=>({stopReason:r.message.stopReason,textChars:(r.message.content||[]).filter(c=>c.type==='text').reduce((n,c)=>n+c.text.length,0),toolCalls:(r.message.content||[]).filter(c=>c.type==='toolCall').map(c=>c.name)})).slice(-8)}))}catch(e){console.log('MISSING_OR_INVALID:'+e.code)}`, currentTask.id])
+        : { exitCode: null, stdout: 'task record missing', stderr: '' };
+      const agentProcesses = probe(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'ps', '-eo', 'pid,ppid,etime,comm,args']);
+      const fileCheck = currentTask
+        ? probe(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'node', '-e', `const fs=require('node:fs'),c=require('node:crypto');const p='/workspace/tasks/'+process.argv[1]+'/pi-file-e2e.txt';try{const b=fs.readFileSync(p);console.log(JSON.stringify({exists:true,bytes:b.length,sha256:c.createHash('sha256').update(b).digest('hex')}))}catch(e){console.log(JSON.stringify({exists:false,code:e.code}))}`, currentTask.id])
+        : { exitCode: null, stdout: 'task record missing', stderr: '' };
+      const diagnostic = {
+        task: currentTask,
+        runtimeResult,
+        piSessionSummary,
+        agentProcesses,
+        expectedFile: fileCheck,
+        capturedAt: new Date().toISOString(),
+      };
+      const diagnosticPath = join(artifacts, 'pi-task-timeout-diagnostics.json');
+      await writeFile(diagnosticPath, `${JSON.stringify(diagnostic, null, 2)}\n`);
+      throw new Error(`Pi task did not leave working state within 150 seconds; diagnostics saved to ${diagnosticPath}. Original wait error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const piTask = await page.evaluate(async instruction => {
+      const state = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string; status: string; engine: string; result: string | null; error: string | null }[] };
+      return state.tasks.find(item => item.instruction === instruction) || null;
+    }, piInstruction);
+    assert(piTask, 'The Chrome-submitted Pi task must be persisted in its signed-in tenant');
+    assert.equal(piTask.status, 'done', `Pi file task failed: ${piTask.error || piTask.result || '(no task detail)'}`);
+    assert.equal(piTask.engine, 'pi');
+    assert.match(piTask.result || '', /pi-file-e2e\.txt/, 'The completed result must report the created file path');
+    const piFilePath = `/workspace/tasks/${piTask.id}/pi-file-e2e.txt`;
+    const piFileContent = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'cat', piFilePath]);
+    assert.equal(piFileContent, 'Pi 云电脑文件写入验证成功。', 'The Chrome task must create the exact requested tenant-local content');
+    const piFiles = command(['kubectl', '-n', namespace, 'exec', desktopPod, '-c', 'agent-runtime', '--', 'find', `/workspace/tasks/${piTask.id}/.coke-dots-agent-runtime/pi-sessions`, '-type', 'f', '-printf', '%P\n']);
     assert(piFiles.trim(), 'Pi must persist its native session inside the tenant cloud computer workspace');
-    console.log('Real DeepSeek Harness and Pi model calls completed inside the isolated Debian Agent container');
+    await page.screenshot({ path: join(artifacts, '06-pi-file-authoring-task.png'), fullPage: true });
+    console.log(`Chrome-submitted Pi task created and verified ${piFilePath} inside its isolated Debian task directory`);
   } else {
     assert.match(runtimeResult.message || '', /Adapter completed: real Debian 13 runtime smoke; runtime token visible to child: false/);
   }
@@ -494,7 +558,7 @@ try {
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive a cloud computer Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', runLiveAgentKernels ? 'real DeepSeek Harness call plus Chrome-submitted Pi file-authoring task and persisted session in the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
   logs.push(`Failure diagnostics: appServerExit=${appServer?.exitCode ?? 'running'} health=${health} page=${page?.url() ?? 'unavailable'}`);
@@ -511,9 +575,6 @@ try {
   }
   if (namespace && (kubectlNamespaceCreated || process.env.DOTS_K3D_CLEANUP_FAILED === '1')) {
     spawnSync('kubectl', ['delete', 'namespace', namespace, '--wait=true', '--timeout=120s'], { cwd: projectRoot, stdio: 'ignore' });
-  }
-  if (runLiveAgentKernels) {
-    try { new Entry(testKeychainService, 'shared-model-api-key').deletePassword(); } catch { /* The credential may not have been created if setup failed early. */ }
   }
   await rm(tempRoot, { recursive: true, force: true });
 }
