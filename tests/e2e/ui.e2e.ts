@@ -2050,6 +2050,12 @@ try {
     await waitFor(() => mockTeamsPostedMessages.some(message => message.conversationId === 'a:alpha-personal-chat' && message.text === 'Teams connector E2E reply received.'), 15_000);
     const database = new DatabaseSync(join(testDataDir, 'dots.db'));
     try {
+      await waitFor(() => {
+        const delivery = database.prepare(`SELECT e.status,t.status AS task_status FROM teams_inbox_events e
+          JOIN tasks t ON t.id=e.task_id AND t.tenant_id=e.tenant_id WHERE e.event_id=?`).get('teams-task-event-e2e-002') as
+          { status: string; task_status: string } | undefined;
+        return delivery?.status === 'delivered' && delivery.task_status === 'done';
+      }, 15_000);
       const event = database.prepare(`SELECT e.status,e.tenant_id,e.task_id,t.status AS task_status,t.result FROM teams_inbox_events e
         JOIN tasks t ON t.id=e.task_id AND t.tenant_id=e.tenant_id WHERE e.event_id=?`).get('teams-task-event-e2e-002') as
         { status: string; tenant_id: string; task_id: string; task_status: string; result: string } | undefined;

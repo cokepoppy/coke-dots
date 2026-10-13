@@ -18,6 +18,8 @@ const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `linux-cloud-computer
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-cloud-e2e-'));
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
+const modelKeychainService = `com.cokepoppy.coke-dots.e2e-cloud-${randomUUID()}`;
+const modelKeychainFile = join(dataDirectory, 'test-keyring.json');
 const signingKey = 'coke-dots-linux-cloud-computer-e2e-signing-key';
 const screen = makeScreen();
 const machines = new Map<string, { owner: 'agent' | 'user'; url: string; title: string }>();
@@ -47,6 +49,10 @@ let releaseRecovery: () => void = () => undefined;
 const recoveryRelease = new Promise<void>(resolvePromise => { releaseRecovery = resolvePromise; });
 
 await writeFile(envFile, '');
+await mkdir(dataDirectory, { recursive: true });
+await writeFile(modelKeychainFile, JSON.stringify({
+  [JSON.stringify([modelKeychainService, 'shared-model-api-key'])]: 'cloud-e2e-shared-api-key',
+}), { mode: 0o600 });
 await mkdir(artifacts, { recursive: true });
 
 function makeScreen() {
@@ -196,14 +202,18 @@ async function startApp() {
     env: {
       ...process.env,
       NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(appPort),
-      DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.e2e-cloud-${randomUUID()}`,
+      DOTS_KEYCHAIN_SERVICE: modelKeychainService,
+      DOTS_TEST_KEYRING: 'memory', DOTS_TEST_KEYRING_PATH: modelKeychainFile,
       DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_LINUX_DESKTOP_TOKEN_SECRET: signingKey,
       DOTS_LINUX_DESKTOP_TEST_WORKER_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/worker/`,
       DOTS_LINUX_DESKTOP_TEST_NOVNC_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/novnc/`,
       DOTS_LINUX_DESKTOP_TEST_AGENT_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/agent/`,
-      DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
-      DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: 'node', args: ['/tmp/dots-dsh-adapter.mjs'] } }),
-      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://api.deepseek.com', DOTS_MODEL_API_KEY: 'cloud-e2e-shared-api-key', DOTS_MODEL: 'deepseek-flash', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
+      DOTS_DESKTOP_AGENT_ADAPTERS: 'pi,dsh',
+      DOTS_AGENT_KERNELS_JSON: JSON.stringify({
+        pi: { command: 'node', args: ['/tmp/dots-pi-adapter.mjs'] },
+        dsh: { command: 'node', args: ['/tmp/dots-dsh-adapter.mjs'] },
+      }),
+      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://api.deepseek.com', DOTS_MODEL_API_KEY: '', DOTS_MODEL: 'deepseek-flash', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -259,6 +269,26 @@ async function chooseComputer(target: Page) {
   }, null, { timeout: 20_000 });
 }
 
+async function openDotProfile(target: Page) {
+  const profileLink = target.locator('.profile-link');
+  if (await profileLink.isVisible()) await profileLink.click();
+  else {
+    await target.getByTestId('account-menu-trigger').click();
+    await target.getByRole('button', { name: 'Dot 设置', exact: true }).click();
+  }
+  await target.getByRole('heading', { name: '你的 dot', exact: true }).waitFor({ state: 'visible' });
+}
+
+async function setDotPaused(target: Page, paused: boolean) {
+  await openDotProfile(target);
+  await target.getByRole('button', { name: 'Dot options' }).click();
+  await target.getByTestId('dot-pause-action').click();
+  await waitFor(async () => {
+    const state = await target.evaluate(async () => await (await fetch('/api/state')).json()) as { dotPaused: boolean };
+    return state.dotPaused === paused;
+  }, 10_000);
+}
+
 try {
   await startRemote();
   appPort = await freePort();
@@ -276,7 +306,9 @@ try {
   await signIn(page, 'cloud-alpha@example.test');
   const engineState = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[] };
   const availableEngines = engineState.availableEngines;
+  assert(availableEngines.includes('pi'), 'The cloud workspace should expose its configured Pi adapter');
   assert(availableEngines.includes('dsh'), 'The cloud workspace should expose its configured DeepSeek Harness adapter');
+  assert(engineState.remoteEngines.includes('pi'), 'The cloud workspace should identify Pi as running in its cloud computer');
   assert(engineState.remoteEngines.includes('dsh'), 'The cloud workspace should identify DeepSeek Harness as running in its cloud computer');
   assert.equal(availableEngines.includes('claude'), false, 'Claude Code must remain unavailable in the cloud workspace UI and API');
   await page.evaluate(async () => {
@@ -412,8 +444,51 @@ try {
   assert.notEqual(machines.get(alphaHash), machines.get(betaHash), 'Tenants shared one desktop state object');
   await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });
   await betaContext.close();
+
+  // Reproduce a disappearing instance-shared key through the Chrome composer.
+  // Pausing Dot keeps the task queued while the isolated test credential store changes.
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  await page.locator('[data-testid="engine-select"]').selectOption('pi');
+  assert.equal(await page.locator('small.hint').textContent(), '任务由 Dot 的云电脑运行。');
+  const beforeMissingKey = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean } };
+  assert.equal(beforeMissingKey.modelSettings.hasKey, true, 'Seed the isolated instance-shared API key before the browser task');
+  await setDotPaused(page, true);
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  const missingKeyInstruction = 'E2E Pi task must stop before cloud dispatch when the shared API key disappears';
+  await page.getByTestId('task-composer').fill(missingKeyInstruction);
+  await page.locator('button.send').click();
+  await waitFor(async () => Boolean(await page!.evaluate(async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction);
+  }, missingKeyInstruction)), 10_000);
+  const missingKeyTask = await page.evaluate(async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction) || null;
+  }, missingKeyInstruction);
+  assert(missingKeyTask, 'The Chrome composer must create the Pi task while Dot is paused');
+  assert.equal(missingKeyTask.status, 'queued', 'The paused Dot must leave the task queued during the credential change');
+  const remoteCallsBeforeMissingKey = agentCalls.length;
+  const remotePathCountBeforeMissingKey = remoteHttpPaths.length;
+  await writeFile(modelKeychainFile, '{}', { mode: 0o600 });
+  await setDotPaused(page, false);
+  await waitForAsyncPredicate(page, async id => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string }[] };
+    return state.tasks.find(task => task.id === id)?.status === 'failed';
+  }, missingKeyTask.id, { timeout: 10_000 });
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  await page.locator('.timeline .message.system p').filter({ hasText: '当前 Coke Dots 实例缺少API 密钥' }).waitFor({ state: 'visible' });
+  const failedActivity = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task must stop' }).first();
+  await failedActivity.locator('.context-status.failed').waitFor({ state: 'visible' });
+  assert.match(await failedActivity.innerText(), /Failed/, 'The right-side Recent activity row must show the failed task status');
+  const afterMissingKey = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean }; tasks: { id: string; status: string; error: string | null }[] };
+  assert.equal(afterMissingKey.modelSettings.hasKey, false, 'The UI state must report that the shared key is unavailable');
+  assert.equal(afterMissingKey.tasks.find(task => task.id === missingKeyTask.id)?.status, 'failed');
+  assert.equal(agentCalls.length, remoteCallsBeforeMissingKey, 'Pi must fail its shared-config preflight without dispatching to the cloud Agent runtime');
+  assert.equal(remoteHttpPaths.slice(remotePathCountBeforeMissingKey).some(path => path.includes(`${alphaHash}/agent/v1/tasks/run`)), false, 'No remote Agent task request may be sent after the shared key disappears');
+  await page.screenshot({ path: join(artifacts, '05-pi-missing-shared-key-preflight.png') });
+
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation', 'Chrome Pi task shows shared-key preflight failure without cloud Agent dispatch'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
