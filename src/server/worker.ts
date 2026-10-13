@@ -96,8 +96,10 @@ export class Worker {
     const adapter = adapters[task.engine];
     const computer = this.computerFor?.(task.tenantId);
     const remoteEngines = parseRemoteEngines();
-    const useDesktopRuntime = Boolean(computer?.runAgentTask && process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && remoteEngines.includes(task.engine));
-    if (!useDesktopRuntime && !adapter?.available(task.tenantId)) {
+    const requiresDesktopRuntime = Boolean(computer?.runAgentTask && process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && remoteEngines.includes(task.engine));
+    const modelConfig = effectiveModelConfig(task.tenantId);
+    const useDesktopRuntime = requiresDesktopRuntime && Boolean(modelConfig);
+    if ((requiresDesktopRuntime && !modelConfig) || (!useDesktopRuntime && !adapter?.available(task.tenantId))) {
       const engineName = ({ model: '模型 API', claude: 'Claude Code', pi: 'Pi', dsh: 'DeepSeek Harness' } as const)[task.engine];
       const missing = ['model', 'pi', 'dsh'].includes(task.engine) ? missingModelSettings(task.tenantId) : [];
       const reason = missing.length
@@ -177,7 +179,7 @@ export class Worker {
         };
       }
       const decision = useDesktopRuntime
-        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: effectiveModelConfig(task.tenantId) || undefined, allowWorkspaceFileWrites: input.allowWorkspaceFileWrites, signal })), task.agentSessionId || undefined, agentDecisionOptions(input))
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, executionId: task.nextRunAt || task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, allowWorkspaceFileWrites: input.allowWorkspaceFileWrites, signal })), task.agentSessionId || undefined, agentDecisionOptions(input))
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
