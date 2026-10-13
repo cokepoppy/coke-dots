@@ -101,6 +101,38 @@ test('shared model settings distinguish an unreadable system credential store fr
   }
 });
 
+test('background Agent tasks retain the last readable shared key through a temporary Keychain lock', () => {
+  const keys = ['NODE_ENV', 'DOTS_TEST_KEYRING', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previous = new Map(keys.map(key => [key, process.env[key]]));
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_TEST_KEYRING = 'memory';
+  process.env.DOTS_E2E_AUTH = '0';
+  for (const key of ['DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const) delete process.env[key];
+  const service = process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots';
+  const sharedEntry = new Entry(service, 'shared-model-api-key');
+  sharedEntry.deletePassword();
+  try {
+    loadSharedModelSettings('https://api.example.test/v1', 'shared-test-model');
+    saveSharedModelKey('shared-memory-cache-fixture');
+    assert.deepEqual(effectiveModelConfig(), {
+      apiKey: 'shared-memory-cache-fixture', model: 'shared-test-model', baseUrl: 'https://api.example.test/v1',
+    });
+
+    process.env.DOTS_TEST_KEYRING = 'unavailable';
+    assert.equal(sharedModelApiKeyStatus(), 'available', 'A temporary Keychain lock must not interrupt a credential already loaded into the service process');
+    assert.deepEqual(effectiveModelConfig(), {
+      apiKey: 'shared-memory-cache-fixture', model: 'shared-test-model', baseUrl: 'https://api.example.test/v1',
+    });
+  } finally {
+    process.env.DOTS_TEST_KEYRING = 'memory';
+    sharedEntry.deletePassword();
+    loadSharedModelSettings(null, null);
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('Pi and DeepSeek Harness reuse one instance credential across tenant-isolated runtimes', () => {
   const previous = { nodeEnv: process.env.NODE_ENV, e2eAuth: process.env.DOTS_E2E_AUTH, apiKey: process.env.DOTS_MODEL_API_KEY, model: process.env.DOTS_MODEL, baseUrl: process.env.DOTS_MODEL_BASE_URL };
   const service = process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots';

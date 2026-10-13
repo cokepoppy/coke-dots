@@ -445,56 +445,98 @@ try {
   await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });
   await betaContext.close();
 
-  // Reproduce a disappearing instance-shared key through the Chrome composer.
-  // Pausing Dot keeps the task queued while the isolated test credential store changes.
+  // A temporary Keychain lock must not interrupt a credential already loaded by the long-running service.
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
   await page.locator('[data-testid="engine-select"]').selectOption('pi');
   assert.equal(await page.locator('small.hint').textContent(), '任务由 Dot 的云电脑运行。');
-  const beforeMissingKey = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean } };
-  assert.equal(beforeMissingKey.modelSettings.hasKey, true, 'Seed the isolated instance-shared API key before the browser task');
+  const beforeTemporaryLock = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean } };
+  assert.equal(beforeTemporaryLock.modelSettings.hasKey, true, 'Seed the isolated instance-shared API key before the browser task');
   await setDotPaused(page, true);
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
-  const unreadableKeyInstruction = 'E2E Pi task must stop before cloud dispatch when the system keychain is unreadable';
-  await page.getByTestId('task-composer').fill(unreadableKeyInstruction);
+  const cachedKeyInstruction = 'E2E Pi task continues while the already-loaded shared keychain is temporarily locked';
+  await page.getByTestId('task-composer').fill(cachedKeyInstruction);
   await page.locator('button.send').click();
-  await waitFor(async () => Boolean(await page!.evaluate(async instruction => {
-    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string }[] };
-    return state.tasks.find(task => task.instruction === instruction);
-  }, unreadableKeyInstruction)), 10_000);
-  const unreadableKeyTask = await page.evaluate(async instruction => {
-    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string }[] };
-    return state.tasks.find(task => task.instruction === instruction) || null;
-  }, unreadableKeyInstruction);
-  assert(unreadableKeyTask, 'The Chrome composer must create the Pi task while Dot is paused');
-  assert.equal(unreadableKeyTask.status, 'queued', 'The paused Dot must leave the task queued during the credential-store failure');
-  const remoteCallsBeforeMissingKey = agentCalls.length;
-  const remotePathCountBeforeMissingKey = remoteHttpPaths.length;
+  await waitForAsyncPredicate(page, async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction)?.status === 'queued';
+  }, cachedKeyInstruction, { timeout: 10_000 });
+  const remoteCallsBeforeTemporaryLock = agentCalls.length;
   await writeFile(modelKeychainFile, '{ locked', { mode: 0o600 });
   await setDotPaused(page, false);
-  await waitForAsyncPredicate(page, async id => {
-    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string }[] };
-    return state.tasks.find(task => task.id === id)?.status === 'failed';
-  }, unreadableKeyTask.id, { timeout: 10_000 });
+  await waitForAsyncPredicate(page, async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction)?.status === 'done';
+  }, cachedKeyInstruction, { timeout: 10_000 });
+  const afterTemporaryLock = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { instruction: string; status: string }[] };
+  assert.equal(afterTemporaryLock.modelSettings.hasKey, true, 'The process-local shared key cache should remain usable while Keychain access is temporarily unavailable');
+  assert.equal(afterTemporaryLock.modelSettings.apiKeyStatus, 'available');
+  assert.equal(afterTemporaryLock.tasks.find(task => task.instruction === cachedKeyInstruction)?.status, 'done');
+  const cachedKeyCall = agentCalls.find(call => call.prompt && String(call.prompt).includes(cachedKeyInstruction));
+  assert(cachedKeyCall, 'The queued Pi task should reach the cloud Agent using the cached credential');
+  assert.equal(cachedKeyCall.engine, 'pi');
+  assert.equal((cachedKeyCall.modelConfig as { apiKey?: string } | undefined)?.apiKey, 'cloud-e2e-shared-api-key');
+  assert.equal(agentCalls.length, remoteCallsBeforeTemporaryLock + 1, 'A temporary Keychain failure should not prevent exactly one cloud Agent dispatch');
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  const cachedActivityRow = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task continues while the already-loaded' }).first();
+  await cachedActivityRow.waitFor({ state: 'visible' });
+  await cachedActivityRow.click();
+  await cachedActivityRow.locator('.context-status.done').waitFor({ state: 'visible' });
+  await page.screenshot({ path: join(artifacts, '05a-pi-temporary-keychain-lock-continues.png') });
+
+  // A fresh service process has no in-memory key. With the Keychain still locked, it must fail queued work before cloud dispatch.
+  await setDotPaused(page, true);
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  const lockedRestartInstruction = 'E2E Pi task must stop before cloud dispatch when the keychain is unreadable after restart';
+  await page.getByTestId('task-composer').fill(lockedRestartInstruction);
+  await page.locator('button.send').click();
+  await waitForAsyncPredicate(page, async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction)?.status === 'queued';
+  }, lockedRestartInstruction, { timeout: 10_000 });
+  const remoteCallsBeforeLockedRestart = agentCalls.length;
+  await restartApp();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByTestId('app-shell').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  const afterLockedRestart = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { instruction: string; status: string }[] };
+  assert.equal(afterLockedRestart.modelSettings.hasKey, false);
+  assert.equal(afterLockedRestart.modelSettings.apiKeyStatus, 'unreadable');
+  assert(afterLockedRestart.remoteEngines.includes('pi'), 'The UI should retain Pi as a configured cloud destination while reporting its credential unavailable');
+  assert.equal(afterLockedRestart.availableEngines.includes('pi'), false);
+  assert.equal(afterLockedRestart.tasks.find(task => task.instruction === lockedRestartInstruction)?.status, 'queued');
+  const rejectedNewPiTask = await page.evaluate(async instruction => {
+    const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction, engine: 'pi' }) });
+    return { status: response.status, body: await response.json() as { error?: string } };
+  }, 'E2E must not enqueue Pi while its shared credential is unreadable after restart');
+  assert.equal(rejectedNewPiTask.status, 400, 'The Chrome-facing task API must reject new cloud Pi work without the shared credential');
+  assert.match(rejectedNewPiTask.body.error || '', /实例级模型 API 配置/);
+  const tasksAfterRejectedPi = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { tasks: { instruction: string }[] };
+  assert.equal(tasksAfterRejectedPi.tasks.some(task => task.instruction === 'E2E must not enqueue Pi while its shared credential is unreadable after restart'), false);
+
+  await setDotPaused(page, false);
+  await waitForAsyncPredicate(page, async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction)?.status === 'failed';
+  }, lockedRestartInstruction, { timeout: 10_000 });
+  assert.equal(agentCalls.length, remoteCallsBeforeLockedRestart, 'A fresh process must fail before sending work to the Debian Agent runtime when it cannot unlock the shared key');
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  const lockedActivityRow = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task must stop before cloud dispatch' }).first();
+  await lockedActivityRow.waitFor({ state: 'visible' });
+  await lockedActivityRow.click();
   await page.locator('.timeline .message.system p').filter({ hasText: '系统凭据库无法读取共享 API 密钥' }).waitFor({ state: 'visible' });
-  const failedActivity = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task must stop' }).first();
+  const afterUnavailableTask = await page.evaluate(async instruction => {
+    const state = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; error: string | null }[] };
+    return state.tasks.find(task => task.instruction === instruction) || null;
+  }, lockedRestartInstruction);
+  assert.equal(afterUnavailableTask?.status, 'failed');
+  assert.match(afterUnavailableTask?.error || '', /请解锁运行服务设备上的系统钥匙串/);
+  const failedActivity = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task must stop before cloud dispatch' }).first();
   await failedActivity.locator('.context-status.failed').waitFor({ state: 'visible' });
-  assert.match(await failedActivity.innerText(), /Failed/, 'The right-side Recent activity row must show the failed task status');
-  const afterUnreadableKey = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { id: string; status: string; error: string | null }[] };
-  assert.equal(afterUnreadableKey.modelSettings.hasKey, false, 'The UI state must report that the shared key is unavailable');
-  assert.equal(afterUnreadableKey.modelSettings.apiKeyStatus, 'unreadable', 'The UI state must distinguish an unreadable system credential store from a missing key');
-  assert(afterUnreadableKey.remoteEngines.includes('pi'), 'The UI must retain the configured cloud execution destination even when credentials cannot be read');
-  assert.equal(afterUnreadableKey.availableEngines.includes('pi'), false, 'A cloud-only Pi kernel must not be shown as ready through a local Pi installation when its shared credentials are unavailable');
-  assert.equal(afterUnreadableKey.tasks.find(task => task.id === unreadableKeyTask.id)?.status, 'failed');
-  assert.equal(agentCalls.length, remoteCallsBeforeMissingKey, 'Pi must fail its shared-config preflight without dispatching to the cloud Agent runtime');
-  assert.equal(remoteHttpPaths.slice(remotePathCountBeforeMissingKey).some(path => path.includes(`${alphaHash}/agent/v1/tasks/run`)), false, 'No remote Agent task request may be sent while the system credential store is unreadable');
-  await page.getByTestId('composer-hint').filter({ hasText: '无法读取实例共享 API 密钥' }).waitFor({ state: 'visible' });
-  await page.screenshot({ path: join(artifacts, '05-pi-unreadable-keychain-preflight.png') });
-  await openDotProfile(page);
-  await page.getByTestId('model-keychain-warning').waitFor({ state: 'visible' });
+  assert.match(await failedActivity.innerText(), /Failed/);
+  await page.screenshot({ path: join(artifacts, '05-pi-keychain-locked-after-restart-preflight.png') });
 
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation', 'Chrome Pi task explains an unreadable system keychain without cloud Agent dispatch'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation', 'a temporary Keychain lock preserves the cached shared key', 'a fresh process fails queued Pi work before cloud dispatch when the Keychain stays locked'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);

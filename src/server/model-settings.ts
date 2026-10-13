@@ -9,6 +9,7 @@ const keychainFor = (tenantId: string) => new Entry(keychainService(), `tenant-$
 const sharedKeychainFor = () => new Entry(keychainService(), 'shared-model-api-key');
 const environmentModelAllowed = (tenantId: string) => process.env.NODE_ENV !== 'test' || tenantId === 'legacy' || (process.env.DOTS_E2E_AUTH === '1');
 let sharedKeychainReadFailed = false;
+let cachedSharedModelKey: string | null = null;
 
 /** Load the Coke Dots instance-wide Model API profile. Its secret stays in Keychain. */
 export function loadSharedModelSettings(baseUrl: string | null, model: string | null) {
@@ -26,8 +27,10 @@ export function loadModelSettings(baseUrl: string | null, model: string | null, 
 }
 
 export function saveSharedModelKey(value: string) {
-  if (!value.trim()) throw new Error('密钥不能为空');
-  sharedKeychainFor().setPassword(value.trim());
+  const normalizedKey = value.trim();
+  if (!normalizedKey) throw new Error('密钥不能为空');
+  sharedKeychainFor().setPassword(normalizedKey);
+  cachedSharedModelKey = normalizedKey;
   sharedKeychainReadFailed = false;
   const prior = stored.get('shared') || { baseUrl: '', model: '', hasKey: false };
   stored.set('shared', { ...prior, hasKey: true });
@@ -44,6 +47,8 @@ export function migrateWorkspaceModelToShared(tenantId: string, baseUrl: string,
   const apiKey = readTenantKey(tenantId);
   if (!apiKey || !model.trim()) return false;
   sharedKeychainFor().setPassword(apiKey);
+  cachedSharedModelKey = apiKey;
+  sharedKeychainReadFailed = false;
   stored.set('shared', { baseUrl, model, hasKey: true });
   return true;
 }
@@ -125,10 +130,13 @@ function readSharedKey(): string | null {
   try {
     const key = sharedKeychainFor().getPassword();
     sharedKeychainReadFailed = false;
-    return key;
+    cachedSharedModelKey = key || null;
+    return cachedSharedModelKey;
   } catch {
     sharedKeychainReadFailed = true;
-    return null;
+    // Keep long-running background work alive if the login Keychain locks after
+    // this service has already read the shared credential successfully.
+    return cachedSharedModelKey;
   }
 }
 
