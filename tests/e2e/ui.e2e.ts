@@ -871,6 +871,13 @@ try {
     const workspacePlaceholder = modal.locator('.slack-current-workspace.is-placeholder');
     await workspacePlaceholder.waitFor({ state: 'visible' });
     assert.match(await workspacePlaceholder.innerText(), /Workspace/);
+    assert.equal(await modal.locator('.slack-setup-mark').count(), 0, 'The reference has no Slack icon above the title');
+    const emptyModalGeometry = await modal.evaluate(element => {
+      const dialog = element.getBoundingClientRect();
+      const card = element.querySelector('.slack-setup-workspace-card')!.getBoundingClientRect();
+      return { width: Math.round(dialog.width), height: Math.round(dialog.height), cardWidth: Math.round(card.width), cardHeight: Math.round(card.height) };
+    });
+    assert.deepEqual(emptyModalGeometry, { width: 440, height: 365, cardWidth: 390, cardHeight: 220 }, 'The setup dialog should match the video frame proportions at 1440 × 1000');
     const connectButton = modal.getByTestId('slack-connect');
     assert.equal(await connectButton.innerText(), 'Add to Slack');
     assert.equal(await connectButton.isDisabled(), false);
@@ -883,8 +890,8 @@ try {
     await contextPanel.getByRole('button', { name: 'Slack' }).click();
     const darkModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await darkModal.waitFor({ state: 'visible' });
-    assert.equal(await darkModal.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(35, 33, 38)');
-    assert.equal(await darkModal.locator('.slack-setup-picker').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(41, 39, 45)');
+    assert.equal(await darkModal.evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(7, 23, 14)');
+    assert.equal(await darkModal.locator('.slack-setup-workspace-card').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(11, 33, 21)');
     await screenshot(alphaPage!, 'slack-setup-empty-workspace-dark');
     await darkModal.getByRole('button', { name: 'Close Slack setup' }).click();
     await darkModal.waitFor({ state: 'hidden' });
@@ -907,27 +914,38 @@ try {
 
     const connectedModal = alphaPage!.getByRole('dialog', { name: 'Set up Slack' });
     await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
-    const workspace = connectedModal.getByLabel('Slack workspace');
-    assert.equal(await workspace.isVisible(), false, 'The installed workspace picker should stay collapsed in the compact state');
-    const selectAnother = connectedModal.locator('.slack-select-another');
-    assert.equal(await selectAnother.getAttribute('aria-expanded'), 'false');
-    await selectAnother.click();
-    assert.equal(await selectAnother.getAttribute('aria-expanded'), 'true');
-    await workspace.waitFor({ state: 'visible' });
-    assert.equal(await workspace.inputValue(), 'TASPIE2E');
-    assert.deepEqual(await workspace.locator('option').allTextContents(), ['ASPI']);
+    const workspaceTrigger = connectedModal.locator('.slack-current-workspace');
+    assert.equal(await workspaceTrigger.locator('.slack-workspace-name').innerText(), 'ASPI');
+    assert.equal(await workspaceTrigger.getAttribute('aria-expanded'), 'false');
+    assert.equal(await connectedModal.getByText('More Slack settings', { exact: true }).count(), 0, 'The sampled dialog does not show an extra settings row');
+    assert.deepEqual(await connectedModal.evaluate(element => {
+      const dialog = element.getBoundingClientRect();
+      const card = element.querySelector('.slack-setup-workspace-card')!.getBoundingClientRect();
+      return { width: Math.round(dialog.width), height: Math.round(dialog.height), cardWidth: Math.round(card.width), cardHeight: Math.round(card.height) };
+    }), { width: 440, height: 365, cardWidth: 390, cardHeight: 220 });
+    await workspaceTrigger.click();
+    const workspaceMenu = connectedModal.getByRole('menu', { name: 'Choose a workspace' });
+    await workspaceMenu.waitFor({ state: 'visible' });
+    assert.deepEqual(await workspaceMenu.getByRole('menuitemradio').allTextContents(), ['ASPI']);
+    assert.equal(await workspaceMenu.getByRole('menuitem', { name: 'Select another' }).isVisible(), true);
     assert.equal(await connectedModal.getByTestId('slack-connect').innerText(), 'Select a workspace');
     await screenshot(alphaPage!, 'slack-workspace-installed');
+    await workspaceTrigger.press('Escape');
+    await workspaceMenu.waitFor({ state: 'hidden' });
+    await connectedModal.waitFor({ state: 'visible' });
+    await workspaceTrigger.click();
+    await workspaceMenu.waitFor({ state: 'visible' });
 
+    await workspaceMenu.getByRole('menuitemradio', { name: 'ASPI' }).click();
     await connectedModal.getByTestId('slack-connect').click();
     await connectedModal.getByRole('status').filter({ hasText: /ASPI is selected for/ }).waitFor({ state: 'visible' });
     const aspiToken = new Entry('com.cokepoppy.coke-dots.e2e', keychainAccount('TASPIE2E')).getPassword();
     assert.equal(aspiToken, 'xoxb-coke-dots-e2e-aspi-token', 'ASPI token should be persisted only in its isolated E2E keychain entry');
 
-    await connectedModal.locator('.slack-setup-advanced > summary').click();
+    await workspaceTrigger.click();
     await Promise.all([
       alphaPage!.waitForURL(url => url.origin === mockSlackProviderOrigin && url.pathname === '/oauth/v2/authorize', { timeout: 10_000 }),
-      connectedModal.getByRole('button', { name: 'Connect or refresh Slack access' }).click(),
+      connectedModal.getByRole('menuitem', { name: 'Select another' }).click(),
     ]);
     await alphaPage!.getByRole('heading', { name: 'Choose a Slack workspace for Coke Dots' }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'slack-mock-consent-second-workspace');
@@ -936,11 +954,12 @@ try {
       alphaPage!.getByRole('button', { name: 'Allow access to Coke Lab' }).click(),
     ]);
     await connectedModal.waitFor({ state: 'visible', timeout: 15_000 });
-    assert.equal(await connectedModal.locator('.slack-select-another').getAttribute('aria-expanded'), 'false', 'Installing another workspace should return to the compact state');
-    await connectedModal.locator('.slack-select-another').click();
-    await workspace.waitFor({ state: 'visible' });
-    assert.deepEqual(await workspace.locator('option').allTextContents(), ['ASPI', 'Coke Lab']);
-    await workspace.selectOption('TCOKEE2E');
+    assert.equal(await connectedModal.locator('.slack-current-workspace').getAttribute('aria-expanded'), 'false', 'Installing another workspace should return to the compact state');
+    await connectedModal.locator('.slack-current-workspace').click();
+    const installedWorkspaceMenu = connectedModal.getByRole('menu', { name: 'Choose a workspace' });
+    await installedWorkspaceMenu.waitFor({ state: 'visible' });
+    assert.deepEqual(await installedWorkspaceMenu.getByRole('menuitemradio').allTextContents(), ['ASPI', 'Coke Lab']);
+    await installedWorkspaceMenu.getByRole('menuitemradio', { name: 'Coke Lab' }).click();
     await connectedModal.getByTestId('slack-connect').click();
     await connectedModal.getByRole('status').filter({ hasText: /Coke Lab is selected for/ }).waitFor({ state: 'visible' });
     const cokeLabToken = new Entry('com.cokepoppy.coke-dots.e2e', keychainAccount('TCOKEE2E')).getPassword();
