@@ -55,8 +55,14 @@ const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
 const configuredDesktopEngines = () => configuredDesktopAgentEngines() as Engine[];
-const remoteFor = (tenantId: string) => effectiveModelConfig(tenantId) ? configuredDesktopEngines() : [];
-const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...remoteFor(tenantId)])];
+const remoteFor = () => configuredDesktopEngines();
+const availableFor = (tenantId: string) => {
+  const remote = configuredDesktopEngines();
+  const cloudConfigured = Boolean(effectiveModelConfig(tenantId));
+  return (Object.keys(adapters) as Engine[]).filter(engine => remote.includes(engine)
+    ? cloudConfigured
+    : adapters[engine].available(tenantId));
+};
 
 function snapshot(tenantId: string, userId?: string) {
   loadSharedModelSettings(
@@ -68,7 +74,7 @@ function snapshot(tenantId: string, userId?: string) {
   return store.snapshot(available.includes('model'), available, {
     ...publicModelSettings(tenantId),
     ...(userId ? { canManage: store.canManageInstanceModel(userId, tenantId) } : {}),
-  }, tenantId, remoteFor(tenantId));
+  }, tenantId, remoteFor());
 }
 
 function computerFor(tenantId: string): ComputerRuntime {

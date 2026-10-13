@@ -480,9 +480,11 @@ try {
   const failedActivity = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task must stop' }).first();
   await failedActivity.locator('.context-status.failed').waitFor({ state: 'visible' });
   assert.match(await failedActivity.innerText(), /Failed/, 'The right-side Recent activity row must show the failed task status');
-  const afterUnreadableKey = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { id: string; status: string; error: string | null }[] };
+  const afterUnreadableKey = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { id: string; status: string; error: string | null }[] };
   assert.equal(afterUnreadableKey.modelSettings.hasKey, false, 'The UI state must report that the shared key is unavailable');
   assert.equal(afterUnreadableKey.modelSettings.apiKeyStatus, 'unreadable', 'The UI state must distinguish an unreadable system credential store from a missing key');
+  assert(afterUnreadableKey.remoteEngines.includes('pi'), 'The UI must retain the configured cloud execution destination even when credentials cannot be read');
+  assert.equal(afterUnreadableKey.availableEngines.includes('pi'), false, 'A cloud-only Pi kernel must not be shown as ready through a local Pi installation when its shared credentials are unavailable');
   assert.equal(afterUnreadableKey.tasks.find(task => task.id === unreadableKeyTask.id)?.status, 'failed');
   assert.equal(agentCalls.length, remoteCallsBeforeMissingKey, 'Pi must fail its shared-config preflight without dispatching to the cloud Agent runtime');
   assert.equal(remoteHttpPaths.slice(remotePathCountBeforeMissingKey).some(path => path.includes(`${alphaHash}/agent/v1/tasks/run`)), false, 'No remote Agent task request may be sent while the system credential store is unreadable');
