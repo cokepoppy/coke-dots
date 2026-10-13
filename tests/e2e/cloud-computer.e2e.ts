@@ -560,8 +560,40 @@ try {
   await openDotProfile(page);
   await page.getByTestId('model-keychain-warning').waitFor({ state: 'visible' });
 
+  // Unlocking the host Keychain should restore a fresh process on the next page load,
+  // without restarting the service or resending the task that already failed.
+  const lockedProcessPid = appServer?.pid;
+  await writeFile(modelKeychainFile, JSON.stringify({
+    [JSON.stringify([modelKeychainService, 'shared-model-api-key'])]: 'cloud-e2e-shared-api-key',
+  }), { mode: 0o600 });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByTestId('app-shell').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  const restoredKeyState = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string } };
+  assert.equal(appServer?.pid, lockedProcessPid, 'Unlock recovery should not require restarting the Coke Dots service');
+  assert.equal(restoredKeyState.modelSettings.hasKey, true, 'A readable shared Keychain entry should restore Model API availability');
+  assert.equal(restoredKeyState.modelSettings.apiKeyStatus, 'available');
+  assert(restoredKeyState.availableEngines.includes('pi'), 'Pi should become available after the Keychain is readable again');
+
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  await page.locator('[data-testid="engine-select"]').selectOption('pi');
+  const unlockedTaskInstruction = 'E2E 钥匙串解锁后无需重启恢复 Pi：请用中文回复“Pi 已恢复”。';
+  const remoteCallsBeforeUnlockRetry = agentCalls.length;
+  await page.getByTestId('task-composer').fill(unlockedTaskInstruction);
+  await page.locator('button.send').click();
+  await waitForAsyncPredicate(page, async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
+    return state.tasks.find(task => task.instruction === instruction)?.status === 'done';
+  }, unlockedTaskInstruction, { timeout: 10_000 });
+  const unlockedTaskCall = agentCalls.slice(remoteCallsBeforeUnlockRetry).find(call => String(call.prompt || '').includes(unlockedTaskInstruction));
+  assert(unlockedTaskCall, 'The new Chrome task should reach the cloud Agent after Keychain access returns');
+  assert.equal(unlockedTaskCall.engine, 'pi');
+  assert.equal((unlockedTaskCall.modelConfig as { apiKey?: string } | undefined)?.apiKey, 'cloud-e2e-shared-api-key');
+  assert.equal(agentCalls.length, remoteCallsBeforeUnlockRetry + 1, 'Unlock recovery must dispatch the new task exactly once');
+  await page.screenshot({ path: join(artifacts, '06-pi-recovers-after-keychain-unlock-without-restart.png') });
+
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation', 'a temporary Keychain lock preserves the cached shared key', 'a fresh process fails queued Pi work before cloud dispatch when the Keychain stays locked'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation', 'a temporary Keychain lock preserves the cached shared key', 'a fresh process fails queued Pi work before cloud dispatch when the Keychain stays locked', 'a fresh process recovers after Keychain unlock without a service restart'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
