@@ -525,9 +525,10 @@ try {
   await lockedActivityRow.click();
   await page.locator('.timeline .message.system p').filter({ hasText: '系统凭据库无法读取共享 API 密钥' }).waitFor({ state: 'visible' });
   const afterUnavailableTask = await page.evaluate(async instruction => {
-    const state = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; error: string | null }[] };
+    const state = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string; status: string; error: string | null }[] };
     return state.tasks.find(task => task.instruction === instruction) || null;
   }, lockedRestartInstruction);
+  assert(afterUnavailableTask, 'The locked cloud task must remain available to the user for a later retry');
   assert.equal(afterUnavailableTask?.status, 'failed');
   assert.match(afterUnavailableTask?.error || '', /请解锁运行服务设备上的系统钥匙串/);
   const failedActivity = page.getByTestId('context-activity').locator('.context-activity-row').filter({ hasText: 'E2E Pi task must stop before cloud dispatch' }).first();
@@ -575,21 +576,21 @@ try {
   assert.equal(restoredKeyState.modelSettings.apiKeyStatus, 'available');
   assert(restoredKeyState.availableEngines.includes('pi'), 'Pi should become available after the Keychain is readable again');
 
-  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
-  await page.locator('[data-testid="engine-select"]').selectOption('pi');
-  const unlockedTaskInstruction = 'E2E 钥匙串解锁后无需重启恢复 Pi：请用中文回复“Pi 已恢复”。';
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  const lockedTaskCard = page.getByTestId(`task-card-${afterUnavailableTask.id}`);
+  await lockedTaskCard.locator('.pill.failed').waitFor({ state: 'visible' });
   const remoteCallsBeforeUnlockRetry = agentCalls.length;
-  await page.getByTestId('task-composer').fill(unlockedTaskInstruction);
-  await page.locator('button.send').click();
+  await lockedTaskCard.getByRole('button', { name: '重试', exact: true }).click();
   await waitForAsyncPredicate(page, async instruction => {
     const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string }[] };
     return state.tasks.find(task => task.instruction === instruction)?.status === 'done';
-  }, unlockedTaskInstruction, { timeout: 10_000 });
-  const unlockedTaskCall = agentCalls.slice(remoteCallsBeforeUnlockRetry).find(call => String(call.prompt || '').includes(unlockedTaskInstruction));
-  assert(unlockedTaskCall, 'The new Chrome task should reach the cloud Agent after Keychain access returns');
+  }, lockedRestartInstruction, { timeout: 10_000 });
+  const unlockedTaskCall = agentCalls.slice(remoteCallsBeforeUnlockRetry).find(call => call.taskId === afterUnavailableTask.id);
+  assert(unlockedTaskCall, 'Retrying the original Chrome task should reach the cloud Agent after Keychain access returns');
   assert.equal(unlockedTaskCall.engine, 'pi');
   assert.equal((unlockedTaskCall.modelConfig as { apiKey?: string } | undefined)?.apiKey, 'cloud-e2e-shared-api-key');
-  assert.equal(agentCalls.length, remoteCallsBeforeUnlockRetry + 1, 'Unlock recovery must dispatch the new task exactly once');
+  assert.equal(agentCalls.length, remoteCallsBeforeUnlockRetry + 1, 'Unlock recovery must dispatch the retried task exactly once');
+  await lockedTaskCard.locator('.pill.done').waitFor({ state: 'visible' });
   await page.screenshot({ path: join(artifacts, '06-pi-recovers-after-keychain-unlock-without-restart.png') });
 
   await alphaContext.close();
