@@ -7,14 +7,23 @@ import { randomBytes } from 'node:crypto';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const mode = process.argv[2];
-const testKeyringDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-test-keyring-'));
-const environment = {
+const baseEnvironment = {
   ...process.env,
   NODE_ENV: 'test',
   DOTS_E2E_AUTH: '1',
-  DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.test-${randomBytes(8).toString('hex')}`,
-  DOTS_TEST_KEYRING_DIR: testKeyringDirectory,
 };
+
+function createIsolatedEnvironment() {
+  const testKeyringDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-test-keyring-'));
+  return {
+    testKeyringDirectory,
+    environment: {
+      ...baseEnvironment,
+      DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.test-${randomBytes(8).toString('hex')}`,
+      DOTS_TEST_KEYRING_DIR: testKeyringDirectory,
+    },
+  };
+}
 
 const testFiles = readdirSync(join(projectRoot, 'tests'))
   .filter(file => file.endsWith('.test.ts'))
@@ -35,15 +44,16 @@ if (mode === 'unit') {
   commands = [];
 }
 
-try {
-  for (const [command, args] of commands) {
-    const result = spawnSync(command, args, { cwd: projectRoot, env: environment, stdio: 'inherit' });
+for (const [command, args] of commands) {
+  const isolated = createIsolatedEnvironment();
+  try {
+    const result = spawnSync(command, args, { cwd: projectRoot, env: isolated.environment, stdio: 'inherit' });
     if (result.error) throw result.error;
     if (result.status !== 0) {
       process.exitCode = result.status ?? 1;
       break;
     }
+  } finally {
+    rmSync(isolated.testKeyringDirectory, { recursive: true, force: true });
   }
-} finally {
-  rmSync(testKeyringDirectory, { recursive: true, force: true });
 }

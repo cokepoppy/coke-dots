@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
 import { Entry } from './keyring.ts';
 
-export interface ModelSettings { baseUrl: string; model: string; hasKey: boolean; adminTenantId: string | null }
+export type ModelApiKeyStatus = 'available' | 'missing' | 'unreadable';
+export interface ModelSettings { baseUrl: string; model: string; hasKey: boolean; adminTenantId: string | null; apiKeyStatus: ModelApiKeyStatus }
 
 const keychainService = () => process.env.DOTS_KEYCHAIN_SERVICE?.trim()
   || (process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT !== undefined || process.argv.includes('--test') ? 'com.cokepoppy.coke-dots.test' : 'com.cokepoppy.coke-dots');
@@ -10,12 +11,14 @@ const tenantKeychainEntry = (tenantId: string) => new Entry(keychainService(), `
 const legacyKeychainEntry = () => new Entry(keychainService(), 'local-model-api-key');
 const testModelFixtureEnabled = () => process.env.NODE_ENV === 'test' && process.env.DOTS_E2E_AUTH === '1';
 
-let stored: ModelSettings = { baseUrl: '', model: '', hasKey: false, adminTenantId: null };
+let stored: ModelSettings = { baseUrl: '', model: '', hasKey: false, adminTenantId: null, apiKeyStatus: 'missing' };
 const lastReadableSharedKeys = new Map<string, string>();
+const unreadableSharedKeychains = new Set<string>();
 
 /** Endpoint, model name, and API credential are shared by all Coke Dots tenants. */
 export function loadModelSettings(baseUrl: string | null, model: string | null, adminTenantId: string | null = null) {
-  stored = { baseUrl: baseUrl || '', model: model || '', hasKey: Boolean(readSharedKey() || environmentModelKey()), adminTenantId };
+  const apiKeyStatus = sharedModelApiKeyStatus();
+  stored = { baseUrl: baseUrl || '', model: model || '', hasKey: apiKeyStatus === 'available', adminTenantId, apiKeyStatus };
 }
 
 /** Migrate one existing tenant-scoped credential to the instance Keychain entry. */
@@ -51,7 +54,8 @@ export function saveModelKey(value: string) {
   const key = value.trim();
   sharedKeychainEntry().setPassword(key);
   lastReadableSharedKeys.set(keychainService(), key);
-  stored = { ...stored, hasKey: true };
+  unreadableSharedKeychains.delete(keychainService());
+  stored = { ...stored, hasKey: true, apiKeyStatus: 'available' };
 }
 
 export function setModelMetadata(baseUrl: string, model: string, adminTenantId: string | null = stored.adminTenantId) {
@@ -59,7 +63,13 @@ export function setModelMetadata(baseUrl: string, model: string, adminTenantId: 
 }
 
 export function publicModelSettings(adminTenantId: string | null = stored.adminTenantId): ModelSettings {
-  return { ...stored, hasKey: Boolean(readSharedKey() || environmentModelKey()), adminTenantId };
+  const apiKeyStatus = sharedModelApiKeyStatus();
+  return { ...stored, hasKey: apiKeyStatus === 'available', apiKeyStatus, adminTenantId };
+}
+
+export function sharedModelApiKeyStatus(): ModelApiKeyStatus {
+  if (readSharedKey() || environmentModelKey()) return 'available';
+  return unreadableSharedKeychains.has(keychainService()) ? 'unreadable' : 'missing';
 }
 
 export function effectiveModelConfig(_tenantId = 'legacy') {
@@ -83,10 +93,12 @@ function readSharedKey(): string | null {
       throw new Error('Simulated unavailable shared Model API Keychain');
     }
     const value = new Entry(service, 'shared-model-api-key').getPassword() || null;
+    unreadableSharedKeychains.delete(service);
     if (value) lastReadableSharedKeys.set(service, value);
     else lastReadableSharedKeys.delete(service);
     return value;
   } catch {
+    unreadableSharedKeychains.add(service);
     // macOS can temporarily make the login Keychain unreadable while it is locked.
     // Retain only the last value read or saved successfully in this service process.
     return lastReadableSharedKeys.get(service) || null;

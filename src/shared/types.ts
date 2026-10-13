@@ -71,7 +71,8 @@ export interface Snapshot {
   entries: Entry[];
   configured: boolean;
   availableEngines: Engine[];
-  modelSettings: { baseUrl: string; model: string; hasKey: boolean; adminTenantId: string | null };
+  modelSettings: { baseUrl: string; model: string; hasKey: boolean; adminTenantId: string | null; apiKeyStatus: 'available' | 'missing' | 'unreadable' };
+  remoteEngines: Engine[];
 }
 
 export interface Watch {

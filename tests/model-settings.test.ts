@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { Entry } from '../src/server/keyring.ts';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.ts';
-import { effectiveModelConfig, loadModelSettings, migrateTenantModelKey, publicModelSettings, saveModelKey, setModelMetadata } from '../src/server/model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, migrateTenantModelKey, publicModelSettings, saveModelKey, setModelMetadata, sharedModelApiKeyStatus } from '../src/server/model-settings.ts';
 
 const keychainService = () => process.env.DOTS_KEYCHAIN_SERVICE || 'com.cokepoppy.coke-dots.test';
 const sharedEntry = () => new Entry(keychainService(), 'shared-model-api-key');
@@ -88,6 +89,42 @@ test('the last readable shared Model API key survives a temporary Keychain read 
     deletePassword(shared);
     rmSync(testDirectory, { recursive: true, force: true });
     for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2e], ['DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE', old.lockFile], ['DOTS_MODEL_API_KEY', old.key], ['DOTS_MODEL', old.model], ['DOTS_MODEL_BASE_URL', old.baseUrl]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('shared model settings distinguish a missing key from an unreadable Keychain', () => {
+  const testDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-keychain-status-'));
+  const lockFile = join(testDirectory, 'login-keychain-locked');
+  const old = {
+    nodeEnv: process.env.NODE_ENV,
+    e2e: process.env.DOTS_E2E_AUTH,
+    service: process.env.DOTS_KEYCHAIN_SERVICE,
+    lockFile: process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE,
+    key: process.env.DOTS_MODEL_API_KEY,
+    model: process.env.DOTS_MODEL,
+    baseUrl: process.env.DOTS_MODEL_BASE_URL,
+  };
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_E2E_AUTH = '0';
+  process.env.DOTS_KEYCHAIN_SERVICE = `com.cokepoppy.coke-dots.test.${randomUUID()}`;
+  delete process.env.DOTS_MODEL_API_KEY;
+  delete process.env.DOTS_MODEL;
+  delete process.env.DOTS_MODEL_BASE_URL;
+  try {
+    writeFileSync(lockFile, 'simulated unavailable keychain');
+    process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE = lockFile;
+    loadModelSettings('https://api.shared.example.test/v1', 'shared-test-model');
+    assert.equal(sharedModelApiKeyStatus(), 'unreadable');
+    assert.equal(publicModelSettings().hasKey, false);
+
+    rmSync(lockFile, { force: true });
+    assert.equal(sharedModelApiKeyStatus(), 'missing');
+    assert.equal(publicModelSettings().apiKeyStatus, 'missing');
+  } finally {
+    rmSync(testDirectory, { recursive: true, force: true });
+    for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2e], ['DOTS_KEYCHAIN_SERVICE', old.service], ['DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE', old.lockFile], ['DOTS_MODEL_API_KEY', old.key], ['DOTS_MODEL', old.model], ['DOTS_MODEL_BASE_URL', old.baseUrl]] as const) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }
