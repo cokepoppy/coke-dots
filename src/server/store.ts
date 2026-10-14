@@ -444,7 +444,7 @@ export class Store {
       JOIN tenants t ON t.id=m.tenant_id AND t.kind='personal'
       WHERE p.enabled=1 AND p.next_run_at IS NOT NULL AND p.next_run_at<=?
         AND (SELECT COUNT(*) FROM memberships all_members WHERE all_members.tenant_id=t.id)=1
-        AND NOT EXISTS (SELECT 1 FROM gmail_proactive_review_runs r WHERE r.user_id=p.user_id AND r.status IN ('queued','working'))
+        AND NOT EXISTS (SELECT 1 FROM gmail_proactive_review_runs r WHERE r.status IN ('queued','working'))
       ORDER BY p.next_run_at ASC LIMIT 100`).all(now) as { userId: string; tenantId: string; lastRunAt: string | null }[];
   }
 
@@ -461,14 +461,14 @@ export class Store {
         WHERE p.user_id=? AND p.enabled=1 AND p.next_run_at IS NOT NULL AND p.next_run_at<=?`).get(userId, now) as
         { lastRunAt: string | null; reviewSinceAt: string | null; reviewThroughAt: string | null; pageToken: string | null } | undefined;
       if (!eligible || this.personalTenantIdForGmailReview(userId) !== tenantId) { this.db.exec('COMMIT'); return null; }
-      const running = this.db.prepare(`SELECT 1 FROM gmail_proactive_review_runs WHERE user_id=? AND status IN ('queued','working')`).get(userId);
+      const running = this.db.prepare(`SELECT 1 FROM gmail_proactive_review_runs WHERE status IN ('queued','working')`).get();
       if (running) { this.db.exec('COMMIT'); return null; }
       const sinceAt = eligible.reviewSinceAt || eligible.lastRunAt || new Date(nowMs - 24 * 60 * 60_000).toISOString();
       const throughAt = eligible.reviewThroughAt || now;
       const pageToken = eligible.reviewSinceAt && eligible.reviewThroughAt ? eligible.pageToken : null;
       this.db.prepare(`INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,created_by_user_id)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(id, tenantId, title, instruction, 'queued', 1, now, null, null, null, now, now, engine, 'high', null, null, 'read-only', userId);
+        .run(id, tenantId, title, instruction, 'queued', -1, now, null, null, null, now, now, engine, 'high', null, null, 'read-only', userId);
       this.db.prepare(`INSERT INTO gmail_proactive_review_runs(task_id,user_id,tenant_id,since_at,through_at,page_token,message_ids_json,status,created_at)
         VALUES (?,?,?,?,?,?,?,'queued',?)`).run(id, userId, tenantId, sinceAt, throughAt, pageToken, '[]', now);
       this.db.prepare(`UPDATE gmail_proactive_review_preferences SET next_run_at=NULL,review_since_at=?,review_through_at=?,page_token=?,updated_at=? WHERE user_id=?`)
@@ -1740,9 +1740,8 @@ export class Store {
     return this.getTask(id, tenantId);
   }
 
-  stopTask(id: string, tenantId: string, actorUserId: string): { task: Task; cancelledApprovals: number } | null {
+  stopTask(id: string, tenantId: string, actorUserId: string, now = new Date().toISOString()): { task: Task; cancelledApprovals: number } | null {
     if (!this.isTenantMember(tenantId, actorUserId)) throw new Error('你不是该工作区成员');
-    const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const task = this.getTask(id, tenantId);
@@ -1751,6 +1750,15 @@ export class Store {
       const updated = this.db.prepare("UPDATE tasks SET status='stopped',next_run_at=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status IN ('queued','working','delegating','waiting','scheduled','paused')")
         .run(now, tenantId, id);
       if (!Number(updated.changes)) { this.db.exec('ROLLBACK'); return null; }
+      const gmailReview = this.gmailProactiveReviewRun(id, tenantId);
+      if (gmailReview && ['queued', 'working'].includes(gmailReview.status)) {
+        const nextRunAt = new Date(Date.parse(now) + 24 * 60 * 60_000).toISOString();
+        this.db.prepare(`UPDATE gmail_proactive_review_runs SET status='cancelled',completed_at=? WHERE task_id=? AND tenant_id=?`)
+          .run(now, id, tenantId);
+        this.db.prepare(`UPDATE gmail_proactive_review_preferences SET review_since_at=NULL,review_through_at=NULL,page_token=NULL,
+          next_run_at=CASE WHEN enabled=1 THEN ? ELSE NULL END,last_error=?,updated_at=? WHERE user_id=?`)
+          .run(nextRunAt, '本次主动复查已停止；下次复查仍按每日计划进行。', now, gmailReview.userId);
+      }
       const cancelled = this.db.prepare("UPDATE page_action_approvals SET status='cancelled',decided_at=?,decided_by=? WHERE tenant_id=? AND task_id=? AND status='pending'")
         .run(now, actorUserId, tenantId, id);
       const cancelledSignIn = this.db.prepare("UPDATE website_sign_in_requests SET status='cancelled',updated_at=? WHERE tenant_id=? AND task_id=? AND status IN ('pending','submitted')")

@@ -111,6 +111,68 @@ test('Gmail proactive review is opt-in, daily, personal-tenant-only, and stores 
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('Gmail proactive reviews queue one low-priority account at a time across the service', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-gmail-review-queue-'));
+  const store = new Store(directory);
+  try {
+    const alpha = store.signInGoogle({ subject: 'gmail-queue-alpha', email: 'queue-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'gmail-queue-beta', email: 'queue-beta@example.test', name: 'Beta' });
+    const now = '2026-10-13T02:00:00.000Z';
+    for (const account of [alpha, beta]) {
+      store.connectGmail({ userId: account.user.id, email: `${account.user.name.toLowerCase()}@gmail.com`, connectedAt: now, scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
+      store.setGmailProactiveReview(account.user.id, true, now);
+    }
+
+    const due = store.dueGmailProactiveReviewers(now);
+    assert.equal(due.length, 2);
+    const first = due[0]!;
+    const second = due[1]!;
+    const firstRun = store.createGmailProactiveReviewTask(first.userId, first.tenantId, 'pi', now);
+    assert(firstRun);
+    assert.equal(firstRun.priority, -1, 'Automatic review work must be lower priority than assigned tasks');
+    assert.equal(store.createGmailProactiveReviewTask(second.userId, second.tenantId, 'pi', now), null, 'A second account must wait for the shared background slot');
+    assert.deepEqual(store.dueGmailProactiveReviewers(now), [], 'Queued or working Gmail review must block another account from enqueueing');
+
+    const assigned = store.createTask('Please review this now', null, 'model', first.tenantId, null, now, [], first.userId);
+    assert.equal(store.dueTasks(now)[0]?.id, assigned.id, 'Assigned work must sort ahead of an already queued automatic review');
+    assert.equal(store.claimDueTask(firstRun.id, first.tenantId, now), true);
+    assert.equal(store.markGmailProactiveReviewWorking(firstRun.id, first.tenantId)?.status, 'working');
+    assert.equal(store.completeGmailProactiveReview(firstRun.id, first.tenantId, { now }), true);
+
+    const nextDue = store.dueGmailProactiveReviewers(now);
+    assert.equal(nextDue.length, 1);
+    assert.equal(nextDue[0]?.userId, second.userId, 'The next account should become eligible after the shared review slot is released');
+    const secondRun = store.createGmailProactiveReviewTask(second.userId, second.tenantId, 'pi', now);
+    assert(secondRun);
+    assert.equal(secondRun.tenantId, second.tenantId);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Stopping one Gmail review releases its global queue slot and preserves the daily schedule', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-gmail-review-stop-'));
+  const store = new Store(directory);
+  try {
+    const account = store.signInGoogle({ subject: 'gmail-review-stop', email: 'review-stop@example.test', name: 'Stop Review' });
+    const now = '2026-10-13T02:00:00.000Z';
+    store.connectGmail({ userId: account.user.id, email: 'review-stop@gmail.com', connectedAt: now, scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
+    store.setGmailProactiveReview(account.user.id, true, now);
+    const task = store.createGmailProactiveReviewTask(account.user.id, account.tenant.id, 'pi', now);
+    assert(task);
+    assert.equal(store.claimDueTask(task.id, account.tenant.id, now), true);
+    store.markGmailProactiveReviewWorking(task.id, account.tenant.id);
+
+    const stopped = store.stopTask(task.id, account.tenant.id, account.user.id, now);
+    assert.equal(stopped?.task.status, 'stopped');
+    assert.equal(store.gmailProactiveReviewRun(task.id, account.tenant.id)?.status, 'cancelled');
+    assert.deepEqual(store.gmailProactiveReviewSettings(account.user.id), {
+      enabled: true,
+      nextRunAt: '2026-10-14T02:00:00.000Z',
+      lastRunAt: null,
+      lastError: '本次主动复查已停止；下次复查仍按每日计划进行。',
+    });
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('Gmail is fetched only when requested and message content is passed as untrusted, read-only context', async () => {
   const previous = {
     nodeEnv: process.env.NODE_ENV,
