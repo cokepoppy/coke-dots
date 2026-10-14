@@ -39,3 +39,16 @@ Local Playwright E2E uses the repository's isolated test server and test sign-in
 The follow-up Chrome test uses a 390×844 phone context with touch, DPR 3, and a granted test microphone permission. It speaks a Chinese task request through a deterministic browser-recognition fixture; the Dot asks a Chinese clarification, the second utterance resumes the same persisted task, and the task is held in progress while the user hangs up. Releasing the test Agent after hangup completes that task and places its Chinese result in the same chat timeline. The test also records the active phone-call screen. The complete browser suite passed 43 steps and the cloud-computer E2E passed.
 
 This is simulated speech/model input against the local isolated E2E server. It proves the phone layout, click path, transcript-to-task dispatch, clarification/resume, hangup persistence, and post-call completion. It does not prove physical-phone microphone capture, live speech-provider audio, Google OAuth against Google's servers, Pi execution on the VPS, or a public deployment. OpenAI's current [Dots guide](https://learn.chatgpt.com/docs/dots) says mobile web is unsupported, so Chrome support here remains Coke Dots' responsive-web adaptation.
+
+## Public mobile asset parity (2026-10-14)
+
+OpenAI's current [Message your dot](https://learn.chatgpt.com/docs/dots/channels) guide says mobile web is unsupported, starts a call from the Dot conversation's phone button, allows typing during the call, and says assigned work continues after hangup. Mobile Chrome is therefore Coke Dots' responsive adaptation to the documented phone workflow, not a claim of official mobile-web parity.
+
+After local commit `1aec6ae` (mounted-path Google OAuth fix), `npm run test:e2e:base-path` rebuilt the app with `DOTS_PUBLIC_BASE_PATH=/dots-demo/`. The public HTML at `https://codex.cokeagent.com/dots-demo/` referenced `index-BR0vTsX7.js` and `index-CQ1NhjWb.css`. SHA-256 matched byte-for-byte across the local build, the installed runtime's `app/dist`, and both assets fetched from the public URL:
+
+- JS: `c281614bac8ba89bd0a71d079916ac80150c58bd30308dd2791150eef9e24e69`
+- CSS: `f44917a5e2d49a52095fb8c63d53c19f2d5c0f41e8e99d8ab8c7238bb43b3d6a`
+
+Signed-in Chrome DevTools mobile emulation at 390 CSS px showed the responsive Dot conversation, menu, and Call header. This confirms the public frontend bundle matches the current local build; this read-only check did not place a public voice call. No server restart, K3D change, or paid provider request was made.
+
+Fresh local checks on `1aec6ae`: `npm test` passed 84 tests; `npm run test:e2e` passed 43 browser steps and 13 Linux cloud-computer checks, including the mobile SeedDuplex fake-audio Agent round-trip; `npm run test:e2e:base-path` passed the 390x844 mobile mock-OIDC/PKCE login and mounted callback/session checks. These remain local mock-provider tests, not physical-phone or public voice-turn proof. The retained mobile call screen is `artifacts/e2e/2026-10-14T15-35-04-848Z/screenshots/mobile-chrome-call-active-390.png`.
