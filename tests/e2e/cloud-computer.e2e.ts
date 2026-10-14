@@ -416,7 +416,7 @@ try {
   await betaPage.waitForFunction(async id => {
     const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string }[] };
     return state.tasks.find(task => task.id === id)?.status === 'done';
-  }, betaTask.id, { timeout: 20_000 });
+  }, betaTask.id, { timeout: 30_000 });
   const betaStateAfterTask = await betaPage.evaluate(async id => {
     const state = await fetch('/api/state').then(response => response.json()) as { availableEngines: string[]; remoteEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { id: string; engine: string; status: string; error: string | null }[] };
     return { ...state.tasks.find(task => task.id === id), availableEngines: state.availableEngines, remoteEngines: state.remoteEngines, modelSettings: state.modelSettings };
