@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { chromium, type BrowserContext, type Page, type Route } from 'playwright-core';
 import { computerWelcomePage } from './computer-home.mjs';
 import { fetchPublicPageHtml, isE2EBrowserResearchFixture, isE2EWebsiteSignInFixture, validatePublicHttpsUrl } from '../shared/public-web-policy.mjs';
+import type { TaskArtifact } from '../shared/types.ts';
 
 export interface PublicPageSnapshot { url: string; title: string; text: string }
 
@@ -34,6 +35,9 @@ export interface ComputerRuntime {
   close(): Promise<void>;
   reset?(): Promise<void>;
   novncTarget?(): Promise<URL | null>;
+  listTaskArtifacts?(taskId: string): Promise<TaskArtifact[]>;
+  readTaskArtifact?(taskId: string, artifactPath: string): Promise<{ bytes: Buffer; mediaType: string; name: string; previewable: boolean }>;
+  openTaskArtifact?(taskId: string, artifactPath: string): Promise<ComputerState>;
   runAgentTask?(input: { engine: string; taskId: string; executionId?: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; websiteSignInRequest?: { url: string; reason: string } }>;
 }
 

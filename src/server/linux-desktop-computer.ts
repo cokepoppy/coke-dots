@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import type { ComputerRuntime, ComputerState } from './computer.ts';
 import { validatePublicHttpsUrl } from '../shared/public-web-policy.mjs';
+import type { TaskArtifact } from '../shared/types.ts';
 
 const workerPort = 8082;
 const vncPort = 6080;
@@ -126,6 +127,41 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     const response = await this.request('/v1/screenshot');
     if (!response.ok) throw new Error(`Linux 云电脑截图失败（HTTP ${response.status}）`);
     return Buffer.from(await response.arrayBuffer());
+  }
+
+  async listTaskArtifacts(taskId: string): Promise<TaskArtifact[]> {
+    assertArtifactTaskId(taskId);
+    const response = await this.request(`/v1/artifacts?taskId=${encodeURIComponent(taskId)}`);
+    if (!response.ok) throw new Error(`Linux 云电脑文件列表读取失败（HTTP ${response.status}）`);
+    const value = await response.json() as { artifacts?: unknown };
+    if (!Array.isArray(value.artifacts)) throw new Error('Linux 云电脑返回了无效的文件列表');
+    return value.artifacts.filter((item): item is TaskArtifact => Boolean(item && typeof item === 'object'
+      && typeof (item as TaskArtifact).path === 'string' && typeof (item as TaskArtifact).name === 'string'
+      && typeof (item as TaskArtifact).mediaType === 'string' && Number.isSafeInteger((item as TaskArtifact).size)
+      && typeof (item as TaskArtifact).previewable === 'boolean'));
+  }
+
+  async readTaskArtifact(taskId: string, artifactPath: string) {
+    assertArtifactTaskId(taskId);
+    if (typeof artifactPath !== 'string' || !artifactPath || artifactPath.length > 500) throw new Error('文件路径无效');
+    const query = new URLSearchParams({ taskId, path: artifactPath });
+    const response = await this.request(`/v1/artifact?${query}`);
+    if (!response.ok) throw new Error(`Linux 云电脑文件读取失败（HTTP ${response.status}）`);
+    const mediaType = response.headers.get('content-type')?.trim() || 'application/octet-stream';
+    let name = 'artifact';
+    try { name = decodeURIComponent(response.headers.get('x-dots-artifact-name') || 'artifact'); } catch { /* Use the safe fallback. */ }
+    const previewable = response.headers.get('x-dots-artifact-previewable') === 'true';
+    return { bytes: Buffer.from(await response.arrayBuffer()), mediaType, name, previewable };
+  }
+
+  async openTaskArtifact(taskId: string, artifactPath: string) {
+    assertArtifactTaskId(taskId);
+    const artifact = await this.readTaskArtifact(taskId, artifactPath);
+    if (artifact.mediaType.split(';', 1)[0] !== 'text/html') throw new Error('只有 HTML 文件可以在云电脑浏览器中打开');
+    await this.setRemoteOwner('user');
+    this.owner = 'user';
+    await this.command({ action: 'open-artifact', taskId, path: artifactPath, actor: 'user' });
+    return this.state();
   }
 
   async openPublicPageForAgent(value: string, signal?: AbortSignal) {
@@ -279,6 +315,10 @@ export class LinuxDesktopComputer implements ComputerRuntime {
 
 function isDesktopTransportFailure(error: unknown): boolean {
   return error instanceof TypeError && error.message === 'fetch failed';
+}
+
+function assertArtifactTaskId(taskId: string) {
+  if (!/^[a-f0-9-]{36}$/i.test(taskId)) throw new Error('任务 ID 无效');
 }
 
 function endpointUrl(baseValue: URL, path: string) {

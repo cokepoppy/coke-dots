@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
@@ -11,6 +13,18 @@ const exec = promisify(execFile);
 const token = String(process.env.LINUX_DESKTOP_WORKER_TOKEN || '');
 const port = Number(process.env.COKE_DESKTOP_WORKER_PORT || 8082);
 const resolution = String(process.env.COKE_DESKTOP_RESOLUTION || '1440x1080').split('x').map(Number);
+const workspace = path.resolve(process.env.DOTS_AGENT_WORKSPACE || '/workspace');
+const artifactTaskId = /^[a-f0-9-]{36}$/i;
+const maxArtifactBytes = 25 * 1024 * 1024;
+const maxArtifactCount = 100;
+const artifactTypes = new Map(Object.entries({
+  '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.csv': 'text/csv; charset=utf-8',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf', '.zip': 'application/zip', '.wasm': 'application/wasm',
+}));
+const previewTypes = new Set(['text/html', 'text/css', 'text/javascript', 'application/json', 'text/markdown', 'text/plain', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf']);
 let owner = 'agent';
 let browser;
 let initialized = false;
@@ -18,6 +32,65 @@ let researchGuardInstalled = false;
 let privateSignInFields = null;
 
 if (!token) throw new Error('LINUX_DESKTOP_WORKER_TOKEN is required');
+
+async function artifactRoot(taskId) {
+  if (!artifactTaskId.test(taskId)) throw new Error('invalid task id');
+  const workspaceRoot = await fs.realpath(workspace);
+  const taskRoot = path.join(workspaceRoot, 'tasks');
+  const base = await fs.realpath(taskRoot);
+  if (base !== taskRoot) throw new Error('task directory root is not a workspace directory');
+  const expectedRoot = path.join(base, taskId);
+  const root = await fs.realpath(expectedRoot);
+  if (root !== expectedRoot) throw new Error('task directory is not isolated to this task');
+  return root;
+}
+
+function artifactMediaType(filePath) {
+  return artifactTypes.get(path.extname(filePath).toLowerCase()) || 'application/octet-stream';
+}
+
+async function listArtifacts(taskId) {
+  let root;
+  try { root = await artifactRoot(taskId); }
+  catch (error) { if (error?.code === 'ENOENT') return []; throw error; }
+  const artifacts = [];
+  const pending = [root];
+  while (pending.length && artifacts.length < maxArtifactCount) {
+    const directory = pending.pop();
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) continue;
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) { pending.push(absolute); continue; }
+      if (!entry.isFile()) continue;
+      const real = await fs.realpath(absolute);
+      if (!real.startsWith(`${root}${path.sep}`)) continue;
+      const stats = await fs.stat(real);
+      if (!stats.isFile() || stats.size > maxArtifactBytes) continue;
+      const relative = path.relative(root, real).split(path.sep).join('/');
+      const mediaType = artifactMediaType(real).split(';', 1)[0];
+      artifacts.push({ path: relative, name: path.basename(real), mediaType, size: stats.size, previewable: previewTypes.has(mediaType) });
+      if (artifacts.length >= maxArtifactCount) break;
+    }
+  }
+  return artifacts.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function readArtifact(taskId, relativePath) {
+  const resolved = await resolveArtifact(taskId, relativePath);
+  return { bytes: await fs.readFile(resolved.real), mediaType: resolved.mediaType, name: path.basename(resolved.real), previewable: previewTypes.has(resolved.mediaType.split(';', 1)[0]) };
+}
+
+async function resolveArtifact(taskId, relativePath) {
+  if (typeof relativePath !== 'string' || !relativePath || relativePath.length > 500 || relativePath.includes('\\') || path.posix.isAbsolute(relativePath)
+      || relativePath.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('invalid artifact path');
+  const root = await artifactRoot(taskId);
+  const real = await fs.realpath(path.resolve(root, ...relativePath.split('/')));
+  if (!real.startsWith(`${root}${path.sep}`)) throw new Error('artifact is outside the task directory');
+  const stats = await fs.stat(real);
+  if (!stats.isFile() || stats.size > maxArtifactBytes) throw new Error('artifact is not available for preview');
+  const mediaType = artifactMediaType(real);
+  return { real, mediaType };
+}
 
 async function page() {
   if (!browser) browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
@@ -82,7 +155,12 @@ async function command(input) {
     await browserPage.setContent(computerWelcomePage(dotName), { waitUntil: 'domcontentloaded' });
     return { ready: true, url: browserPage.url(), title: await browserPage.title() };
   }
-  if (action === 'navigate') {
+  if (action === 'open-artifact') {
+    if (actor !== 'user') throw new Error('Only a user can open a task artifact in the cloud browser');
+    const resolved = await resolveArtifact(String(input.taskId || ''), String(input.path || ''));
+    if (!resolved.mediaType.startsWith('text/html')) throw new Error('Only HTML task files can open in the cloud browser');
+    await (await page()).goto(pathToFileURL(resolved.real).href, { waitUntil: 'domcontentloaded', timeout: 15000 });
+  } else if (action === 'navigate') {
     const url = new URL(String(input.url || ''));
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Only credential-free HTTP and HTTPS URLs are allowed');
     await (await page()).goto(url.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -163,6 +241,21 @@ http.createServer(async (req, res) => {
       } catch { return send(res, 503, { ok: false }); }
     }
     if (req.headers.authorization !== `Bearer ${token}`) return send(res, 401, { error: 'worker token is required' });
+    if (req.method === 'GET' && pathname === '/v1/artifacts') {
+      const taskId = new URL(req.url || '/', 'http://127.0.0.1').searchParams.get('taskId') || '';
+      return send(res, 200, { artifacts: await listArtifacts(taskId) });
+    }
+    if (req.method === 'GET' && pathname === '/v1/artifact') {
+      const query = new URL(req.url || '/', 'http://127.0.0.1').searchParams;
+      const artifact = await readArtifact(query.get('taskId') || '', query.get('path') || '');
+      const safeName = encodeURIComponent(artifact.name);
+      res.writeHead(200, {
+        'content-type': artifact.mediaType, 'content-length': artifact.bytes.length, 'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff', 'x-dots-artifact-name': safeName, 'x-dots-artifact-previewable': String(artifact.previewable),
+      });
+      res.end(artifact.bytes);
+      return;
+    }
     if (req.method === 'GET' && pathname === '/v1/control') return send(res, 200, { owner });
     if (req.method === 'POST' && pathname === '/v1/control') {
       const input = await body(req);

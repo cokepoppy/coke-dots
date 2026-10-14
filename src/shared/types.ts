@@ -71,6 +71,14 @@ export interface AttachmentSummary {
   size: number;
 }
 
+export interface TaskArtifact {
+  path: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  previewable: boolean;
+}
+
 export interface VoiceCallSession {
   id: string;
   tenantId: string;

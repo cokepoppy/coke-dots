@@ -26,6 +26,8 @@ const agentTokens = new Map<string, string>();
 const agentCalls: Record<string, unknown>[] = [];
 const agentTaskExecutions = new Map<string, Promise<{ status: string; message: string; sessionId: string }>>();
 const agentExecutionCount = new Map<string, number>();
+const taskArtifacts = new Map<string, { path: string; name: string; mediaType: string; size: number; previewable: boolean }[]>();
+const taskArtifactBodies = new Map<string, Map<string, string>>();
 const browserActions: { hash: string; action: string }[] = [];
 const remoteHttpPaths: string[] = [];
 const remoteUpgradePaths: string[] = [];
@@ -131,11 +133,27 @@ async function startRemote() {
         if (route === '/v1/state' && req.method === 'GET') return content(res, 200, 'application/json', JSON.stringify({ ready: true, owner: machine.owner, url: machine.url, title: machine.title }));
         if (route === '/v1/control' && req.method === 'GET') return content(res, 200, 'application/json', JSON.stringify({ owner: machine.owner }));
         if (route === '/v1/control' && req.method === 'POST') { const body = await readJson(req); machine.owner = body.owner; return content(res, 200, 'application/json', JSON.stringify({ owner: machine.owner })); }
+        if (route === '/v1/artifacts' && req.method === 'GET') {
+          const taskId = requestUrl.searchParams.get('taskId') || '';
+          return content(res, 200, 'application/json', JSON.stringify({ artifacts: taskArtifacts.get(taskId) || [] }));
+        }
+        if (route === '/v1/artifact' && req.method === 'GET') {
+          const taskId = requestUrl.searchParams.get('taskId') || '';
+          const artifactPath = requestUrl.searchParams.get('path') || '';
+          const artifact = taskArtifacts.get(taskId)?.find(item => item.path === artifactPath);
+          const body = taskArtifactBodies.get(taskId)?.get(artifactPath);
+          if (!artifact || body === undefined) return content(res, 404, 'application/json', JSON.stringify({ error: 'artifact not found' }));
+          const bytes = Buffer.from(body);
+          res.writeHead(200, { 'content-type': `${artifact.mediaType}; charset=utf-8`, 'content-length': bytes.length, 'cache-control': 'no-store', 'x-dots-artifact-name': encodeURIComponent(artifact.name), 'x-dots-artifact-previewable': String(artifact.previewable) });
+          res.end(bytes);
+          return;
+        }
         if (route === '/v1/screenshot' && req.method === 'GET') return content(res, 200, 'image/png', screen);
         if (route === '/v1/commands' && req.method === 'POST') {
           const body = await readJson(req);
           browserActions.push({ hash, action: String(body.action || '') });
           if (body.action === 'navigate') { machine.url = String(body.url); machine.title = `Visited ${new URL(machine.url).hostname}`; }
+          if (body.action === 'open-artifact') { machine.url = `file:///workspace/tasks/${body.taskId}/${body.path}`; machine.title = String(body.path); }
           return content(res, 200, 'application/json', JSON.stringify({ ready: true }));
         }
       }
@@ -147,6 +165,13 @@ async function startRemote() {
           const body = await readJson(req);
           agentCalls.push(body);
           const taskId = String(body.taskId || '');
+          const html = '<!doctype html><html><body><main id="demo-artifact">正在加载游戏…</main><script src="game.js"></script></body></html>';
+          const script = "document.querySelector('#demo-artifact').textContent = '俄罗斯方块预览';";
+          taskArtifacts.set(taskId, [
+            { path: 'game.js', name: 'game.js', mediaType: 'text/javascript', size: Buffer.byteLength(script), previewable: true },
+            { path: 'tetris.html', name: 'tetris.html', mediaType: 'text/html', size: Buffer.byteLength(html), previewable: true },
+          ]);
+          taskArtifactBodies.set(taskId, new Map([['tetris.html', html], ['game.js', script]]));
           const executionId = String(body.executionId || taskId);
           const key = `${hash}:${executionId}`;
           let execution = agentTaskExecutions.get(key);
@@ -359,6 +384,30 @@ try {
   assert.equal('computer' in agentCalls[0], false, 'The host must not forward a raw browser Worker token to the cloud Agent runtime');
   await page.screenshot({ path: join(artifacts, '03-agent-task-done.png') });
 
+  await page.locator('.sidebar button.nav[aria-label="你的 dot"]').click();
+  await page.getByTestId('dot-context-panel').waitFor({ state: 'visible' });
+  await page.getByTestId(`context-output-task-${created.task.id}`).click();
+  const artifactCard = page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]');
+  await artifactCard.waitFor({ state: 'visible' });
+  await artifactCard.getByRole('button', { name: '预览' }).click();
+  const artifactPreview = page.frameLocator('[data-testid="task-artifact-preview"]');
+  await artifactPreview.locator('#demo-artifact').filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible' });
+  assert.equal(await artifactPreview.locator('#demo-artifact').textContent(), '俄罗斯方块预览', 'Generated HTML and its relative JavaScript must render in the signed-in chat');
+  const linkedAsset = await page.evaluate(async id => {
+    const response = await fetch(`/api/tasks/${id}/artifacts/file/game.js`);
+    return { status: response.status, type: response.headers.get('content-type'), body: await response.text() };
+  }, created.task.id);
+  assert.equal(linkedAsset.status, 200);
+  assert.match(linkedAsset.type || '', /text\/javascript/);
+  assert.match(linkedAsset.body, /俄罗斯方块预览/);
+  await artifactCard.getByTestId('open-artifact-in-computer').click();
+  await page.getByTestId('computer-workspace').waitFor({ state: 'visible' });
+  await page.getByRole('status').filter({ hasText: 'You have control' }).waitFor({ state: 'visible' });
+  assert.equal(machines.get(alphaHash)?.url, `file:///workspace/tasks/${created.task.id}/tetris.html`, 'One click must open the generated HTML in this tenant’s cloud browser');
+  assert(browserActions.some(entry => entry.hash === alphaHash && entry.action === 'open-artifact'));
+  await page.getByRole('button', { name: 'Return control' }).click();
+  await page.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible' });
+
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
   await page.locator('.composer-bottom select').selectOption('dsh');
   assert.equal(await page.locator('small.hint').textContent(), '任务由 Dot 的云电脑运行。', 'The composer must identify the actual remote execution location');
@@ -397,6 +446,8 @@ try {
   const betaPage = await betaContext.newPage();
   await signIn(betaPage, 'cloud-beta@example.test');
   await chooseComputer(betaPage);
+  const crossTenantArtifactStatus = await betaPage.evaluate(async id => (await fetch(`/api/tasks/${id}/artifacts`)).status, created.task.id);
+  assert.equal(crossTenantArtifactStatus, 404, 'A different tenant must not enumerate another tenant’s task artifacts');
   const betaHash = [...machines.keys()].find(hash => hash !== alphaHash);
   assert(betaHash, 'Second tenant did not receive its own desktop identity');
   assert.notEqual(workerTokens.get(alphaHash), workerTokens.get(betaHash), 'Tenant browser worker bearer tokens were shared');
@@ -413,7 +464,7 @@ try {
   await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });
   await betaContext.close();
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'chat artifact list and HTML preview with linked assets', 'one-click open in cloud browser and return control', 'cross-tenant artifact isolation', 'Chrome-created task recovers after control-plane restart without duplicate execution', 'tenant token and runtime separation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);

@@ -11,6 +11,7 @@ import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '.
 import { effectiveModelConfig, loadModelSettings, loadSharedModelSettings, publicModelSettings, saveSharedModelKey, setSharedModelMetadata } from './model-settings.ts';
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { configuredDesktopAgentEngines, LinuxDesktopComputer } from './linux-desktop-computer.ts';
+import { createArtifactPreviewTicket, verifyArtifactPreviewTicket } from './artifact-preview-ticket.ts';
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
 import { GmailService } from './gmail.ts';
@@ -189,6 +190,20 @@ const server = createServer(async (req, res) => {
     if (!session) return reply(res, 401, { error: '请先登录' });
     return reply(res, 200, { user: session.user, tenant: session.tenant, tenants: store.tenantsForUser(session.user.id) });
   }
+  const artifactPreviewMatch = path.match(/^\/api\/artifact-preview\/([a-f0-9-]{36})\/([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\/(.+)$/i);
+  if (artifactPreviewMatch && req.method === 'GET') {
+    const [, taskId, ticket, rawPath] = artifactPreviewMatch;
+    const claims = verifyArtifactPreviewTicket(ticket);
+    if (!claims || claims.taskId !== taskId) return reply(res, 404, { error: '文件预览已过期或不可用' });
+    const task = store.getTask(taskId, claims.tenantId);
+    if (!task || task.status !== 'done') return reply(res, 404, { error: '文件预览已过期或不可用' });
+    try {
+      const artifactPath = rawPath.split('/').map(part => decodeURIComponent(part)).join('/');
+      const artifact = await computerFor(claims.tenantId).readTaskArtifact?.(task.id, artifactPath);
+      if (!artifact?.previewable) return reply(res, 404, { error: '文件预览已过期或不可用' });
+      return writeTaskArtifact(res, artifact);
+    } catch { return reply(res, 502, { error: '云电脑文件预览暂时不可用' }); }
+  }
   if (path === '/api/auth/desktop/start' && req.method === 'GET') return auth.beginDesktop(req, res, url);
   if (path === '/api/auth/logout' && req.method === 'POST') {
     if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
@@ -200,6 +215,55 @@ const server = createServer(async (req, res) => {
   const session = auth.session(req);
   if (!session) return reply(res, 401, { error: '请先使用 Google 登录' });
   if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+  const taskArtifactsMatch = path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/artifacts$/i);
+  if (taskArtifactsMatch && req.method === 'GET') {
+    const task = store.getTask(taskArtifactsMatch[1], session.tenant.id);
+    if (!task || task.status !== 'done') return reply(res, 404, { error: '任务不存在或尚未完成' });
+    const artifacts = await computerFor(session.tenant.id).listTaskArtifacts?.(task.id) || [];
+    return reply(res, 200, { artifacts });
+  }
+  const taskArtifactPreviewUrlMatch = path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/artifacts\/preview-url$/i);
+  if (taskArtifactPreviewUrlMatch && req.method === 'GET') {
+    const task = store.getTask(taskArtifactPreviewUrlMatch[1], session.tenant.id);
+    if (!task || task.status !== 'done') return reply(res, 404, { error: '任务不存在或尚未完成' });
+    const artifactPath = url.searchParams.get('path') || '';
+    const artifacts = await computerFor(session.tenant.id).listTaskArtifacts?.(task.id) || [];
+    const artifact = artifacts.find(item => item.path === artifactPath);
+    if (!artifact?.previewable) return reply(res, 415, { error: '该文件暂不支持预览' });
+    const ticket = createArtifactPreviewTicket(session.tenant.id, task.id);
+    const encodedPath = artifactPath.split('/').map(part => encodeURIComponent(part)).join('/');
+    return reply(res, 200, { url: `/api/artifact-preview/${task.id}/${ticket}/${encodedPath}` });
+  }
+  const taskArtifactContentMatch = path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/artifacts\/content$/i);
+  if (taskArtifactContentMatch && req.method === 'GET') {
+    const task = store.getTask(taskArtifactContentMatch[1], session.tenant.id);
+    if (!task || task.status !== 'done') return reply(res, 404, { error: '任务不存在或尚未完成' });
+    const artifactPath = url.searchParams.get('path') || '';
+    const artifact = await computerFor(session.tenant.id).readTaskArtifact?.(task.id, artifactPath);
+    if (!artifact) return reply(res, 404, { error: '该运行环境暂不提供云电脑文件预览' });
+    return writeTaskArtifact(res, artifact);
+  }
+  const taskArtifactFileMatch = path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/artifacts\/file\/(.+)$/i);
+  if (taskArtifactFileMatch && req.method === 'GET') {
+    const task = store.getTask(taskArtifactFileMatch[1], session.tenant.id);
+    if (!task || task.status !== 'done') return reply(res, 404, { error: '任务不存在或尚未完成' });
+    let artifactPath: string;
+    try { artifactPath = taskArtifactFileMatch[2].split('/').map(part => decodeURIComponent(part)).join('/'); }
+    catch { return reply(res, 400, { error: '文件路径无效' }); }
+    const artifact = await computerFor(session.tenant.id).readTaskArtifact?.(task.id, artifactPath);
+    if (!artifact) return reply(res, 404, { error: '该运行环境暂不提供云电脑文件预览' });
+    return writeTaskArtifact(res, artifact);
+  }
+  const taskArtifactOpenMatch = path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/artifacts\/open-in-computer$/i);
+  if (taskArtifactOpenMatch && req.method === 'POST') {
+    const task = store.getTask(taskArtifactOpenMatch[1], session.tenant.id);
+    if (!task || task.status !== 'done') return reply(res, 404, { error: '任务不存在或尚未完成' });
+    const body = await readJson(req);
+    const artifactPath = String(body.path || '');
+    const computer = computerFor(session.tenant.id);
+    if (!computer.openTaskArtifact) return reply(res, 404, { error: '该运行环境暂不支持在云电脑中打开任务文件' });
+    return reply(res, 200, await computer.openTaskArtifact(task.id, artifactPath));
+  }
   if (path === '/api/gmail' && req.method === 'GET') return reply(res, 200, gmail.snapshot(session.user.id));
   if (path === '/api/gmail/oauth/start' && req.method === 'GET') return gmail.begin(req, res, session);
   if (path === '/api/gmail' && req.method === 'DELETE') {
@@ -803,7 +867,8 @@ function isLocalRequest(req: IncomingMessage, path: string) {
   const forwarded = Boolean(publicHost && trustedProxy && hostname === publicHost);
   const oauthCallback = req.method === 'GET' && path === '/auth/google/callback' && origin === 'https://accounts.google.com';
   const slackCallback = req.method === 'GET' && path === '/auth/slack/callback' && ['https://slack.com', 'https://slack-gov.com'].includes(origin || '');
-  const allowedOrigin = !origin || isAllowedOrigin(origin) || oauthCallback || slackCallback;
+  const sandboxArtifactPreview = req.method === 'GET' && path.startsWith('/api/artifact-preview/');
+  const allowedOrigin = !origin || isAllowedOrigin(origin) || oauthCallback || slackCallback || (sandboxArtifactPreview && origin === 'null');
   return loopback && (localHost || forwarded) && allowedOrigin;
 }
 
@@ -882,6 +947,21 @@ function textAttachmentType(extension: string): string | null {
 function reply(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(value));
+}
+
+function writeTaskArtifact(res: ServerResponse, artifact: { bytes: Buffer; mediaType: string; name: string; previewable: boolean }) {
+  if (artifact.bytes.length > 25 * 1024 * 1024) return reply(res, 413, { error: '文件超过 25 MB，暂不支持预览' });
+  const filename = artifact.name.replace(/[\r\n"\\]/g, '_').slice(0, 180) || 'artifact';
+  const encodedFilename = encodeURIComponent(filename);
+  res.writeHead(200, {
+    'Content-Type': artifact.mediaType,
+    'Content-Length': artifact.bytes.length,
+    'Content-Disposition': `inline; filename="artifact"; filename*=UTF-8''${encodedFilename}`,
+    'X-Content-Type-Options': 'nosniff',
+    ...(artifact.previewable ? { 'Content-Security-Policy': "sandbox allow-scripts; default-src 'self' data: blob: https: http:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https: http:; style-src 'self' 'unsafe-inline' https: http:; img-src 'self' data: blob: https: http:; font-src 'self' data: https: http:; connect-src https: http: wss: ws:; media-src 'self' data: blob: https: http:; object-src 'none'; base-uri 'none'; form-action 'none'" } : {}),
+    'Cache-Control': 'private, no-store',
+  });
+  res.end(artifact.bytes);
 }
 
 async function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string) {
