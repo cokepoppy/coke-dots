@@ -2918,7 +2918,7 @@ try {
     }
   });
 
-  await recordStep('SeedDuplex 3.0 JSON WebSocket keeps API Key private and dispatches Chinese speech to the tenant Agent', async () => {
+  await recordStep('Mobile Chrome SeedDuplex call captures microphone audio, speaks the Agent result, and dispatches Chinese speech', async () => {
     mockVolcEngineDuplexUrl = await startMockVolcEngineDuplexProvider();
     await stopServer(server);
     server = await startServer(e2ePort, {
@@ -2929,8 +2929,17 @@ try {
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
-    await alphaContext!.grantPermissions(['microphone'], { origin: baseUrl });
-    await alphaPage!.evaluate(`(() => {
+    await mobilePage!.reload({ waitUntil: 'domcontentloaded' });
+    await mobilePage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await mobilePage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await mobileContext!.grantPermissions(['microphone'], { origin: baseUrl });
+    assert.deepEqual(await mobilePage!.evaluate(() => ({
+      width: window.innerWidth,
+      height: window.innerHeight,
+      touch: navigator.maxTouchPoints > 0,
+      mobileLayout: window.matchMedia('(max-width: 520px)').matches,
+    })), { width: 390, height: 844, touch: true, mobileLayout: true }, 'The live voice-provider test must run in a touch-enabled 390×844 mobile Chrome context');
+    await mobilePage!.evaluate(`(() => {
       const originalStart = AudioBufferSourceNode.prototype.start;
       window.__dotsVolcPlaybackCapture = [];
       AudioBufferSourceNode.prototype.start = function(...args) {
@@ -2944,7 +2953,7 @@ try {
         return originalStart.apply(this, args);
       };
     })()`);
-    await alphaPage!.evaluate(`(() => {
+    await mobilePage!.evaluate(`(() => {
       const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       Object.defineProperty(window, '__dotsVolcDuplexTrack', { configurable: true, value: null, writable: true });
       Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async constraints => {
@@ -2953,54 +2962,57 @@ try {
         return stream;
       } } });
     })()`);
-    await openProfile(alphaPage!);
-    await alphaPage!.getByTestId('profile-voice-call-launch').click();
-    const call = alphaPage!.getByTestId('voice-call');
+    assert.equal(await mobilePage!.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'The signed-in mobile Dot conversation must fit the phone viewport before starting a call');
+    await mobilePage!.getByTestId('mobile-dot-nav').click();
+    await mobilePage!.getByTestId('conversation-call-launch').click();
+    const call = mobilePage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
-    await alphaPage!.waitForFunction(() => {
+    assert.equal(await call.getAttribute('data-variant'), 'mobile', 'The live SeedDuplex call must use the mobile phone surface');
+    const mobileCallBounds = await call.boundingBox();
+    assert(mobileCallBounds && mobileCallBounds.x === 0 && mobileCallBounds.y === 0 && mobileCallBounds.width === 390 && mobileCallBounds.height === 844, 'The live mobile call surface must fill the phone viewport');
+    await mobilePage!.waitForFunction(() => {
       const dialog = document.querySelector('[data-testid="voice-call"]');
       return dialog?.getAttribute('data-voice-provider') === 'volcengine' && dialog.getAttribute('data-voice-model') === 'doubao-seedduplex-3.0';
     });
-    await alphaPage!.waitForFunction(() => {
+    await mobilePage!.waitForFunction(() => {
       const state = document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-state');
       return state === 'sent' || state === 'no-frames' || state === 'context-suspended';
     }, null, { timeout: 20_000 });
     assert.equal(await call.getAttribute('data-voice-mic-state'), 'sent', 'The browser must start microphone PCM capture after SeedDuplex connects');
-    assert(await alphaPage!.getByTestId('voice-call-transcript').textContent().then(text => text?.includes('正在聆听')), 'The call should report listening only after microphone PCM frames have been sent');
-    assert(await call.getByTestId('voice-call-mic-meter').isVisible(), 'The caller must see microphone input activity during the SeedDuplex call');
-    await alphaPage!.waitForFunction(() => Number(document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-level')) > 0, null, { timeout: 10_000 });
-    assert(Number(await call.getAttribute('data-voice-mic-level')) > 0, 'The UI microphone meter must detect a non-silent input signal');
+    assert(await mobilePage!.getByTestId('voice-call-transcript').textContent().then(text => text?.includes('正在聆听')), 'The mobile call should report listening only after microphone PCM frames have been sent');
+    await mobilePage!.waitForFunction(() => Number(document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-level')) > 0, null, { timeout: 10_000 });
+    assert(Number(await call.getAttribute('data-voice-mic-level')) > 0, 'The mobile call must detect a non-silent microphone signal even though its compact phone UI omits the desktop meter');
     assert.equal(mockVolcEngineDuplexConnections.length, 1, 'The authenticated SeedDuplex call should open one provider connection');
     const providerConnection = mockVolcEngineDuplexConnections[0];
     assert.equal(providerConnection.headers['x-api-key'], 'e2e-seedduplex-secret', 'The shared API key must be sent only from the server');
     assert(providerConnection.headers['x-api-request-id'], 'Each provider connection must carry a traceable request ID');
-    const publicProviderInfo = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as Record<string, unknown>;
+    const publicProviderInfo = await mobilePage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as Record<string, unknown>;
     assert.deepEqual(publicProviderInfo, { provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' }, 'Public provider state must not reveal the API key');
-    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 30_000 });
+    await mobilePage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 30_000 });
     await waitFor(() => providerConnection.audioDeltas > 0, 5_000);
-    const playbackFrames = await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcPlaybackCapture: { sampleRate: number; length: number; peak: number }[] }).__dotsVolcPlaybackCapture);
+    const playbackFrames = await mobilePage!.evaluate(() => (window as unknown as { __dotsVolcPlaybackCapture: { sampleRate: number; length: number; peak: number }[] }).__dotsVolcPlaybackCapture);
     assert(playbackFrames.some(frame => frame.sampleRate === 24_000 && frame.length === 240 && frame.peak >= 0.45), 'The browser must decode and schedule SeedDuplex float32 output at 24 kHz instead of dropping it or playing static');
     assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM audio in realtime-sized packets');
     assert(providerConnection.pcmPeak > 0 && providerConnection.nonSilentPcmSamples > 0, 'SeedDuplex must receive non-silent PCM from the selected microphone, not merely zero-filled frames');
     assert(providerConnection.events.includes('session.create') && providerConnection.events.includes('input_audio_buffer.append'), 'SeedDuplex must use JSON session and audio events');
     assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be submitted to SeedDuplex direct text-to-speech events');
     assert(providerConnection.events.includes('speech_text_buffer.commit'), 'Agent status speech must use the provider direct-synthesis event');
-    assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Final Chinese speech transcript must start the normal tenant Agent task');
+    assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Final Chinese speech transcript from the mobile call must start the normal tenant Agent task');
 
-    const activeCall = await alphaPage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
+    const activeCall = await mobilePage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
     assert(activeCall, 'The SeedDuplex voice session must use the authenticated user-owned call record');
     const betaCookie = (await betaContext!.cookies(baseUrl)).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
     const crossTenantUpgrade = await websocketUpgradeStatus(`${baseUrl.replace(/^http/, 'ws')}/api/voice-calls/${activeCall.id}/volcengine-stream`, betaCookie);
     assert.equal(crossTenantUpgrade, 404, 'A different tenant cannot open another account’s SeedDuplex stream');
     await call.getByRole('button', { name: '静音' }).click();
-    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.enabled), false, 'Mute must disable microphone capture');
+    assert.equal(await mobilePage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.enabled), false, 'Mute must disable mobile microphone capture');
     await call.getByRole('button', { name: '取消静音' }).click();
-    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.enabled), true, 'Unmute must resume microphone capture');
+    assert.equal(await mobilePage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.enabled), true, 'Unmute must resume mobile microphone capture');
     await waitFor(() => providerConnection.events.includes('input_audio_mute.commit') && providerConnection.events.includes('input_audio_unmute.commit'), 5_000);
-    await screenshot(alphaPage!, 'volcengine-seedduplex-call-agent-result');
+    await screenshot(mobilePage!, 'volcengine-seedduplex-mobile-call-agent-result');
     await call.getByRole('button', { name: '结束通话' }).click();
     await call.waitFor({ state: 'detached' });
-    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.readyState), 'ended', 'Ending the call must release the microphone');
+    assert.equal(await mobilePage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.readyState), 'ended', 'Ending the mobile call must release the microphone');
     await waitFor(() => providerConnection.events.includes('session.close') && providerConnection.timeline.includes('server:session.closed'), 5_000);
   });
 
@@ -3008,17 +3020,16 @@ try {
     const transcript = '请用云电脑打开网页并告诉我标题。';
     const reply = '请打开 https://example.com/。';
     mockVolcEngineDuplexNextInitialTranscript = transcript;
-    const profileCallButton = alphaPage!.getByTestId('profile-voice-call-launch');
-    if (!(await profileCallButton.isVisible())) await openProfile(alphaPage!);
-    const playbackBefore = await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcPlaybackCapture: unknown[] }).__dotsVolcPlaybackCapture.length);
-    await profileCallButton.click();
-    const call = alphaPage!.getByTestId('voice-call');
+    const mobileCallButton = mobilePage!.getByTestId('conversation-call-launch');
+    const playbackBefore = await mobilePage!.evaluate(() => (window as unknown as { __dotsVolcPlaybackCapture: unknown[] }).__dotsVolcPlaybackCapture.length);
+    await mobileCallButton.click();
+    const call = mobilePage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
-    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 20_000 });
+    await mobilePage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 20_000 });
     await call.locator('.voice-call-card-transcript').filter({ hasText: transcript }).waitFor({ state: 'visible', timeout: 15_000 });
     await call.locator('.voice-call-card-task').filter({ hasText: '等待你的回复' }).waitFor({ state: 'visible', timeout: 15_000 });
 
-    const waitingState = await alphaPage!.evaluate(async () => {
+    const waitingState = await mobilePage!.evaluate(async () => {
       const calls = await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[];
       const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string; engine: string; result: string | null }[] };
       return { call: calls.find(item => !item.endedAt), task: state.tasks.find(item => item.instruction === '请用云电脑打开网页并告诉我标题。') };
@@ -3036,7 +3047,7 @@ try {
     await call.locator('.voice-call-card-task').filter({ hasText: '已完成：请用云电脑打开网页并告诉我标题' }).waitFor({ state: 'visible', timeout: 20_000 });
     await waitFor(() => providerConnection.audioDeltas >= 2, 10_000);
 
-    const resumedState = await alphaPage!.evaluate(async ({ transcriptText, replyText, callId }) => {
+    const resumedState = await mobilePage!.evaluate(async ({ transcriptText, replyText, callId }) => {
       const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string; engine: string; result: string | null }[] };
       const calls = await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[];
       const tasks = state.tasks.filter(task => task.instruction.includes(transcriptText));
@@ -3057,9 +3068,9 @@ try {
     assert.equal(resumedState.call?.endedAt, null, 'The call must stay open while the resumed Agent answer is spoken');
     assert(providerConnection.spokenTexts.includes('请告诉我你要打开的网址。'), 'The call must speak the Agent clarification');
     assert(providerConnection.spokenTexts.includes('网页标题是「Example Domain」。'), 'The call must speak the completed Agent result');
-    const playbackAfter = await alphaPage!.evaluate(({ initialCount }) => (window as unknown as { __dotsVolcPlaybackCapture: { sampleRate: number; peak: number }[] }).__dotsVolcPlaybackCapture.slice(initialCount), { initialCount: playbackBefore });
+    const playbackAfter = await mobilePage!.evaluate(({ initialCount }) => (window as unknown as { __dotsVolcPlaybackCapture: { sampleRate: number; peak: number }[] }).__dotsVolcPlaybackCapture.slice(initialCount), { initialCount: playbackBefore });
     assert(playbackAfter.length >= 2 && playbackAfter.every(frame => frame.sampleRate === 24_000 && frame.peak > 0), 'Both SeedDuplex responses must reach the browser audio playback path');
-    await screenshot(alphaPage!, 'seedduplex-multiturn-clarification-resumed');
+    await screenshot(mobilePage!, 'seedduplex-mobile-multiturn-clarification-resumed');
     await call.getByRole('button', { name: '结束通话' }).click();
     await call.waitFor({ state: 'detached' });
   });
