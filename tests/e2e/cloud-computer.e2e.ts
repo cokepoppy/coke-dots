@@ -389,17 +389,19 @@ try {
   await page.getByTestId(`context-output-task-${created.task.id}`).click();
   const artifactCard = page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]');
   await artifactCard.waitFor({ state: 'visible' });
-  await artifactCard.getByRole('button', { name: '预览' }).click();
   const artifactPreview = page.frameLocator('[data-testid="task-artifact-preview"]');
   await artifactPreview.locator('#demo-artifact').filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible' });
-  assert.equal(await artifactPreview.locator('#demo-artifact').textContent(), '俄罗斯方块预览', 'Generated HTML and its relative JavaScript must render in the signed-in chat');
+  assert.equal(await artifactPreview.locator('#demo-artifact').textContent(), '俄罗斯方块预览', 'Selecting a completed task with an HTML artifact must open its preview inline in the signed-in conversation');
   const linkedAsset = await page.evaluate(async id => {
     const response = await fetch(`/api/tasks/${id}/artifacts/file/game.js`);
     return { status: response.status, type: response.headers.get('content-type'), body: await response.text() };
   }, created.task.id);
-  assert.equal(linkedAsset.status, 200);
-  assert.match(linkedAsset.type || '', /text\/javascript/);
-  assert.match(linkedAsset.body, /俄罗斯方块预览/);
+  assert.deepEqual(linkedAsset, { status: 200, type: 'text/javascript; charset=utf-8', body: "document.querySelector('#demo-artifact').textContent = '俄罗斯方块预览';" }, 'Relative assets must resolve through the same task-scoped artifact route');
+  await artifactCard.getByRole('button', { name: '收起预览' }).click();
+  await page.locator('[data-testid="task-artifact-preview"]').waitFor({ state: 'detached' });
+  await artifactCard.getByRole('button', { name: '预览' }).click();
+  await artifactPreview.locator('#demo-artifact').filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible' });
+  await page.screenshot({ path: join(artifacts, '03-agent-task-done.png') });
   await artifactCard.getByTestId('open-artifact-in-computer').click();
   await page.getByTestId('computer-workspace').waitFor({ state: 'visible' });
   await page.getByRole('status').filter({ hasText: 'You have control' }).waitFor({ state: 'visible' });
