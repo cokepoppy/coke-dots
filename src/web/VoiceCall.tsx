@@ -30,6 +30,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   onClose: () => void;
 }) {
   const [displayMode, setDisplayMode] = useState<'desktop' | 'mobile'>(() => window.matchMedia(MOBILE_CALL_LAYOUT_QUERY).matches ? 'mobile' : 'desktop');
+  const [mobileMinimized, setMobileMinimized] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [muted, setMuted] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(true);
@@ -781,6 +782,8 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
 
   const minutes = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0');
   const seconds = (elapsedSeconds % 60).toString().padStart(2, '0');
+  const showMobileScreen = displayMode === 'mobile' && !mobileMinimized;
+  const callVariant = displayMode === 'desktop' ? 'desktop' : mobileMinimized ? 'mobile-minimized' : 'mobile';
   const muteButton = <button type="button" className={`voice-call-card-secondary${muted ? ' is-active' : ''}`} aria-label={muted ? '取消静音' : '静音'} aria-pressed={muted} title={muted ? '取消静音' : '静音'} onClick={toggleMute}>
     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-4 0h8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>{muted && <path d="m4 4 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>}</svg>
   </button>;
@@ -797,8 +800,12 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   const accessibleCallText = <div className="voice-call-a11y" aria-live="polite" aria-atomic="true" data-testid="voice-call-transcript" data-task-status={taskStatus}>
     <span>{status}</span>{transcript && <span>你说：{transcript}</span>}{taskStatus && <span>{taskStatus}</span>}
   </div>;
-  return <section className={`voice-call-card${displayMode === 'mobile' ? ' voice-call-card-mobile' : ''}`} role="dialog" aria-modal={displayMode === 'mobile'} aria-label="语音通话" data-testid="voice-call" data-variant={displayMode} data-voice-provider={voiceProvider} data-voice-model={voiceModel} data-voice-mic-state={micCaptureState} data-voice-mic-level={micLevelPercent}>
-    {displayMode === 'mobile' ? <div className="voice-call-mobile-screen" data-testid="voice-call-mobile-screen">
+  return <section className={`voice-call-card${showMobileScreen ? ' voice-call-card-mobile' : ''}${callVariant === 'mobile-minimized' ? ' voice-call-card-mobile-minimized' : ''}`} role="dialog" aria-modal={showMobileScreen} aria-label="语音通话" data-testid="voice-call" data-variant={callVariant} data-voice-provider={voiceProvider} data-voice-model={voiceModel} data-voice-mic-state={micCaptureState} data-voice-mic-level={micLevelPercent}>
+    {showMobileScreen ? <div className="voice-call-mobile-screen" data-testid="voice-call-mobile-screen">
+      <button type="button" className="voice-call-mobile-return" data-testid="voice-call-minimize" aria-label="返回聊天" title="返回聊天并保持通话" onClick={() => setMobileMinimized(true)}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14M5 8l5-5M5 8l5 5M19 16H5m14 0-5-5m5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        <span>聊天</span>
+      </button>
       <div className="voice-call-mobile-identity">
         <DotAvatar appearance={appearance} small className="voice-call-mobile-avatar" />
         <strong>{dotName}</strong>
@@ -818,6 +825,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       <DotAvatar appearance={appearance} small className="voice-call-card-avatar" />
       <div className="voice-call-card-identity"><strong>{dotName}</strong><span className="voice-call-card-status"><i className={callError ? 'has-error' : ''} />{callError ? '通话遇到问题' : status}</span></div>
       <time className="voice-call-card-timer" data-testid="voice-call-timer">{Number(minutes)}:{seconds}</time>
+      {callVariant === 'mobile-minimized' && <button type="button" className="voice-call-card-expand" data-testid="voice-call-restore" aria-label="返回通话" title="返回通话" onClick={() => setMobileMinimized(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m0-4 6 6m6-6h4v4m0-4-6 6M4 16v4h4m-4 0 6-6m10 2v4h-4m4 0-6-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg></button>}
     </div>
     {voiceProvider === 'volcengine' && <div className="voice-call-card-mic" data-testid="voice-call-mic-meter" data-mic-state={micCaptureState} aria-label={`麦克风输入音量 ${micLevelPercent}%`}>
       <span>麦克风</span><div role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={micLevelPercent}><i style={{ width: `${micLevelPercent}%` }} /></div><small>{micCaptureState === 'sent' ? '音频帧已发送' : micCaptureState === 'muted' ? '已静音' : micCaptureState === 'no-frames' ? '未收到音频帧' : micCaptureState === 'context-suspended' ? '浏览器音频未启动' : '等待音频帧'}</small>

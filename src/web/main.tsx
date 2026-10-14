@@ -285,6 +285,7 @@ function App() {
 
   async function submit() {
     if (!draft.trim() || busy) return;
+    const keepRootDotConversation = voiceCallOpen && view === 'chat' && selected === null;
     if (state.remoteEngines.includes(engine) && !state.availableEngines.includes(engine)) {
       setError(state.modelSettings.apiKeyStatus === 'unreadable'
         ? '无法读取实例共享 API 密钥。请解锁运行 Coke Dots 服务的 Mac 登录钥匙串后重试。'
@@ -299,7 +300,7 @@ function App() {
           ? { frequency, time: scheduleTime, timeZone: scheduleTimeZone, endDate: scheduleEndDate || null }
           : { frequency, weekdays: scheduleWeekdays, time: scheduleTime, timeZone: scheduleTimeZone, endDate: scheduleEndDate || null };
       const task = await request('/tasks', 'POST', { instruction: draft, scheduleSpec, scheduleMinutes: schedule && frequency === 'interval' ? minutes : null, engine, attachmentIds: pendingAttachments.map(attachment => attachment.id) }) as Task;
-      setDraft(''); setPendingAttachments([]); setSelected(task.id); setSelectedPageId(null); setView('chat'); setSchedule(false); setFrequency('interval'); setMinutes(60); setScheduleWeekdays([]); setScheduleEndDate('');
+      setDraft(''); setPendingAttachments([]); setSelected(keepRootDotConversation ? null : task.id); setSelectedPageId(null); setView('chat'); setSchedule(false); setFrequency('interval'); setMinutes(60); setScheduleWeekdays([]); setScheduleEndDate('');
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 

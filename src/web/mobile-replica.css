@@ -309,6 +309,37 @@
     box-shadow: none;
   }
 
+  .voice-call-mobile-return {
+    position: absolute;
+    z-index: 1;
+    top: calc(env(safe-area-inset-top) + 12px);
+    right: 16px;
+    min-width: 74px;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 11px;
+    border: 1px solid #e9e6ed;
+    border-radius: 22px;
+    background: #f5f3f7;
+    color: #5d5665;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .voice-call-mobile-return svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .voice-call-mobile-return:focus-visible {
+    outline: 2px solid #8d75b7;
+    outline-offset: 2px;
+  }
+
   .voice-call-mobile-screen {
     position: relative;
     width: 100%;
@@ -455,6 +486,12 @@
   .dots-dark .voice-call-card-mobile {
     background: #1c1b1f;
     color: #efedf2;
+  }
+
+  .dots-dark .voice-call-mobile-return {
+    border-color: #39343f;
+    background: #302d35;
+    color: #ded9e5;
   }
 
   .dots-dark .voice-call-mobile-screen {

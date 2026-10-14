@@ -14,6 +14,7 @@
 .voice-call-card-task{color:#8c72b3}
 .voice-call-card-error{margin:9px 0 0;padding:7px 8px;border-radius:8px;background:#fff1ef;color:#a74741;font-size:10px;line-height:1.45;overflow-wrap:anywhere}
 .voice-call-card-controls{display:flex;align-items:center;gap:9px;margin-top:12px}
+.voice-call-card-expand{width:28px;height:28px;flex:none;display:grid;place-items:center;padding:0;border:0;border-radius:8px;background:#f1f0f2;color:#6d6972;cursor:pointer}.voice-call-card-expand svg{width:16px;height:16px}.voice-call-card-expand:hover{background:#e9e7eb;color:#37343c}.voice-call-card-expand:focus-visible{outline:2px solid #8d75b7;outline-offset:2px}.voice-call-card-mobile-minimized{z-index:150}.voice-call-card-mobile-minimized .voice-call-card-expand{width:44px;height:44px;border-radius:12px}.voice-call-card-mobile-minimized .voice-call-card-expand svg{width:19px;height:19px}.voice-call-card-mobile-minimized .voice-call-card-controls{gap:10px}.voice-call-card-mobile-minimized .voice-call-card-secondary{width:44px;height:44px}.voice-call-card-mobile-minimized .voice-call-card-end{height:44px;min-width:96px}
 .voice-call-card-secondary,.voice-call-card-end{height:36px;display:grid;place-items:center;padding:0;border:0;cursor:pointer;transition:background .14s ease,transform .14s ease}
 .voice-call-card-secondary{width:36px;flex:none;border-radius:50%;background:#f1f0f2;color:#6d6972}
 .voice-call-card-secondary:hover{background:#e9e7eb;color:#37343c}
@@ -36,5 +37,6 @@
 .dots-dark .voice-call-card-secondary{background:#38353c;color:#d2ced7}
 .dots-dark .voice-call-card-secondary:hover{background:#46424a;color:#fff}
 .dots-dark .voice-call-card-secondary.is-active{background:#4d405d;color:#e0cff9}
+.dots-dark .voice-call-card-expand{background:#38353c;color:#d2ced7}.dots-dark .voice-call-card-expand:hover{background:#46424a;color:#fff}
 .dots-dark .voice-call-card-error{background:#452928;color:#ffb9b3}
 @media(max-width:520px){.voice-call-card{top:58px;right:12px;width:min(320px,calc(100vw - 24px));padding:12px}}

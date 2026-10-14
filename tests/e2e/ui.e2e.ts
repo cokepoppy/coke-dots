@@ -2104,6 +2104,39 @@ try {
     screenshotNames.push('mobile-chrome-call-active-390.png');
     assert.equal(await call.locator('.voice-call-mobile-controls button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')).join('|')),
       '关闭扬声器|结束通话|静音', 'Phone call controls must keep speaker, red hang-up, and mute in the observed order');
+    const activeMobileCallBeforeChat = await mobilePage.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
+    assert(activeMobileCallBeforeChat, 'The mobile call must have an active persisted call record before opening chat');
+    await call.getByTestId('voice-call-minimize').click();
+    await mobilePage.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-variant') === 'mobile-minimized');
+    assert.equal(await call.getAttribute('aria-modal'), 'false', 'The minimized call must release modal focus so the conversation can be used');
+    const minimizedCallBounds = await call.boundingBox();
+    assert(minimizedCallBounds && minimizedCallBounds.width < 390 && minimizedCallBounds.height < 390,
+      'Returning to chat must keep the active call visible as a compact floating card');
+    const minimizedTouchControls = await call.locator('.voice-call-card-controls button').evaluateAll(buttons => buttons.map(button => {
+      const box = button.getBoundingClientRect();
+      return { width: box.width, height: box.height };
+    }));
+    assert(minimizedTouchControls.length === 3 && minimizedTouchControls.every(box => box.width >= 44 && box.height >= 44),
+      'The minimized mobile call controls must remain touch-sized');
+    const restoreCallBounds = await call.getByTestId('voice-call-restore').boundingBox();
+    assert(restoreCallBounds && restoreCallBounds.width >= 44 && restoreCallBounds.height >= 44,
+      'The return-to-call action must remain touch-sized');
+    assert.equal(await mobilePage.getByTestId('task-composer').isVisible(), true,
+      'The text composer must remain usable while a mobile call is active');
+    await screenshot(mobilePage, 'mobile-chrome-call-minimized-chat-390');
+    const typedDuringCall = '通话中补充：请用中文整理重点。';
+    await mobilePage.getByTestId('task-composer').fill(typedDuringCall);
+    await mobilePage.locator('.composer .send').click();
+    await mobilePage.locator('.timeline .message.user p').filter({ hasText: typedDuringCall }).waitFor({ state: 'visible' });
+    assert.equal(await call.getAttribute('data-variant'), 'mobile-minimized', 'Sending text must not end or expand the active mobile call');
+    const activeMobileCallAfterChat = await mobilePage.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
+    assert.deepEqual(activeMobileCallAfterChat, activeMobileCallBeforeChat,
+      'Typing into the same Dot chat must preserve the active call session');
+    await call.getByTestId('voice-call-restore').click();
+    await mobilePage.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-variant') === 'mobile');
+    const activeMobileCallAfterRestore = await mobilePage.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
+    assert.deepEqual(activeMobileCallAfterRestore, activeMobileCallBeforeChat,
+      'Returning to the phone screen must resume the same persisted call rather than starting a new call');
     await mobilePage.setViewportSize({ width: 844, height: 390 });
     await mobilePage.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-variant') === 'mobile');
     await mobilePage.waitForFunction(() => {
