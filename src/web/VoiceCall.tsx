@@ -21,6 +21,7 @@ interface RecognitionLike {
 }
 type RecognitionConstructor = new () => RecognitionLike;
 type SpeechWindow = Window & { SpeechRecognition?: RecognitionConstructor; webkitSpeechRecognition?: RecognitionConstructor };
+const MOBILE_CALL_LAYOUT_QUERY = '(max-width: 520px), (max-width: 1024px) and (pointer: coarse)';
 
 export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   dotName: string;
@@ -28,7 +29,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   onTranscript: (text: string, waitingTaskId: string | undefined, callId: string, turnId: string) => Promise<Task>;
   onClose: () => void;
 }) {
-  const [displayMode, setDisplayMode] = useState<'desktop' | 'mobile'>(() => window.matchMedia('(max-width: 520px)').matches ? 'mobile' : 'desktop');
+  const [displayMode, setDisplayMode] = useState<'desktop' | 'mobile'>(() => window.matchMedia(MOBILE_CALL_LAYOUT_QUERY).matches ? 'mobile' : 'desktop');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [muted, setMuted] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(true);
@@ -76,7 +77,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   speakerRef.current = speakerOn;
 
   useEffect(() => {
-    const query = window.matchMedia('(max-width: 520px)');
+    const query = window.matchMedia(MOBILE_CALL_LAYOUT_QUERY);
     const update = () => setDisplayMode(query.matches ? 'mobile' : 'desktop');
     update();
     query.addEventListener('change', update);

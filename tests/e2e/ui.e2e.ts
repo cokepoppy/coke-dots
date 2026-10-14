@@ -2073,6 +2073,26 @@ try {
     screenshotNames.push('mobile-chrome-call-active-390.png');
     assert.equal(await call.locator('.voice-call-mobile-controls button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')).join('|')),
       '关闭扬声器|结束通话|静音', 'Phone call controls must keep speaker, red hang-up, and mute in the observed order');
+    await mobilePage.setViewportSize({ width: 844, height: 390 });
+    await mobilePage.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-variant') === 'mobile');
+    await mobilePage.waitForFunction(() => {
+      const controls = document.querySelector('.voice-call-mobile-controls');
+      const box = controls?.getBoundingClientRect();
+      return Boolean(controls && getComputedStyle(controls).display !== 'none' && box && box.width >= 300 && box.height >= 80 && box.bottom <= window.innerHeight);
+    });
+    const landscapeCallBounds = await call.boundingBox();
+    assert(landscapeCallBounds && landscapeCallBounds.x === 0 && landscapeCallBounds.y === 0 && landscapeCallBounds.width === 844 && landscapeCallBounds.height === 390,
+      'A touch-first phone in landscape must keep the full-screen call surface instead of switching to the desktop float');
+    const landscapeControlsBounds = await call.locator('.voice-call-mobile-controls').boundingBox();
+    assert(landscapeControlsBounds && landscapeControlsBounds.width >= 300 && landscapeControlsBounds.height >= 80 && landscapeControlsBounds.y + landscapeControlsBounds.height <= 390,
+      'Speaker, hang-up, and mute must remain visible inside the landscape phone viewport');
+    assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'The landscape call page must not overflow horizontally');
+    await screenshot(mobilePage, 'mobile-chrome-call-landscape-844');
+    await call.screenshot({ path: join(screenshotsDir, 'mobile-chrome-call-landscape-844-surface.png') });
+    screenshotNames.push('mobile-chrome-call-landscape-844-surface.png');
+    await mobilePage.setViewportSize({ width: 390, height: 844 });
+    await mobilePage.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-variant') === 'mobile');
     await call.getByRole('button', { name: '静音' }).click();
     assert.equal(await call.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
     await call.getByRole('button', { name: '取消静音' }).click();

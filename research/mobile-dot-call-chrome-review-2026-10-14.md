@@ -26,6 +26,10 @@ The YouTube video is compressed and does not demonstrate the mobile layout. The 
 5. Other mobile pages keep bottom navigation. A user can return to Dot conversation from Activity, Scheduled, Computer, or account settings.
 6. Honor phone safe areas and virtual-keyboard viewport resizing. Verify 390-pixel and narrow 320-pixel viewports.
 
+## Landscape phone browser follow-up (2026-10-14)
+
+The responsive shell and full-screen call are selected for narrow windows or touch-first screens up to 1024 CSS pixels wide. This keeps a phone in landscape mode on the same Dot conversation and handset call surface while preserving the compact floating call card for desktop Chrome at the same 690-pixel width. The local browser E2E checks the Google sign-in link target and touch size, starts a call in 390×844 mobile Chrome, rotates the viewport to 844×390, and asserts the phone call surface and all controls stay within the viewport. This is mobile viewport emulation, not a physical iOS/Android microphone or live Google sign-in test.
+
 ## Verification boundary
 
 Local Playwright E2E uses the repository's isolated test server and test sign-in. It can prove responsive layout, click navigation, the Dot conversation, and call UI state. It does not prove physical phone Google OAuth, OS microphone permission, speech recognition, or live Pi dispatch; those require a signed-in mobile Chrome run against the deployed HTTPS site and must be reported separately.

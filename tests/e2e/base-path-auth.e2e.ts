@@ -109,7 +109,7 @@ async function main() {
 
   const baseUrl = `http://127.0.0.1:${frontendPort}${basePath}/`;
   browser = await chromium.launch({ executablePath: browserPath, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
   page = await context.newPage();
   page.on('request', request => {
     const url = new URL(request.url());
@@ -123,11 +123,37 @@ async function main() {
   const googleLogin = page.getByRole('link', { name: '使用 Google 登录' });
   await googleLogin.waitFor({ state: 'visible' });
   assert.equal(new URL(await googleLogin.getAttribute('href') || '', baseUrl).pathname, `${basePath}/api/auth/google/start`);
+  const googleLoginBounds = await googleLogin.boundingBox();
+  assert(googleLoginBounds && googleLoginBounds.height >= 48 && googleLoginBounds.x >= 0 && googleLoginBounds.x + googleLoginBounds.width <= 390,
+    'The real Google login action must be visible and touch-sized on a phone viewport');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+    'The mobile Google login page must not overflow horizontally');
   await page.screenshot({ path: join(artifactRoot, 'base-path-login.png'), fullPage: true });
+
+  let googleAuthorizeUrl = '';
+  await page.route(`**${basePath}/api/auth/google/start`, async route => {
+    const response = await route.fetch({ maxRedirects: 0 });
+    assert.equal(response.status(), 302, 'The Google OAuth start route must return an authorization redirect');
+    googleAuthorizeUrl = response.headers().location || '';
+    await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: '<main><h1>Mock OAuth redirect captured</h1></main>' });
+  });
+  await googleLogin.click();
+  await page.getByRole('heading', { name: 'Mock OAuth redirect captured' }).waitFor({ state: 'visible' });
+  assert(googleAuthorizeUrl, 'The mobile Google button must reach the Google authorization redirect');
+  const authorization = new URL(googleAuthorizeUrl);
+  assert.equal(authorization.origin, 'https://accounts.google.com');
+  assert.equal(authorization.searchParams.get('client_id'), 'coke-dots-base-path-e2e.apps.googleusercontent.com');
+  assert.equal(authorization.searchParams.get('code_challenge_method'), 'S256', 'The OAuth redirect must retain PKCE');
+  assert(authorization.searchParams.get('state'), 'The OAuth redirect must include a per-flow state token');
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 
   await page.getByTestId('e2e-sign-in').click();
   await page.getByTestId('app-shell').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+    'The authenticated Coke Dots shell must load on mobile without horizontal overflow');
+  await page.screenshot({ path: join(artifactRoot, 'base-path-mobile-authenticated-app.png'), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();
   await page.getByTestId('computer-choice').waitFor({ state: 'visible' });
   await page.getByRole('button', { name: 'Continue' }).click();
@@ -156,7 +182,7 @@ async function main() {
   assert(apiRequests.length >= 5, `Expected authenticated API traffic, received: ${apiRequests.join(', ')}`);
   assert(apiRequests.every(item => item.includes(`${basePath}/api/`)), `A browser API request escaped the base path: ${apiRequests.join(', ')}`);
   assert.deepEqual(pageErrors, [], `Browser errors: ${pageErrors.join('; ')}`);
-  console.log(JSON.stringify({ result: 'passed', baseUrl, apiRequests, pageErrors, screenshots: ['base-path-login.png', 'base-path-authenticated-app.png'], artifactRoot }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', baseUrl, apiRequests, pageErrors, screenshots: ['base-path-login.png', 'base-path-mobile-authenticated-app.png', 'base-path-authenticated-app.png'], artifactRoot }, null, 2));
   await context.close();
 }
 
