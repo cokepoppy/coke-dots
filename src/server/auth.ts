@@ -72,9 +72,10 @@ export class AuthService {
     const state = url.searchParams.get('state') || '';
     const code = url.searchParams.get('code') || '';
     const flow = state && state.length <= 1024 ? this.store.consumeOAuthFlow(hash(state)) : null;
-    const returnTo = flow?.returnTo || appOrigin(req);
+    const returnTo = flow?.returnTo || appBaseUrl(req);
     const cookieState = cookieValue(req.headers.cookie || '', oauthCookieName);
-    clearOAuthCookie(res);
+    const redirectUri = this.redirectUri(req);
+    clearOAuthCookie(res, redirectUri);
     if (url.searchParams.has('error')) {
       if (flow?.handoffHash) this.store.cancelDesktopHandoff(flow.handoffHash);
       return redirect(res, `${returnTo}/?authError=cancelled`);
@@ -85,8 +86,7 @@ export class AuthService {
       return redirect(res, `${returnTo}/?authError=expired`);
     }
     try {
-      const redirectUri = this.redirectUri(req);
-      const client = this.oauthClient();
+      const client = this.oauthClient(redirectUri);
       const { tokens } = await client.getToken({ code, codeVerifier: flow.codeVerifier, redirect_uri: redirectUri });
       if (!tokens.id_token) return redirect(res, `${returnTo}/?authError=missing_identity`);
       const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: this.clientId });
@@ -124,21 +124,28 @@ export class AuthService {
     const configured = process.env.GOOGLE_REDIRECT_URI?.trim();
     if (configured) return configured;
     const hostname = req.headers.host?.split(':')[0] === 'localhost' ? 'localhost' : '127.0.0.1';
-    return `http://${hostname}:${this.port}/auth/google/callback`;
+    return `http://${hostname}:${this.port}${normalizeBasePath(process.env.DOTS_BASE_PATH || '')}/auth/google/callback`;
   }
 
-  private oauthClient() {
-    return new OAuth2Client(this.clientId, this.clientSecret, process.env.GOOGLE_REDIRECT_URI?.trim() || `http://127.0.0.1:${this.port}/auth/google/callback`);
+  private oauthClient(redirectUri: string) {
+    const testEndpoints = e2eOAuthEndpoints();
+    return new OAuth2Client({
+      clientId: this.clientId,
+      clientSecret: this.clientSecret,
+      redirectUri,
+      ...(testEndpoints ? { endpoints: testEndpoints } : {}),
+    });
   }
 
   private async createAuthorizationUrl(req: IncomingMessage, res: ServerResponse, handoffHash?: string) {
     const state = randomToken();
     const nonce = randomToken();
-    const client = this.oauthClient();
+    const redirectUri = this.redirectUri(req);
+    const client = this.oauthClient(redirectUri);
     const { codeVerifier, codeChallenge } = await client.generateCodeVerifierAsync();
     const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-    this.store.createOAuthFlow({ stateHash: hash(state), nonce, codeVerifier, expiresAt, handoffHash, returnTo: appOrigin(req) });
-    setOAuthCookie(res, hash(state));
+    this.store.createOAuthFlow({ stateHash: hash(state), nonce, codeVerifier, expiresAt, handoffHash, returnTo: appBaseUrl(req) });
+    setOAuthCookie(res, hash(state), redirectUri);
     const authorizationUrl = new URL(client.generateAuthUrl({
       response_type: 'code', access_type: 'online', scope: ['openid', 'email', 'profile'],
       state, prompt: 'select_account', code_challenge: codeChallenge,
@@ -160,11 +167,11 @@ function setSessionCookie(res: ServerResponse, token: string, maxAgeMs: number, 
   const securePart = secure ? '; Secure' : '';
   appendCookie(res, `${cookieName}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}${securePart}`);
 }
-function setOAuthCookie(res: ServerResponse, stateHash: string) {
-  appendCookie(res, `${oauthCookieName}=${stateHash}; HttpOnly; SameSite=Lax; Path=/auth/google/callback; Max-Age=600${(process.env.GOOGLE_REDIRECT_URI || '').startsWith('https://') ? '; Secure' : ''}`);
+function setOAuthCookie(res: ServerResponse, stateHash: string, redirectUri: string) {
+  appendCookie(res, `${oauthCookieName}=${stateHash}; HttpOnly; SameSite=Lax; Path=${oauthCallbackPath(redirectUri)}; Max-Age=600${new URL(redirectUri).protocol === 'https:' ? '; Secure' : ''}`);
 }
-function clearOAuthCookie(res: ServerResponse) {
-  appendCookie(res, `${oauthCookieName}=; HttpOnly; SameSite=Lax; Path=/auth/google/callback; Max-Age=0`);
+function clearOAuthCookie(res: ServerResponse, redirectUri: string) {
+  appendCookie(res, `${oauthCookieName}=; HttpOnly; SameSite=Lax; Path=${oauthCallbackPath(redirectUri)}; Max-Age=0${new URL(redirectUri).protocol === 'https:' ? '; Secure' : ''}`);
 }
 function appendCookie(res: ServerResponse, value: string) {
   const old = res.getHeader('Set-Cookie');
@@ -175,22 +182,71 @@ function redirect(res: ServerResponse, location: string) {
   res.writeHead(302, { Location: location, 'Cache-Control': 'no-store' });
   res.end();
 }
-function appOrigin(req: IncomingMessage) {
+function appBaseUrl(req: IncomingMessage) {
   const configured = process.env.DOTS_APP_URL?.trim();
   if (configured) {
-    try { const url = new URL(configured); if (['http:', 'https:'].includes(url.protocol)) return url.origin; } catch { /* Use the local request origin. */ }
+    try {
+      const url = new URL(configured);
+      if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
+        const mountPath = url.pathname === '/' ? normalizeBasePath(process.env.DOTS_BASE_PATH || '') : normalizeBasePath(url.pathname);
+        return `${url.origin}${mountPath}`;
+      }
+    } catch { /* Use the local request origin. */ }
   }
   const referer = req.headers.referer;
   if (referer) {
     try {
-      const origin = new URL(referer).origin;
-      if (/^http:\/\/(127\.0\.0\.1|localhost):(5173|4317)$/.test(origin)) return origin;
+      const url = new URL(referer);
+      if (/^http:\/\/(127\.0\.0\.1|localhost):(5173|4317)$/.test(url.origin)) {
+        const mountPath = process.env.DOTS_BASE_PATH?.trim() ? normalizeBasePath(process.env.DOTS_BASE_PATH) : normalizeBasePath(url.pathname);
+        return `${url.origin}${mountPath}`;
+      }
     } catch { /* Ignore malformed referrers. */ }
   }
+  const publicOrigin = process.env.DOTS_PUBLIC_ORIGIN?.trim();
+  if (publicOrigin) {
+    try {
+      const url = new URL(publicOrigin);
+      if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
+        const mountPath = url.pathname === '/' ? normalizeBasePath(process.env.DOTS_BASE_PATH || '') : normalizeBasePath(url.pathname);
+        return `${url.origin}${mountPath}`;
+      }
+    } catch { /* Fall back to the local origin. */ }
+  }
+  const mountPath = normalizeBasePath(process.env.DOTS_BASE_PATH || '');
   const host = req.headers.host || '';
   const match = host.match(/^(127\.0\.0\.1|localhost):(5173|4317)$/);
-  return match ? `http://${match[1]}:${match[2]}` : 'http://127.0.0.1:4317';
+  return match ? `http://${match[1]}:${match[2]}${mountPath}` : `http://127.0.0.1:${process.env.DOTS_PORT || 4317}${mountPath}`;
 }
+
+function normalizeBasePath(value: string) {
+  const trimmed = value.trim().replace(/^\/+|\/+$/g, '');
+  if (!trimmed) return '';
+  if (!/^[a-zA-Z0-9/_-]+$/.test(trimmed) || trimmed.split('/').some(part => !part || part === '.' || part === '..')) return '';
+  return `/${trimmed}`;
+}
+
+function oauthCallbackPath(redirectUri: string) {
+  const pathname = new URL(redirectUri).pathname;
+  return pathname.startsWith('/') && !pathname.includes(';') ? pathname : '/auth/google/callback';
+}
+
+function e2eOAuthEndpoints() {
+  if (process.env.NODE_ENV !== 'test') return undefined;
+  const configured = process.env.DOTS_E2E_GOOGLE_OAUTH_ORIGIN?.trim();
+  if (!configured) return undefined;
+  const origin = new URL(configured);
+  if (origin.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(origin.hostname) || origin.username || origin.password || origin.pathname !== '/') {
+    throw new Error('DOTS_E2E_GOOGLE_OAUTH_ORIGIN must be a local HTTP origin');
+  }
+  return {
+    oauth2AuthBaseUrl: new URL('/o/oauth2/v2/auth', origin).toString(),
+    oauth2TokenUrl: new URL('/token', origin).toString(),
+    oauth2FederatedSignonPemCertsUrl: new URL('/pem-certs', origin).toString(),
+    oauth2FederatedSignonJwkCertsUrl: new URL('/certs', origin).toString(),
+  };
+}
+
 function json(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(value));
