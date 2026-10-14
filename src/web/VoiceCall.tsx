@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DotAppearance, Snapshot, Task, VoiceCallSession } from '../shared/types.ts';
-import { appFetch } from './api.ts';
+import { appFetch, appPath } from './api.ts';
 import './voice-call.css';
 
 interface RecognitionAlternative { transcript: string }
@@ -222,7 +222,7 @@ export function VoiceCall({ dotName, appearance, displayMode, onTranscript, onCl
         fallbackTimer = window.setInterval(() => void refreshSnapshot(), 1000);
         return;
       }
-      stream = new EventSource('/api/events');
+      stream = new EventSource(appPath('/api/events'));
       stream.onmessage = event => {
         if (fallbackTimer !== null) { window.clearInterval(fallbackTimer); fallbackTimer = null; }
         try { reconcile(JSON.parse(event.data) as Snapshot); }

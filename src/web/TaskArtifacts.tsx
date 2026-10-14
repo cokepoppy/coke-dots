@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import type { TaskArtifact } from '../shared/types.ts';
+import { appFetch, appPath } from './api.ts';
 import './task-artifacts.css';
 
 function contentUrl(taskId: string, path: string) {
   const safePath = path.split('/').map(part => encodeURIComponent(part)).join('/');
-  return `/api/tasks/${encodeURIComponent(taskId)}/artifacts/file/${safePath}`;
+  return appPath(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/file/${safePath}`);
 }
 
 export function TaskArtifacts({ taskId, onOpenComputer }: { taskId: string; onOpenComputer: () => void }) {
@@ -22,7 +23,7 @@ export function TaskArtifacts({ taskId, onOpenComputer }: { taskId: string; onOp
     setPreviewUrls({});
     void (async () => {
       try {
-        const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/artifacts`, { signal: controller.signal });
+        const response = await appFetch(`/api/tasks/${encodeURIComponent(taskId)}/artifacts`, { signal: controller.signal });
         if (!response.ok) throw new Error('文件暂时无法读取');
         const value = await response.json() as { artifacts: TaskArtifact[] };
         if (controller.signal.aborted) return;
@@ -34,11 +35,11 @@ export function TaskArtifacts({ taskId, onOpenComputer }: { taskId: string; onOp
         const html = value.artifacts.find(artifact => artifact.mediaType === 'text/html' && artifact.previewable);
         if (!html) return;
         try {
-          const previewResponse = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/preview-url?path=${encodeURIComponent(html.path)}`, { signal: controller.signal });
+          const previewResponse = await appFetch(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/preview-url?path=${encodeURIComponent(html.path)}`, { signal: controller.signal });
           const preview = await previewResponse.json() as { url?: string; error?: string };
           if (!previewResponse.ok || !preview.url) throw new Error(preview.error || '无法预览这个文件');
           if (!controller.signal.aborted) {
-            setPreviewUrls(current => ({ ...current, [html.path]: preview.url! }));
+            setPreviewUrls(current => ({ ...current, [html.path]: appPath(preview.url!) }));
             setPreviewPath(html.path);
           }
         } catch (reason) {
@@ -58,10 +59,10 @@ export function TaskArtifacts({ taskId, onOpenComputer }: { taskId: string; onOp
     if (previewPath === artifactPath) { setPreviewPath(null); return; }
     setError('');
     try {
-      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/preview-url?path=${encodeURIComponent(artifactPath)}`);
+      const response = await appFetch(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/preview-url?path=${encodeURIComponent(artifactPath)}`);
       const value = await response.json() as { url?: string; error?: string };
       if (!response.ok || !value.url) throw new Error(value.error || '无法预览这个文件');
-      setPreviewUrls(current => ({ ...current, [artifactPath]: value.url! }));
+      setPreviewUrls(current => ({ ...current, [artifactPath]: appPath(value.url!) }));
       setPreviewPath(artifactPath);
     } catch (reason) { setError(reason instanceof Error ? reason.message : '无法预览这个文件'); }
   }
@@ -70,7 +71,7 @@ export function TaskArtifacts({ taskId, onOpenComputer }: { taskId: string; onOp
     setOpeningPath(artifactPath);
     setError('');
     try {
-      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/open-in-computer`, {
+      const response = await appFetch(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/open-in-computer`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: artifactPath }),
       });
       const value = await response.json() as { error?: string };

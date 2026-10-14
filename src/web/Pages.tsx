@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { WorkspacePage } from '../shared/types.ts';
+import { appFetch } from './api.ts';
 
 async function readResponse<T>(response: Response): Promise<T> {
   const data = await response.json() as T & { error?: string };
@@ -20,7 +21,7 @@ export function PagesView({ tenantId, onOpen }: { tenantId: string; onOpen: (id:
     const generation = ++loadGeneration.current;
     setLoading(true); setError('');
     try {
-      const next = await readResponse<WorkspacePage[]>(await fetch('/api/pages'));
+      const next = await readResponse<WorkspacePage[]>(await appFetch('/api/pages'));
       if (generation === loadGeneration.current) setPages(next);
     } catch (reason) { if (generation === loadGeneration.current) setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { if (generation === loadGeneration.current) setLoading(false); }
@@ -32,7 +33,7 @@ export function PagesView({ tenantId, onOpen }: { tenantId: string; onOpen: (id:
     if (busy || !title.trim() || !content.trim()) return;
     setBusy(true); setError('');
     try {
-      const page = await readResponse<WorkspacePage>(await fetch('/api/pages', {
+      const page = await readResponse<WorkspacePage>(await appFetch('/api/pages', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title, content }),
       }));
       setTitle(''); setContent(''); setPages(current => [page, ...current]); onOpen(page.id);
@@ -70,7 +71,7 @@ export function ScratchpadNavigationPane({ tenantId, selectedPageId, refreshKey,
     const generation = ++loadGeneration.current;
     let active = true;
     setPages([]); setLoading(true); setError('');
-    void fetch('/api/pages').then(response => readResponse<WorkspacePage[]>(response)).then(next => {
+    void appFetch('/api/pages').then(response => readResponse<WorkspacePage[]>(response)).then(next => {
       if (active && generation === loadGeneration.current) setPages(next);
     }).catch(reason => {
       if (active && generation === loadGeneration.current) setError(reason instanceof Error ? reason.message : String(reason));
@@ -104,7 +105,7 @@ export function PagePane({ pageId, tenantId, full = false, onBack, onPageUpdated
   useEffect(() => {
     const generation = ++loadGeneration.current;
     setEditing(false); setPage(null); setLoading(true); setError('');
-    void fetch(`/api/pages/${pageId}`).then(response => readResponse<WorkspacePage>(response)).then(next => {
+    void appFetch(`/api/pages/${pageId}`).then(response => readResponse<WorkspacePage>(response)).then(next => {
       if (generation !== loadGeneration.current) return;
       setPage(next); setTitleDraft(next.title); setContentDraft(next.content);
     }).catch(reason => {
@@ -118,7 +119,7 @@ export function PagePane({ pageId, tenantId, full = false, onBack, onPageUpdated
     if (!page || busy || !titleDraft.trim() || !contentDraft.trim()) return;
     setBusy(true); setError('');
     try {
-      const updated = await readResponse<WorkspacePage>(await fetch(`/api/pages/${page.id}`, {
+      const updated = await readResponse<WorkspacePage>(await appFetch(`/api/pages/${page.id}`, {
         method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: titleDraft, content: contentDraft }),
       }));
       setPage(updated); setTitleDraft(updated.title); setContentDraft(updated.content); setEditing(false); onPageUpdated?.();

@@ -33,3 +33,9 @@ For an HTML game such as Tetris, the shortest path is: select the completed task
 ## Verification contract
 
 The Chrome click-through must create an HTML file with a relative JavaScript asset, select its completed task, and verify the game text appears without clicking Preview. It then checks collapse/reopen, Download availability, one-click open in the tenant's cloud browser, return-control behavior, and 404 isolation for another tenant's list/content/preview/open requests. This proves Coke Dots behavior in the local browser suite; public signed-in Chrome must be reported separately and must identify the bundle/revision it actually served.
+
+## Public baseline check
+
+On 2026-10-14, signed-in Chrome at `https://codex.cokeagent.com/dots-demo/` showed the completed Tetris response and a filesystem path, but no generated-file card or inline preview. A read-only request to `/dots-demo/api/tasks/{taskId}/artifacts` returned `{"error":"Not found"}`, so the artifact API from this feature branch is not present in the public runtime. The public root `/api/health` identifies `coke-openrouter`; Dots API requests must stay under `/dots-demo/api`.
+
+The installed demo source does not match this feature branch and does not contain `src/web/TaskArtifacts.tsx`. A whole-app sync from this branch would replace later live functionality. The branch now builds with the `/dots-demo/` asset base and routes browser API calls and preview URLs through that prefix, but public feature E2E remains pending integration into the live runtime baseline and deployment of the matching cloud-worker artifact endpoints.
