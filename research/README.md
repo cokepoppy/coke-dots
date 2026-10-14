@@ -92,6 +92,7 @@ V1's chapter titles and selected frames have been reviewed directly in Chrome. S
 - **Scheduled work:** request recurrence → inspect Scheduled details → run at the requested trigger → inspect notification → cancel future run.
 - **Computer:** open work computer → inspect without control → Take over → perform a browser action → Return control → verify agent resumes.
 - **Approval:** request a draft that would send or write externally → inspect pending decision → reject → confirm no external mutation → approve a separate action → inspect audit trail.
+- **Agent self-wake:** assign a goal that needs a later check → inspect the saved checkpoint in chat → open the one-time follow-up in Scheduled → cancel it or let the same task resume and verify the prior checkpoint is included. See [self-wake behavior and limits](personal-agent-self-wake.md).
 
 ## Local browser verification
 

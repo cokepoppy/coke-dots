@@ -104,6 +104,8 @@ async function startMockModel() {
         mockModelRequests.push({ prompt, authorization: String(request.headers.authorization || '') });
         const hasReply = prompt.includes('User reply: Use Friday.');
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
+        const isOneTimeFollowup = prompt.includes('E2E one-time follow-up — confirm approval status');
+        const isOneTimeFollowupResume = isOneTimeFollowup && prompt.includes('Prior result: SELF-WAKE checkpoint');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
         const isMemoryCheck = prompt.includes('E2E memory prompt — apply the saved workspace preference');
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
@@ -144,13 +146,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isKeychainResilienceTask;
+        const isComplete = hasReply || isRecurringCheck || isOneTimeFollowupResume || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isKeychainResilienceTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isKeychainResilienceTask ? '登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : isOneTimeFollowup && !isOneTimeFollowupResume ? { status: 'scheduled', message: 'SELF-WAKE checkpoint: review the approval log; check again in 30 minutes.', nextMinutes: 30 } : { status: isComplete ? 'done' : 'waiting', message: isOneTimeFollowupResume ? 'The approval is complete; I updated the release plan.' : isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isKeychainResilienceTask ? '登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -2129,6 +2131,29 @@ try {
     await item.waitFor({ state: 'detached' });
     assert.equal(promptCount(), initialCount + 2, 'The interval did not trigger exactly one automatic follow-up run');
     await selectTenant(alphaPage!, 'Alpha Shared');
+  });
+
+  await recordStep('One-time agent follow-ups are visible and manageable in Scheduled', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    const instruction = 'E2E one-time follow-up — confirm approval status';
+    await clickNav(alphaPage!, '你的 dot');
+    await createTask(alphaPage!, instruction);
+    await alphaPage!.locator('.timeline .message.dot p').filter({ hasText: 'SELF-WAKE checkpoint' }).waitFor({ state: 'visible', timeout: 15_000 });
+    await alphaPage!.locator('.timeline .pill.scheduled').waitFor({ state: 'visible', timeout: 15_000 });
+    await clickNav(alphaPage!, 'Scheduled');
+    const item = alphaPage!.locator('.scheduled-item').filter({ hasText: instruction });
+    await item.waitFor({ state: 'visible' });
+    await item.getByText('Scheduled', { exact: true }).waitFor({ state: 'visible' });
+    await item.click();
+    const detail = alphaPage!.getByTestId('scheduled-detail');
+    await detail.getByText('One-time follow-up', { exact: true }).waitFor({ state: 'visible' });
+    await detail.getByRole('button', { name: 'Cancel follow-up' }).click();
+    await item.waitFor({ state: 'detached' });
+    const state = await alphaPage!.evaluate(async () => fetch('/api/state').then(response => response.json())) as { tasks: { instruction: string; status: string; nextRunAt: string | null }[] };
+    const paused = state.tasks.find(task => task.instruction === instruction);
+    assert.equal(paused?.status, 'paused', 'Cancelling a one-time follow-up should leave the conversation resumable');
+    assert.equal(paused?.nextRunAt, null, 'Cancelling a one-time follow-up left a wake-up scheduled');
+    await screenshot(alphaPage!, '07g-one-time-follow-up');
   });
 
   await recordStep('Three independent tasks run in parallel in one workspace and finish in Activity', async () => {

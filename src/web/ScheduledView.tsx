@@ -10,6 +10,14 @@ const statusText: Record<Task['status'], string> = {
   queued: 'Queued', working: 'Working', delegating: 'Parallel work', waiting: 'Needs you', scheduled: 'Monitoring', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
 };
 
+function taskHasRecurrence(task: Task) {
+  return scheduleForTask(task.scheduleSpec, task.scheduleMinutes) !== null;
+}
+
+function taskStatusText(task: Task) {
+  return task.status === 'scheduled' && !taskHasRecurrence(task) ? 'Scheduled' : statusText[task.status];
+}
+
 export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onOpenTask, onNewTask, onAddWatch }: {
   tasks: Task[];
   watches: Watch[];
@@ -28,9 +36,9 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
   const [watchError, setWatchError] = useState('');
 
   const items = useMemo<ScheduledItem[]>(() => [
-    ...tasks.filter(task => scheduleForTask(task.scheduleSpec, task.scheduleMinutes) !== null).map(task => ({
+    ...tasks.filter(task => taskHasRecurrence(task) || task.status === 'scheduled').map(task => ({
       key: `task:${task.id}`, kind: 'task' as const, title: task.title,
-      searchable: `${task.title} ${task.instruction} ${statusText[task.status]} ${describeSchedule(scheduleForTask(task.scheduleSpec, task.scheduleMinutes)!)}`,
+      searchable: `${task.title} ${task.instruction} ${taskStatusText(task)} ${taskHasRecurrence(task) ? describeSchedule(scheduleForTask(task.scheduleSpec, task.scheduleMinutes)!) : 'One-time follow-up'}`,
       updatedAt: task.updatedAt, task,
     })),
     ...watches.map(watch => ({
@@ -69,7 +77,7 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
       <div className="scheduled-dot"><span className="scheduled-dot-mark" aria-hidden="true">●</span>Your dot <span aria-hidden="true">⌄</span></div>
       <div className="scheduled-items" aria-label="Scheduled tasks">
         {filtered.map(item => {
-          const status = item.kind === 'task' ? statusText[item.task.status] : item.watch.status === 'active' ? 'Monitoring' : item.watch.status === 'paused' ? 'Paused' : 'Failed';
+          const status = item.kind === 'task' ? taskStatusText(item.task) : item.watch.status === 'active' ? 'Monitoring' : item.watch.status === 'paused' ? 'Paused' : 'Failed';
           return <button key={item.key} className={`scheduled-item ${selectedKey === item.key ? 'selected' : ''}`} aria-pressed={selectedKey === item.key} onClick={() => setSelectedKey(item.key)}>
             <span className="scheduled-item-copy"><strong>{item.title}</strong><small>{status}</small></span>
             <span className="scheduled-item-menu" aria-hidden="true">···</span>
@@ -94,17 +102,17 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
         <button className="scheduled-primary" type="submit" disabled={watchBusy || !watchUrl.trim()}>{watchBusy ? 'Adding…' : 'Add monitor'}</button>
       </form>}
       {selected?.kind === 'task' && <article className="scheduled-detail" data-testid="scheduled-detail" data-item-id={selected.task.id}>
-        <div className="scheduled-detail-top"><span className="scheduled-detail-label">Your dot</span><span className={`scheduled-status ${selected.task.status}`}>{statusText[selected.task.status]}</span></div>
+        <div className="scheduled-detail-top"><span className="scheduled-detail-label">Your dot</span><span className={`scheduled-status ${selected.task.status}`}>{taskStatusText(selected.task)}</span></div>
         <h2>{selected.task.title}</h2>
         <p className="scheduled-instruction">{selected.task.instruction}</p>
-        <div className="scheduled-detail-meta"><span>{describeSchedule(scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes)!)}</span><span>Next run: {['failed', 'paused', 'waiting'].includes(selected.task.status) ? 'Not scheduled' : selected.task.nextRunAt ? new Date(selected.task.nextRunAt).toLocaleString() : 'Not scheduled'}</span></div>
+        <div className="scheduled-detail-meta"><span>{taskHasRecurrence(selected.task) ? describeSchedule(scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes)!) : 'One-time follow-up'}</span><span>Next run: {['failed', 'paused', 'waiting'].includes(selected.task.status) ? 'Not scheduled' : selected.task.nextRunAt ? new Date(selected.task.nextRunAt).toLocaleString() : 'Not scheduled'}</span></div>
         {selected.task.error && <p className="scheduled-detail-error" role="alert">{selected.task.error}</p>}
         {selected.task.result && <div className="scheduled-result"><span>Latest result</span><p>{selected.task.result}</p></div>}
         <div className="scheduled-detail-actions">
           <button onClick={() => onOpenTask(selected.task)}>Open conversation</button>
           {selected.task.status === 'paused'
             ? <button className="scheduled-primary" onClick={() => onCancelTask(selected.task)}>Remove schedule</button>
-            : <button className="scheduled-danger" onClick={() => onCancelTask(selected.task)}>Cancel schedule</button>}
+            : <button className="scheduled-danger" onClick={() => onCancelTask(selected.task)}>{taskHasRecurrence(selected.task) ? 'Cancel schedule' : 'Cancel follow-up'}</button>}
         </div>
       </article>}
       {selected?.kind === 'watch' && <article className="scheduled-detail" data-testid="scheduled-detail" data-item-id={selected.watch.id}>
@@ -115,7 +123,7 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
         {selected.watch.error && <p className="scheduled-detail-error" role="alert">{selected.watch.error}</p>}
         <div className="scheduled-detail-actions"><button className="scheduled-primary" onClick={() => onWatchAction(selected.watch, selected.watch.status === 'active' ? 'pause' : 'resume')}>{selected.watch.status === 'active' ? 'Pause monitor' : 'Resume monitor'}</button></div>
       </article>}
-      {!selected && <div className="scheduled-empty-detail"><div className="scheduled-empty-icon" aria-hidden="true">◷</div><h2>{items.length ? 'No matching tasks' : 'No scheduled tasks yet'}</h2><p>{items.length ? 'Try a different search.' : 'Create a recurring task or monitor a page to see it here.'}</p><button className="scheduled-primary" onClick={onNewTask}>＋ New task</button></div>}
+      {!selected && <div className="scheduled-empty-detail"><div className="scheduled-empty-icon" aria-hidden="true">◷</div><h2>{items.length ? 'No matching tasks' : 'No scheduled tasks yet'}</h2><p>{items.length ? 'Try a different search.' : 'Create a follow-up, recurring task, or page monitor to see it here.'}</p><button className="scheduled-primary" onClick={onNewTask}>＋ New task</button></div>}
     </div>
   </section>;
 }
