@@ -36,6 +36,15 @@ The Chrome click-through must create an HTML file with a relative JavaScript ass
 
 ## Public baseline check
 
-On 2026-10-14, signed-in Chrome at `https://codex.cokeagent.com/dots-demo/` showed the completed Tetris response and a filesystem path, but no generated-file card or inline preview. A read-only request to `/dots-demo/api/tasks/{taskId}/artifacts` returned `{"error":"Not found"}`, so the artifact API from this feature branch is not present in the public runtime. The public root `/api/health` identifies `coke-openrouter`; Dots API requests must stay under `/dots-demo/api`.
+On 2026-10-14, signed-in Chrome at `https://codex.cokeagent.com/dots-demo/` showed the completed Tetris response and a filesystem path, but no generated-file card or inline preview. A read-only request to `/dots-demo/api/tasks/{taskId}/artifacts` returned `{"error":"Not found"}`. The public page served `/dots-demo/assets/index-C10z0l4c.js` (SHA-256 `462693bd5b4967cc3b4df77bd5142fac59db8619a955e2f099a4b4d3f8b52cc8`), matching the installed demo runtime's `app/dist`; neither includes this feature. The public root `/api/health` identifies `coke-openrouter`; Dots API requests must stay under `/dots-demo/api`.
 
-The installed demo source does not match this feature branch and does not contain `src/web/TaskArtifacts.tsx`. A whole-app sync from this branch would replace later live functionality. The branch now builds with the `/dots-demo/` asset base and routes browser API calls and preview URLs through that prefix, but public feature E2E remains pending integration into the live runtime baseline and deployment of the matching cloud-worker artifact endpoints.
+The feature branch was rebased onto the source baseline matching the installed runtime (including the later Gmail and Teams functionality). Its build uses `/dots-demo/` for static assets, API calls, and preview URLs. The public feature remains unreleased, so the signed-in public flow is not yet verified with this branch.
+
+## Implementation and verification
+
+- The selected completed task now lists its tenant-scoped files inline. Selecting an HTML output opens a sandboxed preview automatically; users can collapse/reopen it, download the file, or open that exact file in the tenant's cloud computer.
+- `npm test`: 117/117 passed.
+- `npm run test:e2e`: 54 Chrome UI steps passed against a disposable local app and mock computer service. This is local evidence, not public-site evidence.
+- `npm run test:e2e:demo-path`: passed for the `/dots-demo/` browser route.
+- `npm run test:e2e:k3d`: passed against a real local K3D Debian desktop using a fake Agent adapter (no paid model call). It checked artifact endpoint authorization, HTML listing/content and preview headers, browser open/navigation/control flow, and workspace persistence after desktop Pod recreation. Test namespace was removed afterward. The image revision label matched commit `668d746b5b36b212f706d89c913eb7cd811a5e4c`.
+- Public deployment was not changed. The signed-in public artifact flow remains to be run after release; no claim of pixel-perfect parity is based on compressed YouTube footage.
