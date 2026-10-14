@@ -118,7 +118,7 @@ async function executeKernel(input, requestSignal, slot) {
   if (!prompt || prompt.length > 20_000) throw new Error('Task prompt must contain 1–20000 characters');
   if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
   const modelConfig = requireModelConfig(input.modelConfig);
-  if (await controlOwner() !== 'agent') return { taskId, status: 'waiting', message: '电脑目前由你控制。交还电脑后，请告诉我继续。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
+  if (await controlOwner() !== 'agent') return { taskId, status: 'waiting', pausedForControl: true, message: '电脑目前由你控制。我已暂停这项工作；交还电脑后点击“继续”即可恢复。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
 
   const cwd = safeWorkspace(input.cwd);
   await mkdir(cwd, { recursive: true, mode: 0o700 });
@@ -152,7 +152,7 @@ async function executeKernel(input, requestSignal, slot) {
       child.once('close', value => resolve(value ?? 1));
     });
     if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
-    if (slot.interruptedByUser) return { taskId, status: 'waiting', message: '我已暂停当前操作，因为你正在接管电脑。交还电脑后，请告诉我继续。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
+    if (slot.interruptedByUser) return { taskId, status: 'waiting', pausedForControl: true, message: '我已暂停当前操作，因为你正在接管电脑。交还电脑后，请告诉我继续。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
     if (code !== 0) throw new Error(`Agent adapter exited with code ${code}`);
     let result;
     try { result = redactSecret(JSON.parse(stdout), modelConfig.apiKey); } catch { throw new Error('Agent adapter must return a JSON decision'); }

@@ -28,7 +28,7 @@ export interface ComputerRuntime {
   listTaskArtifacts?(taskId: string): Promise<TaskArtifact[]>;
   readTaskArtifact?(taskId: string, artifactPath: string): Promise<{ bytes: Buffer; mediaType: string; name: string; previewable: boolean }>;
   openTaskArtifact?(taskId: string, artifactPath: string): Promise<ComputerState>;
-  runAgentTask?(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] }>;
+  runAgentTask?(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; pausedForControl?: boolean }>;
 }
 
 export class ComputerManager implements ComputerRuntime {

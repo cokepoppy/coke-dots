@@ -133,8 +133,14 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     const held = await heldPromise;
     assert.equal(held.status, 200);
     assert.equal(held.body.status, 'waiting');
+    assert.equal((held.body as { pausedForControl?: boolean }).pausedForControl, true, 'A user takeover must be identified separately from a normal clarification');
     assert.match(held.body.message || '', /接管电脑/);
     assert.doesNotMatch(stderr, /agent-test-token-never-print/);
+    owner = 'user';
+    const queuedWhileUserControls = await submit('55555555-5555-4555-8555-555555555555', 'queued during takeover');
+    assert.equal(queuedWhileUserControls.status, 200);
+    assert.equal((queuedWhileUserControls.body as { pausedForControl?: boolean }).pausedForControl, true, 'A queued remote task must also become a resumable pause while the user owns the computer');
+    assert.doesNotMatch(await readFile(markerPath, 'utf8'), /55555555-5555-4555-8555-555555555555/, 'A queued task must not spawn a kernel while the user controls the desktop');
     owner = 'agent';
   } finally {
     if (child && child.exitCode === null) {

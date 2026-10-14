@@ -25,6 +25,7 @@ const machines = new Map<string, { owner: 'agent' | 'user'; url: string; title: 
 const workerTokens = new Map<string, string>();
 const agentTokens = new Map<string, string>();
 const agentCalls: Record<string, unknown>[] = [];
+const takeoverInterruptedTasks = new Set<string>();
 const taskArtifacts = new Map<string, { path: string; name: string; mediaType: string; size: number; previewable: boolean }[]>();
 const taskArtifactBodies = new Map<string, Map<string, string>>();
 const browserActions: { hash: string; action: string }[] = [];
@@ -140,6 +141,19 @@ async function startRemote() {
         if (route === '/v1/tasks/run' && req.method === 'POST') {
           const body = await readJson(req);
           agentCalls.push(body);
+          const taskId = String(body.taskId);
+          if (String(body.prompt).includes('E2E cloud takeover pause flow') && !takeoverInterruptedTasks.has(taskId)) {
+            const deadline = Date.now() + 15_000;
+            await new Promise<void>((resolve, reject) => {
+              const timer = setInterval(() => {
+                if (machine.owner === 'user') { clearInterval(timer); resolve(); }
+                else if (Date.now() >= deadline) { clearInterval(timer); reject(new Error('Timed out waiting for Chrome computer takeover in the pause E2E')); }
+              }, 25);
+              res.once('close', () => clearInterval(timer));
+            });
+            takeoverInterruptedTasks.add(taskId);
+            return content(res, 200, 'application/json', JSON.stringify({ status: 'waiting', pausedForControl: true, message: '我已暂停当前操作，因为你正在接管电脑。交还电脑后，请告诉我继续。', engine: 'pi', sessionId: 'cloud-session-1' }));
+          }
           const html = '<!doctype html><html><body><main id="demo-artifact">正在加载游戏…</main><script src="game.js"></script></body></html>';
           const script = "document.querySelector('#demo-artifact').textContent = '俄罗斯方块预览';";
           taskArtifacts.set(String(body.taskId), [
@@ -373,6 +387,35 @@ try {
   await page.getByRole('button', { name: 'Return control' }).click();
   await page.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible' });
 
+  const takeoverPauseTitle = 'E2E cloud takeover pause flow';
+  const takeoverPauseTask = await page.evaluate(async instruction => {
+    const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction, engine: 'pi' }) });
+    return { status: response.status, task: await response.json() as { id: string } };
+  }, takeoverPauseTitle);
+  assert.equal(takeoverPauseTask.status, 201);
+  const takeoverDispatchDeadline = Date.now() + 10_000;
+  while (Date.now() < takeoverDispatchDeadline && !agentCalls.some(call => call.taskId === takeoverPauseTask.task.id)) await new Promise(resolve => setTimeout(resolve, 25));
+  assert(agentCalls.some(call => call.taskId === takeoverPauseTask.task.id), 'The Pi cloud task must be running before the user takes over');
+  await page.getByRole('button', { name: 'Take over' }).click();
+  await page.getByRole('status').filter({ hasText: 'You have control' }).waitFor({ state: 'visible' });
+  await page.waitForFunction(async id => {
+    const response = await fetch('/api/state');
+    const state = await response.json() as { tasks: { id: string; status: string; error: string | null }[] };
+    const task = state.tasks.find(item => item.id === id);
+    return task?.status === 'paused' && /Agent 已暂停/.test(task.error || '');
+  }, takeoverPauseTask.task.id, { timeout: 10_000 });
+  await page.screenshot({ path: join(artifacts, '04-cloud-computer-user-control.png') });
+  await page.getByRole('button', { name: 'Return control' }).click();
+  await page.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible' });
+  await page.getByRole('button', { name: 'Activity' }).click();
+  const takeoverPauseCard = page.locator('.task-card').filter({ hasText: takeoverPauseTitle });
+  await takeoverPauseCard.locator('.pill.paused').waitFor({ state: 'visible' });
+  await page.screenshot({ path: join(artifacts, '05-cloud-task-paused-in-activity.png') });
+  await takeoverPauseCard.getByRole('button', { name: '继续' }).click();
+  await takeoverPauseCard.locator('.pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+  assert.equal(agentCalls.filter(call => call.taskId === takeoverPauseTask.task.id).length, 2, 'Continuing after returning control should resume the same cloud task');
+  await page.screenshot({ path: join(artifacts, '06-cloud-task-resumed-after-takeover.png') });
+
   const betaContext = await browser.newContext({ viewport: { width: 1440, height: 980 }, deviceScaleFactor: 1 });
   const betaPage = await betaContext.newPage();
   await signIn(betaPage, 'cloud-beta@example.test');
@@ -408,10 +451,10 @@ try {
   assert.deepEqual(betaAgentCall.modelConfig, { apiKey: 'cloud-e2e-shared-api-key', baseUrl: 'https://api.deepseek.com/v1', model: 'cloud-e2e-model' }, 'A second tenant must reuse the same instance model profile');
   assert.notEqual(agentTokens.get(alphaHash), agentTokens.get(betaHash), 'Tenant Agent runtime bearer tokens were shared');
   assert.notEqual(machines.get(alphaHash), machines.get(betaHash), 'Tenants shared one desktop state object');
-  await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });
+  await betaPage.screenshot({ path: join(artifacts, '07-beta-isolated-desktop.png') });
   await betaContext.close();
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'recoverable browser-context status and error code', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'chat artifact list and iframe preview with linked assets', 'sandboxed HTML preview headers', 'one-click cloud-browser artifact open and return control', 'cross-tenant artifact read/open denial', 'tenant token and runtime separation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'recoverable browser-context status and error code', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'computer takeover pauses the active task and Chrome resumes it after control returns', 'chat artifact list and iframe preview with linked assets', 'sandboxed HTML preview headers', 'one-click cloud-browser artifact open and return control', 'cross-tenant artifact read/open denial', 'tenant token and runtime separation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);

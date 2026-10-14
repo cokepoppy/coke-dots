@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import type { ComputerRuntime, ComputerState } from './computer.ts';
 import type { TaskArtifact } from '../shared/types.ts';
-import { LinuxDesktopWorkerError } from './computer-errors.ts';
+import { ComputerControlOwnedByUserError, LinuxDesktopWorkerError } from './computer-errors.ts';
 
 const workerPort = 8082;
 const vncPort = 6080;
@@ -149,7 +149,10 @@ export class LinuxDesktopComputer implements ComputerRuntime {
   async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; signal?: AbortSignal }) {
     await this.ensureConnection();
     const owner = await this.request('/v1/control');
-    if (!owner.ok || (await owner.json() as { owner?: string }).owner !== 'agent') throw new Error('用户正在接管这台电脑，Agent 已暂停');
+    if (!owner.ok) await this.throwWorkerError(owner, `Linux 云电脑控制权读取失败（HTTP ${owner.status}）`);
+    const control = await owner.json() as { owner?: string };
+    if (control.owner === 'user') throw new ComputerControlOwnedByUserError();
+    if (control.owner !== 'agent') throw new Error('无法确认 Linux 云电脑的控制权，任务没有发送给 Agent。');
     const url = endpointUrl(this.connection!.agentUrl, 'v1/tasks/run');
     const response = await fetch(url, {
       method: 'POST',
@@ -157,10 +160,11 @@ export class LinuxDesktopComputer implements ComputerRuntime {
       body: JSON.stringify({ engine: input.engine, taskId: input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, ...(input.modelConfig ? { modelConfig: input.modelConfig } : {}), computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
       signal: input.signal ? AbortSignal.any([AbortSignal.timeout(15 * 60_000), input.signal]) : AbortSignal.timeout(15 * 60_000),
     });
-    const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] };
+    const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; pausedForControl?: boolean };
     if (!response.ok) throw new Error(result.error || `Linux Agent 运行时返回 HTTP ${response.status}`);
     if (typeof result.status !== 'string' || typeof result.message !== 'string') throw new Error('Linux Agent 运行时返回了无效结果');
-    return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }) };
+    if (result.pausedForControl === true) throw new ComputerControlOwnedByUserError();
+    return { status: result.status, message: result.message, ...(result.nextMinutes === undefined ? {} : { nextMinutes: result.nextMinutes }), ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), ...(result.pageAction === undefined ? {} : { pageAction: result.pageAction }), ...(result.delegations === undefined ? {} : { delegations: result.delegations }), ...(result.pausedForControl === undefined ? {} : { pausedForControl: result.pausedForControl }) };
   }
 
   async close() {

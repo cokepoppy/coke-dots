@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import { configuredDesktopImage, desktopResourceIdentity, desktopResources, isPinnedDesktopImageReference, KubectlDesktopConnector, LinuxDesktopComputer, type DesktopConnector } from '../src/server/linux-desktop-computer.ts';
+import { ComputerControlOwnedByUserError } from '../src/server/computer-errors.ts';
 
 test('Linux desktop resources isolate tenant namespaces and never publish CDP', () => {
   const alpha = desktopResourceIdentity('alpha-workspace');
@@ -193,6 +194,7 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
   let connectionCount = 0;
   const png = Buffer.from('mock-desktop-frame');
   const agentInput: Record<string, unknown>[] = [];
+  let pauseNextAgentTask = false;
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -217,7 +219,10 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     agentInput.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ status: 'done', message: 'remote task finished', sessionId: 'remote-session' }));
+    res.end(JSON.stringify(pauseNextAgentTask
+      ? { status: 'waiting', pausedForControl: true, message: '我已暂停当前操作，因为你正在接管电脑。' }
+      : { status: 'done', message: 'remote task finished', sessionId: 'remote-session' }));
+    pauseNextAgentTask = false;
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   await new Promise<void>(resolve => agentServer.listen(0, '127.0.0.1', resolve));
@@ -253,6 +258,12 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     assert.equal(agentInput[0].cwd, 'tasks/task-1');
     assert.equal('signal' in agentInput[0], false, 'AbortSignal must control the HTTP request, not leak into the runtime payload');
     assert.equal((agentInput[0].computer as { workerToken: string }).workerToken, 'scoped-worker-token');
+    pauseNextAgentTask = true;
+    await assert.rejects(
+      computer.runAgentTask({ engine: 'dsh', taskId: 'task-2', prompt: 'continue', sessionId: null }),
+      error => error instanceof ComputerControlOwnedByUserError,
+      'The cloud Agent takeover marker must become a typed task-pause signal in the app server',
+    );
     await computer.close();
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));

@@ -1,6 +1,13 @@
 const exposedWorkerStatuses = new Set([400, 403, 409, 422, 503]);
 const safeErrorCode = /^[A-Z][A-Z0-9_]{0,63}$/;
 
+export class ComputerControlOwnedByUserError extends Error {
+  constructor() {
+    super('用户正在接管云电脑，Agent 已暂停。交还控制权后点击“继续”即可恢复。');
+    this.name = 'ComputerControlOwnedByUserError';
+  }
+}
+
 export class LinuxDesktopWorkerError extends Error {
   readonly statusCode: number;
   readonly code?: string;

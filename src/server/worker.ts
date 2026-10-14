@@ -5,6 +5,7 @@ import { nextScheduleOccurrence, scheduleForTask } from '../shared/scheduling.ts
 import { Store } from './store.ts';
 import { adapters, formatAgentPrompt, parseDecision, type AgentRequest, type Engine } from './adapters.ts';
 import type { ComputerRuntime } from './computer.ts';
+import { ComputerControlOwnedByUserError } from './computer-errors.ts';
 import { effectiveModelConfig, loadModelSettings, sharedModelApiKeyStatus } from './model-settings.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
@@ -175,6 +176,14 @@ export class Worker {
     } catch (error) {
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;
+      if (error instanceof ComputerControlOwnedByUserError) {
+        const message = error.message;
+        this.store.updateTask(task.id, { status: 'paused', nextRunAt: null, error: message }, task.tenantId);
+        this.store.addEntry('system', message, task.id, task.tenantId);
+        this.notifyIfEnabled(task.tenantId, `“${task.title}”已暂停；交还云电脑控制权后可以继续。`);
+        this.onChange();
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       this.store.updateTask(task.id, { status: 'failed', error: message.slice(0, 400) }, task.tenantId);
       this.store.addEntry('system', `执行失败：${message.slice(0, 400)}`, task.id, task.tenantId);
