@@ -81,6 +81,23 @@ export function TaskArtifacts({ taskId, onOpenComputer }: { taskId: string; onOp
     finally { setOpeningPath(null); }
   }
 
+  async function openInBrowser(artifactPath: string) {
+    const tab = window.open('about:blank', '_blank');
+    if (!tab) { setError('浏览器阻止了新标签页，请允许此站点打开新窗口后重试'); return; }
+    tab.opener = null;
+    setOpeningPath(artifactPath);
+    setError('');
+    try {
+      const response = await appFetch(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/preview-url?path=${encodeURIComponent(artifactPath)}`);
+      const value = await response.json() as { url?: string; error?: string };
+      if (!response.ok || !value.url) throw new Error(value.error || '无法打开这个文件');
+      tab.location.replace(appPath(value.url));
+    } catch (reason) {
+      tab.close();
+      setError(reason instanceof Error ? reason.message : '无法打开这个文件');
+    } finally { setOpeningPath(null); }
+  }
+
   if (artifacts === null) return <section className="task-artifacts" data-testid="task-artifacts-loading" aria-label="任务文件"><span>正在查找生成的文件…</span></section>;
   if (!artifacts.length && !error) return null;
 
@@ -95,6 +112,7 @@ export function TaskArtifacts({ taskId, onOpenComputer }: { taskId: string; onOp
           <span className="task-artifact-file-icon" aria-hidden="true">{artifact.mediaType.startsWith('image/') ? '▧' : artifact.mediaType === 'text/html' ? '◉' : '▤'}</span>
           <span className="task-artifact-file-copy"><strong title={artifact.path}>{artifact.name}</strong><small>{formatSize(artifact.size)}{artifact.previewable ? ' · 可预览' : ''}</small></span>
           {artifact.previewable && <button type="button" className="task-artifact-action" aria-expanded={isPreviewed} onClick={() => void togglePreview(artifact.path)}>{isPreviewed ? '收起预览' : '预览'}</button>}
+          {artifact.mediaType === 'text/html' && <button type="button" className="task-artifact-action" data-testid="open-artifact-in-browser" disabled={openingPath !== null} onClick={() => void openInBrowser(artifact.path)}>{openingPath === artifact.path ? '正在打开…' : '在新标签页打开'}</button>}
           {artifact.mediaType === 'text/html' && <button type="button" className="task-artifact-action" data-testid="open-artifact-in-computer" disabled={openingPath !== null} onClick={() => void openInComputer(artifact.path)}>{openingPath === artifact.path ? '正在打开…' : '在云电脑中打开'}</button>}
           <a className="task-artifact-action" href={url} download={artifact.name}>下载</a>
           {isPreviewed && previewUrls[artifact.path] && <iframe className="task-artifact-preview" data-testid="task-artifact-preview" title={`预览 ${artifact.name}`} src={previewUrls[artifact.path]} sandbox="allow-scripts" referrerPolicy="no-referrer" />}

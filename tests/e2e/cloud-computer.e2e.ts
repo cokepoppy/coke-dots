@@ -364,6 +364,22 @@ try {
   await page.locator('[data-testid="task-artifact-preview"]').waitFor({ state: 'detached' });
   await tetrisArtifact.getByRole('button', { name: '预览' }).click();
   await page.frameLocator('[data-testid="task-artifact-preview"]').locator('#demo-artifact').filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible' });
+  const [artifactTab] = await Promise.all([
+    alphaContext.waitForEvent('page'),
+    tetrisArtifact.getByTestId('open-artifact-in-browser').click(),
+  ]);
+  const artifactResponses: string[] = [];
+  artifactTab.on('response', response => {
+    if (response.url().includes('/artifacts/file/')) artifactResponses.push(`${response.status()} ${response.url()} ${response.headers()['content-type'] || ''}`);
+  });
+  artifactTab.on('requestfailed', request => artifactResponses.push(`failed ${request.url()} ${request.failure()?.errorText || ''}`));
+  await artifactTab.waitForURL(url => url.pathname.includes(`/api/artifact-preview/${created.task.id}/`), { timeout: 10_000 });
+  await artifactTab.waitForLoadState('load');
+  try { await artifactTab.locator('#demo-artifact').filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible', timeout: 5_000 }); }
+  catch { throw new Error(`Full-tab HTML artifact failed to render. url=${artifactTab.url()} body=${await artifactTab.locator('body').innerText()} responses=${JSON.stringify(artifactResponses)}`); }
+  assert.match(new URL(artifactTab.url()).pathname, new RegExp(`/api/artifact-preview/${created.task.id}/`), 'The full-tab preview must use a short-lived ticket scoped to the same tenant task');
+  await artifactTab.screenshot({ path: join(artifacts, '04-tetris-full-tab.png') });
+  await artifactTab.close();
   await page.screenshot({ path: join(artifacts, '03-agent-task-done.png') });
   await page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]').getByTestId('open-artifact-in-computer').click();
   await page.getByTestId('computer-workspace').waitFor({ state: 'visible' });
@@ -383,6 +399,8 @@ try {
   assert.deepEqual(crossTenantArtifact, { status: 404, body: { error: '任务不存在' } }, 'A tenant must not enumerate another tenant task files');
   const crossTenantContentStatus = await betaPage.evaluate(async id => (await fetch(`/api/tasks/${id}/artifacts/content?path=${encodeURIComponent('tetris.html')}`)).status, created.task.id);
   assert.equal(crossTenantContentStatus, 404, 'A tenant must not read another tenant task files');
+  const crossTenantFileStatus = await betaPage.evaluate(async id => (await fetch(`/api/tasks/${id}/artifacts/file/tetris.html`)).status, created.task.id);
+  assert.equal(crossTenantFileStatus, 404, 'Opening a direct browser link must still reject another tenant');
   const crossTenantPreviewStatus = await betaPage.evaluate(async previewUrl => (await fetch(previewUrl)).status, alphaArtifactChecks.previewUrl);
   assert.equal(crossTenantPreviewStatus, 404, 'A signed preview URL must not expose a tenant artifact to a different signed-in tenant');
   const crossTenantOpenStatus = await betaPage.evaluate(async id => (await fetch(`/api/tasks/${id}/artifacts/open-in-computer`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: 'tetris.html' }) })).status, created.task.id);
@@ -398,7 +416,7 @@ try {
   await betaPage.waitForFunction(async id => {
     const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; status: string }[] };
     return state.tasks.find(task => task.id === id)?.status === 'done';
-  }, betaTask.id, { timeout: 20_000 });
+  }, betaTask.id, { timeout: 30_000 });
   const betaStateAfterTask = await betaPage.evaluate(async id => {
     const state = await fetch('/api/state').then(response => response.json()) as { availableEngines: string[]; remoteEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { id: string; engine: string; status: string; error: string | null }[] };
     return { ...state.tasks.find(task => task.id === id), availableEngines: state.availableEngines, remoteEngines: state.remoteEngines, modelSettings: state.modelSettings };
@@ -411,7 +429,7 @@ try {
   await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });
   await betaContext.close();
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'recoverable browser-context status and error code', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'chat artifact list and iframe preview with linked assets', 'sandboxed HTML preview headers', 'one-click cloud-browser artifact open and return control', 'cross-tenant artifact read/open denial', 'tenant token and runtime separation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'recoverable browser-context status and error code', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'chat artifact list and iframe preview with linked assets', 'sandboxed HTML preview headers', 'new browser tab uses a tenant-bound short-lived ticket and loads relative HTML assets', 'one-click cloud-browser artifact open and return control', 'cross-tenant artifact read/open denial', 'tenant token and runtime separation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);

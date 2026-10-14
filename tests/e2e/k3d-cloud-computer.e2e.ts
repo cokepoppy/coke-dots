@@ -305,6 +305,16 @@ try {
   const preview = page.frameLocator('[data-testid="task-artifact-preview"]').locator('#demo-artifact');
   await preview.filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible', timeout: 20_000 });
   assert.equal((await preview.textContent())?.trim(), '俄罗斯方块预览', 'The completed real cloud task must render its HTML artifact in the conversation');
+  const [artifactTab] = await Promise.all([
+    context.waitForEvent('page'),
+    artifactCard.getByTestId('open-artifact-in-browser').click(),
+  ]);
+  await artifactTab.waitForURL(url => url.pathname.includes(`/api/artifact-preview/${cloudTaskId}/`), { timeout: 10_000 });
+  await artifactTab.waitForLoadState('domcontentloaded');
+  await artifactTab.locator('#demo-artifact').filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible', timeout: 20_000 });
+  assert.match(new URL(artifactTab.url()).pathname, new RegExp(`/api/artifact-preview/${cloudTaskId}/`), 'The browser tab must show the real task artifact through a short-lived task preview ticket');
+  await artifactTab.screenshot({ path: join(artifacts, '02-chat-artifact-full-tab.png') });
+  await artifactTab.close();
   const downloadPromise = page.waitForEvent('download');
   await artifactCard.getByRole('link', { name: '下载' }).click();
   assert.equal((await downloadPromise).suggestedFilename(), 'tetris.html', 'The task file must be downloadable from its chat card');
