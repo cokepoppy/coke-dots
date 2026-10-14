@@ -128,6 +128,19 @@ async function main() {
   await page.getByTestId('e2e-sign-in').click();
   await page.getByTestId('app-shell').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+  await page.getByRole('button', { name: '你的 dot', exact: true }).click();
+  await page.getByTestId('computer-choice').waitFor({ state: 'visible' });
+  await page.getByRole('button', { name: 'Continue' }).click();
+  const onboardingStatus = await page.evaluate(async () => (await fetch('/dots-demo/api/profile', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ onboardingComplete: true }) })).status);
+  assert.equal(onboardingStatus, 200, 'The E2E tenant should finish onboarding before checking the composer default');
+  const fixtureTask = await page.evaluate(async () => {
+    const response = await fetch('/dots-demo/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'E2E scheduled fixture for Pi default', engine: 'pi', scheduleMinutes: 60 }) });
+    return { status: response.status, body: await response.json() as { title?: string } };
+  });
+  assert.equal(fixtureTask.status, 201, 'A future-only fixture should make the chat composer available without running an Agent task');
+  await page.getByRole('button', { name: /E2E scheduled fixture for Pi default/ }).click();
+  await page.getByTestId('engine-select').waitFor({ state: 'visible' });
+  assert.equal(await page.getByTestId('engine-select').inputValue(), 'pi', 'The public demo build must default to the Pi Agent kernel');
   const eventDeadline = Date.now() + 5_000;
   while (!requests.some(item => item === 'GET /dots-demo/api/events') && Date.now() < eventDeadline) await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
   assert(requests.includes('GET /dots-demo/api/events'), 'The authenticated live event stream must use the prefixed API path');

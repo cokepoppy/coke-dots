@@ -45,6 +45,8 @@ const statusText: Record<TaskStatus, string> = {
   queued: '排队中', working: '工作中', delegating: '并行处理中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停', stopped: '已停止',
 };
 const engineText: Record<TaskEngine, string> = { model: '模型 API', claude: 'Claude Code（已停用）', pi: 'Pi', dsh: 'DeepSeek Harness' };
+const buildDefaultEngine = import.meta.env.VITE_DOTS_DEFAULT_ENGINE;
+const defaultEngine: Engine = buildDefaultEngine === 'pi' || buildDefaultEngine === 'dsh' || buildDefaultEngine === 'model' ? buildDefaultEngine : 'model';
 
 async function request(path: string, method: 'POST' | 'PATCH', body: object) {
   const response = await appFetch(`/api${path}`, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -105,7 +107,7 @@ function App() {
   const [scheduleTimeZone, setScheduleTimeZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
   const [scheduleWeekdays, setScheduleWeekdays] = useState<number[]>([]);
   const [scheduleEndDate, setScheduleEndDate] = useState('');
-  const [engine, setEngine] = useState<Engine>('model');
+  const [engine, setEngine] = useState<Engine>(defaultEngine);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 

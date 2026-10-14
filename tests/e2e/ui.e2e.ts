@@ -722,6 +722,7 @@ try {
   await recordStep('Only the supported model, Pi, and DeepSeek Harness choices are selectable', async () => {
     const options = await alphaPage!.getByTestId('engine-select').locator('option').evaluateAll(elements => elements.map(element => (element as HTMLOptionElement).value));
     assert.deepEqual(options, ['model', 'pi', 'dsh']);
+    assert.equal(await alphaPage!.getByTestId('engine-select').inputValue(), 'model', 'Local development builds should keep the Model API as the default');
     const legacyAttempt = await alphaPage!.evaluate(async () => {
       const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'E2E legacy Claude engine rejection', engine: 'claude' }) });
       return { status: response.status, body: await response.json() as { error?: string } };
