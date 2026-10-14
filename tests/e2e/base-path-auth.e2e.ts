@@ -323,12 +323,23 @@ async function main() {
   const googleLogin = page.getByRole('link', { name: '使用 Google 登录' });
   await googleLogin.waitFor({ state: 'visible' });
   assert.equal(new URL(await googleLogin.getAttribute('href') || '', baseUrl).pathname, `${basePath}/api/auth/google/start`);
+  const loginDescription = await page.locator('.auth-card > p').innerText();
+  assert.match(loginDescription, /任务、记录和浏览器会话按工作区隔离/);
+  assert.match(loginDescription, /模型 API 由 Coke Dots 实例统一配置/);
+  assert.doesNotMatch(loginDescription, /模型密钥.*工作区.*隔离/);
   const googleLoginBounds = await googleLogin.boundingBox();
   assert(googleLoginBounds && googleLoginBounds.height >= 48 && googleLoginBounds.x >= 0 && googleLoginBounds.x + googleLoginBounds.width <= 390,
     'The real Google login action must be visible and touch-sized on a phone viewport');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
     'The mobile Google login page must not overflow horizontally');
   await page.screenshot({ path: join(artifactRoot, 'base-path-login.png'), fullPage: true });
+  await page.setViewportSize({ width: 320, height: 568 });
+  const narrowGoogleLoginBounds = await googleLogin.boundingBox();
+  assert(narrowGoogleLoginBounds && narrowGoogleLoginBounds.height >= 48 && narrowGoogleLoginBounds.x >= 0 && narrowGoogleLoginBounds.x + narrowGoogleLoginBounds.width <= 320,
+    'The Google login action must remain touch-sized and fit a narrow phone viewport');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+    'The narrow mobile Google login page must not overflow horizontally');
+  await page.setViewportSize({ width: 390, height: 844 });
   await googleLogin.click();
   await page.getByRole('heading', { name: 'Google account' }).waitFor({ state: 'visible' });
   await page.getByRole('link', { name: 'Continue with Google' }).click({ noWaitAfter: true });
@@ -378,6 +389,13 @@ async function main() {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
     'The mobile Dot conversation must fit before placing a call');
   await page.screenshot({ path: join(artifactRoot, 'base-path-mobile-dot-chat.png'), fullPage: true });
+  await page.setViewportSize({ width: 320, height: 568 });
+  const narrowChatCallBounds = await page.getByTestId('conversation-call-launch').boundingBox();
+  assert(narrowChatCallBounds && narrowChatCallBounds.width >= 44 && narrowChatCallBounds.height >= 44 && narrowChatCallBounds.x >= 0 && narrowChatCallBounds.x + narrowChatCallBounds.width <= 320,
+    'The Dot call button must remain touch-sized and inside a narrow phone conversation header');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+    'The narrow mobile Dot conversation must not overflow horizontally');
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => {
     const originalStart = AudioBufferSourceNode.prototype.start;
     Object.defineProperty(window, '__dotsVoiceOutputFrames', { configurable: true, value: [], writable: true });
@@ -401,6 +419,20 @@ async function main() {
     'The active phone call must fill the 390×844 viewport');
   assert.equal(await mobileCall.locator('.voice-call-mobile-controls button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')).join('|')),
     '关闭扬声器|结束通话|静音', 'Mobile call controls must keep speaker, red hang-up, and mute in the expected order');
+  await page.setViewportSize({ width: 320, height: 568 });
+  const narrowCallBounds = await mobileCall.boundingBox();
+  const narrowControlBounds = await mobileCall.locator('.voice-call-mobile-controls').boundingBox();
+  const narrowCallButtonBounds = await mobileCall.locator('.voice-call-mobile-controls button').evaluateAll(buttons => buttons.map(button => {
+    const rect = button.getBoundingClientRect();
+    return { x: rect.x, right: rect.right, width: rect.width, height: rect.height };
+  }));
+  assert(narrowCallBounds && narrowCallBounds.x === 0 && narrowCallBounds.y === 0 && narrowCallBounds.width === 320 && narrowCallBounds.height === 568,
+    'The active call must resize to a narrow 320×568 phone viewport');
+  assert(narrowControlBounds && narrowControlBounds.x >= 0 && narrowControlBounds.x + narrowControlBounds.width <= 320 && narrowControlBounds.y + narrowControlBounds.height <= 568,
+    'The mobile call controls must remain fully visible on a narrow phone viewport');
+  assert(narrowCallButtonBounds.every(button => button.width >= 44 && button.height >= 44 && button.x >= 0 && button.right <= 320),
+    'Every mobile call control must stay touch-sized and within the narrow viewport');
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-state') === 'sent', null, { timeout: 20_000 });
   const greeting = `你好，我是 Dot，有什么我可以帮你？`;
   const voiceDeadline = Date.now() + 10_000;

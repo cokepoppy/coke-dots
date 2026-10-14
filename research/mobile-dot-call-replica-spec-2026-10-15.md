@@ -34,7 +34,7 @@ OpenAI 的 [Meet dots 文档](https://learn.chatgpt.com/docs/dots) 当前说明�
 `tests/e2e/base-path-auth.e2e.ts` 通过手机尺寸与触控模式的 Chrome 执行完整流程：
 
 - 真实点击本地 Google OAuth 模拟器，验证 state cookie、PKCE、回调与登录态。
-- 检查登录和对话页在手机尺寸无水平溢出；检查通话视图为 390×844 全屏且控制区顺序正确。
+- 检查登录与对话页在 320×568 和 390×844 手机视口无水平溢出，Google 登录和拨号入口达到触控尺寸；检查通话视图在两种尺寸均铺满屏幕，挂断、静音和扬声器控制完整可见。
 - 使用 Chrome fake media stream 与本地 SeedDuplex WebSocket 模拟器，确认浏览器送出非静音 PCM、收到并调度 24 kHz 返回音频、Dot 中文问候经过 TTS 事件发出。
 - 验证返回聊天时通话不结束，挂断后数据库通话记录有结束时间，语音会话已关闭。
 
