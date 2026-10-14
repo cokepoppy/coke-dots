@@ -669,6 +669,24 @@ try {
   await recordStep('Unauthenticated page and E2E-only sign-in control render', async () => {
     await alphaPage!.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('e2e-sign-in').waitFor({ state: 'visible' });
+    await alphaPage!.setViewportSize({ width: 390, height: 844 });
+    const mobileLogin = await alphaPage!.locator('.auth-card').boundingBox();
+    assert(mobileLogin && mobileLogin.x >= 0 && mobileLogin.x + mobileLogin.width <= 390,
+      'The Google login card must fit a 390 px mobile Chrome viewport');
+    const mobileGoogleLogin = alphaPage!.locator('a.google-login');
+    if (await mobileGoogleLogin.count()) {
+      assert(await mobileGoogleLogin.isVisible(), 'Configured Google OAuth must remain directly available from mobile Chrome');
+    } else {
+      assert(await alphaPage!.locator('.auth-setup').isVisible(), 'An unconfigured Google OAuth state must remain visible on mobile');
+    }
+    const mobileTestLogin = alphaPage!.getByTestId('e2e-sign-in');
+    const mobileTestLoginBox = await mobileTestLogin.boundingBox();
+    assert(mobileTestLoginBox && mobileTestLoginBox.height >= 44,
+      'The mobile sign-in action must remain a touch-sized target');
+    assert.equal(await alphaPage!.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'The mobile login page must not scroll horizontally');
+    await screenshot(alphaPage!, '01-login-mobile-390');
+    await alphaPage!.setViewportSize({ width: 1440, height: 1000 });
     await screenshot(alphaPage!, '01-login');
   });
 
@@ -1710,19 +1728,51 @@ try {
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
     const narrowCall = alphaPage!.getByTestId('voice-call');
     await narrowCall.waitFor({ state: 'visible' });
-    assert.equal(await narrowCall.getAttribute('data-variant'), 'desktop', 'Narrow browser windows must keep the web call card, not switch to a phone mockup');
+    assert.equal(await narrowCall.getAttribute('data-variant'), 'mobile', 'A narrow mobile Chrome viewport must use the mobile call surface');
+    assert.equal(await narrowCall.getByTestId('voice-call-mobile-screen').count(), 1,
+      'The mobile call surface must expose the phone-style screen');
     const narrowCallBox = await narrowCall.boundingBox();
-    assert(narrowCallBox && narrowCallBox.width < 350 && narrowCallBox.height < 220,
-      'The narrow browser call must remain a compact card');
-    assert(narrowCallBox && narrowCallBox.x >= 0 && narrowCallBox.y >= 0 && narrowCallBox.x + narrowCallBox.width <= 390 && narrowCallBox.y + narrowCallBox.height <= 844,
-      'The compact call card must fit fully within a 390×844 viewport');
+    assert(narrowCallBox && narrowCallBox.x === 0 && narrowCallBox.y === 0 && narrowCallBox.width === 390 && narrowCallBox.height === 844,
+      'The mobile call surface must fill the 390×844 viewport');
+    assert.equal(await narrowCall.locator('.voice-call-mobile-controls button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')).join('|')),
+      '关闭扬声器|结束通话|静音', 'Mobile controls must appear in speaker, red hang-up, mute order');
     assert.equal(await narrowCall.locator('.voice-call-card-end').count(), 1);
     assert.equal(await narrowCall.getByRole('button', { name: /接听|回答/ }).count(), 0);
-    await screenshot(alphaPage!, 'voice-call-compact-390');
-    await narrowCall.screenshot({ path: join(screenshotsDir, 'voice-call-compact-390.png') });
-    screenshotNames.push('voice-call-compact-390.png');
+    await waitFor(async () => {
+      const output = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+      return output.at(-1) === '你好，我是 dot，有什么我可以帮你？';
+    }, 10_000);
+    await narrowCall.getByRole('button', { name: '关闭扬声器' }).click();
+    assert.equal(await narrowCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
+    await narrowCall.getByRole('button', { name: '打开扬声器' }).click();
+    await narrowCall.getByRole('button', { name: '静音' }).click();
+    assert.equal(await narrowCall.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
+    await narrowCall.getByRole('button', { name: '取消静音' }).click();
+    await screenshot(alphaPage!, 'voice-call-mobile-390');
+    await narrowCall.screenshot({ path: join(screenshotsDir, 'voice-call-mobile-390.png') });
+    screenshotNames.push('voice-call-mobile-390.png');
     await narrowCall.getByRole('button', { name: '结束通话' }).click();
     await narrowCall.waitFor({ state: 'hidden' });
+
+    const mobileDotNav = alphaPage!.getByTestId('mobile-dot-nav');
+    assert(await mobileDotNav.isVisible(), 'A mobile navigation item must lead to the Dot conversation');
+    await mobileDotNav.click();
+    await alphaPage!.locator('.timeline').waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'The mobile conversation shell must not scroll horizontally');
+    const mobileCallEntry = alphaPage!.getByTestId('conversation-call-launch');
+    assert(await mobileCallEntry.isVisible(), 'The conversation header must offer Call on mobile Chrome');
+    const mobileCallEntryBox = await mobileCallEntry.boundingBox();
+    assert(mobileCallEntryBox && mobileCallEntryBox.width >= 44 && mobileCallEntryBox.height >= 44,
+      'The mobile Call entry must be a touch-sized target');
+    await screenshot(alphaPage!, 'mobile-chat-dot-timeline-390');
+    await mobileCallEntry.click();
+    const conversationMobileCall = alphaPage!.getByTestId('voice-call');
+    await conversationMobileCall.waitFor({ state: 'visible' });
+    assert.equal(await conversationMobileCall.getAttribute('data-variant'), 'mobile');
+    await screenshot(alphaPage!, 'voice-call-mobile-from-conversation-header');
+    await conversationMobileCall.getByRole('button', { name: '结束通话' }).click();
+    await conversationMobileCall.waitFor({ state: 'hidden' });
     await alphaPage!.setViewportSize(desktopViewport);
     await openProfile(alphaPage!);
     await alphaPage!.getByLabel('名字').fill(originalDotName);
@@ -1865,12 +1915,12 @@ try {
       return snapshot.tasks.some(task => task.instruction === text && task.status === 'done' && task.result === 'Voice request finished after the call ended.');
     }, instruction, { timeout: 15_000 });
     const alphaCalls = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null; durationSeconds: number | null }[];
-    assert.equal(alphaCalls.length, 6, 'Three profile viewport checks plus the conversation header, context panel, and composer must each persist a call');
+    assert.equal(alphaCalls.length, 7, 'Three profile viewport checks plus mobile and desktop conversation header, context panel, and composer must each persist a call');
     assert(alphaCalls.every(item => item.endedAt), 'Ending each call must persist its completion time');
     assert(alphaCalls.some(item => item.durationSeconds !== null && item.durationSeconds >= 1));
 
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 6, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 7, null, { timeout: 10_000 });
     await alphaPage!.waitForFunction(() => {
       const timeline = document.querySelector('.timeline');
       const composer = document.querySelector('.composer-wrap');
@@ -1878,14 +1928,14 @@ try {
     }, null, { timeout: 5_000 });
     const timelineTimes = await alphaPage!.locator('.timeline [data-testid="chat-timeline-item"]').evaluateAll(elements => elements.map(element => Date.parse(element.getAttribute('data-timestamp') || '')));
     assert(timelineTimes.every((time, index) => index === 0 || timelineTimes[index - 1]! <= time), 'Conversation entries and ended-call chips must appear in chronological order');
-    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 6, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
-    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 6, 'The ended-call state should retain the optional label visible in the reference');
+    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 7, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
+    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 7, 'The ended-call state should retain the optional label visible in the reference');
     await screenshot(alphaPage!, 'voice-call-ended-in-conversation');
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 6, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 7, null, { timeout: 10_000 });
     await alphaPage!.waitForFunction(() => {
       const timeline = document.querySelector('.timeline');
       const composer = document.querySelector('.composer-wrap');
@@ -1895,7 +1945,7 @@ try {
     await selectTenant(alphaPage!, 'Alpha workspace');
     await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 0, null, { timeout: 10_000 });
     await selectTenant(alphaPage!, 'Alpha Shared');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 6, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 7, null, { timeout: 10_000 });
 
     await selectTenant(betaPage!, 'Alpha Shared');
     const betaSharedCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));

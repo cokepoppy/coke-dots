@@ -22,13 +22,13 @@ interface RecognitionLike {
 type RecognitionConstructor = new () => RecognitionLike;
 type SpeechWindow = Window & { SpeechRecognition?: RecognitionConstructor; webkitSpeechRecognition?: RecognitionConstructor };
 
-export function VoiceCall({ dotName, appearance, displayMode = 'desktop', onTranscript, onClose }: {
+export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   dotName: string;
   appearance: DotAppearance;
-  displayMode?: 'desktop';
   onTranscript: (text: string, waitingTaskId: string | undefined, callId: string, turnId: string) => Promise<Task>;
   onClose: () => void;
 }) {
+  const [displayMode, setDisplayMode] = useState<'desktop' | 'mobile'>(() => window.matchMedia('(max-width: 520px)').matches ? 'mobile' : 'desktop');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [muted, setMuted] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(true);
@@ -74,6 +74,14 @@ export function VoiceCall({ dotName, appearance, displayMode = 'desktop', onTran
   onTranscriptRef.current = onTranscript;
   mutedRef.current = muted;
   speakerRef.current = speakerOn;
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 520px)');
+    const update = () => setDisplayMode(query.matches ? 'mobile' : 'desktop');
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
 
   function stopRealtimeTransport() {
     if (micStartupTimerRef.current !== null) {
@@ -772,7 +780,39 @@ export function VoiceCall({ dotName, appearance, displayMode = 'desktop', onTran
 
   const minutes = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0');
   const seconds = (elapsedSeconds % 60).toString().padStart(2, '0');
-  return <section className="voice-call-card" role="dialog" aria-modal="false" aria-label="语音通话" data-testid="voice-call" data-variant={displayMode} data-voice-provider={voiceProvider} data-voice-model={voiceModel} data-voice-mic-state={micCaptureState} data-voice-mic-level={micLevelPercent}>
+  const muteButton = <button type="button" className={`voice-call-card-secondary${muted ? ' is-active' : ''}`} aria-label={muted ? '取消静音' : '静音'} aria-pressed={muted} title={muted ? '取消静音' : '静音'} onClick={toggleMute}>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-4 0h8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>{muted && <path d="m4 4 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>}</svg>
+  </button>;
+  const speakerButton = <button type="button" className={`voice-call-card-secondary${!speakerOn ? ' is-active' : ''}`} aria-label={speakerOn ? '关闭扬声器' : '打开扬声器'} aria-pressed={speakerOn} title={speakerOn ? '关闭扬声器' : '打开扬声器'} onClick={toggleSpeaker}>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 9a5 5 0 0 1 0 6m2.5-8.5a8.5 8.5 0 0 1 0 11" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>{!speakerOn && <path d="m4 4 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>}</svg>
+  </button>;
+  const endButton = <button type="button" className="voice-call-card-end" aria-label="结束通话" title="结束通话" onClick={() => void endCall()}>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 13.8c4.6-4.1 10.4-4.1 15 0 .5.4.7 1.1.4 1.6l-1.3 3.2a1.4 1.4 0 0 1-1.6.8l-3.6-.9a1.4 1.4 0 0 1-1-1.4v-.9a12 12 0 0 0-4.2 0v.9a1.4 1.4 0 0 1-1 1.4l-3.6.9a1.4 1.4 0 0 1-1.6-.8l-1.3-3.2c-.3-.5-.1-1.2.4-1.6z" fill="currentColor"/></svg>
+  </button>;
+  const liveCallText = (transcript || taskStatus) && <div className="voice-call-card-live" data-testid="voice-call-live-text">
+    {transcript && <span className="voice-call-card-transcript">你：{transcript}</span>}
+    {taskStatus && <span className="voice-call-card-task" data-task-status={taskStatus}>{taskStatus}</span>}
+  </div>;
+  const accessibleCallText = <div className="voice-call-a11y" aria-live="polite" aria-atomic="true" data-testid="voice-call-transcript" data-task-status={taskStatus}>
+    <span>{status}</span>{transcript && <span>你说：{transcript}</span>}{taskStatus && <span>{taskStatus}</span>}
+  </div>;
+  return <section className={`voice-call-card${displayMode === 'mobile' ? ' voice-call-card-mobile' : ''}`} role="dialog" aria-modal={displayMode === 'mobile'} aria-label="语音通话" data-testid="voice-call" data-variant={displayMode} data-voice-provider={voiceProvider} data-voice-model={voiceModel} data-voice-mic-state={micCaptureState} data-voice-mic-level={micLevelPercent}>
+    {displayMode === 'mobile' ? <div className="voice-call-mobile-screen" data-testid="voice-call-mobile-screen">
+      <div className="voice-call-mobile-identity">
+        <DotAvatar appearance={appearance} small className="voice-call-mobile-avatar" />
+        <strong>{dotName}</strong>
+        <span className="voice-call-mobile-status"><i className={callError ? 'has-error' : ''} />{callError ? '通话遇到问题' : status}</span>
+      </div>
+      <time className="voice-call-mobile-timer" data-testid="voice-call-timer">{Number(minutes)}:{seconds}</time>
+      {liveCallText}
+      {callError && <p className="voice-call-card-error" role="alert">{callError}</p>}
+      <div className="voice-call-mobile-controls" aria-label="通话控制">
+        <div className="voice-call-mobile-control">{speakerButton}<small>{speakerOn ? '扬声器' : '已关闭'}</small></div>
+        <div className="voice-call-mobile-control is-end">{endButton}<small>结束</small></div>
+        <div className="voice-call-mobile-control">{muteButton}<small>{muted ? '取消静音' : '静音'}</small></div>
+      </div>
+      {accessibleCallText}
+    </div> : <>
     <div className="voice-call-card-heading">
       <DotAvatar appearance={appearance} small className="voice-call-card-avatar" />
       <div className="voice-call-card-identity"><strong>{dotName}</strong><span className="voice-call-card-status"><i className={callError ? 'has-error' : ''} />{callError ? '通话遇到问题' : status}</span></div>
@@ -781,25 +821,12 @@ export function VoiceCall({ dotName, appearance, displayMode = 'desktop', onTran
     {voiceProvider === 'volcengine' && <div className="voice-call-card-mic" data-testid="voice-call-mic-meter" data-mic-state={micCaptureState} aria-label={`麦克风输入音量 ${micLevelPercent}%`}>
       <span>麦克风</span><div role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={micLevelPercent}><i style={{ width: `${micLevelPercent}%` }} /></div><small>{micCaptureState === 'sent' ? '音频帧已发送' : micCaptureState === 'muted' ? '已静音' : micCaptureState === 'no-frames' ? '未收到音频帧' : micCaptureState === 'context-suspended' ? '浏览器音频未启动' : '等待音频帧'}</small>
     </div>}
-    {(transcript || taskStatus) && <div className="voice-call-card-live" data-testid="voice-call-live-text">
-      {transcript && <span className="voice-call-card-transcript">你：{transcript}</span>}
-      {taskStatus && <span className="voice-call-card-task" data-task-status={taskStatus}>{taskStatus}</span>}
-    </div>}
+    {liveCallText}
     {callError && <p className="voice-call-card-error" role="alert">{callError}</p>}
     <div className="voice-call-card-controls">
-      <button type="button" className={`voice-call-card-secondary${muted ? ' is-active' : ''}`} aria-label={muted ? '取消静音' : '静音'} aria-pressed={muted} title={muted ? '取消静音' : '静音'} onClick={toggleMute}>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-4 0h8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>{muted && <path d="m4 4 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>}</svg>
-      </button>
-      <button type="button" className={`voice-call-card-secondary${!speakerOn ? ' is-active' : ''}`} aria-label={speakerOn ? '关闭扬声器' : '打开扬声器'} aria-pressed={speakerOn} title={speakerOn ? '关闭扬声器' : '打开扬声器'} onClick={toggleSpeaker}>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 9a5 5 0 0 1 0 6m2.5-8.5a8.5 8.5 0 0 1 0 11" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>{!speakerOn && <path d="m4 4 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>}</svg>
-      </button>
-      <button type="button" className="voice-call-card-end" aria-label="结束通话" title="结束通话" onClick={() => void endCall()}>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 13.8c4.6-4.1 10.4-4.1 15 0 .5.4.7 1.1.4 1.6l-1.3 3.2a1.4 1.4 0 0 1-1.6.8l-3.6-.9a1.4 1.4 0 0 1-1-1.4v-.9a12 12 0 0 0-4.2 0v.9a1.4 1.4 0 0 1-1 1.4l-3.6.9a1.4 1.4 0 0 1-1.6-.8l-1.3-3.2c-.3-.5-.1-1.2.4-1.6z" fill="currentColor"/></svg>
-        <span>挂断</span>
-      </button>
+      {muteButton}{speakerButton}{endButton}
     </div>
-    <div className="voice-call-a11y" aria-live="polite" aria-atomic="true" data-testid="voice-call-transcript" data-task-status={taskStatus}>
-      <span>{status}</span>{transcript && <span>你说：{transcript}</span>}{taskStatus && <span>{taskStatus}</span>}
-    </div>
+    {accessibleCallText}
+    </>}
   </section>;
 }

@@ -32,6 +32,7 @@ import './shell-replica.css';
 import './onboarding-replica.css';
 import './computer-choice.css';
 import './call-timeline.css';
+import './mobile-replica.css';
 
 const initial: Snapshot = { profile: { name: 'Dot', shape: 'circle', color: '#c8cbd5', eyes: 'dot', glasses: 'none', accessory: 'none', character: 'ring', pet: 'moss', avatarSetupCompletedAt: null, onboardingCompletedAt: null, onboardingCompletedName: null }, preferences: { desktopNotifications: false }, computerAccess: { dotComputer: true, localComputer: true, configured: false }, tasks: [], watches: [], entries: [], configured: false, availableEngines: [], remoteEngines: [], modelSettings: { baseUrl: '', model: '', hasKey: false, adminTenantId: null, apiKeyStatus: 'missing' } };
 interface AuthContext { user: { id: string; email: string; name: string }; tenant: { id: string; name: string; role: string; kind: string }; tenants: { id: string; name: string; role: string; kind: string }[] }
@@ -397,6 +398,7 @@ function App() {
   return <div className={`shell ${theme === 'dark' ? 'dots-dark' : ''} ${view === 'home' ? 'home-mode' : ''} ${view === 'chat' ? 'dot-chat-mode' : ''} ${contextMode ? 'dot-context-mode' : ''} ${contextMode && voiceCallOpen ? 'voice-call-active-mode' : ''} ${onboardingMode ? 'dot-onboarding-mode' : ''} ${computerChoiceMode ? 'dot-computer-choice-mode' : ''} ${view === 'scheduled' ? 'scheduled-mode' : ''} ${view === 'chat' && selectedPageId ? 'page-open-mode' : ''}`} data-testid="app-shell" data-theme={theme} data-tenant-id={authContext.tenant.id} data-state-loaded={stateLoaded}>
     <aside className="icon-rail" aria-label="主导航">
       <button className={`rail-button ${view === 'home' ? 'selected' : ''}`} aria-label="新聊天" title="新聊天" onClick={() => { setSelectedPageId(null); setSelected(null); setView('home'); }}>⌂</button>
+      <button className={`rail-button mobile-dot-nav ${view === 'chat' ? 'selected' : ''}`} data-testid="mobile-dot-nav" aria-label="你的 dot" title="你的 dot" onClick={() => { setSelectedPageId(null); setView('chat'); setSelected(null); }}>◉</button>
       <button className={`rail-button ${view === 'pages' ? 'selected' : ''}`} aria-label="Scratchpad" title="Scratchpad" onClick={() => { setSelectedPageId(null); setView('pages'); }}>▱</button>
       <button className={`rail-button ${view === 'activity' ? 'selected' : ''}`} aria-label="Activity" title="Activity" onClick={() => { setSelectedPageId(null); setView('activity'); }}>◷</button>
       <button className={`rail-button ${view === 'scheduled' ? 'selected' : ''}`} aria-label="Scheduled" title="Scheduled" onClick={() => { setSelectedPageId(null); setView('scheduled'); }}>◴</button>

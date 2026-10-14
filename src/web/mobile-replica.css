@@ -1,0 +1,437 @@
+/* Mobile Chrome layout. This extends the desktop web app; it does not claim
+   parity with an official mobile-web client, which OpenAI does not offer. */
+.mobile-dot-nav { display: none; }
+
+@media (max-width: 520px) {
+  html,
+  body,
+  #root {
+    width: 100%;
+    min-width: 0;
+    min-height: 100%;
+    overflow-x: clip;
+  }
+
+  .auth-loading,
+  .auth-page {
+    min-height: 100vh;
+    min-height: 100svh;
+    padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+  }
+
+  .auth-card {
+    width: 100%;
+    max-width: 430px;
+    padding: 28px 22px;
+    border-radius: 18px;
+  }
+
+  .auth-card h1 {
+    margin-top: 34px;
+    font-size: 26px;
+  }
+
+  .auth-card p {
+    font-size: 14px;
+  }
+
+  .google-login {
+    min-height: 52px;
+  }
+
+  .shell {
+    min-height: 100vh;
+    min-height: 100svh;
+    padding-bottom: calc(62px + env(safe-area-inset-bottom));
+    overflow-x: clip;
+  }
+
+  .shell.dot-chat-mode {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    padding-bottom: calc(62px + env(safe-area-inset-bottom));
+    overflow: hidden;
+  }
+
+  .shell > .icon-rail {
+    position: fixed;
+    z-index: 90;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    height: calc(58px + env(safe-area-inset-bottom));
+    flex-direction: row;
+    justify-content: space-around;
+    gap: 2px;
+    padding: 4px 8px calc(4px + env(safe-area-inset-bottom));
+    border-top: 1px solid #e9e8ec;
+    border-right: 0;
+    background: #fff;
+  }
+
+  .shell > .icon-rail .rail-button,
+  .shell > .icon-rail .rail-user {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    font-size: 19px;
+  }
+
+  .shell > .icon-rail .mobile-dot-nav {
+    display: grid;
+  }
+
+  .shell > .icon-rail .rail-spacer,
+  .shell > .sidebar {
+    display: none;
+  }
+
+  .shell > .main {
+    width: 100%;
+    min-width: 0;
+    min-height: calc(100svh - 62px - env(safe-area-inset-bottom));
+  }
+
+  .shell.dot-chat-mode > .main {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .dot-chat-mode .topbar,
+  .dot-context-mode .topbar {
+    position: relative;
+    inset: auto;
+    z-index: 5;
+    width: 100%;
+    height: 52px;
+    flex: none;
+    justify-content: space-between;
+    padding: 0 12px 0 16px;
+    border-bottom: 1px solid #efedf0;
+    background: #fff;
+  }
+
+  .dot-chat-mode .topbar-title {
+    display: block;
+    max-width: calc(100% - 60px);
+    color: #302e35;
+    font-size: 15px;
+  }
+
+  .dot-chat-mode .surface-switcher,
+  .dot-chat-mode .top-actions {
+    display: none;
+  }
+
+  .dot-chat-mode .dot-conversation-actions {
+    display: flex;
+    flex: none;
+    margin-left: auto;
+  }
+
+  .dot-chat-mode .conversation-call-launch {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    color: #5e4c76;
+  }
+
+  .dot-chat-mode .conversation-call-launch svg {
+    width: 19px;
+    height: 19px;
+  }
+
+  .dot-chat-mode .chat-layout {
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .dot-chat-mode .chat-panel {
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .dot-chat-mode .dot-context-panel {
+    display: none;
+  }
+
+  .dot-chat-mode .timeline {
+    width: 100%;
+    min-height: 0;
+    padding: 20px 16px 14px;
+  }
+
+  .dot-chat-mode .message {
+    gap: 9px;
+    margin-bottom: 18px;
+  }
+
+  .dot-chat-mode .message p {
+    font-size: 14px;
+    overflow-wrap: anywhere;
+  }
+
+  .dot-chat-mode .message-name {
+    font-size: 12px;
+  }
+
+  .dot-chat-mode .composer-wrap,
+  .dot-onboarding-mode .composer-wrap {
+    width: 100%;
+    padding: 8px 10px 10px;
+  }
+
+  .dot-chat-mode:not(.home-mode) .composer {
+    min-height: 50px;
+    flex-wrap: nowrap;
+    gap: 5px;
+    padding: 6px 8px;
+    border-radius: 24px;
+  }
+
+  .dot-chat-mode:not(.home-mode) .composer textarea {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    height: 34px;
+    min-height: 34px;
+    padding: 6px 2px;
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .dot-chat-mode:not(.home-mode) .composer textarea:focus {
+    height: 66px;
+    min-height: 66px;
+  }
+
+  .dot-chat-mode .composer-bottom {
+    flex: none;
+    gap: 4px;
+  }
+
+  .dot-chat-mode .composer-bottom > label {
+    display: none;
+  }
+
+  .dot-chat-mode .composer-bottom .voice-call-launch,
+  .dot-chat-mode .composer-bottom .send {
+    width: 38px;
+    height: 38px;
+    flex: none;
+    margin: 0;
+  }
+
+  .dot-chat-mode .composer-bottom .voice-call-launch {
+    background: #f1eef5;
+    color: #715991;
+  }
+
+  .dot-chat-mode .hint {
+    display: none;
+  }
+
+  .voice-call-card-mobile {
+    position: fixed;
+    z-index: 150;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    overflow: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: #fff;
+    color: #302e35;
+    box-shadow: none;
+  }
+
+  .voice-call-mobile-screen {
+    position: relative;
+    width: 100%;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: calc(11vh + env(safe-area-inset-top)) 24px calc(28px + env(safe-area-inset-bottom));
+    background: linear-gradient(180deg, #fbfafc 0%, #fff 45%, #fff 100%);
+  }
+
+  .voice-call-mobile-identity {
+    display: grid;
+    justify-items: center;
+    gap: 9px;
+    color: #302e35;
+    font-size: 17px;
+  }
+
+  .avatar.small.voice-call-mobile-avatar {
+    width: 68px;
+    height: 68px;
+    border-radius: 50%;
+    filter: drop-shadow(0 5px 16px #8f78ad35);
+  }
+
+  .voice-call-mobile-status {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: #85818a;
+    font-size: 13px;
+  }
+
+  .voice-call-mobile-status i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #6ca77c;
+  }
+
+  .voice-call-mobile-status i.has-error {
+    background: #d7645e;
+  }
+
+  .voice-call-mobile-timer {
+    margin-top: auto;
+    margin-bottom: 20px;
+    color: #77737e;
+    font-size: 16px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .04em;
+  }
+
+  .voice-call-mobile-screen > .voice-call-card-live {
+    width: min(100%, 360px);
+    max-height: 104px;
+    gap: 8px;
+    margin: 0;
+    padding: 12px 14px;
+    border: 1px solid #eeeaf2;
+    border-radius: 14px;
+    background: #f8f7fa;
+    color: #56515d;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .voice-call-mobile-screen > .voice-call-card-live .voice-call-card-transcript,
+  .voice-call-mobile-screen > .voice-call-card-live .voice-call-card-task {
+    -webkit-line-clamp: 2;
+  }
+
+  .voice-call-mobile-screen > .voice-call-card-error {
+    width: min(100%, 360px);
+    font-size: 13px;
+  }
+
+  .voice-call-mobile-controls {
+    width: min(100%, 400px);
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    margin-top: auto;
+    padding-top: 44px;
+  }
+
+  .voice-call-mobile-control {
+    width: 82px;
+    display: grid;
+    justify-items: center;
+    gap: 11px;
+    color: #77737e;
+    font-size: 12px;
+  }
+
+  .voice-call-mobile-control .voice-call-card-secondary,
+  .voice-call-mobile-control .voice-call-card-end {
+    width: 64px;
+    height: 64px;
+    min-width: 64px;
+    border-radius: 50%;
+  }
+
+  .voice-call-mobile-control .voice-call-card-secondary {
+    background: #f0eef3;
+    color: #51495d;
+  }
+
+  .voice-call-mobile-control .voice-call-card-secondary svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  .voice-call-mobile-control .voice-call-card-end {
+    margin: 0;
+    padding: 0;
+    background: #e5484d;
+  }
+
+  .voice-call-mobile-control .voice-call-card-end svg {
+    width: 26px;
+    height: 26px;
+  }
+
+  .voice-call-mobile-control small {
+    color: inherit;
+    font-size: 12px;
+  }
+
+  .dots-dark .shell > .icon-rail,
+  .dots-dark .dot-chat-mode .topbar {
+    border-color: #353239;
+    background: #1c1b1f;
+  }
+
+  .dots-dark .dot-chat-mode .topbar-title,
+  .dots-dark .voice-call-mobile-identity {
+    color: #efedf2;
+  }
+
+  .dots-dark .voice-call-card-mobile {
+    background: #1c1b1f;
+    color: #efedf2;
+  }
+
+  .dots-dark .voice-call-mobile-screen {
+    background: linear-gradient(180deg, #25222a 0%, #1c1b1f 48%, #1c1b1f 100%);
+  }
+
+  .dots-dark .voice-call-mobile-status,
+  .dots-dark .voice-call-mobile-timer,
+  .dots-dark .voice-call-mobile-control {
+    color: #b5b0bb;
+  }
+
+  .dots-dark .voice-call-mobile-screen > .voice-call-card-live {
+    border-color: #39343f;
+    background: #28252d;
+    color: #d6d1dc;
+  }
+}
+
+@media (max-width: 360px) {
+  .voice-call-mobile-controls {
+    padding-top: 30px;
+  }
+
+  .voice-call-mobile-control {
+    width: 72px;
+  }
+
+  .voice-call-mobile-control .voice-call-card-secondary,
+  .voice-call-mobile-control .voice-call-card-end {
+    width: 58px;
+    height: 58px;
+    min-width: 58px;
+  }
+}
