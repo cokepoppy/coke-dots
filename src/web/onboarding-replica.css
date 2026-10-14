@@ -6,6 +6,7 @@
 .dot-chat-mode .top-actions{gap:6px}
 .voice-call-active-mode.dot-chat-mode .top-actions{display:none}
 .dot-chat-mode .dot-conversation-actions{display:flex;align-items:center;gap:0}
+.dot-onboarding-mode .dot-conversation-actions{display:none}
 .dot-chat-mode .conversation-call-launch{width:28px;height:28px;display:grid;place-items:center;padding:0;border:0;border-radius:8px;background:transparent;color:#77747d;cursor:pointer}
 .dot-chat-mode .conversation-call-launch:hover{background:#efedf1;color:#3f3b44}
 .dot-chat-mode .conversation-call-launch:focus-visible{outline:2px solid #8d75b7;outline-offset:2px}

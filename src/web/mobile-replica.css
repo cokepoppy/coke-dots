@@ -1,6 +1,8 @@
 /* Mobile Chrome layout. This extends the desktop web app; it does not claim
    parity with an official mobile-web client, which OpenAI does not offer. */
 .mobile-dot-nav { display: none; }
+.mobile-chat-menu-toggle,
+.mobile-chat-heading { display: none; }
 
 @media (max-width: 520px) {
   html,
@@ -16,6 +18,7 @@
   .auth-page {
     min-height: 100vh;
     min-height: 100svh;
+    min-height: 100dvh;
     padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
   }
 
@@ -50,8 +53,12 @@
     height: 100vh;
     height: 100dvh;
     min-height: 0;
-    padding-bottom: calc(62px + env(safe-area-inset-bottom));
+    padding-bottom: 0;
     overflow: hidden;
+  }
+
+  .shell.dot-chat-mode > .icon-rail {
+    display: none;
   }
 
   .shell > .icon-rail {
@@ -114,11 +121,55 @@
     background: #fff;
   }
 
+  .dot-chat-mode .topbar {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    height: calc(56px + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) 10px 0;
+  }
+
   .dot-chat-mode .topbar-title {
-    display: block;
-    max-width: calc(100% - 60px);
+    display: none;
+  }
+
+  .dot-chat-mode .mobile-chat-menu-toggle {
+    width: 44px;
+    height: 44px;
+    display: grid;
+    grid-column: 1;
+    grid-row: 1;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: #514e57;
+    font-size: 21px;
+  }
+
+  .dot-chat-mode .mobile-chat-menu-toggle:focus-visible {
+    outline: 2px solid #8d75b7;
+    outline-offset: 1px;
+  }
+
+  .dot-chat-mode .mobile-chat-heading {
+    min-width: 0;
+    display: flex;
+    grid-column: 2;
+    grid-row: 1;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
     color: #302e35;
-    font-size: 15px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .dot-chat-mode .mobile-chat-heading > span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .dot-chat-mode .surface-switcher,
@@ -128,6 +179,8 @@
 
   .dot-chat-mode .dot-conversation-actions {
     display: flex;
+    grid-column: 3;
+    grid-row: 1;
     flex: none;
     margin-left: auto;
   }
@@ -186,7 +239,7 @@
   .dot-chat-mode .composer-wrap,
   .dot-onboarding-mode .composer-wrap {
     width: 100%;
-    padding: 8px 10px 10px;
+    padding: 8px 10px calc(10px + env(safe-area-inset-bottom));
   }
 
   .dot-chat-mode:not(.home-mode) .composer {
@@ -393,6 +446,8 @@
   }
 
   .dots-dark .dot-chat-mode .topbar-title,
+  .dots-dark .dot-chat-mode .mobile-chat-heading,
+  .dots-dark .dot-chat-mode .mobile-chat-menu-toggle,
   .dots-dark .voice-call-mobile-identity {
     color: #efedf2;
   }
@@ -416,6 +471,213 @@
     border-color: #39343f;
     background: #28252d;
     color: #d6d1dc;
+  }
+
+  .mobile-navigation {
+    position: fixed;
+    z-index: 140;
+    inset: 0;
+  }
+
+  .mobile-navigation-backdrop {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    border: 0;
+    background: #19171d78;
+  }
+
+  .mobile-navigation-panel {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: min(320px, calc(100vw - 48px));
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: calc(10px + env(safe-area-inset-top)) 14px calc(12px + env(safe-area-inset-bottom));
+    overflow: hidden;
+    border-right: 1px solid #ece9ef;
+    background: #fff;
+    box-shadow: 8px 0 28px #1a14201f;
+    color: #302e35;
+  }
+
+  .mobile-navigation-panel > header {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #efedf1;
+    font-size: 15px;
+  }
+
+  .mobile-navigation-panel > header button {
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: inherit;
+    font-size: 25px;
+  }
+
+  .mobile-navigation-panel nav {
+    display: grid;
+    gap: 3px;
+  }
+
+  .mobile-navigation-panel nav button,
+  .mobile-navigation-panel footer > button {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: #5e5a65;
+    text-align: left;
+    font-size: 14px;
+  }
+
+  .mobile-navigation-panel nav button.selected,
+  .mobile-navigation-panel nav button:hover,
+  .mobile-navigation-panel footer > button:hover {
+    background: #f1eff3;
+    color: #302e35;
+  }
+
+  .mobile-navigation-panel nav button > span {
+    flex: 1;
+  }
+
+  .mobile-navigation-recent {
+    min-height: 0;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 3px;
+    overflow-y: auto;
+    padding-top: 6px;
+  }
+
+  .mobile-navigation-recent > strong {
+    padding: 8px 12px 5px;
+    color: #8a8690;
+    font-size: 12px;
+  }
+
+  .mobile-navigation-recent > button {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    overflow: hidden;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: #59555f;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  .mobile-navigation-recent > button.selected,
+  .mobile-navigation-recent > button:hover {
+    background: #f1eff3;
+  }
+
+  .mobile-navigation-recent > span {
+    padding: 4px 12px;
+    color: #aaa6b0;
+    font-size: 12px;
+  }
+
+  .mobile-navigation-panel footer {
+    display: grid;
+    gap: 4px;
+    padding-top: 10px;
+    border-top: 1px solid #efedf1;
+  }
+
+  .mobile-navigation-account {
+    display: grid;
+    gap: 3px;
+    padding: 2px 12px 8px;
+  }
+
+  .mobile-navigation-account strong {
+    overflow: hidden;
+    color: #45414a;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+
+  .mobile-navigation-account small {
+    overflow: hidden;
+    color: #92909a;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+  }
+
+  .mobile-navigation-panel .workspace-switcher {
+    display: block;
+    padding: 0 12px 5px;
+  }
+
+  .mobile-navigation-panel .workspace-switcher label {
+    display: grid;
+    gap: 5px;
+    font-size: 11px;
+  }
+
+  .mobile-navigation-panel .workspace-switcher select {
+    width: 100%;
+    max-width: none;
+    height: 40px;
+    font-size: 13px;
+  }
+
+  .mobile-navigation-panel .workspace-switcher .new-workspace {
+    width: 100%;
+    height: 40px;
+    margin-top: 6px;
+    font-size: 12px;
+  }
+
+  .dots-dark .mobile-navigation-panel {
+    border-color: #353239;
+    background: #1c1b1f;
+    color: #efedf2;
+  }
+
+  .dots-dark .mobile-navigation-panel > header,
+  .dots-dark .mobile-navigation-panel footer {
+    border-color: #353239;
+  }
+
+  .dots-dark .mobile-navigation-panel nav button,
+  .dots-dark .mobile-navigation-panel footer > button,
+  .dots-dark .mobile-navigation-recent > button {
+    color: #c7c2cc;
+  }
+
+  .dots-dark .mobile-navigation-panel nav button.selected,
+  .dots-dark .mobile-navigation-panel nav button:hover,
+  .dots-dark .mobile-navigation-panel footer > button:hover,
+  .dots-dark .mobile-navigation-recent > button.selected,
+  .dots-dark .mobile-navigation-recent > button:hover {
+    background: #302d34;
+    color: #f0edf4;
+  }
+
+  .dots-dark .mobile-navigation-account strong {
+    color: #e7e2eb;
   }
 }
 

@@ -91,6 +91,7 @@ function App() {
   const [computerAccessOpen, setComputerAccessOpen] = useState(false);
   const [computerConnectedToast, setComputerConnectedToast] = useState(false);
   const [voiceCallOpen, setVoiceCallOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [slackModalOpen, setSlackModalOpen] = useState(false);
   const [view, setView] = useState<'home' | 'chat' | 'activity' | 'scheduled' | 'computer' | 'profile' | 'pages'>('home');
   const [selected, setSelected] = useState<string | null>(null);
@@ -116,6 +117,15 @@ function App() {
   useEffect(() => {
     if (view === 'home' || view === 'chat') lastChatLocation.current = { view, selected, selectedPageId };
   }, [view, selected, selectedPageId]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     void appFetch('/api/auth/me').then(async response => response.ok ? await response.json() as AuthContext : null)
@@ -417,7 +427,14 @@ function App() {
       <button className="profile-link" onClick={() => { setSelectedPageId(null); setView('profile'); }}><DotAvatar appearance={state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
-      <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div>{contextMode && !voiceCallOpen && <div className="dot-conversation-actions"><button type="button" data-testid="conversation-call-launch" className="conversation-call-launch" aria-label="Call" title="Call" onMouseDown={event => event.preventDefault()} onClick={startDotCall}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 3.8 10 7.2 8.2 9.1a13 13 0 0 0 6.7 6.7l1.9-1.8 3.4 2.9-.8 3.2a1.8 1.8 0 0 1-2 1.4C9 20.2 3.8 15 2.5 6.6a1.8 1.8 0 0 1 1.4-2z" /></svg></button></div>}</header>
+      <header className="topbar">
+        {view === 'chat' && <button type="button" className="mobile-chat-menu-toggle" data-testid="mobile-chat-menu-toggle" aria-label="打开导航菜单" aria-expanded={mobileNavOpen} aria-controls="mobile-navigation-panel" onClick={() => setMobileNavOpen(true)}><span aria-hidden="true">☰</span></button>}
+        <span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span>
+        {view === 'chat' && <div className="mobile-chat-heading" data-testid="mobile-chat-heading"><DotAvatar appearance={state.profile} small /><span>{selectedTask?.title || state.profile.name}</span></div>}
+        <div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div>
+        <div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div>
+        {view === 'chat' && !voiceCallOpen && <div className="dot-conversation-actions"><button type="button" data-testid="conversation-call-launch" className="conversation-call-launch" aria-label="Call" title="Call" onMouseDown={event => event.preventDefault()} onClick={startDotCall}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 3.8 10 7.2 8.2 9.1a13 13 0 0 0 6.7 6.7l1.9-1.8 3.4 2.9-.8 3.2a1.8 1.8 0 0 1-2 1.4C9 20.2 3.8 15 2.5 6.6a1.8 1.8 0 0 1 1.4-2z" /></svg></button></div>}
+      </header>
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {computerConnectedToast && <div className="computer-connected-toast" data-testid="computer-connected-toast" role="status"><span className="computer-connected-icon" aria-hidden="true">✓</span><span>The computer is connected to your dot</span><button type="button" aria-label="Dismiss notification" onClick={() => setComputerConnectedToast(false)}>×</button></div>}
@@ -445,6 +462,27 @@ function App() {
       {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} onStartCall={startDotCall} />}
       {view === 'computer' && <ComputerView dotName={state.profile.name} localComputerEnabled={state.computerAccess.localComputer} onManageAccess={() => setComputerAccessOpen(true)} onError={setError} />}
     </main>
+    {mobileNavOpen && <div className="mobile-navigation" data-testid="mobile-navigation">
+      <button type="button" className="mobile-navigation-backdrop" aria-label="关闭导航菜单" onClick={() => setMobileNavOpen(false)} />
+      <aside className="mobile-navigation-panel" id="mobile-navigation-panel" role="dialog" aria-modal="true" aria-label="Coke Dots 导航">
+        <header><strong>Coke Dots</strong><button type="button" aria-label="关闭导航菜单" onClick={() => setMobileNavOpen(false)}>×</button></header>
+        <nav aria-label="页面导航">
+          <button type="button" onClick={() => { setSelectedPageId(null); setSelected(null); setView('home'); setMobileNavOpen(false); }}>＋ <span>新聊天</span></button>
+          <button type="button" className={view === 'chat' && !selected ? 'selected' : ''} onClick={() => { setSelectedPageId(null); setSelected(null); setView('chat'); setMobileNavOpen(false); }}>◉ <span>你的 dot</span></button>
+          <button type="button" onClick={() => { setSelectedPageId(null); setView('pages'); setMobileNavOpen(false); }}>▱ <span>Scratchpad</span></button>
+          <button type="button" onClick={() => { setSelectedPageId(null); setView('activity'); setMobileNavOpen(false); }}>◷ <span>Activity</span></button>
+          <button type="button" onClick={() => { setSelectedPageId(null); setView('scheduled'); setMobileNavOpen(false); }}>◴ <span>Scheduled</span></button>
+          <button type="button" onClick={() => { setSelectedPageId(null); setView('computer'); setMobileNavOpen(false); }}>▣ <span>电脑</span></button>
+        </nav>
+        <div className="mobile-navigation-recent"><strong>最近任务</strong>{state.tasks.slice(0, 12).map(task => <button type="button" key={task.id} className={selected === task.id ? 'selected' : ''} onClick={() => { setSelectedPageId(null); setSelected(task.id); setView('chat'); setMobileNavOpen(false); }}><i className={`status-dot ${task.status}`} />{task.title}</button>)}{state.tasks.length === 0 && <span>还没有任务</span>}</div>
+        <footer>
+          <div className="mobile-navigation-account"><strong>{authContext.user.name || authContext.user.email}</strong><small>{authContext.user.email}</small></div>
+          <WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} />
+          <button type="button" onClick={() => { setSelectedPageId(null); setView('profile'); setMobileNavOpen(false); }}>账户与 Dot 设置</button>
+          <button type="button" onClick={() => void logout()}>退出账号</button>
+        </footer>
+      </aside>
+    </div>}
     {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, false, true)} />}
     {computerAccessOpen && <DotComputerChoice localComputer={state.computerAccess.localComputer} mode="settings" onSave={saveComputerAccess} onCancel={() => setComputerAccessOpen(false)} />}
     {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, !state.profile.onboardingCompletedAt)} />}

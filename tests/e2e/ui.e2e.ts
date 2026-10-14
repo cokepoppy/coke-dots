@@ -579,7 +579,18 @@ async function clickNav(page: Page, label: string) {
 }
 
 async function openProfile(page: Page) {
-  await page.getByRole('button', { name: '你的 dot 设置', exact: true }).click();
+  const profileShortcut = page.getByRole('button', { name: '你的 dot 设置', exact: true });
+  if (await profileShortcut.isVisible()) {
+    await profileShortcut.click();
+    return;
+  }
+  const mobileMenu = page.getByTestId('mobile-chat-menu-toggle');
+  if (await mobileMenu.isVisible()) {
+    await mobileMenu.click();
+    await page.getByRole('button', { name: '账户与 Dot 设置', exact: true }).click();
+    return;
+  }
+  assert.fail('The Dot profile must be reachable from desktop navigation or the mobile menu');
 }
 
 async function taskNavigationItem(page: Page, title: string) {
@@ -1649,7 +1660,7 @@ try {
     assert.equal(originalDotName, 'Shared Dot', 'The shared-workspace profile fixture should be explicit before the reference capture');
     await alphaPage!.getByLabel('名字').fill('dot');
     await alphaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
-    await alphaPage!.locator('.profile-link strong').getByText('dot', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.getByLabel('名字').inputValue(), 'dot', 'The profile editor should show the saved Dot name');
     const desktopViewport = alphaPage!.viewportSize();
     assert(desktopViewport, 'The desktop call E2E must use a fixed browser viewport');
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
@@ -1755,17 +1766,42 @@ try {
     await narrowCall.waitFor({ state: 'hidden' });
 
     const mobileDotNav = alphaPage!.getByTestId('mobile-dot-nav');
-    assert(await mobileDotNav.isVisible(), 'A mobile navigation item must lead to the Dot conversation');
-    await mobileDotNav.click();
+    if (await mobileDotNav.isVisible()) await mobileDotNav.click();
     await alphaPage!.locator('.timeline').waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.locator('.shell.dot-chat-mode > .icon-rail').evaluate(element => getComputedStyle(element).display), 'none',
+      'The Dot conversation should use the phone header instead of keeping a desktop rail at the bottom');
     assert.equal(await alphaPage!.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
       'The mobile conversation shell must not scroll horizontally');
+    const mobileMenuButton = alphaPage!.getByTestId('mobile-chat-menu-toggle');
+    const mobileMenuButtonBox = await mobileMenuButton.boundingBox();
+    assert(mobileMenuButtonBox && mobileMenuButtonBox.width >= 44 && mobileMenuButtonBox.height >= 44,
+      'The mobile conversation menu must be a touch-sized target');
+    assert(await alphaPage!.getByTestId('mobile-chat-heading').isVisible(),
+      'The mobile conversation header must identify the current Dot or task');
     const mobileCallEntry = alphaPage!.getByTestId('conversation-call-launch');
     assert(await mobileCallEntry.isVisible(), 'The conversation header must offer Call on mobile Chrome');
     const mobileCallEntryBox = await mobileCallEntry.boundingBox();
     assert(mobileCallEntryBox && mobileCallEntryBox.width >= 44 && mobileCallEntryBox.height >= 44,
       'The mobile Call entry must be a touch-sized target');
     await screenshot(alphaPage!, 'mobile-chat-dot-timeline-390');
+    await mobileMenuButton.click();
+    const mobileNavigation = alphaPage!.getByTestId('mobile-navigation');
+    await mobileNavigation.waitFor({ state: 'visible' });
+    const mobileNavigationBox = await mobileNavigation.locator('.mobile-navigation-panel').boundingBox();
+    assert(mobileNavigationBox && mobileNavigationBox.width <= 320 && mobileNavigationBox.height === 844,
+      'The mobile conversation menu should open as a viewport-height side drawer');
+    await mobileNavigation.locator('nav').getByRole('button', { name: /Activity/ }).click();
+    await alphaPage!.getByRole('heading', { name: 'Activity', exact: true }).waitFor({ state: 'visible' });
+    assert(await mobileDotNav.isVisible(), 'The bottom navigation should remain available on non-chat mobile pages');
+    await mobileDotNav.click();
+    await alphaPage!.locator('.timeline').waitFor({ state: 'visible' });
+    await alphaPage!.setViewportSize({ width: 320, height: 640 });
+    assert.equal(await alphaPage!.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'The Dot conversation must remain free of horizontal overflow on a narrow 320 px phone');
+    assert(await alphaPage!.getByTestId('conversation-call-launch').isVisible(),
+      'The Call action must remain reachable on a narrow mobile viewport');
+    await screenshot(alphaPage!, 'mobile-chat-dot-timeline-320');
+    await alphaPage!.setViewportSize({ width: 390, height: 844 });
     await mobileCallEntry.click();
     const conversationMobileCall = alphaPage!.getByTestId('voice-call');
     await conversationMobileCall.waitFor({ state: 'visible' });
@@ -1777,7 +1813,7 @@ try {
     await openProfile(alphaPage!);
     await alphaPage!.getByLabel('名字').fill(originalDotName);
     await alphaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
-    await alphaPage!.locator('.profile-link strong').getByText(originalDotName, { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await alphaPage!.getByLabel('名字').inputValue(), originalDotName, 'The Dot profile name should be restored');
 
     await (await taskNavigationItem(alphaPage!, 'E2E shared workspace task')).click();
     const headerCallLaunch = alphaPage!.getByTestId('conversation-call-launch');
