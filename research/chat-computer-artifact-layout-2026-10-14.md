@@ -39,3 +39,12 @@ The Chrome click-through must create an HTML file with a relative JavaScript ass
 On 2026-10-14, signed-in Chrome at `https://codex.cokeagent.com/dots-demo/` showed the completed Tetris response and a filesystem path, but no generated-file card or inline preview. A read-only request to `/dots-demo/api/tasks/{taskId}/artifacts` returned `{"error":"Not found"}`, so the artifact API from this feature branch is not present in the public runtime. The public root `/api/health` identifies `coke-openrouter`; Dots API requests must stay under `/dots-demo/api`.
 
 The installed demo source does not match this feature branch and does not contain `src/web/TaskArtifacts.tsx`. A whole-app sync from this branch would replace later live functionality. The branch now builds with the `/dots-demo/` asset base and routes browser API calls and preview URLs through that prefix, but public feature E2E remains pending integration into the live runtime baseline and deployment of the matching cloud-worker artifact endpoints.
+
+## Implementation and verification
+
+- The selected completed task lists its tenant-scoped files inline. A previewable HTML output opens automatically in a sandboxed preview; the card also supports Download and “在云电脑中打开”. The cloud action opens the same file in the tenant's remote browser.
+- `npm test`: 72/72 passed.
+- `npm run test:e2e`: build passed; 38 Chrome UI steps and 12 cloud-computer flow checks passed against the disposable local app and test adapters. These checks cover the chat preview, linked assets, download, remote-browser action, and cross-tenant access denial; they are not public-site evidence.
+- `npm run test:e2e:k3d`: self-contained image build/import and real K3D run passed on `tp1121-sandbox-dev` with image `sha-c87accfc61ca4e473172579b06a2349ea76d06cc`. A temporary Debian 13 desktop and fake Agent adapter exercised worker-token authorization, task-scoped HTML listing/read, chat preview, download, opening the file in remote Chrome, returning control, browser navigation/click/type, and workspace persistence after Pod recreation. This test did not call a paid model. The temporary namespace and PVC were removed.
+- `npm run test:e2e:public-demo`: six anonymous Chrome checks passed for public routing, asset prefix, Google OAuth wiring, and existing routes. This does not verify the signed-in feature flow.
+- The feature is not deployed. Signed-in public artifact E2E remains pending a release; no public result is inferred from local or K3D success.
