@@ -1,7 +1,6 @@
 import { appFetch } from './api.ts';
 import { useEffect, useRef, useState } from 'react';
 import type { WorkspacePage } from '../shared/types.ts';
-import { appFetch } from './api.ts';
 
 async function readResponse<T>(response: Response): Promise<T> {
   const data = await response.json() as T & { error?: string };

@@ -1,7 +1,6 @@
 import { appFetch } from './api.ts';
 import { useEffect, useState } from 'react';
 import type { Snapshot, Task, TaskStatus } from '../shared/types.ts';
-import { appFetch } from './api.ts';
 import { DotAvatar } from './DotAvatar.tsx';
 import './context-panel.css';
 
