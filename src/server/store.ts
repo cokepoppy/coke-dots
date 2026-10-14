@@ -931,7 +931,7 @@ export class Store {
       this.db.prepare('DELETE FROM tenant_action_rules WHERE tenant_id=?').run(tenantId);
       this.db.prepare('DELETE FROM workspace_invitations WHERE tenant_id=?').run(tenantId);
       // Provider configuration belongs to the local account setup, not the Dot's
-      // conversations or memory. Keep the model endpoint/name and Keychain secret.
+      // conversations or memory. Keep the model endpoint/name and instance K3D Secret.
       this.db.prepare("DELETE FROM tenant_settings WHERE tenant_id=? AND key NOT IN ('modelBaseUrl','modelName')").run(tenantId);
       this.db.prepare(`UPDATE tenant_profiles SET name='Dot',shape='circle',color='#c8cbd5',eyes='dot',glasses='none',accessory='none',
         character='ring',pet='moss',avatar_setup_completed_at=NULL,onboarding_completed_at=NULL,onboarding_completed_name=NULL WHERE tenant_id=?`).run(tenantId);

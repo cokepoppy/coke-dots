@@ -3,10 +3,11 @@ import { execFileSync } from 'node:child_process';
 import { redactSecret } from '../src/shared/redact-secret.ts';
 
 const stdinKey = process.argv.slice(2).includes('--stdin-key');
-const keychain = process.argv.slice(2).includes('--keychain');
-if (stdinKey && keychain) throw new Error('Choose either --stdin-key or --keychain.');
-if (keychain) {
-  await runFromKeychain();
+const k3dSecret = process.argv.slice(2).includes('--k3d-secret');
+if (process.argv.slice(2).includes('--keychain')) throw new Error('The Model API key no longer uses Keychain; use --k3d-secret.');
+if (stdinKey && k3dSecret) throw new Error('Choose either --stdin-key or --k3d-secret.');
+if (k3dSecret) {
+  await runFromK3dSecret();
 } else {
   const apiKey = (stdinKey ? await readHiddenInput() : process.env.DOTS_LIVE_MODEL_API_KEY || '').trim();
   if (!apiKey) {
@@ -19,26 +20,25 @@ if (keychain) {
   }
 }
 
-async function runFromKeychain() {
+async function runFromK3dSecret() {
   const { resolve } = await import('node:path');
   const { Store } = await import('../src/server/store.ts');
-  const { effectiveModelConfig, hasSharedModelKey, loadSharedModelSettings, migrateWorkspaceModelToShared } = await import('../src/server/model-settings.ts');
+  const { loadSharedModelSettings } = await import('../src/server/model-settings.ts');
+  const { K3dModelSecretStore } = await import('../src/server/k3d-model-secret.ts');
   const store = new Store(resolve(process.env.DOTS_DATA_DIR || './data'));
   try {
     const baseUrl = store.getSetting('sharedModelBaseUrl', 'legacy') || store.getSetting('modelBaseUrl', 'legacy') || '';
     const model = store.getSetting('sharedModelName', 'legacy') || store.getSetting('modelName', 'legacy') || '';
     loadSharedModelSettings(baseUrl, model);
-    if (!hasSharedModelKey()) {
-      migrateWorkspaceModelToShared('legacy', baseUrl, model);
-      loadSharedModelSettings(baseUrl, model);
-    }
-    const config = effectiveModelConfig('legacy');
-    if (!config) {
-      console.error('The Coke Dots instance needs a shared model name and a Keychain API key before this check can run.');
+    const secret = new K3dModelSecretStore().read(true);
+    if (!baseUrl || !model || !secret.value) {
+      console.error(secret.status === 'unavailable'
+        ? 'The Coke Dots instance K3D Secret is unavailable; check the current kubectl context and cluster.'
+        : 'The Coke Dots instance needs a shared model name and K3D Secret before this check can run.');
       process.exitCode = 2;
       return;
     }
-    await run(config.apiKey, config.baseUrl, config.model, 'legacy', false);
+    await run(secret.value, baseUrl, model, 'legacy', true);
   } finally { store.close(); }
 }
 

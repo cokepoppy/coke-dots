@@ -8,11 +8,10 @@ import { test } from 'node:test';
 import { Entry } from '../src/server/keyring.ts';
 import { adapters } from '../src/server/adapters.ts';
 import { startDshPublicPageBridge } from '../src/server/dsh-browser-bridge.ts';
-import { loadModelSettings, loadSharedModelSettings, saveModelKey, saveSharedModelKey } from '../src/server/model-settings.ts';
+import { clearSharedModelSecretForTests, loadModelSettings, loadSharedModelSettings, saveSharedModelKey } from '../src/server/model-settings.ts';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 
 process.env.DOTS_KEYCHAIN_SERVICE = `${process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots.test'}.dsh-browser-${process.pid}`;
-const sharedKeychainEntry = () => new Entry(process.env.DOTS_KEYCHAIN_SERVICE!, 'shared-model-api-key');
 
 async function listen(server: ReturnType<typeof createServer>) {
   await new Promise<void>((resolvePromise, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
@@ -122,8 +121,7 @@ test('DeepSeek Harness loads the isolated browser-tool patch and returns page ev
     dataDirectory: process.env.DOTS_DATA_DIR,
   };
   let pageReads = 0;
-  const sharedEntry = sharedKeychainEntry();
-  sharedEntry.deletePassword();
+  clearSharedModelSecretForTests();
   try {
     process.env.DOTS_DSH_BIN = dshBin!;
     process.env.DOTS_DSH_PROFILE = 'sdk';
@@ -132,7 +130,7 @@ test('DeepSeek Harness loads the isolated browser-tool patch and returns page ev
     loadSharedModelSettings(`http://127.0.0.1:${port}/v1`, 'dsh-browser-shared-model');
     saveSharedModelKey('dsh-browser-shared-instance-test-key');
     loadModelSettings('https://tenant-override.invalid/v1', 'tenant-override-model', tenantId);
-    saveModelKey('dsh-browser-test-only-key', tenantId);
+    new Entry(process.env.DOTS_KEYCHAIN_SERVICE!, `tenant-${tenantId}-model-api-key`).setPassword('dsh-browser-test-only-key');
     const result = await adapters.dsh.run({
       tenantId,
       prompt: 'Research this public launch page',
@@ -182,7 +180,7 @@ test('DeepSeek Harness loads the isolated browser-tool patch and returns page ev
     assert.ok(!noBrowserToolNames.some(name => /(?:^|[-_])(?:bash|pwsh|write|edit|web|subagent|workflow)(?:[-_]|$)/i.test(name)),
       `A DSH task without browser access still exposed a general capability: ${noBrowserToolNames.join(', ')}`);
   } finally {
-    sharedEntry.deletePassword();
+    clearSharedModelSecretForTests();
     loadSharedModelSettings(null, null);
     if (previous.bin === undefined) delete process.env.DOTS_DSH_BIN; else process.env.DOTS_DSH_BIN = previous.bin;
     if (previous.profile === undefined) delete process.env.DOTS_DSH_PROFILE; else process.env.DOTS_DSH_PROFILE = previous.profile;

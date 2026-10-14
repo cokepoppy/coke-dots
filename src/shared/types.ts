@@ -90,7 +90,7 @@ export interface Snapshot {
   configured: boolean;
   availableEngines: Engine[];
   remoteEngines: Engine[];
-  modelSettings: { baseUrl: string; model: string; hasKey: boolean; canManage?: boolean };
+  modelSettings: { baseUrl: string; model: string; hasKey: boolean; secretStoreStatus?: 'configured' | 'missing' | 'unavailable'; canManage?: boolean };
 }
 
 export interface Watch {

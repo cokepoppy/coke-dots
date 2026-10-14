@@ -108,7 +108,9 @@ export class Worker {
       const engineName = ({ model: '模型 API', claude: 'Claude Code', pi: 'Pi', dsh: 'DeepSeek Harness' } as const)[task.engine];
       const missing = ['model', 'pi', 'dsh'].includes(task.engine) ? missingModelSettings(task.tenantId) : [];
       const reason = missing.length
-        ? `当前 Coke Dots 实例缺少${missing.join('和')}。请由实例模型管理员在“模型 API”设置中补全共享配置后重试。`
+        ? missing.includes('K3D Secret')
+          ? '无法读取实例级 K3D Secret。请检查 K3D 集群状态和 Coke Dots 服务使用的 kubectl 上下文，再由实例模型管理员重试。'
+          : `当前 Coke Dots 实例缺少${missing.join('和')}。请由实例模型管理员在“模型 API”设置中补全共享配置后重试。`
         : `${engineName} 尚未配置或安装，请检查本机内核安装和实例模型设置后重试。`;
       const errorMessage = `${engineName} 内核不可用，任务没有执行。${reason}`;
       this.store.updateTask(task.id, { status: 'failed', error: errorMessage }, task.tenantId);

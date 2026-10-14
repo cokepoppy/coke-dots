@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Entry } from '../src/server/keyring.ts';
 import { adapters, agentDecisionOptions, createPiWorkspaceModelRuntime, createTenantDshEnvironment, formatAgentPrompt, isDshSessionCollision, parseDecision, providerReasoningEffort, resolveTenantAgentDirectory, type AgentRequest } from '../src/server/adapters.ts';
-import { loadModelSettings, loadSharedModelSettings, saveModelKey, saveSharedModelKey } from '../src/server/model-settings.ts';
+import { clearSharedModelSecretForTests, loadModelSettings, loadSharedModelSettings, saveSharedModelKey } from '../src/server/model-settings.ts';
 import { Store } from '../src/server/store.ts';
 
 process.env.DOTS_KEYCHAIN_SERVICE = `${process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots.test'}.adapters-${process.pid}`;
@@ -282,12 +282,11 @@ test('Pi and DSH reuse the shared instance model credential across authenticated
     pi: process.env.DOTS_PI_ENABLED, dshBin: process.env.DOTS_DSH_BIN, dshConfig: process.env.DOTS_DSH_READ_ONLY_CONFIG,
     nodeEnv: process.env.NODE_ENV, e2eAuth: process.env.DOTS_E2E_AUTH,
   };
-  const sharedEntry = new Entry(process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots', 'shared-model-api-key');
   const alpha = `engine-alpha-${randomUUID()}`;
   const beta = `engine-beta-${randomUUID()}`;
   process.env.DOTS_PI_ENABLED = '1'; process.env.DOTS_DSH_BIN = process.execPath; process.env.DOTS_DSH_READ_ONLY_CONFIG = '/read-only-profile';
   process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '0';
-  sharedEntry.deletePassword();
+  clearSharedModelSecretForTests();
   try {
     loadModelSettings('https://api.deepseek.com/v1', 'deepseek-flash', alpha);
     loadModelSettings('https://api.deepseek.com/v1', 'deepseek-flash', beta);
@@ -298,7 +297,7 @@ test('Pi and DSH reuse the shared instance model credential across authenticated
     assert.equal(adapters.pi.available(beta), true);
     assert.equal(adapters.dsh.available(beta), true);
   } finally {
-    sharedEntry.deletePassword();
+    clearSharedModelSecretForTests();
     loadSharedModelSettings(null, null);
     testKeychainEntry(alpha).deletePassword();
     for (const [key, value] of [['DOTS_PI_ENABLED', previous.pi], ['DOTS_DSH_BIN', previous.dshBin], ['DOTS_DSH_READ_ONLY_CONFIG', previous.dshConfig], ['NODE_ENV', previous.nodeEnv], ['DOTS_E2E_AUTH', previous.e2eAuth]] as const) {
@@ -369,13 +368,12 @@ test('DeepSeek Harness SDK uses the shared instance credential and selected mode
   process.env.DOTS_DATA_DIR = dataDirectory;
   process.env.OPENAI_API_KEY = 'host-openai-must-not-cross-tenant-boundary';
   process.env.GOOGLE_CLIENT_SECRET = 'host-google-must-not-cross-tenant-boundary';
-  const sharedEntry = new Entry(process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots', 'shared-model-api-key');
-  sharedEntry.deletePassword();
+  clearSharedModelSecretForTests();
   try {
     loadSharedModelSettings('https://api.deepseek.com/v1', 'shared-dsh-model');
     saveSharedModelKey('dsh-shared-instance-test-key');
     loadModelSettings('https://tenant-override.invalid/v1', 'tenant-override-model', tenantId);
-    saveModelKey('tenant-dsh-only-test-key', tenantId);
+    testKeychainEntry(tenantId).setPassword('tenant-dsh-only-test-key');
     const firstResult = await adapters.dsh.run({
       tenantId,
       prompt: 'run the isolated dsh runtime test',
@@ -418,7 +416,7 @@ test('DeepSeek Harness SDK uses the shared instance credential and selected mode
     assert.notEqual(audit.promptSessionIds[2], firstResult.sessionId, 'Recovery must use a newly minted session ID.');
     assert.equal(result.sessionId, audit.promptSessionIds[2]);
   } finally {
-    sharedEntry.deletePassword();
+    clearSharedModelSecretForTests();
     loadSharedModelSettings(null, null);
     testKeychainEntry(tenantId).deletePassword();
     for (const [key, value] of [

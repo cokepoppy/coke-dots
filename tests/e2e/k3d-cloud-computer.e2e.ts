@@ -9,11 +9,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { PNG } from 'pngjs';
-import { Entry } from '../../src/server/keyring.ts';
 import { formatAgentPrompt } from '../../src/server/adapters.ts';
+import { K3dModelSecretStore } from '../../src/server/k3d-model-secret.ts';
 import { desktopResourceIdentity, LinuxDesktopComputer, type DesktopConnector } from '../../src/server/linux-desktop-computer.ts';
 import { Store } from '../../src/server/store.ts';
 import { compareRasters, cropRaster, resizeRaster } from '../../src/shared/reference-visual.ts';
+import { readLiveSharedModelApiKey } from '../helpers/k3d-model-secret.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const cluster = process.env.DOTS_K3D_CLUSTER || 'tp1121-sandbox-dev';
@@ -23,7 +24,8 @@ const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-k3d-e2e-'));
 const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `k3d-cloud-computer-${new Date().toISOString().replace(/[:.]/g, '-')}`);
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
-const testKeychainService = `com.cokepoppy.coke-dots.e2e-k3d-${randomUUID()}`;
+const testModelSecretDirectory = join(tempRoot, 'model-secret');
+const testModelSecretScope = `k3d-e2e-${randomUUID()}`;
 const runLiveAgentKernels = process.env.DOTS_K3D_LIVE_AGENT_KERNELS === '1';
 let liveModelConfig: { apiKey: string; baseUrl: string; model: string } | null = null;
 const tokenSecret = randomBytes(32).toString('base64url');
@@ -42,7 +44,6 @@ let kubectlNamespaceCreated = false;
 const logs: string[] = [];
 
 async function configureLiveAgentKernels() {
-  const sourceKeychainService = process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots';
   const sourceStore = new Store(resolve(process.env.DOTS_DATA_DIR || './data'));
   let baseUrl = '';
   let model = '';
@@ -50,11 +51,12 @@ async function configureLiveAgentKernels() {
     baseUrl = sourceStore.getSetting('sharedModelBaseUrl', 'legacy') || sourceStore.getSetting('modelBaseUrl', 'legacy') || '';
     model = sourceStore.getSetting('sharedModelName', 'legacy') || sourceStore.getSetting('modelName', 'legacy') || '';
   } finally { sourceStore.close(); }
-  const apiKey = new Entry(sourceKeychainService, 'shared-model-api-key').getPassword()
-    || new Entry(sourceKeychainService, 'tenant-legacy-model-api-key').getPassword() || '';
-  assert(baseUrl && model && apiKey, 'Live cloud-kernel E2E needs the configured shared model endpoint, model, and Keychain credential.');
+  const apiKey = readLiveSharedModelApiKey() || '';
+  assert(baseUrl && model && apiKey, 'Live cloud-kernel E2E needs the configured shared model endpoint, model, and K3D Secret.');
   assert.equal(new URL(baseUrl).protocol, 'https:', 'Live cloud-kernel E2E requires an HTTPS model endpoint.');
-  new Entry(testKeychainService, 'shared-model-api-key').setPassword(apiKey);
+  process.env.DOTS_TEST_MODEL_SECRET_DIR = testModelSecretDirectory;
+  process.env.DOTS_TEST_MODEL_SECRET_SCOPE = testModelSecretScope;
+  new K3dModelSecretStore().save(apiKey);
   const setupStore = new Store(dataDirectory);
   setupStore.setSetting('sharedModelBaseUrl', baseUrl, 'legacy');
   setupStore.setSetting('sharedModelName', model, 'legacy');
@@ -85,7 +87,8 @@ async function startApp(): Promise<ChildProcess> {
     env: {
       ...process.env,
       NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL: researchFixtureUrl, DOTS_ENV_FILE: envFile, DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(appPort),
-      DOTS_KEYCHAIN_SERVICE: testKeychainService,
+      DOTS_TEST_MODEL_SECRET_DIR: testModelSecretDirectory,
+      DOTS_TEST_MODEL_SECRET_SCOPE: testModelSecretScope,
       DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_LINUX_DESKTOP_TOKEN_SECRET: tokenSecret,
       DOTS_LINUX_DESKTOP_IMAGE: process.env.DOTS_LINUX_DESKTOP_IMAGE || 'coke-dots-linux-desktop:dev',
       DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE: process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || cluster,
@@ -511,9 +514,6 @@ try {
   }
   if (namespace && (kubectlNamespaceCreated || process.env.DOTS_K3D_CLEANUP_FAILED === '1')) {
     spawnSync('kubectl', ['delete', 'namespace', namespace, '--wait=true', '--timeout=120s'], { cwd: projectRoot, stdio: 'ignore' });
-  }
-  if (runLiveAgentKernels) {
-    try { new Entry(testKeychainService, 'shared-model-api-key').deletePassword(); } catch { /* The credential may not have been created if setup failed early. */ }
   }
   await rm(tempRoot, { recursive: true, force: true });
 }

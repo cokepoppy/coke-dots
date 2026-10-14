@@ -8,7 +8,7 @@ import { adapters } from './adapters.ts';
 import { isReasoningEffort, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
-import { effectiveModelConfig, hasSharedModelKey, loadModelSettings, loadSharedModelSettings, migrateWorkspaceModelToShared, publicModelSettings, saveSharedModelKey, setSharedModelMetadata } from './model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, loadSharedModelSettings, publicModelSettings, saveSharedModelKey, setSharedModelMetadata } from './model-settings.ts';
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { configuredDesktopAgentEngines, LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { AuthService } from './auth.ts';
@@ -32,17 +32,6 @@ const store = new Store(dataDirectory);
 function initializeModelSettings() {
   loadModelSettings(store.getSetting('modelBaseUrl', 'legacy'), store.getSetting('modelName', 'legacy'), 'legacy');
   for (const tenant of store.modelSettingsTenants()) loadModelSettings(tenant.baseUrl, tenant.model, tenant.tenantId);
-  const legacyProfile = { tenantId: 'legacy', baseUrl: store.getSetting('modelBaseUrl', 'legacy') || '', model: store.getSetting('modelName', 'legacy') || '' };
-  const existingProfiles = [{ ...legacyProfile, ownerUserId: null as string | null }, ...store.modelSettingsTenants()];
-  if (!hasSharedModelKey()) {
-    for (const profile of existingProfiles) {
-      if (!profile.model || !migrateWorkspaceModelToShared(profile.tenantId, profile.baseUrl, profile.model)) continue;
-      store.setSetting('sharedModelBaseUrl', profile.baseUrl, 'legacy');
-      store.setSetting('sharedModelName', profile.model, 'legacy');
-      if (profile.ownerUserId) store.setSetting('sharedModelAdminUserId', profile.ownerUserId, 'legacy');
-      break;
-    }
-  }
   loadSharedModelSettings(
     store.getSetting('sharedModelBaseUrl', 'legacy') || store.getSetting('modelBaseUrl', 'legacy'),
     store.getSetting('sharedModelName', 'legacy') || store.getSetting('modelName', 'legacy'),

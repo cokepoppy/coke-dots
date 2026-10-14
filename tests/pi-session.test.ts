@@ -6,10 +6,9 @@ import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { Entry } from '../src/server/keyring.ts';
 import { adapters, resolvePiSessionManager, resolveTenantAgentDirectory } from '../src/server/adapters.ts';
-import { loadModelSettings, loadSharedModelSettings, saveModelKey, saveSharedModelKey } from '../src/server/model-settings.ts';
+import { clearSharedModelSecretForTests, loadModelSettings, loadSharedModelSettings, saveSharedModelKey } from '../src/server/model-settings.ts';
 
 process.env.DOTS_KEYCHAIN_SERVICE = `${process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots.test'}.pi-session-${process.pid}`;
-const sharedKeychainEntry = () => new Entry(process.env.DOTS_KEYCHAIN_SERVICE!, 'shared-model-api-key');
 
 let piSdk: Parameters<typeof resolvePiSessionManager>[0] | null = null;
 try {
@@ -86,8 +85,7 @@ test('Pi reuses the shared instance credential while keeping each tenant runtime
     });
   });
   const previous = { enabled: process.env.DOTS_PI_ENABLED, dataDirectory: process.env.DOTS_DATA_DIR };
-  const sharedEntry = sharedKeychainEntry();
-  sharedEntry.deletePassword();
+  clearSharedModelSecretForTests();
   try {
     const port = await listen(modelServer);
     process.env.DOTS_PI_ENABLED = '1';
@@ -96,7 +94,7 @@ test('Pi reuses the shared instance credential while keeping each tenant runtime
     saveSharedModelKey('pi-shared-instance-test-key');
     for (const tenant of tenants) {
       loadModelSettings('https://tenant-override.invalid/v1', 'tenant-override-model', tenant.id);
-      saveModelKey(tenant.key, tenant.id);
+      new Entry(process.env.DOTS_KEYCHAIN_SERVICE!, `tenant-${tenant.id}-model-api-key`).setPassword(tenant.key);
       const workspace = join(root, 'workspaces', tenant.id, 'task-1');
       mkdirSync(workspace, { recursive: true });
       const result = await adapters.pi.run({
@@ -114,7 +112,7 @@ test('Pi reuses the shared instance credential while keeping each tenant runtime
     }
     assert.deepEqual(authHeaders, tenants.map(() => 'Bearer pi-shared-instance-test-key'), 'Every tenant uses the single instance API credential');
   } finally {
-    sharedEntry.deletePassword();
+    clearSharedModelSecretForTests();
     loadSharedModelSettings(null, null);
     if (previous.enabled === undefined) delete process.env.DOTS_PI_ENABLED; else process.env.DOTS_PI_ENABLED = previous.enabled;
     if (previous.dataDirectory === undefined) delete process.env.DOTS_DATA_DIR; else process.env.DOTS_DATA_DIR = previous.dataDirectory;
@@ -175,8 +173,7 @@ test('Pi exposes the tenant computer public-page reader while using the shared m
     });
   });
   const previous = { enabled: process.env.DOTS_PI_ENABLED, dataDirectory: process.env.DOTS_DATA_DIR };
-  const sharedEntry = sharedKeychainEntry();
-  sharedEntry.deletePassword();
+  clearSharedModelSecretForTests();
   const eventMessages: string[] = [];
   let pageReads = 0;
   try {
@@ -186,7 +183,7 @@ test('Pi exposes the tenant computer public-page reader while using the shared m
     loadSharedModelSettings(`http://127.0.0.1:${port}/v1`, 'tenant-model');
     saveSharedModelKey('pi-browser-shared-instance-test-key');
     loadModelSettings('https://tenant-override.invalid/v1', 'tenant-override-model', tenantId);
-    saveModelKey('pi-browser-tool-tenant-only-key', tenantId);
+    new Entry(process.env.DOTS_KEYCHAIN_SERVICE!, `tenant-${tenantId}-model-api-key`).setPassword('pi-browser-tool-tenant-only-key');
     const result = await adapters.pi.run({
       tenantId,
       prompt: 'Research this public launch page',
@@ -208,7 +205,7 @@ test('Pi exposes the tenant computer public-page reader while using the shared m
     assert.deepEqual(authHeaders, ['Bearer pi-browser-shared-instance-test-key', 'Bearer pi-browser-shared-instance-test-key']);
     assert.ok(eventMessages.includes('Dot 正在自己的电脑浏览器中读取公开网页。'));
   } finally {
-    sharedEntry.deletePassword();
+    clearSharedModelSecretForTests();
     loadSharedModelSettings(null, null);
     if (previous.enabled === undefined) delete process.env.DOTS_PI_ENABLED; else process.env.DOTS_PI_ENABLED = previous.enabled;
     if (previous.dataDirectory === undefined) delete process.env.DOTS_DATA_DIR; else process.env.DOTS_DATA_DIR = previous.dataDirectory;

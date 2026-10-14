@@ -1039,8 +1039,9 @@ function Profile({ state, auth, onError, onSetDotPaused, onResetDot, onEditAppea
       {membersError && <small className="member-error">{membersError}</small>}
       {!['owner', 'admin'].includes(auth.tenant.role) && <small>只有工作区所有者或管理员可以添加成员。</small>}
     </div>
-    <div className="section-heading model-heading"><h2>模型 API</h2><p>模型 API 配置保存在系统钥匙串，由此 Coke Dots 实例下的所有 Google 账号和工作区共用。模型 API、Pi 和 DeepSeek Harness 都复用这套凭据，各账号的任务与运行目录仍彼此隔离。</p></div>
+    <div className="section-heading model-heading"><h2>模型 API</h2><p>共享模型 API 密钥保存在本机 K3D 集群的 Kubernetes Secret 中，由此 Coke Dots 实例下的所有 Google 账号和工作区共用。模型地址与名称保存在实例配置中；模型 API、Pi 和 DeepSeek Harness 复用同一凭据。</p></div>
     <div className="profile-card model-card">
+      {state.modelSettings.secretStoreStatus === 'unavailable' ? <small role="alert" className="member-error">无法读取本机 K3D Secret。请检查 K3D 集群和 Coke Dots 服务使用的 kubectl 上下文。</small> : state.modelSettings.secretStoreStatus === 'missing' && <small role="status">实例共享模型 API 密钥尚未配置；保存后会写入 K3D Secret。</small>}
       <label>API 地址<input value={baseUrl} disabled={!canManageModelSettings} onChange={e => setBaseUrl(e.target.value)} /></label>
       <label>模型名称<input value={model} disabled={!canManageModelSettings} onChange={e => setModel(e.target.value)} /></label>
       <label>API 密钥<input type="password" autoComplete="off" disabled={!canManageModelSettings} placeholder={state.modelSettings.hasKey ? '已保存；留空则保持不变' : '输入密钥'} value={apiKey} onChange={e => setApiKey(e.target.value)} /></label>

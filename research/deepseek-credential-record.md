@@ -1,21 +1,25 @@
 # DeepSeek model credential record
 
-Originally configured on 2026-10-07 through the `可乐可乐 workspace · owner` profile. The Coke Dots shared-default migration promotes that existing profile to the local service's shared Model API configuration so other Google accounts can reuse it.
+Originally configured on 2026-10-07 through the `可乐可乐 workspace · owner` profile. The Coke Dots shared-default profile is reused by every Google account and workspace on the instance.
 
 | Field | Recorded value |
 | --- | --- |
 | Provider | DeepSeek |
 | API base URL | `https://api.deepseek.com` |
 | Model | `deepseek-flash` |
-| Credential storage | One instance-wide application Keychain entry reused by Model API, Pi, and DeepSeek Harness; the secret value is intentionally not copied into this repository or this record. |
-| Verification | Submitted a real task through the workspace; it completed and returned the requested Chinese confirmation. |
+| Credential storage | One instance-wide Kubernetes Secret in the local K3D cluster, reused by Model API, Pi, and DeepSeek Harness; the secret value is intentionally not copied into this repository or this record. |
+| Verification | The credential has previously completed real Chinese task requests. Re-run the live verification after migrating it to the K3D Secret. |
 
-To rotate the shared credential, the instance model manager updates the API key under **Profile → Model API**. The change applies to all Google accounts on this Coke Dots instance. The application stores the key separately from task data and reveals only whether a key is saved.
+To rotate the shared credential, the instance model manager updates the API key under **Profile → Model API**. The application writes it to the instance Secret in the `coke-dots-system` namespace. The setting applies to every Google account on this Coke Dots instance. The endpoint and model name remain ordinary instance metadata; the API key is not stored in ConfigMap, task data, or the shared PVC.
 
 ## Local development verification
 
-On 2026-10-07, the local development database (`./data/dots.db`) was configured for its bootstrap `legacy` workspace with the same DeepSeek endpoint and model. The API key remains only in the macOS Keychain; it is intentionally absent from this file, shell output, task data, and source control.
+The live model check reads the current K3D Secret and sends one small real request through the production model adapter:
 
-The saved Keychain configuration was tested with `npm run test:live-model -- --keychain`, which uses the production model adapter and sends one small live request. Result: `status=done`, unique marker present, about 1.17 seconds. The check prints neither the key nor the model response body.
+```sh
+npm run test:live-model -- --k3d-secret
+```
 
-The Chrome-to-worker path was then verified with `npm run test:e2e:live-model`: a disposable account signed in through the local page, submitted a task by clicking the composer, and saw its real result in Activity. The worker returned `status=done` with the unique marker in about 2.17 seconds. Test account and task data were held in a temporary database and removed. Screenshot evidence: `artifacts/e2e/live-model-2026-10-07T13-04-28-700Z/live-model-task-completed.png`.
+The command prints status and timing only; it does not print the key or model response. `npm run test:live-model` can also take `DOTS_LIVE_MODEL_API_KEY`, or `--stdin-key` reads a key without terminal echo; those modes do not persist it.
+
+The Chrome-to-worker path is verified separately with `npm run test:e2e:live-model`: a disposable account signs in through the local page, submits a task by clicking the composer, and sees its result in Activity. The test uses a temporary Secret backend and database, then removes both.

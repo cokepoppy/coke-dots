@@ -7,20 +7,22 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Entry } from '@napi-rs/keyring';
 import { chromium, type Browser } from 'playwright-core';
+import { K3dModelSecretStore } from '../../src/server/k3d-model-secret.ts';
 import { Store } from '../../src/server/store.ts';
 import { redactSecret } from '../../src/shared/redact-secret.ts';
+import { readLiveSharedModelApiKey } from '../helpers/k3d-model-secret.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-live-model-e2e-'));
 const dataDirectory = join(tempRoot, 'data');
+const testModelSecretDirectory = join(tempRoot, 'model-secret');
+const testModelSecretScope = `live-model-${randomUUID()}`;
 const envFile = join(tempRoot, 'empty.env');
 const liveEngine = process.env.DOTS_LIVE_MODEL_ENGINE?.trim() || (process.argv.includes('--dsh') ? 'dsh' : 'model');
 const liveDshDelegation = process.env.DOTS_LIVE_DSH_DELEGATION === '1';
 const artifactDirectory = resolve(projectRoot, 'artifacts', 'e2e', `live-${liveEngine}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
 const chromePath = [process.env.DOTS_CHROME_BIN, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium'].find(path => path && existsSync(path));
-const keychainService = process.env.DOTS_LIVE_KEYCHAIN_SERVICE?.trim() || process.env.DOTS_KEYCHAIN_SERVICE?.trim() || 'com.cokepoppy.coke-dots';
 const dshBin = findDshPath();
 let server: ChildProcess | null = null;
 let browser: Browser | null = null;
@@ -80,11 +82,14 @@ try {
     baseUrl = sourceStore.getSetting('sharedModelBaseUrl', 'legacy') || sourceStore.getSetting('modelBaseUrl', 'legacy') || '';
     model = sourceStore.getSetting('sharedModelName', 'legacy') || sourceStore.getSetting('modelName', 'legacy') || '';
   } finally { sourceStore.close(); }
-  apiKeyForRedaction = new Entry(keychainService, 'shared-model-api-key').getPassword()
-    || new Entry(keychainService, 'tenant-legacy-model-api-key').getPassword() || '';
-  const hasKeychainKey = Boolean(apiKeyForRedaction);
-  assert(baseUrl && model && hasKeychainKey, 'The Coke Dots instance must have a model endpoint, model name, and shared or migratable Keychain key.');
+  apiKeyForRedaction = readLiveSharedModelApiKey() || '';
+  assert(baseUrl && model && apiKeyForRedaction, 'The Coke Dots instance must have a model endpoint, model name, and readable K3D Secret.');
   assert.equal(new URL(baseUrl).protocol, 'https:', 'The live model test requires HTTPS.');
+
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_TEST_MODEL_SECRET_DIR = testModelSecretDirectory;
+  process.env.DOTS_TEST_MODEL_SECRET_SCOPE = testModelSecretScope;
+  new K3dModelSecretStore().save(apiKeyForRedaction);
 
   const setupStore = new Store(dataDirectory);
   setupStore.setSetting('sharedModelBaseUrl', baseUrl, 'legacy');
@@ -100,7 +105,7 @@ try {
     env: {
       ...process.env,
       NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_ENV_FILE: envFile,
-      DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(port), DOTS_KEYCHAIN_SERVICE: keychainService,
+      DOTS_DATA_DIR: dataDirectory, DOTS_PORT: String(port), DOTS_TEST_MODEL_SECRET_DIR: testModelSecretDirectory, DOTS_TEST_MODEL_SECRET_SCOPE: testModelSecretScope,
       GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: '', DOTS_MODEL: '', DOTS_MODEL_API_KEY: '',
       DOTS_PI_ENABLED: liveEngine === 'pi' ? '1' : '0',
       DOTS_DSH_BIN: liveEngine === 'dsh' ? dshBin! : '',
@@ -135,7 +140,7 @@ try {
   stage = `${liveEngine}-preflight`;
   const workspace = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; modelSettings: { baseUrl: string; model: string; hasKey: boolean; canManage?: boolean } };
   assert.equal(workspace.availableEngines.includes(liveEngine), true, `The UI did not load the configured ${liveEngine} kernel.`);
-  assert.deepEqual(workspace.modelSettings, { baseUrl, model, hasKey: true, canManage: true });
+  assert.deepEqual(workspace.modelSettings, { baseUrl, model, hasKey: true, secretStoreStatus: 'configured', canManage: true });
 
   stage = 'browser-task-submit';
   await page.getByRole('button', { name: '你的 dot', exact: true }).click();

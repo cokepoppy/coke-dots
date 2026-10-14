@@ -14,7 +14,7 @@ The Reset action is available only when the signed-in user owns a personal works
 
 After the confirmation, Coke Dots stops active task and page-monitor work, closes the local computer, and clears that workspace's tasks and activity, schedules and watches, approvals, attachments, calls, notes, pages, rules, appearance profile, and per-Dot settings. Its local computer and agent runtime directories are removed after path/type checks. When the Linux desktop connector is configured, it deletes only a namespace carrying both the Coke Dots management label and the current tenant hash.
 
-The Google account, personal workspace membership, model endpoint/name, and model API key in macOS Keychain are retained. These retention choices are specific to Coke Dots and are not claims about OpenAI Dots. External changes or messages already sent by an agent are not rolled back.
+The Google account, personal workspace membership, model endpoint/name, and instance-wide model API key in the local K3D Secret are retained. These retention choices are specific to Coke Dots and are not claims about OpenAI Dots. External changes or messages already sent by an agent are not rolled back.
 
 ## Verification and limits
 
