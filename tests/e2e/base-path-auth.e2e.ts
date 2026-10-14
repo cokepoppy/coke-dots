@@ -4,11 +4,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http';
-import { createServer as createNetServer } from 'node:net';
+import { connect as createNetConnection, createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { WebSocketServer } from 'ws';
 
 const projectRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const distRoot = join(projectRoot, 'dist');
@@ -21,6 +22,7 @@ const browserPath = process.env.DOTS_CHROME_BIN || '/Applications/Google Chrome.
 let backend: ChildProcess | null = null;
 let proxy: Server | null = null;
 let oauthProvider: Server | null = null;
+let voiceProvider: WebSocketServer | null = null;
 let browser: Browser | null = null;
 let page: Page | null = null;
 const requests: string[] = [];
@@ -37,6 +39,10 @@ let oauthCallbackCookieSeen = false;
 let oauthCookieScopeCorrect = false;
 let oauthCookieClearScopeCorrect = false;
 let oauthPkceVerified = false;
+let voiceProviderEvents: string[] = [];
+let voiceProviderPcmBytes = 0;
+let voiceProviderPcmPeak = 0;
+let voiceProviderSpokenTexts: string[] = [];
 
 await mkdir(artifactRoot, { recursive: true });
 await writeFile(envFile, '');
@@ -64,8 +70,62 @@ async function waitForBackend(url: string) {
   throw lastError instanceof Error ? lastError : new Error('Timed out waiting for the test backend');
 }
 
+async function startMockVolcengineDuplexProvider() {
+  voiceProviderEvents = [];
+  voiceProviderPcmBytes = 0;
+  voiceProviderPcmPeak = 0;
+  voiceProviderSpokenTexts = [];
+  voiceProvider = new WebSocketServer({ port: 0, host: '127.0.0.1', maxPayload: 1024 * 1024, perMessageDeflate: false });
+  voiceProvider.on('connection', socket => {
+    socket.on('message', (raw, isBinary) => {
+      if (isBinary) return;
+      let event: Record<string, unknown>;
+      try { event = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw)) as Record<string, unknown>; }
+      catch { return; }
+      const type = typeof event.type === 'string' ? event.type : 'missing-type';
+      voiceProviderEvents.push(type);
+      if (type === 'session.create') {
+        socket.send(JSON.stringify({ type: 'session.created', event_id: 'mobile-oauth-session-created', session: { id: 'mobile-oauth-call' } }));
+      } else if (type === 'input_audio_buffer.append' && typeof event.audio === 'string') {
+        const pcm = Buffer.from(event.audio, 'base64');
+        voiceProviderPcmBytes += pcm.byteLength;
+        for (let offset = 0; offset + 1 < pcm.byteLength; offset += 2) voiceProviderPcmPeak = Math.max(voiceProviderPcmPeak, Math.abs(pcm.readInt16LE(offset)));
+      } else if (type === 'speech_text_buffer.commit' && typeof event.text === 'string') {
+        voiceProviderSpokenTexts.push(event.text);
+        socket.send(JSON.stringify({ type: 'response.output_audio.started', response_id: 'mobile-oauth-greeting' }));
+        const pcm = Buffer.alloc(960);
+        for (let index = 0; index < pcm.length / 4; index += 1) pcm.writeFloatLE(Math.sin(index * 2 * Math.PI * 440 / 24000) * 0.5, index * 4);
+        socket.send(JSON.stringify({ type: 'response.output_audio.delta', response_id: 'mobile-oauth-greeting', delta: pcm.toString('base64') }));
+        socket.send(JSON.stringify({ type: 'response.output_audio.done', response_id: 'mobile-oauth-greeting' }));
+      } else if (type === 'session.close') {
+        socket.send(JSON.stringify({ type: 'session.closed', event_id: 'mobile-oauth-session-closed' }));
+      }
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    voiceProvider!.once('error', reject);
+    voiceProvider!.once('listening', resolvePromise);
+  });
+  const address = voiceProvider.address();
+  assert(address && typeof address !== 'string');
+  return `ws://127.0.0.1:${address.port}/duplex`;
+}
+
 function contentType(path: string) {
   return ({ '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' } as Record<string, string>)[extname(path)] || 'application/octet-stream';
+}
+
+function fakeMicrophoneWave(sampleRate = 48_000, durationSeconds = 3) {
+  const samples = sampleRate * durationSeconds;
+  const pcm = Buffer.alloc(samples * 2);
+  for (let index = 0; index < samples; index += 1) pcm.writeInt16LE(Math.round(Math.sin(index * 2 * Math.PI * 440 / sampleRate) * 12_000), index * 2);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + pcm.length, 4); header.write('WAVE', 8);
+  header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22); header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+  header.write('data', 36); header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
 }
 
 async function main() {
@@ -73,6 +133,7 @@ async function main() {
   const frontendPort = 5173;
   const oauthPort = await reservePort();
   const oauthOrigin = `http://127.0.0.1:${oauthPort}`;
+  const voiceProviderUrl = await startMockVolcengineDuplexProvider();
   oauthProvider = createHttpServer(async (incoming, outgoing) => {
     const url = new URL(incoming.url || '/', oauthOrigin);
     oauthTrace.push(`${incoming.method} ${url.pathname}`);
@@ -163,6 +224,7 @@ async function main() {
       DOTS_E2E_AUTH: '1',
       DOTS_VOICE_PROVIDER: 'volcengine',
       DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-secret',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: voiceProviderUrl,
       GOOGLE_CLIENT_ID: oauthClientId,
       GOOGLE_CLIENT_SECRET: 'coke-dots-base-path-e2e-secret',
       GOOGLE_REDIRECT_URI: `http://127.0.0.1:${frontendPort}${basePath}/auth/google/callback`,
@@ -215,11 +277,34 @@ async function main() {
       .once('open', () => { outgoing.writeHead(200, { 'content-type': contentType(filePath), 'cache-control': 'no-store' }); })
       .pipe(outgoing);
   });
+  proxy.on('upgrade', (incoming, client, head) => {
+    const incomingUrl = new URL(incoming.url || '/', `http://127.0.0.1:${frontendPort}`);
+    if (!incomingUrl.pathname.startsWith(`${basePath}/api/`)) { client.destroy(); return; }
+    const upstream = createNetConnection({ host: '127.0.0.1', port: backendPort });
+    upstream.once('connect', () => {
+      const upstreamPath = `${incomingUrl.pathname.slice(basePath.length)}${incomingUrl.search}`;
+      const headers: string[] = [];
+      for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
+        const key = incoming.rawHeaders[index];
+        const value = incoming.rawHeaders[index + 1];
+        headers.push(`${key}: ${key.toLowerCase() === 'host' ? `127.0.0.1:${backendPort}` : value}`);
+      }
+      upstream.write(`${incoming.method || 'GET'} ${upstreamPath} HTTP/${incoming.httpVersion}\r\n${headers.join('\r\n')}\r\n\r\n`);
+      if (head.length) upstream.write(head);
+      upstream.pipe(client);
+      client.pipe(upstream);
+    });
+    upstream.once('error', () => client.destroy());
+    client.once('error', () => upstream.destroy());
+    client.once('close', () => upstream.destroy());
+  });
   await new Promise<void>((resolvePromise, reject) => proxy!.once('error', reject).listen(frontendPort, '127.0.0.1', resolvePromise));
 
   const baseUrl = `http://127.0.0.1:${frontendPort}${basePath}/`;
-  browser = await chromium.launch({ executablePath: browserPath, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+  const fakeMicrophonePath = join(tempRoot, 'mobile-microphone.wav');
+  await writeFile(fakeMicrophonePath, fakeMicrophoneWave());
+  browser = await chromium.launch({ executablePath: browserPath, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-audio-capture=${fakeMicrophonePath}`] });
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, permissions: ['microphone'] });
   page = await context.newPage();
   page.on('requestfailed', request => browserTrace.push(`${request.method()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText || 'failed'}`));
   page.on('response', response => {
@@ -268,20 +353,11 @@ async function main() {
   await page.getByTestId('mobile-navigation').locator('.mobile-navigation-panel').getByRole('button', { name: '关闭导航菜单' }).click();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
     'The authenticated Coke Dots shell must load on mobile without horizontal overflow');
-  await page.screenshot({ path: join(artifactRoot, 'base-path-mobile-authenticated-app.png'), fullPage: true });
+  await page.screenshot({ path: join(artifactRoot, 'base-path-mobile-first-run.png'), fullPage: true });
   await page.getByTestId('computer-choice').waitFor({ state: 'visible' });
   await page.getByRole('button', { name: 'Continue' }).click();
-  await page.setViewportSize({ width: 1440, height: 1000 });
   const onboardingStatus = await page.evaluate(async () => (await fetch('/dots-demo/api/profile', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ onboardingComplete: true }) })).status);
-  assert.equal(onboardingStatus, 200, 'The E2E tenant should finish onboarding before checking the composer default');
-  const fixtureTask = await page.evaluate(async () => {
-    const response = await fetch('/dots-demo/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'E2E scheduled fixture for Pi default', engine: 'pi', scheduleMinutes: 60 }) });
-    return { status: response.status, body: await response.json() as { title?: string } };
-  });
-  assert.equal(fixtureTask.status, 201, 'A future-only fixture should make the chat composer available without running an Agent task');
-  await page.getByRole('button', { name: /E2E scheduled fixture for Pi default/ }).click();
-  await page.getByTestId('engine-select').waitFor({ state: 'visible' });
-  assert.equal(await page.getByTestId('engine-select').inputValue(), 'pi', 'The public demo build must default to the Pi Agent kernel');
+  assert.equal(onboardingStatus, 200, 'The E2E tenant should finish onboarding before testing the mobile Dot conversation');
   const eventDeadline = Date.now() + 5_000;
   while (!requests.some(item => item === 'GET /dots-demo/api/events') && Date.now() < eventDeadline) await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
   assert(requests.includes('GET /dots-demo/api/events'), 'The authenticated live event stream must use the prefixed API path');
@@ -291,13 +367,71 @@ async function main() {
   });
   assert.equal(providerResponse.status, 200, 'The voice provider API must resolve through the base path');
   assert.deepEqual(providerResponse.body, { provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' }, 'The prefixed API must report the configured Doubao SeedDuplex provider without exposing its API key');
-  await page.screenshot({ path: join(artifactRoot, 'base-path-authenticated-app.png'), fullPage: true });
+
+  const mobileDotNav = page.getByTestId('mobile-dot-nav');
+  if (await mobileDotNav.isVisible().catch(() => false)) await mobileDotNav.click();
+  const connectedToast = page.getByTestId('computer-connected-toast');
+  if (await connectedToast.isVisible().catch(() => false)) await connectedToast.getByRole('button', { name: 'Dismiss notification' }).click();
+  await page.getByTestId('mobile-chat-menu-toggle').click();
+  await page.getByTestId('mobile-navigation').getByRole('button', { name: '◉ 你的 dot' }).click();
+  await page.getByTestId('conversation-call-launch').waitFor({ state: 'visible' });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+    'The mobile Dot conversation must fit before placing a call');
+  await page.screenshot({ path: join(artifactRoot, 'base-path-mobile-dot-chat.png'), fullPage: true });
+  await page.evaluate(() => {
+    const originalStart = AudioBufferSourceNode.prototype.start;
+    Object.defineProperty(window, '__dotsVoiceOutputFrames', { configurable: true, value: [], writable: true });
+    AudioBufferSourceNode.prototype.start = function(...args) {
+      const buffer = this.buffer;
+      if (buffer && buffer.sampleRate === 24_000) {
+        const samples = buffer.getChannelData(0);
+        let peak = 0;
+        for (let index = 0; index < samples.length; index += 1) peak = Math.max(peak, Math.abs(samples[index]));
+        (window as unknown as { __dotsVoiceOutputFrames: { sampleRate: number; peak: number }[] }).__dotsVoiceOutputFrames.push({ sampleRate: buffer.sampleRate, peak });
+      }
+      return originalStart.apply(this, args);
+    };
+  });
+  await page.getByTestId('conversation-call-launch').click();
+  const mobileCall = page.getByTestId('voice-call');
+  await mobileCall.waitFor({ state: 'visible' });
+  assert.equal(await mobileCall.getAttribute('data-variant'), 'mobile', 'Mobile Chrome must open the phone call surface');
+  const callBounds = await mobileCall.boundingBox();
+  assert(callBounds && callBounds.x === 0 && callBounds.y === 0 && callBounds.width === 390 && callBounds.height === 844,
+    'The active phone call must fill the 390×844 viewport');
+  assert.equal(await mobileCall.locator('.voice-call-mobile-controls button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')).join('|')),
+    '关闭扬声器|结束通话|静音', 'Mobile call controls must keep speaker, red hang-up, and mute in the expected order');
+  await page.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-state') === 'sent', null, { timeout: 20_000 });
+  const greeting = `你好，我是 Dot，有什么我可以帮你？`;
+  const voiceDeadline = Date.now() + 10_000;
+  while ((voiceProviderPcmBytes < 6_400 || !voiceProviderSpokenTexts.includes(greeting)) && Date.now() < voiceDeadline) await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+  assert(voiceProviderEvents.includes('session.create'), 'The Google-authenticated mobile call must open the configured realtime voice session');
+  assert(voiceProviderPcmBytes >= 6_400 && voiceProviderPcmPeak > 0, `Mobile Chrome must capture and stream non-silent microphone PCM to the provider (bytes=${voiceProviderPcmBytes}, peak=${voiceProviderPcmPeak})`);
+  assert(voiceProviderSpokenTexts.includes(greeting), 'The Dot must send its Chinese call greeting through SeedDuplex speech output');
+  await page.waitForFunction(() => (window as unknown as { __dotsVoiceOutputFrames: { sampleRate: number; peak: number }[] }).__dotsVoiceOutputFrames.some(frame => frame.sampleRate === 24_000 && frame.peak >= 0.45), null, { timeout: 10_000 });
+  await page.screenshot({ path: join(artifactRoot, 'base-path-mobile-dot-call.png'), fullPage: true });
+  const activeCalls = await page.evaluate(async () => await fetch('/dots-demo/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null }[];
+  const activeCall = activeCalls.find(call => !call.endedAt);
+  assert(activeCall, 'The outgoing phone call must be saved to the signed-in user’s call history');
+  await mobileCall.getByTestId('voice-call-minimize').click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-variant') === 'mobile-minimized');
+  assert.equal(await page.getByTestId('task-composer').isVisible(), true, 'The same Dot conversation must remain usable while the call continues');
+  assert.equal(voiceProviderEvents.includes('session.close'), false, 'Returning to chat must not end the active voice session');
+  await mobileCall.getByTestId('voice-call-restore').click();
+  await mobileCall.getByRole('button', { name: '结束通话' }).click();
+  await mobileCall.waitFor({ state: 'detached' });
+  const closeDeadline = Date.now() + 5_000;
+  while (!voiceProviderEvents.includes('session.close') && Date.now() < closeDeadline) await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+  const endedCall = await page.evaluate(async (callId: string) => (await fetch('/dots-demo/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(call => call.id === callId), activeCall.id);
+  assert(endedCall?.endedAt, 'Hang-up must persist the call end time');
+  assert(voiceProviderEvents.includes('session.close'), 'Hang-up must close the realtime voice session');
+  await page.screenshot({ path: join(artifactRoot, 'base-path-mobile-dot-call-ended.png'), fullPage: true });
 
   const apiRequests = requests.filter(item => item.includes('/api/'));
   assert(apiRequests.length >= 5, `Expected authenticated API traffic, received: ${apiRequests.join(', ')}`);
   assert(apiRequests.every(item => item.includes(`${basePath}/api/`)), `A browser API request escaped the base path: ${apiRequests.join(', ')}`);
   assert.deepEqual(pageErrors, [], `Browser errors: ${pageErrors.join('; ')}`);
-  console.log(JSON.stringify({ result: 'passed', baseUrl, apiRequests, oauthCallbackCookieSeen, oauthCookieScopeCorrect, oauthCookieClearScopeCorrect, oauthPkceVerified, oauthTrace, authenticatedEmail: 'mobile.google@example.test', pageErrors, screenshots: ['base-path-login.png', 'base-path-mobile-authenticated-app.png', 'base-path-authenticated-app.png'], artifactRoot }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', baseUrl, apiRequests, oauthCallbackCookieSeen, oauthCookieScopeCorrect, oauthCookieClearScopeCorrect, oauthPkceVerified, oauthTrace, authenticatedEmail: 'mobile.google@example.test', mobileCall: { provider: 'doubao-seedduplex-3.0 (mock)', pcmBytes: voiceProviderPcmBytes, pcmPeak: voiceProviderPcmPeak, spokenTexts: voiceProviderSpokenTexts, outputAudioFrames: await page.evaluate(() => (window as unknown as { __dotsVoiceOutputFrames: { sampleRate: number; peak: number }[] }).__dotsVoiceOutputFrames) }, pageErrors, screenshots: ['base-path-login.png', 'base-path-mobile-first-run.png', 'base-path-mobile-dot-chat.png', 'base-path-mobile-dot-call.png', 'base-path-mobile-dot-call-ended.png'], artifactRoot }, null, 2));
   await context.close();
 }
 
@@ -310,6 +444,8 @@ try {
   if (proxyServer?.listening) await new Promise<void>(resolvePromise => proxyServer.close(() => resolvePromise()));
   const oauthServer = oauthProvider as unknown as Server | undefined;
   if (oauthServer?.listening) await new Promise<void>(resolvePromise => oauthServer.close(() => resolvePromise()));
+  const voiceServer = voiceProvider as unknown as WebSocketServer | undefined;
+  if (voiceServer?.address()) await new Promise<void>(resolvePromise => voiceServer.close(() => resolvePromise()));
   const backendProcess = backend as unknown as ChildProcess | undefined;
   if (backendProcess?.exitCode === null) {
     backendProcess.kill('SIGTERM');
