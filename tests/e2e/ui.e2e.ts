@@ -71,9 +71,11 @@ let browser: Browser | null = null;
 let alphaContext: BrowserContext | null = null;
 let betaContext: BrowserContext | null = null;
 let gammaContext: BrowserContext | null = null;
+let mobileContext: BrowserContext | null = null;
 let alphaPage: Page | null = null;
 let betaPage: Page | null = null;
 let gammaPage: Page | null = null;
+let mobilePage: Page | null = null;
 let baseUrl = '';
 let failure = '';
 let e2ePort = 0;
@@ -538,6 +540,25 @@ async function screenshot(page: Page, name: string) {
   screenshotNames.push(`screenshots/${name}.png`);
 }
 
+function browserVoiceMockScript() {
+  return [
+    '(() => {',
+    '  class FakeSpeechRecognition {',
+    '    constructor() { this.onresult = null; this.onerror = null; this.onend = null; }',
+    '    start() { window.__dotsRecognitionStarts += 1; window.__dotsVoiceEvents.push("listening"); window.__dotsFakeRecognition = this; }',
+    '    abort() {}',
+    '    emit(text) { const result = Object.assign([{ transcript: text }], { isFinal: true }); const event = Object.assign(new Event("result"), { resultIndex: 0, results: [result] }); this.onresult(event); }',
+    '  }',
+    '  Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: FakeSpeechRecognition });',
+    '  Object.defineProperty(window, "__dotsSpeechOutput", { configurable: true, value: [] });',
+    '  Object.defineProperty(window, "__dotsVoiceEvents", { configurable: true, value: [] });',
+    '  Object.defineProperty(window, "__dotsRecognitionStarts", { configurable: true, value: 0, writable: true });',
+    '  Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { cancel() {}, speak(utterance) { window.__dotsSpeechOutput.push(utterance.text); window.__dotsVoiceEvents.push("spoken:" + utterance.text); window.setTimeout(() => utterance.onend?.(), 0); } } });',
+    '  Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { constructor(text) { this.text = text; } } });',
+    '})()',
+  ].join('\n');
+}
+
 async function waitForComputerScreenshot(page: Page) {
   const screenshot = await page.waitForFunction(() => {
     const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
@@ -610,7 +631,18 @@ async function signIn(page: Page, email: string) {
   await navigation;
   await page.getByTestId('app-shell').waitFor({ state: 'visible', timeout: 15_000 });
   await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
-  await page.locator('.profile-link small').filter({ hasText: email }).waitFor({ state: 'visible' });
+  const profileEmail = page.locator('.profile-link small').filter({ hasText: email });
+  if (await profileEmail.isVisible()) return;
+  const mobileDotNav = page.getByTestId('mobile-dot-nav');
+  if (await mobileDotNav.isVisible()) {
+    await mobileDotNav.click();
+    await page.getByTestId('mobile-chat-menu-toggle').click();
+    const mobileNavigation = page.getByTestId('mobile-navigation');
+    await mobileNavigation.locator('.mobile-navigation-account small').filter({ hasText: email }).waitFor({ state: 'visible' });
+    await mobileNavigation.locator('.mobile-navigation-panel').getByRole('button', { name: '关闭导航菜单' }).click();
+    return;
+  }
+  await profileEmail.waitFor({ state: 'visible' });
 }
 
 async function createTask(page: Page, instruction: string, scheduled = false) {
@@ -1638,22 +1670,7 @@ try {
   });
 
   await recordStep('Voice calls dispatch tenant work, preserve in-call controls, and end without stopping assigned work', async () => {
-    const voiceMockScript = [
-      '(() => {',
-      '  class FakeSpeechRecognition {',
-      '    constructor() { this.onresult = null; this.onerror = null; this.onend = null; }',
-      '    start() { window.__dotsRecognitionStarts += 1; window.__dotsVoiceEvents.push("listening"); window.__dotsFakeRecognition = this; }',
-      '    abort() {}',
-      '    emit(text) { const result = Object.assign([{ transcript: text }], { isFinal: true }); const event = Object.assign(new Event("result"), { resultIndex: 0, results: [result] }); this.onresult(event); }',
-      '  }',
-      '  Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: FakeSpeechRecognition });',
-      '  Object.defineProperty(window, "__dotsSpeechOutput", { configurable: true, value: [] });',
-      '  Object.defineProperty(window, "__dotsVoiceEvents", { configurable: true, value: [] });',
-      '  Object.defineProperty(window, "__dotsRecognitionStarts", { configurable: true, value: 0, writable: true });',
-      '  Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { cancel() {}, speak(utterance) { window.__dotsSpeechOutput.push(utterance.text); window.__dotsVoiceEvents.push("spoken:" + utterance.text); window.setTimeout(() => utterance.onend?.(), 0); } } });',
-      '  Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { constructor(text) { this.text = text; } } });',
-      '})()',
-    ].join('\n');
+    const voiceMockScript = browserVoiceMockScript();
     await alphaPage!.evaluate((script: string) => window.eval(script), voiceMockScript);
     await openProfile(alphaPage!);
     const originalDotName = await alphaPage!.getByLabel('名字').inputValue();
@@ -1989,6 +2006,57 @@ try {
     await selectTenant(betaPage!, 'Beta workspace');
     const betaPersonalCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));
     assert.deepEqual(betaPersonalCalls, [], 'A different tenant must not read the call history');
+  });
+
+  await recordStep('Mobile Chrome E2E sign-in opens the Dot and completes an outgoing call', async () => {
+    mobileContext = await browser!.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 3,
+      isMobile: true,
+      hasTouch: true,
+      permissions: ['microphone'],
+    });
+    mobilePage = await mobileContext.newPage();
+    mobilePage.on('pageerror', error => pageErrors.push(`mobile: ${error.message}`));
+    await mobilePage.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    await mobilePage.getByTestId('e2e-sign-in').waitFor({ state: 'visible' });
+    assert.deepEqual(await mobilePage.evaluate(() => ({
+      width: window.innerWidth,
+      touch: navigator.maxTouchPoints > 0,
+      mobileLayout: window.matchMedia('(max-width: 520px)').matches,
+    })), { width: 390, touch: true, mobileLayout: true }, 'Chrome must run with a phone viewport and touch input, not only a resized desktop window');
+    const loginCard = await mobilePage.locator('.auth-card').boundingBox();
+    assert(loginCard && loginCard.x >= 0 && loginCard.x + loginCard.width <= 390, 'The mobile login card must fit the phone viewport');
+    const loginButton = await mobilePage.getByTestId('e2e-sign-in').boundingBox();
+    assert(loginButton && loginButton.height >= 44, 'The mobile sign-in action must be touch-sized');
+    assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'The mobile login view must not scroll horizontally');
+    await screenshot(mobilePage, 'mobile-chrome-login-390');
+
+    await signIn(mobilePage, 'alpha@example.test');
+    await mobilePage.getByTestId('conversation-call-launch').waitFor({ state: 'visible' });
+    assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'The signed-in Dot conversation must fit without horizontal overflow');
+    await screenshot(mobilePage, 'mobile-chrome-dot-chat-390');
+
+    await mobilePage.evaluate((script: string) => window.eval(script), browserVoiceMockScript());
+    const callsBefore = await mobilePage.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string }[]).length);
+    await mobilePage.getByTestId('conversation-call-launch').click();
+    const call = mobilePage.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await mobilePage.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeRecognition), null, { timeout: 10_000 });
+    assert.equal(await call.getAttribute('data-variant'), 'mobile', 'A real mobile Chrome context must use the phone call surface');
+    const callBounds = await call.boundingBox();
+    assert(callBounds && callBounds.x === 0 && callBounds.y === 0 && callBounds.width === 390 && callBounds.height === 844, 'The mobile call surface must fill the phone viewport');
+    assert.equal(await call.locator('.voice-call-mobile-controls button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')).join('|')),
+      '关闭扬声器|结束通话|静音', 'Phone call controls must keep speaker, red hang-up, and mute in the observed order');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await call.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'hidden' });
+    const mobileCallHistory = await mobilePage.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null }[];
+    assert.equal(mobileCallHistory.length, callsBefore + 1, 'Starting a call from the mobile chat must create one durable call record');
+    assert(mobileCallHistory.at(-1)?.endedAt, 'The red hang-up action must close and persist the mobile call');
+    await screenshot(mobilePage, 'mobile-chrome-call-ended-390');
   });
 
   await recordStep('A user reply resumes a waiting task while retaining the original goal', async () => {
@@ -2913,6 +2981,8 @@ try {
   if (alphaPage) await alphaPage.screenshot({ path: join(artifactRoot, 'failure-alpha.png'), fullPage: true }).catch(() => undefined);
   if (betaPage) await betaPage.screenshot({ path: join(artifactRoot, 'failure-beta.png'), fullPage: true }).catch(() => undefined);
   if (gammaPage) await gammaPage.screenshot({ path: join(artifactRoot, 'failure-gamma.png'), fullPage: true }).catch(() => undefined);
+  const failedMobilePage = mobilePage as unknown as Page | null;
+  if (failedMobilePage) await failedMobilePage.screenshot({ path: join(artifactRoot, 'failure-mobile.png'), fullPage: true }).catch(() => undefined);
   throw error;
 } finally {
   releaseHeldPauseModel();
@@ -2926,6 +2996,7 @@ try {
   await alphaContext?.close().catch(() => undefined);
   await betaContext?.close().catch(() => undefined);
   await gammaContext?.close().catch(() => undefined);
+  await (mobileContext as BrowserContext | null)?.close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));

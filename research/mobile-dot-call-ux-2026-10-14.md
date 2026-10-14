@@ -18,3 +18,7 @@ The existing desktop compact floating call remains unchanged. Both layouts use t
 ## Acceptance evidence
 
 The browser E2E should cover the mobile login layout, 390 px chat layout without horizontal overflow, conversation-header Call entry, call status and timer, exact speaker/end/mute order, toggle behavior, hangup persistence, and unchanged compact desktop call card. Playwright mobile viewport emulation validates responsive UI and application state; it is not evidence of physical Android/iOS microphone hardware behavior or a signed-in public VPS deployment.
+
+## Follow-up verification
+
+On 2026-10-14, the local Chrome E2E added a separate Chromium context with `isMobile`, touch input, a 390×844 CSS viewport, 3× device scale, and microphone permission. It opened the mobile login page, signed in through the E2E-only test control, verified the account in the mobile navigation drawer, opened the Dot conversation, started a call from its header, toggled mute, ended the call, and confirmed one ended owner-scoped call record. The full browser suite passed 43 steps. This does not exercise Google's live OAuth redirect, a physical phone's microphone/speaker, or a paid voice-provider connection; public deployment was not changed in this follow-up.
