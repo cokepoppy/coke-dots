@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DotAppearance, Snapshot, Task, VoiceCallSession } from '../shared/types.ts';
-import { appFetch } from './api.ts';
+import { appFetch, appPath } from './api.ts';
 import { DotAvatar } from './DotAvatar.tsx';
 import './voice-call.css';
 
