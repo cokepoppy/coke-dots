@@ -58,6 +58,8 @@ let heldPauseModelAborted = false;
 let pauseModelHeld = false;
 let heldVoiceModelRelease: (() => void) | null = null;
 let voiceModelHeld = false;
+let heldMobileVoiceModelRelease: (() => void) | null = null;
+let mobileVoiceModelHeld = false;
 let heldStopModelRelease: (() => void) | null = null;
 let heldStopModelAborted = false;
 let parallelModelReleases: (() => void)[] = [];
@@ -125,6 +127,8 @@ async function startMockModel() {
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
         const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
         const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
+        const isMobileVoiceRequest = prompt.includes('帮我准备明天的会议资料');
+        const isMobileVoiceReply = isMobileVoiceRequest && prompt.includes('User reply:');
         const isVolcVoiceResponse = prompt.includes('请用中文整理本周人工智能产品更新的三个要点');
         const isSeedDuplexClarification = prompt.includes('请用云电脑打开网页并告诉我标题。') && !prompt.includes('User reply:');
         const isSeedDuplexClarificationReply = prompt.includes('User reply: 请打开 https://example.com/。');
@@ -153,6 +157,11 @@ async function startMockModel() {
           await new Promise<void>(resolvePromise => { heldVoiceModelRelease = resolvePromise; });
           heldVoiceModelRelease = null;
         }
+        if (isMobileVoiceReply && !mobileVoiceModelHeld) {
+          mobileVoiceModelHeld = true;
+          await new Promise<void>(resolvePromise => { heldMobileVoiceModelRelease = resolvePromise; });
+          heldMobileVoiceModelRelease = null;
+        }
         if (isParallelTask) await new Promise<void>(resolvePromise => parallelModelReleases.push(resolvePromise));
         if (delegatedChild) {
           delegatedModelPrompts.push(prompt);
@@ -161,13 +170,19 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isKeychainResilienceTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isMobileVoiceReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isKeychainResilienceTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
         ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isKeychainResilienceTask ? '登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        if (isMobileVoiceRequest) {
+          decision.status = isMobileVoiceReply ? 'done' : 'waiting';
+          decision.message = isMobileVoiceReply
+            ? '好的，我会把产品进展、风险和待决策事项整理成会前资料。'
+            : '你希望会前资料重点覆盖哪些主题？';
+        }
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -2046,16 +2061,70 @@ try {
     assert.equal(await call.getAttribute('data-variant'), 'mobile', 'A real mobile Chrome context must use the phone call surface');
     const callBounds = await call.boundingBox();
     assert(callBounds && callBounds.x === 0 && callBounds.y === 0 && callBounds.width === 390 && callBounds.height === 844, 'The mobile call surface must fill the phone viewport');
+    await waitFor(async () => {
+      const output = await mobilePage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+      return output.some(text => text.startsWith('你好，我是 ') && text.endsWith('有什么我可以帮你？'));
+    }, 10_000);
+    const mobileGreetingSequence = await mobilePage.evaluate(() => (window as unknown as { __dotsVoiceEvents: string[] }).__dotsVoiceEvents.slice(0, 2));
+    assert.deepEqual(mobileGreetingSequence.map(event => event === 'listening' ? 'listening' : event.startsWith('spoken:你好，我是 ') ? 'spoken:greeting' : event),
+      ['spoken:greeting', 'listening'], 'The mobile call must speak its Chinese greeting before starting speech recognition');
+    await screenshot(mobilePage, 'mobile-chrome-call-active-390');
+    await call.screenshot({ path: join(screenshotsDir, 'mobile-chrome-call-active-390.png') });
+    screenshotNames.push('mobile-chrome-call-active-390.png');
     assert.equal(await call.locator('.voice-call-mobile-controls button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')).join('|')),
       '关闭扬声器|结束通话|静音', 'Phone call controls must keep speaker, red hang-up, and mute in the observed order');
     await call.getByRole('button', { name: '静音' }).click();
     assert.equal(await call.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
     await call.getByRole('button', { name: '取消静音' }).click();
+
+    const mobileVoiceGoal = '帮我准备明天的会议资料';
+    const mobileVoiceReply = '重点整理产品进展、项目风险和需要我决定的事项。';
+    await mobilePage.evaluate((text: string) => {
+      const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
+      pageWindow.__dotsFakeRecognition?.emit(text);
+    }, mobileVoiceGoal);
+    await mobilePage.locator('.timeline .message.user p').filter({ hasText: mobileVoiceGoal }).waitFor({ state: 'visible' });
+    await mobilePage.locator('.timeline .message.dot p').filter({ hasText: '你希望会前资料重点覆盖哪些主题？' }).waitFor({ state: 'visible', timeout: 15_000 });
+    const waitingMobileVoiceTask = await mobilePage.evaluate(async (text: string) => {
+      const snapshot = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string; status: string }[] };
+      return snapshot.tasks.find(task => task.instruction === text);
+    }, mobileVoiceGoal);
+    assert(waitingMobileVoiceTask && waitingMobileVoiceTask.status === 'waiting', 'The phone transcript must create a persisted task that can ask the user a follow-up question');
+    await waitFor(async () => {
+      const output = await mobilePage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+      return output.includes('你希望会前资料重点覆盖哪些主题？');
+    }, 10_000);
+    assert.equal(await call.isVisible(), true, 'The Dot clarification must be spoken without leaving the mobile phone call');
+
+    await mobilePage.evaluate((text: string) => {
+      const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
+      pageWindow.__dotsFakeRecognition?.emit(text);
+    }, mobileVoiceReply);
+    await mobilePage.locator('.timeline .message.user p').filter({ hasText: mobileVoiceReply }).waitFor({ state: 'visible' });
+    await waitFor(() => Boolean(heldMobileVoiceModelRelease), 10_000);
+    assert.equal(await call.isVisible(), true, 'The mobile call must stay available while the Agent works on the spoken follow-up');
+    assert.match(await mobilePage.getByTestId('voice-call-transcript').getAttribute('data-task-status') || '', /^Dot 正在处理：/);
+
+    // Hanging up ends the voice channel, while the tenant-scoped Agent task continues.
     await call.getByRole('button', { name: '结束通话' }).click();
     await call.waitFor({ state: 'hidden' });
+    const mobileCallRecord = await mobilePage.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null }[];
+    assert.equal(mobileCallRecord.length, callsBefore + 1, 'Starting a call from the mobile chat must create one durable call record');
+    assert(mobileCallRecord.at(-1)?.endedAt, 'The red hang-up action must close and persist the mobile call');
+    const releaseMobileVoiceModel = heldMobileVoiceModelRelease;
+    assert(releaseMobileVoiceModel, 'The test Agent reply should still be pending when the user hangs up');
+    releaseMobileVoiceModel();
+    await mobilePage.waitForFunction(async ({ id, text }: { id: string; text: string }) => {
+      const snapshot = await (await fetch('/api/state')).json() as { tasks: { id: string; instruction: string; status: string; result: string | null }[] };
+      const task = snapshot.tasks.find(item => item.id === id && item.instruction === text);
+      return task?.status === 'done' && task.result === '好的，我会把产品进展、风险和待决策事项整理成会前资料。';
+    }, { id: waitingMobileVoiceTask.id, text: mobileVoiceGoal }, { timeout: 15_000 });
+    await mobilePage.locator('.timeline .message.dot p').filter({ hasText: '好的，我会把产品进展、风险和待决策事项整理成会前资料。' }).waitFor({ state: 'visible' });
+    const mobileVoicePrompt = mockModelPrompts.filter(prompt => prompt.includes(mobileVoiceGoal));
+    assert.equal(mobileVoicePrompt.length, 2, 'The spoken clarification must resume the original task instead of creating a second task');
+    assert.match(mobileVoicePrompt[1] || '', /Task: 帮我准备明天的会议资料[\s\S]*User reply: 重点整理产品进展、项目风险和需要我决定的事项。/);
     const mobileCallHistory = await mobilePage.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null }[];
-    assert.equal(mobileCallHistory.length, callsBefore + 1, 'Starting a call from the mobile chat must create one durable call record');
-    assert(mobileCallHistory.at(-1)?.endedAt, 'The red hang-up action must close and persist the mobile call');
+    assert.deepEqual(mobileCallHistory, mobileCallRecord, 'Finishing the background task must not reopen or mutate the ended phone call');
     await screenshot(mobilePage, 'mobile-chrome-call-ended-390');
   });
 

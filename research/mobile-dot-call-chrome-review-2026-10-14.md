@@ -29,3 +29,9 @@ The YouTube video is compressed and does not demonstrate the mobile layout. The 
 ## Verification boundary
 
 Local Playwright E2E uses the repository's isolated test server and test sign-in. It can prove responsive layout, click navigation, the Dot conversation, and call UI state. It does not prove physical phone Google OAuth, OS microphone permission, speech recognition, or live Pi dispatch; those require a signed-in mobile Chrome run against the deployed HTTPS site and must be reported separately.
+
+## Mobile spoken-task round trip (2026-10-14)
+
+The follow-up Chrome test uses a 390×844 phone context with touch, DPR 3, and a granted test microphone permission. It speaks a Chinese task request through a deterministic browser-recognition fixture; the Dot asks a Chinese clarification, the second utterance resumes the same persisted task, and the task is held in progress while the user hangs up. Releasing the test Agent after hangup completes that task and places its Chinese result in the same chat timeline. The test also records the active phone-call screen. The complete browser suite passed 43 steps and the cloud-computer E2E passed.
+
+This is simulated speech/model input against the local isolated E2E server. It proves the phone layout, click path, transcript-to-task dispatch, clarification/resume, hangup persistence, and post-call completion. It does not prove physical-phone microphone capture, live speech-provider audio, Google OAuth against Google's servers, Pi execution on the VPS, or a public deployment. OpenAI's current [Dots guide](https://learn.chatgpt.com/docs/dots) says mobile web is unsupported, so Chrome support here remains Coke Dots' responsive-web adaptation.
