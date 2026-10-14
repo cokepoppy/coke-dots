@@ -182,7 +182,7 @@ async function startRemote() {
                 signalRecoveryStarted?.();
                 await recoveryRelease;
               }
-              return { status: 'done', message: `Cloud task completed in ${body.engine}`, sessionId: 'cloud-session-1' };
+              return { status: 'done', message: body.engine === 'pi' ? '俄罗斯方块已创建，可以在下方预览或在云电脑中打开。' : `Cloud task completed in ${body.engine}`, sessionId: 'cloud-session-1' };
             })();
             agentTaskExecutions.set(key, execution);
           }
@@ -226,7 +226,7 @@ async function startApp() {
       DOTS_LINUX_DESKTOP_TEST_WORKER_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/worker/`,
       DOTS_LINUX_DESKTOP_TEST_NOVNC_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/novnc/`,
       DOTS_LINUX_DESKTOP_TEST_AGENT_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/agent/`,
-      DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
+      DOTS_DESKTOP_AGENT_ADAPTERS: 'pi,dsh',
       DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: 'node', args: ['/tmp/dots-dsh-adapter.mjs'] } }),
       GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://api.deepseek.com', DOTS_MODEL_API_KEY: 'cloud-e2e-shared-api-key', DOTS_MODEL: 'deepseek-flash', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
@@ -301,6 +301,8 @@ try {
   await signIn(page, 'cloud-alpha@example.test');
   const engineState = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[] };
   const availableEngines = engineState.availableEngines;
+  assert(availableEngines.includes('pi'), 'The cloud workspace should expose its configured Pi adapter');
+  assert(engineState.remoteEngines.includes('pi'), 'The cloud workspace should identify Pi as running in its cloud computer');
   assert(availableEngines.includes('dsh'), 'The cloud workspace should expose its configured DeepSeek Harness adapter');
   assert(engineState.remoteEngines.includes('dsh'), 'The cloud workspace should identify DeepSeek Harness as running in its cloud computer');
   assert.equal(availableEngines.includes('claude'), false, 'Claude Code must remain unavailable in the cloud workspace UI and API');
@@ -368,7 +370,7 @@ try {
   await page.locator('img[alt="Linux 云桌面画面"]').waitFor({ state: 'visible' });
 
   const created = await page.evaluate(async () => {
-    const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'E2E cloud Agent task', engine: 'dsh' }) });
+    const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: '请在云电脑中创建俄罗斯方块游戏文件', engine: 'pi' }) });
     return { status: response.status, task: await response.json() as { id: string } };
   });
   assert.equal(created.status, 201);
@@ -379,7 +381,7 @@ try {
   }, created.task.id, { timeout: 20_000 });
   const debugState = await page.evaluate(async () => await fetch('/api/state').then(response => response.json()) as { availableEngines: string[]; tasks: { id: string; engine: string; status: string; result: string | null; error: string | null }[] });
   assert.equal(agentCalls.length, 1, `Expected one remote Agent dispatch; created=${JSON.stringify(created)}, state=${JSON.stringify(debugState.tasks.find(task => task.id === created.task.id))}, engines=${JSON.stringify(debugState.availableEngines)}, calls=${JSON.stringify(agentCalls)}, remotePaths=${JSON.stringify(remoteHttpPaths.slice(-40))}, logs=${logs.join('')}`);
-  assert.equal(agentCalls[0].engine, 'dsh');
+  assert.equal(agentCalls[0].engine, 'pi');
   assert.equal(agentCalls[0].cwd, `tasks/${created.task.id}`);
   assert.equal('computer' in agentCalls[0], false, 'The host must not forward a raw browser Worker token to the cloud Agent runtime');
   await page.screenshot({ path: join(artifacts, '03-agent-task-done.png') });
