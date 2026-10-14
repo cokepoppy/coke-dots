@@ -71,6 +71,9 @@ COPY --chmod=0644 deploy/linux-desktop/chrome-theme/manifest.json /opt/coke-dots
 USER 1000:1000
 WORKDIR /workspace
 
+ARG COKE_DOTS_GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision=$COKE_DOTS_GIT_REVISION
+
 EXPOSE 6080 8082 8083
 HEALTHCHECK --interval=10s --timeout=3s --start-period=40s --retries=6 CMD curl --fail --silent http://127.0.0.1:8082/readyz >/dev/null || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start-dots-desktop"]
