@@ -91,6 +91,7 @@ function App() {
   const [computerAccessOpen, setComputerAccessOpen] = useState(false);
   const [computerConnectedToast, setComputerConnectedToast] = useState(false);
   const [voiceCallOpen, setVoiceCallOpen] = useState(false);
+  const [voiceCallAudioContext, setVoiceCallAudioContext] = useState<AudioContext | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [slackModalOpen, setSlackModalOpen] = useState(false);
   const [view, setView] = useState<'home' | 'chat' | 'activity' | 'scheduled' | 'computer' | 'profile' | 'pages'>('home');
@@ -344,6 +345,16 @@ function App() {
   }
 
   function startDotCall() {
+    let audioContext: AudioContext | null = null;
+    try {
+      if (typeof window.AudioContext === 'function') {
+        audioContext = new window.AudioContext({ latencyHint: 'interactive' });
+        void audioContext.resume().catch(() => {});
+      }
+    } catch {
+      // The call screen will show a tap-to-enable recovery if this browser blocks audio startup.
+    }
+    setVoiceCallAudioContext(audioContext);
     setSelected(null);
     setSelectedPageId(null);
     setView('chat');
@@ -487,7 +498,7 @@ function App() {
     {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, false, true)} />}
     {computerAccessOpen && <DotComputerChoice localComputer={state.computerAccess.localComputer} mode="settings" onSave={saveComputerAccess} onCancel={() => setComputerAccessOpen(false)} />}
     {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, !state.profile.onboardingCompletedAt)} />}
-    {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} onTranscript={submitVoiceTranscript} onClose={() => { setVoiceCallOpen(false); void refreshVoiceCalls().catch(reason => setError(reason instanceof Error ? reason.message : String(reason))); }} />}
+    {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} initialAudioContext={voiceCallAudioContext} onTranscript={submitVoiceTranscript} onClose={() => { setVoiceCallOpen(false); setVoiceCallAudioContext(null); void refreshVoiceCalls().catch(reason => setError(reason instanceof Error ? reason.message : String(reason))); }} />}
     {slackModalOpen && authContext && <SlackSetupModal key={authContext.tenant.id} dotName={state.profile.name} canManage={['owner', 'admin'].includes(authContext.tenant.role)} onClose={() => setSlackModalOpen(false)} onConnectSlack={() => {
       try { sessionStorage.setItem('coke-dots:slack-return-state', JSON.stringify({ view, selected })); } catch { /* Restore the home view if session storage is unavailable. */ }
       window.location.assign(appPath('/api/slack/oauth/start'));

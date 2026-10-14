@@ -410,10 +410,35 @@ async function main() {
       return originalStart.apply(this, args);
     };
   });
+  await page.evaluate(() => {
+    const trace = { constructedDuringCallClick: false, resumedDuringCallClick: false, reusedForMicrophone: false };
+    Object.defineProperty(window, '__dotsMobileAudioActivation', { configurable: true, value: trace });
+    const OriginalAudioContext = window.AudioContext;
+    window.AudioContext = new Proxy(OriginalAudioContext, {
+      construct(target, args) {
+        const context = Reflect.construct(target, args) as AudioContext;
+        trace.constructedDuringCallClick = navigator.userActivation.isActive;
+        const resume = context.resume.bind(context);
+        context.resume = () => {
+          trace.resumedDuringCallClick ||= navigator.userActivation.isActive;
+          return resume();
+        };
+        const createMediaStreamSource = context.createMediaStreamSource.bind(context);
+        context.createMediaStreamSource = stream => {
+          trace.reusedForMicrophone = true;
+          return createMediaStreamSource(stream);
+        };
+        return context;
+      },
+    }) as typeof AudioContext;
+  });
   await page.getByTestId('conversation-call-launch').click();
   const mobileCall = page.getByTestId('voice-call');
   await mobileCall.waitFor({ state: 'visible' });
   assert.equal(await mobileCall.getAttribute('data-variant'), 'mobile', 'Mobile Chrome must open the phone call surface');
+  const mobileAudioActivation = await page.evaluate(() => (window as unknown as { __dotsMobileAudioActivation: { constructedDuringCallClick: boolean; resumedDuringCallClick: boolean; reusedForMicrophone: boolean } }).__dotsMobileAudioActivation);
+  assert.equal(mobileAudioActivation.constructedDuringCallClick, true, 'The phone call must create its Web Audio context during the Call tap');
+  assert.equal(mobileAudioActivation.resumedDuringCallClick, true, 'The phone call must resume Web Audio during the Call tap');
   const callBounds = await mobileCall.boundingBox();
   assert(callBounds && callBounds.x === 0 && callBounds.y === 0 && callBounds.width === 390 && callBounds.height === 844,
     'The active phone call must fill the 390×844 viewport');
@@ -434,6 +459,8 @@ async function main() {
     'Every mobile call control must stay touch-sized and within the narrow viewport');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-state') === 'sent', null, { timeout: 20_000 });
+  const audioContextReused = await page.evaluate(() => (window as unknown as { __dotsMobileAudioActivation: { reusedForMicrophone: boolean } }).__dotsMobileAudioActivation.reusedForMicrophone);
+  assert.equal(audioContextReused, true, 'SeedDuplex must reuse the Web Audio context created by the phone Call tap after network setup');
   const greeting = `你好，我是 Dot，有什么我可以帮你？`;
   const voiceDeadline = Date.now() + 10_000;
   while ((voiceProviderPcmBytes < 6_400 || !voiceProviderSpokenTexts.includes(greeting)) && Date.now() < voiceDeadline) await new Promise(resolvePromise => setTimeout(resolvePromise, 50));

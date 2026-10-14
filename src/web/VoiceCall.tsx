@@ -23,9 +23,10 @@ type RecognitionConstructor = new () => RecognitionLike;
 type SpeechWindow = Window & { SpeechRecognition?: RecognitionConstructor; webkitSpeechRecognition?: RecognitionConstructor };
 const MOBILE_CALL_LAYOUT_QUERY = '(max-width: 520px), (max-width: 1024px) and (pointer: coarse)';
 
-export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
+export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscript, onClose }: {
   dotName: string;
   appearance: DotAppearance;
+  initialAudioContext: AudioContext | null;
   onTranscript: (text: string, waitingTaskId: string | undefined, callId: string, turnId: string) => Promise<Task>;
   onClose: () => void;
 }) {
@@ -38,6 +39,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   const [transcript, setTranscript] = useState('');
   const [taskStatus, setTaskStatus] = useState('');
   const [callError, setCallError] = useState('');
+  const [playbackNeedsGesture, setPlaybackNeedsGesture] = useState(false);
   const [micCaptureState, setMicCaptureState] = useState<'waiting' | 'sent' | 'muted' | 'no-frames' | 'context-suspended'>('waiting');
   const [micLevelPercent, setMicLevelPercent] = useState(0);
   const [voiceProvider, setVoiceProvider] = useState<'browser' | 'qwen' | 'volcengine'>('browser');
@@ -53,6 +55,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
   const volcWebSocketRef = useRef<WebSocket | null>(null);
   const volcDuplexRef = useRef(false);
   const volcAudioContextRef = useRef<AudioContext | null>(null);
+  const prewarmedAudioContextRef = useRef<AudioContext | null>(initialAudioContext);
   const volcAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const volcAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const volcOutputSourcesRef = useRef(new Set<AudioBufferSourceNode>());
@@ -380,10 +383,14 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       peer.ontrack = event => {
         const audio = new Audio();
         audio.autoplay = true;
+        audio.setAttribute('playsinline', '');
         audio.muted = !speakerRef.current;
         audio.srcObject = event.streams[0] || new MediaStream([event.track]);
         remoteAudioRef.current = audio;
-        void audio.play().catch(() => setStatus('请点击通话页面以启用扬声器播放'));
+        void audio.play().then(() => setPlaybackNeedsGesture(false)).catch(() => {
+          setPlaybackNeedsGesture(true);
+          setStatus('请点击启用语音播放');
+        });
       };
       peer.onconnectionstatechange = () => {
         if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') setCallError('Qwen 实时语音网络连接中断');
@@ -457,7 +464,10 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       if (!activeRef.current) { stream.getTracks().forEach(track => track.stop()); return; }
       localStreamRef.current = stream;
-      const context = new AudioContext({ latencyHint: 'interactive' });
+      const context = prewarmedAudioContextRef.current && prewarmedAudioContextRef.current.state !== 'closed'
+        ? prewarmedAudioContextRef.current
+        : new AudioContext({ latencyHint: 'interactive' });
+      prewarmedAudioContextRef.current = null;
       volcAudioContextRef.current = context;
       const source = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(1024, 1, 1);
@@ -518,9 +528,10 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
           }
         }
       };
-      void context.resume().catch(() => {
+      if (context.state === 'suspended') void context.resume().catch(() => {
+        setPlaybackNeedsGesture(true);
         setMicCaptureState('context-suspended');
-        setStatus('浏览器音频处理未启动');
+        setStatus('点击启用通话音频');
       });
       await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -645,6 +656,11 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
         if (selectedProvider === 'volcengine' && !provider.configured) throw new Error(provider.model === 'doubao-realtime-dialogue-2.0'
           ? '服务端尚未配置火山引擎 O2.0 实时语音所需的 App ID 和 Access Token。'
           : '服务端尚未配置火山引擎 SeedDuplex 实时语音 API Key。');
+        if (selectedProvider === 'browser') {
+          const context = prewarmedAudioContextRef.current;
+          prewarmedAudioContextRef.current = null;
+          if (context && context.state !== 'closed') void context.close();
+        }
         const response = await appFetch('/api/voice-calls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
         const call = await response.json() as VoiceCallSession & { error?: string };
         if (!response.ok) throw new Error(call.error || 'HTTP ' + response.status);
@@ -706,6 +722,9 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       recognitionRef.current = null;
       stopTaskFollowers();
       stopRealtimeTransport();
+      const prewarmedContext = prewarmedAudioContextRef.current;
+      prewarmedAudioContextRef.current = null;
+      if (prewarmedContext && prewarmedContext.state !== 'closed') void prewarmedContext.close();
       speakingRef.current = false;
       speechGenerationRef.current += 1;
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
@@ -750,12 +769,29 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       volcOutputSourcesRef.current.clear();
       volcPlaybackAtRef.current = volcAudioContextRef.current?.currentTime || 0;
     }
-    if (providerRef.current === 'volcengine' && next && volcAudioContextRef.current?.state === 'suspended') void volcAudioContextRef.current.resume();
+    if (providerRef.current === 'volcengine' && next && volcAudioContextRef.current?.state === 'suspended') void volcAudioContextRef.current.resume()
+      .then(() => setPlaybackNeedsGesture(false))
+      .catch(() => { setPlaybackNeedsGesture(true); setStatus('点击启用通话音频'); });
     if (providerRef.current === 'browser' && !next && 'speechSynthesis' in window) {
       speechGenerationRef.current += 1;
       speakingRef.current = false;
       window.speechSynthesis.cancel();
       if (activeRef.current && !mutedRef.current) window.setTimeout(() => startRecognitionRef.current(), 180);
+    }
+  }
+
+  async function enableAudioPlayback() {
+    try {
+      const context = volcAudioContextRef.current || prewarmedAudioContextRef.current;
+      if (context?.state === 'suspended') await context.resume();
+      if (remoteAudioRef.current) await remoteAudioRef.current.play();
+      if (context?.state === 'running' || remoteAudioRef.current) {
+        setPlaybackNeedsGesture(false);
+        if (activeRef.current && !callError) setStatus(mutedRef.current ? '麦克风已静音' : '正在聆听');
+      }
+    } catch {
+      setPlaybackNeedsGesture(true);
+      setStatus('无法播放语音，请检查浏览器的声音权限');
     }
   }
 
@@ -813,6 +849,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       </div>
       <time className="voice-call-mobile-timer" data-testid="voice-call-timer">{Number(minutes)}:{seconds}</time>
       {liveCallText}
+      {playbackNeedsGesture && <button type="button" className="voice-call-audio-enable" onClick={() => void enableAudioPlayback()}>点击启用语音播放</button>}
       {callError && <p className="voice-call-card-error" role="alert">{callError}</p>}
       <div className="voice-call-mobile-controls" aria-label="通话控制">
         <div className="voice-call-mobile-control">{speakerButton}<small>{speakerOn ? '扬声器' : '已关闭'}</small></div>
@@ -831,6 +868,7 @@ export function VoiceCall({ dotName, appearance, onTranscript, onClose }: {
       <span>麦克风</span><div role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={micLevelPercent}><i style={{ width: `${micLevelPercent}%` }} /></div><small>{micCaptureState === 'sent' ? '音频帧已发送' : micCaptureState === 'muted' ? '已静音' : micCaptureState === 'no-frames' ? '未收到音频帧' : micCaptureState === 'context-suspended' ? '浏览器音频未启动' : '等待音频帧'}</small>
     </div>}
     {liveCallText}
+    {playbackNeedsGesture && <button type="button" className="voice-call-audio-enable" onClick={() => void enableAudioPlayback()}>点击启用语音播放</button>}
     {callError && <p className="voice-call-card-error" role="alert">{callError}</p>}
     <div className="voice-call-card-controls">
       {muteButton}{speakerButton}{endButton}
