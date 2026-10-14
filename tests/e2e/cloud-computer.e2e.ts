@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
-import { Entry } from '../../src/server/keyring.ts';
+import { K3dModelSecretStore } from '../../src/server/k3d-model-secret.ts';
 import { PNG } from 'pngjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -19,6 +19,7 @@ const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `linux-cloud-computer
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-cloud-e2e-'));
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
+const modelSecretDirectory = join(tempRoot, 'model-secrets');
 const signingKey = 'coke-dots-linux-cloud-computer-e2e-signing-key';
 const screen = makeScreen();
 const machines = new Map<string, { owner: 'agent' | 'user'; url: string; title: string }>();
@@ -41,9 +42,11 @@ let remotePort = 0;
 let baseUrl = '';
 const logs: string[] = [];
 
+process.env.NODE_ENV = 'test';
+process.env.DOTS_TEST_MODEL_SECRET_DIR = modelSecretDirectory;
 await writeFile(envFile, '');
 await mkdir(artifacts, { recursive: true });
-new Entry(process.env.DOTS_KEYCHAIN_SERVICE!, 'shared-model-api-key').setPassword('cloud-e2e-shared-api-key');
+new K3dModelSecretStore().save('cloud-e2e-shared-api-key');
 
 function makeScreen() {
   const png = new PNG({ width: 1440, height: 900 });

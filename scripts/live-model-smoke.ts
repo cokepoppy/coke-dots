@@ -3,17 +3,42 @@ import { execFileSync } from 'node:child_process';
 import { redactSecret } from '../src/shared/redact-secret.ts';
 
 const stdinKey = process.argv.slice(2).includes('--stdin-key');
-const apiKey = (stdinKey ? await readHiddenInput() : process.env.DOTS_LIVE_MODEL_API_KEY || '').trim();
-if (!apiKey) {
-  console.error('Set DOTS_LIVE_MODEL_API_KEY or run interactively with --stdin-key.');
-  process.exitCode = 2;
+const k3dSecret = process.argv.slice(2).includes('--k3d-secret');
+if (process.argv.slice(2).includes('--keychain')) throw new Error('The Model API key is stored in the K3D Secret; use --k3d-secret.');
+if (stdinKey && k3dSecret) throw new Error('Choose either --stdin-key or --k3d-secret.');
+if (k3dSecret) {
+  await runFromK3dSecret();
 } else {
-  await run(apiKey);
+  const apiKey = (stdinKey ? await readHiddenInput() : process.env.DOTS_LIVE_MODEL_API_KEY || '').trim();
+  if (!apiKey) {
+    console.error('Set DOTS_LIVE_MODEL_API_KEY or run interactively with --stdin-key.');
+    process.exitCode = 2;
+  } else {
+    await run(apiKey, (process.env.DOTS_LIVE_MODEL_BASE_URL || 'https://api.deepseek.com').trim().replace(/\/$/, ''), (process.env.DOTS_LIVE_MODEL || 'deepseek-flash').trim());
+  }
 }
 
-async function run(apiKey: string) {
-  const baseUrl = (process.env.DOTS_LIVE_MODEL_BASE_URL || 'https://api.deepseek.com').trim().replace(/\/$/, '');
-  const model = (process.env.DOTS_LIVE_MODEL || 'deepseek-flash').trim();
+async function runFromK3dSecret() {
+  const { resolve } = await import('node:path');
+  const { Store } = await import('../src/server/store.ts');
+  const { K3dModelSecretStore } = await import('../src/server/k3d-model-secret.ts');
+  const store = new Store(resolve(process.env.DOTS_DATA_DIR || './data'));
+  try {
+    const baseUrl = store.getAppSetting('modelBaseUrl') || '';
+    const model = store.getAppSetting('modelName') || '';
+    const secret = new K3dModelSecretStore().read(true);
+    if (!baseUrl || !model || !secret.value) {
+      console.error(secret.status === 'unavailable'
+        ? 'The Coke Dots instance K3D Secret is unavailable; check the current kubectl context and cluster.'
+        : 'The Coke Dots instance needs a shared model name and K3D Secret before this check can run.');
+      process.exitCode = 2;
+      return;
+    }
+    await run(secret.value, baseUrl, model);
+  } finally { store.close(); }
+}
+
+async function run(apiKey: string, baseUrl: string, model: string) {
   let endpoint: URL;
   try { endpoint = new URL(baseUrl); }
   catch { console.error('DOTS_LIVE_MODEL_BASE_URL must be a valid HTTPS URL.'); process.exitCode = 2; return; }

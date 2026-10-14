@@ -15,12 +15,15 @@ const baseEnvironment = {
 
 function createIsolatedEnvironment() {
   const testKeyringDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-test-keyring-'));
+  const testModelSecretDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-test-model-secret-'));
   return {
     testKeyringDirectory,
+    testModelSecretDirectory,
     environment: {
       ...baseEnvironment,
       DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.test-${randomBytes(8).toString('hex')}`,
       DOTS_TEST_KEYRING_DIR: testKeyringDirectory,
+      DOTS_TEST_MODEL_SECRET_DIR: testModelSecretDirectory,
     },
   };
 }
@@ -55,5 +58,6 @@ for (const [command, args] of commands) {
     }
   } finally {
     rmSync(isolated.testKeyringDirectory, { recursive: true, force: true });
+    rmSync(isolated.testModelSecretDirectory, { recursive: true, force: true });
   }
 }

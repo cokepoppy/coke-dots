@@ -71,7 +71,7 @@ export interface Snapshot {
   entries: Entry[];
   configured: boolean;
   availableEngines: Engine[];
-  modelSettings: { baseUrl: string; model: string; hasKey: boolean; adminTenantId: string | null; apiKeyStatus: 'available' | 'missing' | 'unreadable' };
+  modelSettings: { baseUrl: string; model: string; hasKey: boolean; adminTenantId: string | null; apiKeyStatus: 'available' | 'missing' | 'unreadable'; secretStoreStatus?: 'configured' | 'missing' | 'unavailable' };
   remoteEngines: Engine[];
 }
 

@@ -6,7 +6,7 @@ An evidence-led, local-first personal agent project. Features are developed on s
 
 Requires Node.js 24 or newer. Copy `.env.example` to a local environment file (do not commit OAuth credentials), register a Google OAuth web client, and set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and the exact callback URI `http://127.0.0.1:4317/auth/google/callback`. Then run `npm install` and `npm run dev`, and open `http://127.0.0.1:5173`. Google sign-in requests only OpenID Connect identity, email, and profile scopes.
 
-The Model API is configured once for the Coke Dots server and reused by every Google account and workspace. Endpoint and model name are stored in instance-scoped SQLite settings; the API key is stored in the Mac's Keychain. The workspace that first saves the shared configuration becomes its administrator. Other workspaces can use the model but cannot edit its shared credentials. Optional `DOTS_MODEL*` environment settings provide a shared server bootstrap configuration.
+The Model API is configured once for the Coke Dots instance and reused by every Google account and workspace. Endpoint and model name are stored in instance-scoped SQLite settings; the API key is stored in the K3D Kubernetes Secret `coke-dots-system/shared-model-api`. Pi and DeepSeek Harness receive the credential in memory when the control service starts a tenant cloud Agent. The workspace that first saves the shared configuration becomes its administrator. Other workspaces can use the model but cannot edit its shared credentials.
 
 The background worker and web UI are separate processes. Closing the browser window leaves the worker running. `DOTS_DATA_DIR` defaults to `./data`; the SQLite database is never committed. Starting the server again recovers any task left in `working` state. Without a configured model, tasks explicitly fail and can be retried after configuration.
 
@@ -28,7 +28,7 @@ Activity can stop an individual one-off task, including a delegated child. Stop 
 
 Each task records its selected engine and its own workspace. The adapter contract returns a durable state (`done`, `waiting`, `scheduled`, or `delegating`), message, optional next check time, optional native session ID and up to three bounded child instructions. A child can choose one of the engines currently available to its tenant, or inherit its parent's engine. The UI shows available engines and keeps each task's choice on retries and restarts.
 
-- **Model API:** OpenAI-compatible Chat Completions via the instance-wide shared settings or environment variables. The shared profile saves only model name and endpoint in instance-scoped SQLite; the API key goes to macOS Keychain. This backend has no tools.
+- **Model API:** OpenAI-compatible Chat Completions via instance-wide shared settings. The shared profile saves model name and endpoint in instance-scoped SQLite and stores the API key in K3D Secret. This backend has no tools.
 - **Pi:** Install the optional `@mariozechner/pi-coding-agent` package, configure Pi's model credentials, and set `DOTS_PI_ENABLED=1`. The adapter supplies Pi's read-only tools and stores its file-backed native session under the task's tenant-scoped workspace (`.coke-dots/pi-sessions`). Task retries and scheduled runs reopen that session by ID; if the ID was not committed before a restart, a single existing session is recovered. Ambiguous or cross-task session IDs fail closed.
 - **DeepSeek Harness:** Install the optional SDK/runtime and set `DOTS_DSH_BIN` plus `DOTS_DSH_READ_ONLY_CONFIG` to a separately verified, read-only profile. The SDK preserves a native session ID. This adapter is opt-in because the chosen runtime profile determines its tools and credentials.
 
@@ -38,7 +38,7 @@ All engines must return the same structured task decision. A missing engine, inv
 
 ### Live model smoke check
 
-`npm run test:live-model` exercises the same OpenAI-compatible adapter used by background tasks and requires `DOTS_LIVE_MODEL_API_KEY`. The defaults match the current [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/): base URL `https://api.deepseek.com` and model `deepseek-flash`. Override them with `DOTS_LIVE_MODEL_BASE_URL` and `DOTS_LIVE_MODEL`. The command makes one small request, verifies the structured task response and a unique marker, and prints status, model, marker presence, and elapsed time without printing the response or key. For interactive use, pass `--stdin-key`; the command temporarily disables terminal echo while reading the key, then restores the original terminal settings. The key is placed in this process environment only and is not written to SQLite or Keychain.
+`npm run test:live-model -- --k3d-secret` exercises the same OpenAI-compatible adapter used by background tasks using the configured K3D Secret and instance model settings. The defaults match the current [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/): base URL `https://api.deepseek.com` and model `deepseek-flash`. The command makes one small request, verifies the structured task response and a unique marker, and prints status, model, marker presence, and elapsed time without printing the response or key. For a separate credential, pass `--stdin-key`; input is hidden and kept in process memory only.
 
 ## Accounts and tenant isolation
 
