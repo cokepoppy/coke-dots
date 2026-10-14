@@ -52,3 +52,9 @@ After local commit `1aec6ae` (mounted-path Google OAuth fix), `npm run test:e2e:
 Signed-in Chrome DevTools mobile emulation at 390 CSS px showed the responsive Dot conversation, menu, and Call header. This confirms the public frontend bundle matches the current local build; this read-only check did not place a public voice call. No server restart, K3D change, or paid provider request was made.
 
 Fresh local checks on `1aec6ae`: `npm test` passed 84 tests; `npm run test:e2e` passed 43 browser steps and 13 Linux cloud-computer checks, including the mobile SeedDuplex fake-audio Agent round-trip; `npm run test:e2e:base-path` passed the 390x844 mobile mock-OIDC/PKCE login and mounted callback/session checks. These remain local mock-provider tests, not physical-phone or public voice-turn proof. The retained mobile call screen is `artifacts/e2e/2026-10-14T15-35-04-848Z/screenshots/mobile-chrome-call-active-390.png`.
+
+## Narrow-phone regression coverage (2026-10-15)
+
+The mobile Chrome E2E now also checks login, signed-in Dot chat, and the active call at 320×640 CSS pixels. It asserts no horizontal overflow, a touch-sized chat Call entry, a full-screen call surface, and all three speaker/end/mute controls within the viewport. `npm test` passed 84 tests; the final `npm run test:e2e` passed all 43 browser steps and 13 cloud-computer checks; `npm run test:e2e:base-path` passed the 390×844 mobile mock Google OAuth/PKCE flow. The 320-pixel active-call capture is `artifacts/e2e/2026-10-14T15-59-47-703Z/screenshots/mobile-chrome-call-active-320.png`.
+
+This only adds narrow-viewport regression coverage; the responsive mobile login, conversation, and call implementation was already present on the tested `main` baseline `05cd09c`. These checks use local browser emulation and mock voice/OAuth services. They do not establish physical-phone microphone behavior, a live Google OAuth session, or a paid public voice call.

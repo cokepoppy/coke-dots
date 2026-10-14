@@ -2035,6 +2035,16 @@ try {
     mobilePage.on('pageerror', error => pageErrors.push(`mobile: ${error.message}`));
     await mobilePage.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await mobilePage.getByTestId('e2e-sign-in').waitFor({ state: 'visible' });
+    await mobilePage.setViewportSize({ width: 320, height: 640 });
+    const narrowLoginCard = await mobilePage.locator('.auth-card').boundingBox();
+    const narrowLoginButton = await mobilePage.getByTestId('e2e-sign-in').boundingBox();
+    assert(narrowLoginCard && narrowLoginCard.x >= 0 && narrowLoginCard.x + narrowLoginCard.width <= 320,
+      'The mobile login card must also fit a narrow 320-pixel phone viewport');
+    assert(narrowLoginButton && narrowLoginButton.height >= 44,
+      'The Google sign-in control must remain touch-sized on a narrow phone');
+    assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'The narrow mobile login view must not scroll horizontally');
+    await mobilePage.setViewportSize({ width: 390, height: 844 });
     assert.deepEqual(await mobilePage.evaluate(() => ({
       width: window.innerWidth,
       touch: navigator.maxTouchPoints > 0,
@@ -2050,6 +2060,13 @@ try {
     await signIn(mobilePage, 'alpha@example.test');
     await mobilePage.getByTestId('conversation-call-launch').waitFor({ state: 'visible' });
     assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'The signed-in Dot conversation must fit without horizontal overflow');
+    await mobilePage.setViewportSize({ width: 320, height: 640 });
+    const narrowChatCallButton = await mobilePage.getByTestId('conversation-call-launch').boundingBox();
+    assert(narrowChatCallButton && narrowChatCallButton.width >= 44 && narrowChatCallButton.height >= 44,
+      'The Dot conversation call entry must remain touch-sized on a narrow phone');
+    assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'The authenticated Dot conversation must not overflow a narrow phone viewport');
+    await mobilePage.setViewportSize({ width: 390, height: 844 });
     await screenshot(mobilePage, 'mobile-chrome-dot-chat-390');
 
     await mobilePage.evaluate((script: string) => window.eval(script), browserVoiceMockScript());
@@ -2068,6 +2085,20 @@ try {
     const mobileGreetingSequence = await mobilePage.evaluate(() => (window as unknown as { __dotsVoiceEvents: string[] }).__dotsVoiceEvents.slice(0, 2));
     assert.deepEqual(mobileGreetingSequence.map(event => event === 'listening' ? 'listening' : event.startsWith('spoken:你好，我是 ') ? 'spoken:greeting' : event),
       ['spoken:greeting', 'listening'], 'The mobile call must speak its Chinese greeting before starting speech recognition');
+    await mobilePage.setViewportSize({ width: 320, height: 640 });
+    const narrowCallBounds = await call.boundingBox();
+    const narrowCallControls = await call.locator('.voice-call-mobile-controls').boundingBox();
+    assert(narrowCallBounds && narrowCallBounds.x === 0 && narrowCallBounds.y === 0 && narrowCallBounds.width === 320 && narrowCallBounds.height === 640,
+      'The phone call surface must fill a narrow 320×640 viewport');
+    assert(narrowCallControls && narrowCallControls.x >= 0 && narrowCallControls.y >= 0 && narrowCallControls.x + narrowCallControls.width <= 320 && narrowCallControls.y + narrowCallControls.height <= 640,
+      'Speaker, red hang-up, and mute must stay inside the narrow phone viewport');
+    assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'The narrow mobile call must not scroll horizontally');
+    assert.equal(await call.locator('.voice-call-mobile-controls button').count(), 3,
+      'All three phone call controls must remain available on a narrow viewport');
+    await call.screenshot({ path: join(screenshotsDir, 'mobile-chrome-call-active-320.png') });
+    screenshotNames.push('mobile-chrome-call-active-320.png');
+    await mobilePage.setViewportSize({ width: 390, height: 844 });
     await screenshot(mobilePage, 'mobile-chrome-call-active-390');
     await call.screenshot({ path: join(screenshotsDir, 'mobile-chrome-call-active-390.png') });
     screenshotNames.push('mobile-chrome-call-active-390.png');
