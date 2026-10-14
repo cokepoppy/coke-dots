@@ -38,7 +38,16 @@ OpenAI 的 [Meet dots 文档](https://learn.chatgpt.com/docs/dots) 当前说明�
 - 使用 Chrome fake media stream 与本地 SeedDuplex WebSocket 模拟器，确认浏览器送出非静音 PCM、收到并调度 24 kHz 返回音频、Dot 中文问候经过 TTS 事件发出。
 - 验证返回聊天时通话不结束，挂断后数据库通话记录有结束时间，语音会话已关闭。
 
-此路径验证前端、基础路径代理、登录态、WebSocket 升级、麦克风捕获和调用控制。模拟服务不验证真实 Google 账号、真实手机硬件、蜂窝/公网网络或火山生产语音质量；真实公网验收需另行使用已登录 Chrome 和真实服务。
+此路径验证前端、基础路径代理、登录态、WebSocket 升级、麦克风捕获和调用控制。模拟服务不验证真实 Google 账号、真实手机硬件、蜂窝/公网网络或火山生产语音质量。
+
+## 公网 Chrome 手动验收（2026-10-15）
+
+使用现有已登录 Chrome 打开 `https://codex.cokeagent.com/dots-demo/`，通过 Chrome 设备工具栏以 390×844 CSS px 模拟手机；这是**手动签入公网浏览器测试**，不是实体手机测试，也不是 dedicated-storage-state 自动化测试。
+
+- 当前 `main` 与测试功能分支为 `d80672a7bf2a0b6f2e8a06588fec29355b5502a7`。公网 `index-BGpV3z0L.js` 与本地 `dist/assets/index-BGpV3z0L.js` 的 SHA-256 相同（`a7cc7ce98584d13e5b5071d5b55e4f8e25ef70ccd876fcfb085ac0b57d6fe3d3`）；CSS `index-DPp-EZ40.css` 也一致（`df6d85bfde2c9bc7ac5347848232ed8b40e991e18c912ba704753c244dcc4913`）。
+- 在 Dot 对话页点击通话图标后，页面切到完整手机通话画面，显示 Dot、连接状态“正在聆听”、计时器，以及扬声器、红色挂断、静音控件。Chrome 显示麦克风正在使用。
+- DevTools Network 记录到 `GET /api/voice/provider` 返回 `200`、`POST /api/voice-calls` 返回 `201`、`volcengine-stream` WebSocket 升级返回 `101`。点击红色挂断后通话画面关闭，通话列表刷新返回 `200`。
+- 本次没有说出语音指令，也没有创建 Agent 任务；因此没有验证公网 ASR 识别内容、Pi 任务执行、任务结果播报的可听质量或实体手机麦克风表现。上一节的本地模拟 E2E 覆盖语音轮次与任务/结果流程，但不能替代这些公网边界。
 
 ## 参考
 
