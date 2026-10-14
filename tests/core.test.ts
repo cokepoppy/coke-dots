@@ -526,6 +526,85 @@ test('background worker stores real model result and schedules a future run', as
   }
 });
 
+test('one-time agent follow-up keeps its checkpoint and resumes the same task after restart', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-self-wake-'));
+  const envKeys = ['DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+  const prompts: string[] = [];
+  const checkpoint = '我已检查当前审批记录，30 分钟后会再次确认状态。';
+  const finalResult = '审批已通过，发布计划已经更新。';
+  const modelServer = createServer(async (req, res) => {
+    assert.equal(req.url, '/chat/completions');
+    let raw = '';
+    for await (const chunk of req) raw += String(chunk);
+    const payload = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+    prompts.push(payload.messages?.find(message => message.role === 'user')?.content || '');
+    const result = prompts.length === 1
+      ? { status: 'scheduled', message: checkpoint, nextMinutes: 30 }
+      : { status: 'done', message: finalResult };
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }));
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'self-wake-test-model';
+  process.env.DOTS_MODEL_API_KEY = 'self-wake-test-key';
+
+  let store = new Store(directory);
+  const user = store.signInGoogle({ subject: 'self-wake-owner', email: 'self-wake@example.test', name: 'Wake Owner' });
+  const competingStore = new Store(directory);
+  const task = store.createTask('Continue checking the approval response', null, 'model', user.tenant.id);
+  const worker = new Worker(store, () => {});
+  const competingWorker = new Worker(competingStore, () => {});
+  let resumedWorker: Worker | null = null;
+  let storeClosed = false;
+  let competingStoreClosed = false;
+  try {
+    worker.start();
+    competingWorker.start();
+    await waitFor(() => store.getTask(task.id, user.tenant.id)?.status === 'scheduled');
+    const sleeping = store.getTask(task.id, user.tenant.id)!;
+    assert.equal(sleeping.result, checkpoint, 'The sleeping checkpoint must be visible and durable');
+    assert.equal(sleeping.scheduleMinutes, null, 'An agent-selected wake-up must stay a one-off follow-up');
+    assert.equal(sleeping.scheduleSpec, null);
+    assert.ok(sleeping.nextRunAt && sleeping.nextRunAt > new Date().toISOString());
+    assert.match(prompts[0] || '', /Prior result: \(none\)/);
+    assert.equal(prompts.length, 1, 'Overlapping worker ticks executed the same task more than once');
+
+    worker.stop(); competingWorker.stop();
+    competingStore.close(); competingStoreClosed = true;
+    store.close(); storeClosed = true;
+    store = new Store(directory);
+    storeClosed = false;
+    store.db.prepare("UPDATE tasks SET next_run_at=? WHERE tenant_id=? AND id=? AND status='scheduled'")
+      .run(new Date(Date.now() - 1_000).toISOString(), user.tenant.id, task.id);
+    resumedWorker = new Worker(store, () => {});
+    resumedWorker.start();
+    await waitFor(() => store.getTask(task.id, user.tenant.id)?.status === 'done');
+
+    const completed = store.getTask(task.id, user.tenant.id)!;
+    assert.equal(completed.id, task.id, 'A wake-up should continue the original responsibility');
+    assert.equal(completed.result, finalResult);
+    assert.equal(completed.nextRunAt, null);
+    assert.equal(prompts.length, 2, 'A due follow-up should run once after restart');
+    assert.ok(prompts[1]?.includes(`Prior result: ${checkpoint}`), 'The resumed agent did not receive its saved checkpoint');
+    assert.deepEqual(store.snapshot(false, [], { baseUrl: '', model: '', hasKey: false, adminTenantId: null, apiKeyStatus: 'missing' }, user.tenant.id).entries
+      .filter(entry => entry.taskId === task.id && entry.kind === 'dot').map(entry => entry.body), [checkpoint, finalResult]);
+  } finally {
+    worker.stop(); competingWorker.stop(); resumedWorker?.stop();
+    if (!competingStoreClosed) competingStore.close();
+    if (!storeClosed) store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('background worker persists the next daily occurrence in the selected time zone', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-calendar-worker-'));
   const modelServer = createServer(async (_req, res) => {

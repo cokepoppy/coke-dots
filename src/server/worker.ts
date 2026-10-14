@@ -32,6 +32,7 @@ export class Worker {
       if (this.active.has(task.id)) continue;
       const tenantActive = this.activeByTenant.get(task.tenantId) || 0;
       if (tenantActive >= Worker.maxActiveTasksPerTenant) continue;
+      if (!this.store.claimDueTask(task.id, task.tenantId)) continue;
       this.active.add(task.id);
       const controller = new AbortController();
       this.abortControllers.set(task.id, controller);
@@ -165,7 +166,7 @@ export class Worker {
         outputMessage += `\n[[page:${page.id}|${encodeURIComponent(page.title)}]]`;
       }
       this.store.updateTask(task.id, {
-        status, result: decision.status === 'done' ? decision.message : current.result,
+        status, result: ['done', 'scheduled'].includes(decision.status) ? decision.message : current.result,
         nextRunAt, error: null, agentSessionId: decision.sessionId || current.agentSessionId,
       }, task.tenantId);
       this.store.addEntry('dot', outputMessage, task.id, task.tenantId);
