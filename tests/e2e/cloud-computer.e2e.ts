@@ -354,9 +354,13 @@ try {
   await page.getByTestId('dot-context-panel').waitFor({ state: 'visible' });
   await page.getByTestId(`context-output-task-${created.task.id}`).click();
   await page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]').waitFor({ state: 'visible' });
-  await page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]').getByRole('button', { name: '预览' }).click();
   await page.frameLocator('[data-testid="task-artifact-preview"]').locator('#demo-artifact').filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible' });
-  assert.equal(await page.frameLocator('[data-testid="task-artifact-preview"]').locator('#demo-artifact').textContent(), '俄罗斯方块预览', 'Clicking preview must render the task file inside the signed-in conversation');
+  assert.equal(await page.frameLocator('[data-testid="task-artifact-preview"]').locator('#demo-artifact').textContent(), '俄罗斯方块预览', 'Selecting a completed task with an HTML artifact must open its preview inline in the signed-in conversation');
+  const tetrisArtifact = page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]');
+  await tetrisArtifact.getByRole('button', { name: '收起预览' }).click();
+  await page.locator('[data-testid="task-artifact-preview"]').waitFor({ state: 'detached' });
+  await tetrisArtifact.getByRole('button', { name: '预览' }).click();
+  await page.frameLocator('[data-testid="task-artifact-preview"]').locator('#demo-artifact').filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible' });
   await page.screenshot({ path: join(artifacts, '03-agent-task-done.png') });
   await page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]').getByTestId('open-artifact-in-computer').click();
   await page.getByTestId('computer-workspace').waitFor({ state: 'visible' });
