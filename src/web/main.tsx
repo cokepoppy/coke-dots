@@ -465,7 +465,7 @@ function LoginScreen({ googleConfigured, e2eAuthAvailable }: { googleConfigured:
     setDesktopError(''); setDesktopPending(true);
     const random = new Uint8Array(32); crypto.getRandomValues(random);
     const handoffToken = Array.from(random, byte => byte.toString(16).padStart(2, '0')).join('');
-    const authorization = new URL('/api/auth/desktop/start', window.location.href);
+    const authorization = new URL(appPath('/api/auth/desktop/start'), window.location.href);
     authorization.searchParams.set('handoffToken', handoffToken);
     const popup = window.open(authorization.toString(), '_blank');
     if (!popup && !isElectron) { setDesktopPending(false); setDesktopError('浏览器阻止了登录窗口，请允许弹出窗口后重试。'); return; }

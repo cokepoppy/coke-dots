@@ -1,6 +1,7 @@
 import { appFetch } from './api.ts';
 import { useEffect, useState } from 'react';
 import type { ActionRuleMode, TenantActionRule } from '../shared/types.ts';
+import { appFetch } from './api.ts';
 import './permission-rules.css';
 
 const modeLabels: Record<ActionRuleMode, string> = {
