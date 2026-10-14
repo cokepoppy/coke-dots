@@ -14,6 +14,7 @@ import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { apiErrorResponse } from './computer-errors.ts';
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
+import { GmailService } from './gmail.ts';
 import { negotiateQwenRealtime, VoiceProviderError, voiceProviderInfo } from './voice-provider.ts';
 import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
@@ -43,6 +44,7 @@ if (modelSettingsSource) {
 if (!priorModelAdminTenantId && migratedModelKeyTenantId) store.setAppSetting('modelSettingsAdminTenantId', migratedModelKeyTenantId);
 const auth = new AuthService(store, port);
 const slack = new SlackService(store, port);
+const gmail = new GmailService(store, port);
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
@@ -89,7 +91,8 @@ const sessionHeartbeat = setInterval(() => {
   }
 }, 30_000);
 
-const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor);
+const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor,
+  (userId, prompt, signal) => gmail.contextForTask(userId, prompt, signal));
 const watchRunner = new WatchRunner(store, publish);
 
 const server = createServer(async (req, res) => {
@@ -99,7 +102,10 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${host}:${port}`);
   const path = url.pathname;
 
-  if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
+  if (path === '/auth/google/callback' && req.method === 'GET') {
+    if ((url.searchParams.get('state') || '').startsWith('gmail_')) return gmail.finish(req, res, url);
+    return auth.finish(req, res, url);
+  }
   if (path === '/auth/slack/callback' && req.method === 'GET') return slack.finish(req, res, url, auth.session(req));
   if (!path.startsWith('/api/')) return serveStatic(req, res);
   if (path === '/api/health' && req.method === 'GET') return reply(res, 200, { ok: true });
@@ -132,6 +138,14 @@ const server = createServer(async (req, res) => {
   const session = auth.session(req);
   if (!session) return reply(res, 401, { error: '请先使用 Google 登录' });
   if (!validMutationOrigin(req)) return reply(res, 403, { error: '请求来源无效' });
+
+  if (path === '/api/gmail' && req.method === 'GET') return reply(res, 200, gmail.snapshot(session.user.id));
+  if (path === '/api/gmail/oauth/start' && req.method === 'GET') return gmail.begin(req, res, session);
+  if (path === '/api/gmail' && req.method === 'DELETE') {
+    gmail.disconnect(session.user.id);
+    publish();
+    return reply(res, 200, { ok: true });
+  }
 
   if (path === '/api/slack' && req.method === 'GET') return reply(res, 200, slack.snapshot(session.tenant.id));
   if (path === '/api/slack/oauth/start' && req.method === 'GET') return slack.begin(req, res, session);

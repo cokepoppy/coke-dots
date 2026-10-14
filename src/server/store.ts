@@ -13,6 +13,8 @@ export interface WorkspaceInvitation { tenantId: string; tenantName?: string; em
 export interface TenantMemory { id: string; tenantId: string; note: string; createdBy: string; createdByName: string; createdAt: string; updatedAt: string }
 export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantSummary; expiresAt: string }
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
+export interface GmailOAuthFlow { stateHash: string; userId: string; codeVerifier: string; expiresAt: string; returnTo: string }
+export interface GmailConnection { userId: string; email: string; connectedAt: string; scopes: string[] }
 export interface SlackOAuthFlow { stateHash: string; tenantId: string; userId: string; expiresAt: string; returnTo: string }
 export interface SlackInstallation { tenantId: string; teamId: string; teamName: string; scopes: string[]; installedAt: string; contactEnabled: boolean }
 export interface StoredTaskAttachment extends AttachmentSummary { tenantId: string; uploadedBy: string; taskId: string | null; content: Uint8Array; createdAt: string }
@@ -52,6 +54,13 @@ export class Store {
       CREATE TABLE IF NOT EXISTS oauth_flows (
         state_hash TEXT PRIMARY KEY, nonce TEXT NOT NULL, code_verifier TEXT NOT NULL, expires_at TEXT NOT NULL, handoff_hash TEXT, return_to TEXT
       );
+      CREATE TABLE IF NOT EXISTS gmail_oauth_flows (
+        state_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), code_verifier TEXT NOT NULL,
+        expires_at TEXT NOT NULL, return_to TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS gmail_connections (
+        user_id TEXT PRIMARY KEY REFERENCES users(id), email TEXT NOT NULL, connected_at TEXT NOT NULL, scopes_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS slack_oauth_flows (
         state_hash TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
         expires_at TEXT NOT NULL, return_to TEXT NOT NULL
@@ -71,7 +80,8 @@ export class Store {
         status TEXT NOT NULL, priority INTEGER NOT NULL, next_run_at TEXT,
         schedule_minutes INTEGER, result TEXT, error TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT, parent_task_id TEXT
+        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT, parent_task_id TEXT,
+        created_by_user_id TEXT REFERENCES users(id)
       );
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'legacy', task_id TEXT,
@@ -154,6 +164,7 @@ export class Store {
     this.addColumnIfMissing('tasks', 'agent_session_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
     this.addColumnIfMissing('tasks', 'parent_task_id', 'TEXT');
+    this.addColumnIfMissing('tasks', 'created_by_user_id', 'TEXT REFERENCES users(id)');
     this.addColumnIfMissing('page_action_approvals', 'decided_by', 'TEXT REFERENCES users(id)');
     this.addColumnIfMissing('tenant_profiles', 'eyes', "TEXT NOT NULL DEFAULT 'classic'");
     this.addColumnIfMissing('tenant_profiles', 'glasses', "TEXT NOT NULL DEFAULT 'none'");
@@ -232,6 +243,36 @@ export class Store {
     this.db.prepare('DELETE FROM oauth_flows WHERE state_hash=?').run(stateHash);
     if (!row || row.expires_at <= now) return null;
     return { nonce: row.nonce, codeVerifier: row.code_verifier, expiresAt: row.expires_at, handoffHash: row.handoff_hash, returnTo: row.return_to };
+  }
+
+  createGmailOAuthFlow(flow: GmailOAuthFlow) {
+    this.db.prepare('INSERT INTO gmail_oauth_flows(state_hash,user_id,code_verifier,expires_at,return_to) VALUES (?,?,?,?,?)')
+      .run(flow.stateHash, flow.userId, flow.codeVerifier, flow.expiresAt, flow.returnTo);
+  }
+
+  consumeGmailOAuthFlow(stateHash: string, now = new Date().toISOString()): Omit<GmailOAuthFlow, 'stateHash'> | null {
+    const row = this.db.prepare('SELECT user_id,code_verifier,expires_at,return_to FROM gmail_oauth_flows WHERE state_hash=?').get(stateHash) as
+      { user_id: string; code_verifier: string; expires_at: string; return_to: string } | undefined;
+    this.db.prepare('DELETE FROM gmail_oauth_flows WHERE state_hash=?').run(stateHash);
+    if (!row || row.expires_at <= now) return null;
+    return { userId: row.user_id, codeVerifier: row.code_verifier, expiresAt: row.expires_at, returnTo: row.return_to };
+  }
+
+  gmailConnection(userId: string): GmailConnection | null {
+    const row = this.db.prepare('SELECT user_id AS userId,email,connected_at AS connectedAt,scopes_json AS scopesJson FROM gmail_connections WHERE user_id=?').get(userId) as
+      { userId: string; email: string; connectedAt: string; scopesJson: string } | undefined;
+    return row ? { userId: row.userId, email: row.email, connectedAt: row.connectedAt, scopes: JSON.parse(row.scopesJson) as string[] } : null;
+  }
+
+  connectGmail(input: GmailConnection) {
+    this.db.prepare(`INSERT INTO gmail_connections(user_id,email,connected_at,scopes_json) VALUES (?,?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET email=excluded.email,connected_at=excluded.connected_at,scopes_json=excluded.scopes_json`)
+      .run(input.userId, input.email, input.connectedAt, JSON.stringify(input.scopes));
+  }
+
+  disconnectGmail(userId: string) {
+    this.db.prepare('DELETE FROM gmail_oauth_flows WHERE user_id=?').run(userId);
+    this.db.prepare('DELETE FROM gmail_connections WHERE user_id=?').run(userId);
   }
 
   createSlackOAuthFlow(flow: SlackOAuthFlow) {
@@ -571,8 +612,8 @@ export class Store {
       } else {
         const id = randomUUID();
         const title = transcript.split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
-        this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(id, input.tenantId, title, transcript, 'queued', 0, now, null, null, null, now, now, input.engine, null, null, null);
+        this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id,created_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(id, input.tenantId, title, transcript, 'queued', 0, now, null, null, null, now, now, input.engine, null, null, null, input.userId);
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,?)')
           .run(input.tenantId, id, 'user', transcript, now, '[]');
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,?)')
@@ -808,7 +849,7 @@ export class Store {
     return this.tenantPage(tenantId, id)!;
   }
 
-  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], uploaderId = ''): Task {
+  createTask(instruction: string, scheduleMinutes: number | null = null, engine: Engine = 'model', tenantId = 'legacy', scheduleSpec: ScheduleSpec | null = null, firstRunAt: string | null = null, attachmentIds: string[] = [], creatorUserId = ''): Task {
     if (!isEngine(engine)) throw new Error('任务内核无效');
     const now = new Date().toISOString();
     const id = randomUUID();
@@ -819,19 +860,19 @@ export class Store {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       if (attachmentIds.length) {
-        if (!uploaderId) throw new Error('上传附件的用户无效');
+        if (!creatorUserId) throw new Error('上传附件的用户无效');
         const placeholders = attachmentIds.map(() => '?').join(',');
-        const owned = this.db.prepare(`SELECT id FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).all(tenantId, uploaderId, ...attachmentIds) as { id: string }[];
+        const owned = this.db.prepare(`SELECT id FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).all(tenantId, creatorUserId, ...attachmentIds) as { id: string }[];
         if (owned.length !== attachmentIds.length) throw new Error('一个或多个附件已失效或不属于当前工作区');
-        const total = this.db.prepare(`SELECT COALESCE(SUM(size),0) AS total FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).get(tenantId, uploaderId, ...attachmentIds) as { total: number };
+        const total = this.db.prepare(`SELECT COALESCE(SUM(size),0) AS total FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).get(tenantId, creatorUserId, ...attachmentIds) as { total: number };
         if (total.total > 512 * 1024) throw new Error('附件总大小不能超过 512 KB');
       }
-      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null);
+      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,created_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null, creatorUserId || null);
       if (attachmentIds.length) {
         const placeholders = attachmentIds.map(() => '?').join(',');
         this.db.prepare(`UPDATE task_attachments SET task_id=? WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`)
-          .run(id, tenantId, uploaderId, ...attachmentIds);
+          .run(id, tenantId, creatorUserId, ...attachmentIds);
       }
       this.addEntry('user', instruction.trim(), id, tenantId, attachmentIds);
       this.addEntry('system', taskSchedule ? `已安排：${describeSchedule(taskSchedule)}。` : '已加入工作队列。', id, tenantId);
@@ -887,13 +928,14 @@ export class Store {
       if (!parent || parent.status !== 'working' || parent.parentTaskId || scheduleForTask(parent.scheduleSpec, parent.scheduleMinutes)) throw new Error('当前工作不能委派子任务');
       if (!isEngine(parent.engine)) throw new Error('已停用的内核不能继续委派子任务');
       if (this.delegatedTasks(parentId, tenantId).length) throw new Error('此工作已经委派过子任务');
+      const creatorUserId = this.taskCreatorUserId(parentId, tenantId);
       const children: Task[] = [];
       for (const delegated of delegations) {
         const id = randomUUID();
         const title = delegated.title.trim();
         const instruction = delegated.instruction.trim();
-        this.db.prepare('INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-          .run(id, tenantId, title, instruction, 'queued', parent.priority, now, null, null, null, now, now, delegated.engine || parent.engine, null, null, parentId);
+        this.db.prepare('INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id,created_by_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, tenantId, title, instruction, 'queued', parent.priority, now, null, null, null, now, now, delegated.engine || parent.engine, null, null, parentId, creatorUserId);
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
           .run(tenantId, id, 'system', `由「${parent.title}」委派；结果将返回给主任务。`, now);
         children.push(this.getTask(id, tenantId)!);
@@ -936,6 +978,11 @@ export class Store {
   getTask(id: string, tenantId = 'legacy'): Task | null {
     const row = this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, id) as Record<string, unknown> | undefined;
     return row ? toTask(row) : null;
+  }
+
+  taskCreatorUserId(id: string, tenantId: string): string | null {
+    const row = this.db.prepare('SELECT created_by_user_id AS userId FROM tasks WHERE id=? AND tenant_id=?').get(id, tenantId) as { userId: string | null } | undefined;
+    return row?.userId || null;
   }
 
   dueTasks(now = new Date().toISOString()): Task[] {
