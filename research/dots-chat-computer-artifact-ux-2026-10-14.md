@@ -1,6 +1,6 @@
 # Dots conversation, cloud computer, and generated-file UX
 
-Reviewed: 2026-10-14. This note records the layout decision and file-delivery behavior implemented on `feature/chat-computer-artifact-delivery`.
+Reviewed: 2026-10-14. This note records the layout decision and file-delivery behavior implemented on `feature/chat-artifact-live-runtime`.
 
 ## Evidence reviewed
 
@@ -8,9 +8,9 @@ Reviewed: 2026-10-14. This note records the layout decision and file-delivery be
 | --- | --- | --- |
 | [OpenAI: Connect computers and apps to your dot](https://learn.chatgpt.com/docs/dots/computers-and-apps), sections “Use the cloud computer” and “Cloud threads” | The profile's Computers entry opens a separate cloud-computer view. Opening the computer does not hand over control; Take over and Return control are explicit actions. The cloud computer owns its files and browser sessions. | Official written product behavior; it does not specify the exact responsive layout or every file-preview state. |
 | [OpenAI: Tasks and memory](https://learn.chatgpt.com/docs/dots/tasks-and-memory), example around its task sidebar | The Dot profile context includes Computers, Recent activity, and Outputs. A task can be opened to inspect progress, files, results, or requests for input. | The page example is an illustration, not a CSS specification. |
-| [John Aspinall hands-on video](https://www.youtube.com/watch?v=Q9tF0R8d_Co), 04:42–04:50 | At 04:42 a distinct browser desktop is visible with “Roger has control” and Take over. Around 04:50 the desktop remains while ownership changes to “You have control” and Return control. | Chrome/YouTube composite, compressed; it does not reveal source viewport or CSS pixels. Captures are documented in `research/john-aspinall-v2-observations.md`. |
+| [John Aspinall hands-on video](https://www.youtube.com/watch?v=Q9tF0R8d_Co), 04:42–04:50 | At 04:42 a distinct browser desktop is visible with “Roger has control” and Take over. Around 04:50 the desktop remains while ownership changes to “You have control” and Return control. The 04:42 frame was rechecked in Chrome for this decision. | Chrome/YouTube composite, compressed; it does not reveal source viewport or CSS pixels. Earlier captures and chapter observations are documented in `research/john-aspinall-v2-observations.md`. |
 | [John Aspinall hands-on video](https://www.youtube.com/watch?v=Q9tF0R8d_Co), 05:40 | The conversation remains on screen beside the right context panel. It contains Computers, Recent activity, and Outputs. | The exact width and pixel positions cannot be inferred from the composite. Capture: `research/frames/john-aspinall-v2-0540-chrome-live.png` (ignored by Git). |
-| [Futurepedia hands-on video](https://www.youtube.com/watch?v=V_1Vn2WfpEY), 05:07 sample and 09:28 sample | The conversation can link a created Scratchpad page; later, generated visual outputs appear in the conversation and the user requests an edit. | The 05:07 sample offset is uncertain and both are compressed composites. They are interaction evidence, not pixel references. See `research/futurepedia-v1-observations.md`. |
+| [Futurepedia hands-on video](https://www.youtube.com/watch?v=V_1Vn2WfpEY), 05:07 and 09:28 | The conversation can link a created Scratchpad page; later, generated visual outputs appear in the conversation and the user requests an edit. | These are compressed composites; they support the conversation/result flow, not pixel measurements or HTML file behavior. See `research/futurepedia-v1-observations.md`. |
 | [OpenAI: Work with files](https://learn.chatgpt.com/docs/artifacts-viewer?surface=app) | The app can preview generated documents alongside chat; when HTML preview is available, HTML can be interactive and can be downloaded or refined. | This is general ChatGPT file guidance, not a claim that every Dots task currently produces the same preview. |
 
 ## Decision

@@ -1,6 +1,6 @@
 # Chat, cloud-computer, and generated-file layout decision
 
-Reviewed: 2026-10-14. This note records the evidence and UX decision for `feature/chat-computer-workspace-layout`.
+Reviewed: 2026-10-14. This note records the evidence and UX decision implemented on `feature/chat-artifact-live-runtime`.
 
 ## Product evidence
 
@@ -15,10 +15,10 @@ Reviewed: 2026-10-14. This note records the evidence and UX decision for `featur
 
 | Video and time | Visible state | Interpretation |
 | --- | --- | --- |
-| [John Aspinall hands-on](https://www.youtube.com/watch?v=Q9tF0R8d_Co), 04:42–04:50 | The video switches to the Dot's own browser desktop. “Roger has control” and “Take over” change to “You have control” and “Return control” while that desktop remains visible. | Computer inspection and control are shown on a dedicated computer surface. The live desktop is not shown as a persistent chat-side mini-panel in this sequence. |
+| [John Aspinall hands-on](https://www.youtube.com/watch?v=Q9tF0R8d_Co), 04:42–04:50 | Chrome recheck at 04:42 shows a separate browser desktop with “Roger has control” and a “Take over” control. By about 04:50, the desktop remains visible and ownership reads “You have control” with “Return control.” | Computer inspection and control are shown on a dedicated computer surface. The live desktop is not shown as a persistent chat-side panel in this sequence. |
 | [John Aspinall hands-on](https://www.youtube.com/watch?v=Q9tF0R8d_Co), 05:40 | The main pane is the Dot conversation. The right context pane shows Dot identity, Call/Slack, Computers, Recent activity, and Outputs. No live desktop image is visible in that right pane. | Supports a right-side Dot context panel, not a right-side live desktop preview. The recording is compressed and cannot provide reliable CSS-pixel measurements. |
-| [Futurepedia hands-on](https://www.youtube.com/watch?v=V_1Vn2WfpEY), 09:28 | Generated thumbnail outputs appear in the conversation, and the user requests a visual revision; a revised thumbnail then appears in the conversation. | Supports returning reviewable artifacts directly in the conversation and iterating there. The video does not show an HTML game or prove a specific file-opening interaction. |
 | [Futurepedia hands-on](https://www.youtube.com/watch?v=V_1Vn2WfpEY), 05:07 | A Scratchpad page is shown in a split view with conversation, page navigation, and document content. | This is a document/Pages view. It is not evidence that the cloud computer is permanently docked beside every conversation. |
+| [Futurepedia hands-on](https://www.youtube.com/watch?v=V_1Vn2WfpEY), 09:28 | A generated visual output appears in the conversation; the user asks for a revision and a revised output follows. | Supports making outputs reviewable from the conversation. It does not show an HTML game or the exact cloud-file open action. |
 
 These are direct observations from the retained Chrome-visible samples documented in `john-aspinall-v2-observations.md` and `futurepedia-v1-observations.md`. Video composites are evidence of structure and interaction only; source viewport and CSS dimensions are unknown, so no pixel-parity claim is made from them.
 

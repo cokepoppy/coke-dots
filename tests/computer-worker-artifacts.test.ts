@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -20,6 +20,7 @@ async function freePort() {
 
 test('cloud computer exposes task files safely through its authenticated worker', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'dots-artifact-workspace-'));
+  const runtimeDirectory = await mkdtemp(join(tmpdir(), 'dots-artifact-runtime-'));
   const taskId = 'd4d39c7e-5f39-4a40-a51c-07bb73bfa213';
   const symlinkTaskId = 'c3d39c7e-5f39-4a40-a51c-07bb73bfa213';
   const taskDirectory = join(workspace, 'tasks', taskId);
@@ -36,12 +37,19 @@ test('cloud computer exposes task files safely through its authenticated worker'
   await writeFile(join(outsideTask, 'secret.html'), '<p>private task</p>');
   await symlink(outside, join(taskDirectory, 'escape.html'));
   await symlink(outsideTask, join(workspace, 'tasks', symlinkTaskId));
+  // Match the runtime image layout: the worker and its two local modules are
+  // installed together in /opt/coke-dots, while this test launches the source
+  // worker directly from a temporary directory.
+  await copyFile(join(projectRoot, 'deploy/linux-desktop/computer-worker.mjs'), join(runtimeDirectory, 'computer-worker.mjs'));
+  await copyFile(join(projectRoot, 'src/server/computer-home.mjs'), join(runtimeDirectory, 'computer-home.mjs'));
+  await copyFile(join(projectRoot, 'src/shared/public-web-policy.mjs'), join(runtimeDirectory, 'public-web-policy.mjs'));
+  await symlink(join(projectRoot, 'node_modules'), join(runtimeDirectory, 'node_modules'), 'dir');
 
   const port = await freePort();
   const token = 'artifact-worker-test-token';
   let child: ChildProcess | null = null;
   try {
-    child = spawn(process.execPath, [join(projectRoot, 'deploy/linux-desktop/computer-worker.mjs')], {
+    child = spawn(process.execPath, [join(runtimeDirectory, 'computer-worker.mjs')], {
       cwd: projectRoot,
       env: { ...process.env, DOTS_AGENT_WORKSPACE: workspace, LINUX_DESKTOP_WORKER_TOKEN: token, COKE_DESKTOP_WORKER_PORT: String(port) },
       stdio: ['ignore', 'ignore', 'pipe'],
@@ -85,5 +93,6 @@ test('cloud computer exposes task files safely through its authenticated worker'
     child?.kill('SIGTERM');
     if (child && child.exitCode === null) await new Promise<void>(resolveExit => child!.once('exit', () => resolveExit()));
     await rm(workspace, { recursive: true, force: true });
+    await rm(runtimeDirectory, { recursive: true, force: true });
   }
 });
