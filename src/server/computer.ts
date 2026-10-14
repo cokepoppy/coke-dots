@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
+import type { TaskArtifact } from '../shared/types.ts';
 
 export interface ComputerState {
   ready: boolean;
@@ -24,6 +25,9 @@ export interface ComputerRuntime {
   screenshot(): Promise<Buffer>;
   close(): Promise<void>;
   novncTarget?(): Promise<URL | null>;
+  listTaskArtifacts?(taskId: string): Promise<TaskArtifact[]>;
+  readTaskArtifact?(taskId: string, artifactPath: string): Promise<{ bytes: Buffer; mediaType: string; name: string; previewable: boolean }>;
+  openTaskArtifact?(taskId: string, artifactPath: string): Promise<ComputerState>;
   runAgentTask?(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; signal?: AbortSignal }): Promise<{ status: string; message: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[] }>;
 }
 

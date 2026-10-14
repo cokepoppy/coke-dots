@@ -1,0 +1,23 @@
+.task-artifacts{width:min(100%,720px);margin:20px auto 14px;padding:14px 16px;border:1px solid #e9e6ec;border-radius:13px;background:#fff;color:#34313a;box-shadow:0 3px 12px #35263c08}
+.task-artifacts-heading{display:flex;align-items:center;gap:8px;margin-bottom:10px;color:#736487;font-size:13px}
+.task-artifacts-heading strong{color:#423c49;font-weight:650}
+.task-artifacts-heading small{margin-left:auto;padding:2px 7px;border-radius:10px;background:#f3f0f6;color:#81748f;font-size:10px}
+.task-artifact-list{display:grid;gap:7px}
+.task-artifact{display:flex;flex-wrap:wrap;align-items:center;gap:9px;min-width:0;padding:8px 9px;border:1px solid #f0edf2;border-radius:9px;background:#fcfbfd}
+.task-artifact-file-icon{width:28px;height:28px;display:grid;place-items:center;flex:none;border-radius:7px;background:#f1eef5;color:#8876a1;font-size:15px}
+.task-artifact-file-copy{display:grid;gap:3px;min-width:0;flex:1}
+.task-artifact-file-copy strong{overflow:hidden;color:#45414a;font-size:12px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.task-artifact-file-copy small,.task-artifacts>span{color:#99949e;font-size:10px}
+.task-artifact-action{display:inline-grid;place-items:center;min-height:28px;padding:0 10px;border:1px solid #e8e4eb;border-radius:7px;background:#fff;color:#6d5b85;font:inherit;font-size:11px;text-decoration:none;cursor:pointer}
+.task-artifact-action:hover{border-color:#d7cce3;background:#f8f5fb}
+.task-artifact-action:focus-visible{outline:2px solid #9b82c7;outline-offset:2px}
+.task-artifact-preview{width:100%;height:min(62vh,560px);border:1px solid #e9e6ec;border-radius:8px;background:#fff}
+.task-artifact-error{margin:3px 0;color:#a0615b;font-size:11px;line-height:1.5}
+.dots-dark .task-artifacts{border-color:#37313d;background:#211d24;color:#e7e2eb;box-shadow:0 4px 16px #0003}
+.dots-dark .task-artifacts-heading strong,.dots-dark .task-artifact-file-copy strong{color:#e7e2eb}
+.dots-dark .task-artifacts-heading small,.dots-dark .task-artifact-file-icon{background:#322b39;color:#c4b2df}
+.dots-dark .task-artifact{border-color:#37313d;background:#28232c}
+.dots-dark .task-artifact-action{border-color:#49414f;background:#211d24;color:#ceb9e8}
+.dots-dark .task-artifact-action:hover{background:#302838}
+.dots-dark .task-artifact-preview{border-color:#49414f}
+@media(max-width:700px){.task-artifacts{width:calc(100% - 20px);padding:12px}.task-artifact{gap:7px}.task-artifact-action{padding:0 8px}.task-artifact-preview{height:55vh}}

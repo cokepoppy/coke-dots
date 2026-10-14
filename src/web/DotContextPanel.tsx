@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Snapshot, Task, TaskStatus } from '../shared/types.ts';
+import { appFetch } from './api.ts';
 import { DotAvatar } from './DotAvatar.tsx';
 import './context-panel.css';
 
@@ -25,7 +26,7 @@ export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSt
   useEffect(() => {
     let current = true;
     const refresh = () => {
-      void fetch('/api/computer').then(async response => response.ok ? await response.json() as ComputerState : null)
+      void appFetch('/api/computer').then(async response => response.ok ? await response.json() as ComputerState : null)
         .then(next => { if (current && next) setComputer(next); })
         .catch(() => { if (current) setComputer(null); });
     };
@@ -63,7 +64,7 @@ export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSt
     </ContextSection>
 
     <ContextSection title="Outputs" testId="context-outputs">
-      {outputs.length ? <div className="context-list">{outputs.map(task => <button className="context-output-row" key={task.id} onClick={() => onSelectTask(task.id)}><span className="context-output-icon" aria-hidden="true">▤</span><span className="context-row-copy"><strong>{task.title}</strong><small>Task result</small></span></button>)}</div> : <p className="context-empty">No outputs yet</p>}
+      {outputs.length ? <div className="context-list">{outputs.map(task => <button className="context-output-row" data-testid={`context-output-task-${task.id}`} key={task.id} onClick={() => onSelectTask(task.id)}><span className="context-output-icon" aria-hidden="true">▤</span><span className="context-row-copy"><strong>{task.title}</strong><small>{task.status === 'done' ? '打开结果和文件' : 'Task result'}</small></span></button>)}</div> : <p className="context-empty">No outputs yet</p>}
     </ContextSection>
 
   </aside>;

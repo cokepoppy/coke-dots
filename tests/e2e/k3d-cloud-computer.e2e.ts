@@ -20,10 +20,12 @@ const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `k3d-cloud-computer-$
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
 const tokenSecret = randomBytes(32).toString('base64url');
-const agentAdapterSource = "const fs=require('node:fs');let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const task=JSON.parse(input);const key='k3d-e2e-shared-model-key';const keyInEnv=Object.values(process.env).includes(key)||Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)||Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN);fs.writeFileSync('runtime-persistence.txt',task.taskId);console.log(JSON.stringify({status:'done',message:'Adapter completed: '+task.prompt+'; shared model config received: '+Boolean(task.modelConfig?.apiKey===key&&task.modelConfig?.baseUrl==='https://api.example.test/v1'&&task.modelConfig?.model==='k3d-e2e-model')+'; model key in child environment: '+keyInEnv}))})";
+const tetrisHtml = '<!doctype html><html lang="zh"><meta charset="utf-8"><body><main id="demo-artifact">俄罗斯方块预览</main></body></html>';
+const agentAdapterSource = `const fs=require('node:fs');let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const task=JSON.parse(input);const key='k3d-e2e-shared-model-key';const keyInEnv=Object.values(process.env).includes(key)||Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)||Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN);fs.writeFileSync('runtime-persistence.txt',task.taskId);fs.writeFileSync('tetris.html',${JSON.stringify(tetrisHtml)});console.log(JSON.stringify({status:'done',message:'Adapter completed: '+task.prompt+'; shared model config received: '+Boolean(task.modelConfig?.apiKey===key&&task.modelConfig?.baseUrl==='https://api.example.test/v1'&&task.modelConfig?.model==='k3d-e2e-model')+'; model key in child environment: '+keyInEnv}))})`;
 const k3dModelConfig = { apiKey: 'k3d-e2e-shared-model-key', baseUrl: 'https://api.example.test/v1', model: 'k3d-e2e-model' };
 let appServer: ChildProcess | null = null;
 let agentPortForward: ChildProcess | null = null;
+let workerPortForward: ChildProcess | null = null;
 let browser: Browser | null = null;
 let page: Page | null = null;
 let appPort = 0;
@@ -234,10 +236,12 @@ try {
   await page.getByTestId('engine-select').selectOption('dsh');
   await page.getByTestId('task-composer').fill(cloudInstruction);
   await page.locator('button.send').click();
-  const cloudTaskId = await page.waitForFunction(async instruction => {
-    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; engine: string }[] };
-    return state.tasks.find(task => task.instruction === instruction && task.engine === 'dsh')?.id || false;
-  }, cloudInstruction, { timeout: 15_000 }).then(handle => handle.jsonValue()) as string;
+  const cloudTask = await page.waitForFunction(async instruction => {
+    const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; title: string; instruction: string; engine: string }[] };
+    const task = state.tasks.find(item => item.instruction === instruction && item.engine === 'dsh');
+    return task ? { id: task.id, title: task.title } : false;
+  }, cloudInstruction, { timeout: 15_000 }).then(handle => handle.jsonValue()) as { id: string; title: string };
+  const cloudTaskId = cloudTask.id;
   const cloudTaskDeadline = Date.now() + 180_000;
   let completedCloudTask: {
     task: { id: string; status: string; result: string | null; error: string | null } | undefined;
@@ -266,6 +270,56 @@ try {
   const cloudTaskArtifact = `/workspace/tasks/${cloudTaskId}/runtime-persistence.txt`;
   assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', cloudTaskArtifact]), cloudTaskId, 'The UI task must execute in the actual tenant Agent runtime and persist its artifact on that tenant PVC');
   console.log('Chrome-created cloud task completed through the host service, tenant Agent runtime, and Debian adapter');
+
+  const workerPort = await freePort();
+  workerPortForward = spawn('kubectl', ['-n', namespace, 'port-forward', '--address', '127.0.0.1', 'svc/desktop', `${workerPort}:8082`], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let workerPortForwardOutput = '';
+  workerPortForward.stdout?.on('data', chunk => { workerPortForwardOutput += String(chunk); });
+  workerPortForward.stderr?.on('data', chunk => { workerPortForwardOutput += String(chunk); });
+  const workerPortForwardDeadline = Date.now() + 15_000;
+  while (!workerPortForwardOutput.includes(`127.0.0.1:${workerPort}`) && Date.now() < workerPortForwardDeadline) {
+    if (workerPortForward.exitCode !== null) throw new Error(`Worker port-forward exited early: ${workerPortForwardOutput}`);
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+  }
+  assert(workerPortForwardOutput.includes(`127.0.0.1:${workerPort}`), `Worker port-forward did not become ready: ${workerPortForwardOutput}`);
+  const workerToken = createHmac('sha256', tokenSecret).update(`worker:${tenantId}`).digest('base64url');
+  const workerBaseUrl = `http://127.0.0.1:${workerPort}`;
+  const unauthorizedArtifacts = await fetch(`${workerBaseUrl}/v1/artifacts?taskId=${encodeURIComponent(cloudTaskId)}`);
+  assert.equal(unauthorizedArtifacts.status, 401, 'The real tenant Worker must reject artifact listing without its worker token');
+  const artifactListResponse = await fetch(`${workerBaseUrl}/v1/artifacts?taskId=${encodeURIComponent(cloudTaskId)}`, { headers: { authorization: `Bearer ${workerToken}` } });
+  assert.equal(artifactListResponse.status, 200);
+  const artifactList = await artifactListResponse.json() as { artifacts: { path: string; name: string; mediaType: string; size: number; previewable: boolean }[] };
+  assert.deepEqual(artifactList.artifacts, [
+    { path: 'runtime-persistence.txt', name: 'runtime-persistence.txt', mediaType: 'text/plain', size: Buffer.byteLength(cloudTaskId), previewable: true },
+    { path: 'tetris.html', name: 'tetris.html', mediaType: 'text/html', size: Buffer.byteLength(tetrisHtml), previewable: true },
+  ]);
+  const artifactResponse = await fetch(`${workerBaseUrl}/v1/artifact?${new URLSearchParams({ taskId: cloudTaskId, path: 'tetris.html' })}`, { headers: { authorization: `Bearer ${workerToken}` } });
+  assert.equal(artifactResponse.status, 200);
+  assert.equal(artifactResponse.headers.get('content-type'), 'text/html; charset=utf-8');
+  assert.equal(artifactResponse.headers.get('x-dots-artifact-previewable'), 'true');
+  assert.equal(await artifactResponse.text(), tetrisHtml);
+  console.log('The real tenant Worker authenticated and served the task-scoped HTML game artifact');
+
+  const artifactCard = page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]');
+  await artifactCard.waitFor({ state: 'visible', timeout: 30_000 });
+  const preview = page.frameLocator('[data-testid="task-artifact-preview"]').locator('#demo-artifact');
+  await preview.filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible', timeout: 20_000 });
+  assert.equal((await preview.textContent())?.trim(), '俄罗斯方块预览', 'The completed real cloud task must render its HTML artifact in the conversation');
+  const downloadPromise = page.waitForEvent('download');
+  await artifactCard.getByRole('link', { name: '下载' }).click();
+  assert.equal((await downloadPromise).suggestedFilename(), 'tetris.html', 'The task file must be downloadable from its chat card');
+  await artifactCard.getByTestId('open-artifact-in-computer').click();
+  await page.locator('[data-testid="computer-workspace"]').waitFor({ state: 'visible', timeout: 20_000 });
+  const openedArtifact = await page.waitForFunction(async taskId => {
+    const response = await fetch('/api/computer', { cache: 'no-store' });
+    if (!response.ok) return false;
+    const state = await response.json() as { owner?: string; url?: string };
+    return state.owner === 'user' && state.url === `file:///workspace/tasks/${taskId}/tetris.html` ? { owner: state.owner, url: state.url } : false;
+  }, cloudTaskId, { timeout: 30_000 }).then(handle => handle.jsonValue()) as { owner: string; url: string };
+  assert.deepEqual(openedArtifact, { owner: 'user', url: `file:///workspace/tasks/${cloudTaskId}/tetris.html` });
+  await page.getByRole('button', { name: 'Return control' }).click();
+  await page.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible' });
+  console.log('Chrome displayed the generated game, downloaded it, opened it in the real cloud browser, and returned control');
 
   await page.getByRole('button', { name: '电脑', exact: true }).click();
   await page.getByRole('button', { name: 'Take over' }).click();
@@ -302,12 +356,13 @@ try {
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The tenant workspace artifact must survive a desktop Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'Chrome-created task routed through the host service to the tenant Agent runtime', 'shared Model API profile delivered to the adapter via stdin and excluded from its environment and task result', 'browser navigate/click/type', 'takeover and return', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'Chrome-created task routed through the host service to the tenant Agent runtime', 'shared Model API profile delivered to the adapter via stdin and excluded from its environment and task result', 'authenticated task artifact listing and read through the live Worker API', 'Chrome chat HTML preview, download, cloud-browser open, and return control', 'browser navigate/click/type', 'takeover and return', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
 } finally {
   agentPortForward?.kill('SIGTERM');
+  workerPortForward?.kill('SIGTERM');
   await page?.context().close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
   if (appServer && appServer.exitCode === null) {

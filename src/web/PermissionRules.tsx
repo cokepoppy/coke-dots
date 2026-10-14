@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ActionRuleMode, TenantActionRule } from '../shared/types.ts';
+import { appFetch } from './api.ts';
 import './permission-rules.css';
 
 const modeLabels: Record<ActionRuleMode, string> = {
@@ -28,7 +29,7 @@ export function PermissionRules({ tenantId, role }: { tenantId: string; role: st
   useEffect(() => {
     let active = true;
     setRule(null); setEditing(false); setError(''); setLoading(true);
-    void fetch('/api/action-rule').then(response => responseData<TenantActionRule | null>(response)).then(next => {
+    void appFetch('/api/action-rule').then(response => responseData<TenantActionRule | null>(response)).then(next => {
       if (active) setRule(next);
     }).catch(reason => { if (active) setError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (active) setLoading(false); });
@@ -43,7 +44,7 @@ export function PermissionRules({ tenantId, role }: { tenantId: string; role: st
   async function save() {
     setBusy(true); setError('');
     try {
-      const saved = await responseData<TenantActionRule>(await fetch('/api/action-rule', {
+      const saved = await responseData<TenantActionRule>(await appFetch('/api/action-rule', {
         method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction, mode }),
       }));
       setRule(saved); setEditing(false);
@@ -54,7 +55,7 @@ export function PermissionRules({ tenantId, role }: { tenantId: string; role: st
   async function remove() {
     setBusy(true); setError('');
     try {
-      await responseData<{ ok: boolean }>(await fetch('/api/action-rule', { method: 'DELETE' }));
+      await responseData<{ ok: boolean }>(await appFetch('/api/action-rule', { method: 'DELETE' }));
       setRule(null); setEditing(false);
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setBusy(false); }
