@@ -147,7 +147,7 @@ async function startRemote() {
             { path: 'tetris.html', name: 'tetris.html', mediaType: 'text/html', size: Buffer.byteLength(html), previewable: true },
           ]);
           taskArtifactBodies.set(String(body.taskId), new Map([['tetris.html', html], ['game.js', script]]));
-          return content(res, 200, 'application/json', JSON.stringify({ status: 'done', message: `Cloud task completed in ${body.engine}`, sessionId: 'cloud-session-1' }));
+          return content(res, 200, 'application/json', JSON.stringify({ status: 'done', message: body.engine === 'pi' ? '俄罗斯方块已创建，可以在下方预览或在云电脑中打开。' : `Cloud task completed in ${body.engine}`, sessionId: 'cloud-session-1' }));
         }
       }
       content(res, 404, 'text/plain', 'not found');
@@ -186,8 +186,8 @@ async function startApp() {
       DOTS_LINUX_DESKTOP_TEST_WORKER_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/worker/`,
       DOTS_LINUX_DESKTOP_TEST_NOVNC_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/novnc/`,
       DOTS_LINUX_DESKTOP_TEST_AGENT_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/agent/`,
-      DOTS_DESKTOP_AGENT_ADAPTERS: 'dsh',
-      DOTS_AGENT_KERNELS_JSON: JSON.stringify({ dsh: { command: 'node', args: ['/tmp/dots-dsh-adapter.mjs'] } }),
+      DOTS_DESKTOP_AGENT_ADAPTERS: 'pi,dsh',
+      DOTS_AGENT_KERNELS_JSON: JSON.stringify({ pi: { command: 'node', args: ['/tmp/dots-pi-adapter.mjs'] }, dsh: { command: 'node', args: ['/tmp/dots-dsh-adapter.mjs'] } }),
       GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://api.deepseek.com/v1', DOTS_MODEL_API_KEY: '', DOTS_MODEL: 'cloud-e2e-model', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -248,6 +248,9 @@ try {
   });
 
   await signIn(page, 'cloud-alpha@example.test');
+  const initialState = await page.evaluate(async () => await (await fetch('/api/state')).json()) as { availableEngines: string[]; remoteEngines: string[] };
+  assert(initialState.availableEngines.includes('pi'), 'The cloud workspace should expose its configured Pi adapter');
+  assert(initialState.remoteEngines.includes('pi'), 'Pi should run in the tenant cloud computer');
   await page.evaluate(async () => {
     const response = await fetch('/api/computer-access', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ localComputer: false }) });
     if (!response.ok) throw new Error(`Could not disable local computer access: ${response.status}`);
@@ -312,7 +315,7 @@ try {
   await page.locator('img[alt="Linux 云桌面画面"]').waitFor({ state: 'visible' });
 
   const created = await page.evaluate(async () => {
-    const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'E2E cloud Agent task', engine: 'dsh' }) });
+    const response = await fetch('/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: '请在云电脑中创建俄罗斯方块游戏文件', engine: 'pi' }) });
     return { status: response.status, task: await response.json() as { id: string } };
   });
   assert.equal(created.status, 201);
@@ -323,7 +326,7 @@ try {
   }, created.task.id, { timeout: 20_000 });
   const debugState = await page.evaluate(async () => await fetch('/api/state').then(response => response.json()) as { availableEngines: string[]; tasks: { id: string; engine: string; status: string; result: string | null; error: string | null }[] });
   assert.equal(agentCalls.length, 1, `Expected one remote Agent dispatch; created=${JSON.stringify(created)}, state=${JSON.stringify(debugState.tasks.find(task => task.id === created.task.id))}, engines=${JSON.stringify(debugState.availableEngines)}, calls=${JSON.stringify(agentCalls)}, remotePaths=${JSON.stringify(remoteHttpPaths.filter(path => path.includes('/agent/')))}, logs=${logs.join('')}`);
-  assert.equal(agentCalls[0].engine, 'dsh');
+  assert.equal(agentCalls[0].engine, 'pi');
   assert.equal(agentCalls[0].cwd, `tasks/${created.task.id}`);
   assert.equal((agentCalls[0].computer as { baseUrl: string }).baseUrl, 'http://127.0.0.1:8082');
   assert.deepEqual(agentCalls[0].modelConfig, { apiKey: 'cloud-e2e-shared-api-key', baseUrl: 'https://api.deepseek.com/v1', model: 'cloud-e2e-model' }, 'The cloud Agent must receive the shared instance model profile in its task request');
