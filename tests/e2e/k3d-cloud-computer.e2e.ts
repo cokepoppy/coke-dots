@@ -33,7 +33,7 @@ const researchFixtureUrl = 'https://research-fixture.dots.test/launch';
 process.env.NODE_ENV = 'test';
 process.env.DOTS_E2E_AUTH = '1';
 process.env.DOTS_E2E_COMPUTER_RESEARCH_FIXTURE_URL = researchFixtureUrl;
-const agentAdapterSource = "const fs=require('node:fs');let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const task=JSON.parse(input);fs.writeFileSync('runtime-persistence.txt',task.taskId);console.log(JSON.stringify({status:'done',message:'Adapter completed: '+task.prompt+'; runtime token visible to child: '+Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)}))})";
+const agentAdapterSource = "const fs=require('node:fs');let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const task=JSON.parse(input);fs.writeFileSync('runtime-persistence.txt',task.taskId);fs.writeFileSync('tetris.html','<!doctype html><html lang=zh><meta charset=utf-8><body><main>俄罗斯方块预览</main></body></html>');console.log(JSON.stringify({status:'done',message:'Adapter completed: '+task.prompt+'; runtime token visible to child: '+Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)}))})";
 let appServer: ChildProcess | null = null;
 let agentPortForward: ChildProcess | null = null;
 let workerPortForward: ChildProcess | null = null;
@@ -469,6 +469,27 @@ try {
   }
   assert(workerPortForwardOutput.includes(`127.0.0.1:${workerPort}`), `Computer worker port-forward did not become ready: ${workerPortForwardOutput}`);
   const workerToken = createHmac('sha256', tokenSecret).update(`worker:${tenantId}`).digest('base64url');
+  if (!runLiveAgentKernels) {
+    const workerBase = `http://127.0.0.1:${workerPort}`;
+    const artifactQuery = new URLSearchParams({ taskId: runtimeTaskId, path: 'tetris.html' });
+    const unauthorizedArtifacts = await fetch(`${workerBase}/v1/artifacts?taskId=${encodeURIComponent(runtimeTaskId)}`);
+    assert.equal(unauthorizedArtifacts.status, 401, 'The live Worker artifact listing must require the tenant worker token');
+    const artifactListResponse = await fetch(`${workerBase}/v1/artifacts?taskId=${encodeURIComponent(runtimeTaskId)}`, { headers: { authorization: `Bearer ${workerToken}` } });
+    assert.equal(artifactListResponse.status, 200);
+    const artifactList = await artifactListResponse.json() as { artifacts: { path: string; name: string; mediaType: string; size: number; previewable: boolean }[] };
+    const htmlArtifact = artifactList.artifacts.find(artifact => artifact.path === 'tetris.html');
+    assert.deepEqual(htmlArtifact, {
+      path: 'tetris.html', name: 'tetris.html', mediaType: 'text/html',
+      size: Buffer.byteLength('<!doctype html><html lang=zh><meta charset=utf-8><body><main>俄罗斯方块预览</main></body></html>'),
+      previewable: true,
+    }, 'The real tenant Worker must list the HTML created by its cloud Agent as an interactive artifact');
+    const artifactResponse = await fetch(`${workerBase}/v1/artifact?${artifactQuery}`, { headers: { authorization: `Bearer ${workerToken}` } });
+    assert.equal(artifactResponse.status, 200);
+    assert.equal(artifactResponse.headers.get('content-type'), 'text/html; charset=utf-8');
+    assert.equal(artifactResponse.headers.get('x-dots-artifact-previewable'), 'true');
+    assert.match(await artifactResponse.text(), /俄罗斯方块预览/);
+    console.log('Authenticated live Worker listed and served the task-scoped Chinese HTML artifact');
+  }
   const researchConnector: DesktopConnector = {
     async connect() {
       return {
@@ -497,7 +518,7 @@ try {
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '-c', workspaceArtifactContainer, '--', 'cat', workspacePath]), workspaceArtifact, 'The tenant Agent artifact must survive a cloud computer Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, and visible navigation', 'takeover and return', 'authenticated public-page research in the live Debian browser', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', 'desktop UID 1000 and isolated cloud Agent UID 1001', '1440x1080 coral desktop screenshot', 'live noVNC canvas and WebSocket', 'noVNC address-bar click/text entry, runtime Enter, visible navigation, and return control', 'authenticated public-page research in the live Debian browser', runLiveAgentKernels ? 'real Pi and DeepSeek Harness model API calls and session files inside the Agent container' : 'Agent adapter execution with runtime-token isolation', ...(!runLiveAgentKernels ? ['authenticated HTML artifact listing and task-scoped content read through the live Worker API'] : []), 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   const health = await fetch(`http://127.0.0.1:${appPort}/api/health`).then(response => `HTTP ${response.status}`).catch(failure => `unreachable: ${failure instanceof Error ? failure.message : String(failure)}`);
   logs.push(`Failure diagnostics: appServerExit=${appServer?.exitCode ?? 'running'} health=${health} page=${page?.url() ?? 'unavailable'}`);
