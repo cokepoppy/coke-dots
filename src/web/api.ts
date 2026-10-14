@@ -6,3 +6,9 @@ export function appPath(path: string) {
 export function appFetch(input: RequestInfo | URL, init?: RequestInit) {
   return fetch(typeof input === 'string' ? appPath(input) : input, init);
 }
+
+export function appWebSocketUrl(path: string) {
+  const url = new URL(appPath(path), window.location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}

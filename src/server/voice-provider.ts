@@ -1,7 +1,9 @@
+import { volcengineVoiceInfo } from './volcengine-voice.ts';
+
 export const QWEN_REALTIME_MODEL = 'qwen3.8-omni-flash-realtime';
 const MAX_SDP_BYTES = 80_000;
 
-export type VoiceProviderInfo = { provider: 'browser' | 'qwen' | 'unsupported'; configured: boolean; model?: string };
+export type VoiceProviderInfo = { provider: 'browser' | 'qwen' | 'volcengine' | 'unsupported'; configured: boolean; model?: string };
 export type QwenRealtimeConfig = { apiKey: string; workspaceId: string; region: 'beijing' | 'singapore'; model: typeof QWEN_REALTIME_MODEL };
 
 export class VoiceProviderError extends Error {
@@ -11,6 +13,7 @@ export class VoiceProviderError extends Error {
 export function voiceProviderInfo(env: NodeJS.ProcessEnv = process.env): VoiceProviderInfo {
   const selected = env.DOTS_VOICE_PROVIDER || 'browser';
   if (selected === 'browser') return { provider: 'browser', configured: true };
+  if (selected === 'volcengine') return volcengineVoiceInfo(env);
   if (selected !== 'qwen') return { provider: 'unsupported', configured: false };
   try {
     qwenRealtimeConfig(env);

@@ -1,3 +1,4 @@
+import { appFetch, appPath } from './api.ts';
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import './computer.css';
 
@@ -12,7 +13,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
 
   async function refresh() {
     try {
-      const response = await fetch('/api/computer');
+      const response = await appFetch('/api/computer');
       if (!response.ok) return;
       const next = await response.json() as ComputerState;
       setState(next);
@@ -24,7 +25,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
   async function action(path: string, body: object = {}) {
     setBusy(true);
     try {
-      const response = await fetch(`/api/computer/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const response = await appFetch(`/api/computer/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const result = await response.json() as ComputerState & { error?: string };
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       setState(result); setFrame(Date.now());
@@ -73,8 +74,8 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
     {!state.ready ? <div className="computer-empty"><div className="computer-icon">▣</div><h2>打开独立电脑</h2><p>{state.backend === 'linux-desktop' ? '这台 Debian 云电脑和 Agent 运行时在独立工作区内持续运行。' : '工作区会话保存在 Coke Dots 专用 Chrome 配置中。'}</p><button disabled={busy} onClick={() => void action('open', { dotName })}>打开电脑</button></div> : <div className={`computer-workspace${state.owner === 'user' ? ' has-user-control' : ''}`} data-testid="computer-workspace">
       {state.backend === 'linux-desktop' ? <div className="computer-stage is-linux-desktop" data-testid="linux-desktop-stage">
         {state.owner === 'user'
-          ? <iframe title="Linux 云桌面" data-testid="linux-desktop-view" src="/api/computer/novnc/vnc_lite.html?scale=1&autoconnect=1&path=api/computer/novnc/websockify" />
-          : <img src={`/api/computer/screenshot?t=${frame}`} alt="Linux 云桌面画面" />}
+          ? <iframe title="Linux 云桌面" data-testid="linux-desktop-view" src={appPath("/api/computer/novnc/vnc_lite.html?scale=1&autoconnect=1&path=api/computer/novnc/websockify")} />
+          : <img src={appPath(`/api/computer/screenshot?t=${frame}`)} alt="Linux 云桌面画面" />}
       </div> : <div className="computer-stage">
         <div className="computer-browser-window">
           <div className="browser-window-chrome">
@@ -89,7 +90,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
               <span className="browser-toolbar-menu" aria-hidden="true">⋮</span>
             </div>
           </div>
-          <div className="browser-page-frame"><img src={`/api/computer/screenshot?t=${frame}`} alt="独立浏览器画面" tabIndex={state.owner === 'user' ? 0 : -1} onClick={click} onKeyDown={keyDown} /></div>
+          <div className="browser-page-frame"><img src={appPath(`/api/computer/screenshot?t=${frame}`)} alt="独立浏览器画面" tabIndex={state.owner === 'user' ? 0 : -1} onClick={click} onKeyDown={keyDown} /></div>
         </div>
         <div className="computer-dock" aria-hidden="true"><span className="dock-chrome">◉</span><span className="dock-terminal">›_</span><span className="dock-files">▰</span></div>
       </div>}

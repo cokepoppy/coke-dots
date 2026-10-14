@@ -17,7 +17,7 @@ Sources:
 
 ## Current Coke Dots call path
 
-The default browser provider is a **chained browser voice path**. The `feature/realtime-voice-provider` branch adds an optional Qwen WebRTC speech-to-speech path:
+The default browser provider is a **chained browser voice path**. The `feature/realtime-voice-provider` branch adds an optional Qwen WebRTC speech-to-speech path. Its child branch `feature/volcengine-realtime-voice-provider` supports Volcano O2.0 and SeedDuplex 3.0 through server-mediated WebSocket paths; both submit final transcripts through the existing tenant-authenticated voice task API:
 
 1. The browser's Web Speech `SpeechRecognition` implementation listens to the microphone. The browser/OS speech service provides a finalized transcript; Coke Dots does not receive or persist the raw audio.
 2. Each final phrase goes through the same tenant-authenticated task API as typed work. A clarification uses the existing waiting task ID and task-reply endpoint.
@@ -120,6 +120,27 @@ The Qwen browser path already uses WebRTC with audio media tracks and a DataChan
 
 Store voice provider configuration as shared instance configuration, separately from each tenant's tasks and conversations. The Qwen DashScope API key/workspace and the Volcano credentials are distinct from the DeepSeek text-model key. Keep them on the trusted Dots server; only the authorized call/session signaling crosses the client boundary. The Agent kernel itself remains in the authenticated tenant's Debian cloud computer.
 
+## Volcano credential and protocol versions
+
+The official Volcano documentation currently describes two different realtime paths; their credentials and wire protocols are not interchangeable:
+
+| Path | Official endpoint and protocol | Credential/configuration | Coke Dots status |
+|---|---|---|---|
+| Realtime API O2.0 | `wss://openspeech.bytedance.com/api/v3/realtime/dialogue`; binary event frames; StartSession selects model `1.2.1.1` | Console App ID, Access Token, fixed Resource ID `volc.speech.dialog`, and fixed App Key `PlgvMymc7f3tQnJ6` | Implemented by `feature/volcengine-realtime-voice-provider`; the long-lived values stay in the Coke Dots server environment. |
+| SeedDuplex 3.0 | `wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue`; one JSON text message per event, base64 audio payloads; fixed `session.model: 1.2.6.1` | Shared server-side `DOTS_VOLCENGINE_API_KEY`; the 3.0 key takes precedence over legacy fields. | Implemented by this branch with a separate JSON adapter. |
+
+The account application can use the newer API Key path without translating it into O2.0 App ID/Access Token fields. SeedDuplex follows the documented 20 ms, 640-byte mono PCM input packet size at 16 kHz, base64-encodes the audio into `input_audio_buffer.append`, and asks for mono PCM output at 24 kHz. When the user mutes, the adapter sends the provider's mute/unmute control events. It waits for `session.closed` after `session.close` before it closes the provider socket. The shared API Key stays on the server; tenant isolation is enforced by the existing authenticated call record and task APIs.
+
+`feature/volcengine-realtime-voice-provider` passes the production build and all 71 unit tests. Chrome UI E2E passed 39 click-through steps on 2026-10-11 with `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`; the manifest is `artifacts/e2e/2026-10-11T09-45-35-371Z/manifest.json`. The run uses local deterministic providers and a fake microphone. It exercises both O2.0 and SeedDuplex, Chinese transcript dispatch into the normal tenant Agent task path, spoken Agent output, cross-tenant rejection, credential secrecy, mute/unmute, microphone cleanup, ordered shutdown, and the actionable Chinese UI response for the observed SeedDuplex `45000030` entitlement error. This is mock-provider coverage, not proof of a live billable Volcano call; the live call remains unverified.
+
+Credential boundary: the API Key created in Volcengine Ark/AI Hub for Ark model inference is a different product credential from the Doubao Speech Console key. Ark inference uses `Authorization: Bearer ...` at the Ark host, while realtime speech APIs use the Speech Console key via `X-Api-Key` at `openspeech.bytedance.com`. The user has provided the separate Speech Console key; it is stored only in ignored local `.env` files and is never recorded here or committed. Local E2E uses disposable fake credentials and a local mock provider.
+
+**Live console and API check (2026-10-11):** Chrome reaches Speech Console API Key Management, and the Speech API Key is listed as enabled in the `default` project. The key is configured only in ignored local `.env` files; it is not recorded here or committed. A one-time WebSocket handshake reached SeedDuplex and returned HTTP 403, code `45000030`, with `requested resource not granted [resource_id=volc.speech.dialog]`. The console's service-management page confirms the cause: **端到端实时语音** is marked **未开通**. The gateway now maps this code to a clear Chinese UI error without exposing the provider response body. This is a resource-entitlement gate, not a network timeout. The provider has not completed a live speech session yet.
+
+The app is locally set to `DOTS_VOICE_PROVIDER=volcengine`. Do not click the service's **开通** button automatically: the official new-console guide says voice models use trial quota first and automatically switch to postpaid billing after that quota is exhausted. Get explicit user approval before enabling that billable resource; then rerun the live SeedDuplex smoke test and a real browser call. The user's separate Ark API Key is for Ark model inference and must not be sent to the Speech Console endpoint.
+
+Sources: [Volcano Realtime API access document](https://docs.volcengine.com/docs/DoubaoVoice/End-to-endreal-timespeechlargemodelAPIaccessdocument?lang=zh) documents the O2.0 endpoint, required headers, binary frame format and model version; [SeedDuplex 3.0 access requirements](https://docs.volcengine.com/docs/DoubaoVoice/access-mustread?lang=zh) documents the JSON text-frame protocol and model `1.2.6.1`; [SeedDuplex iOS integration](https://docs.volcengine.com/docs/DoubaoVoice/end-to-end-full-duplex-ios-sdk-documentation?lang=zh) documents Console API Key management and the `/api/v3/duplex/realtime/dialogue` endpoint; [Speech Console quick start](https://docs.volcengine.com/docs/DoubaoVoice/QuickStartNewConsole?lang=zh) explains the trial-quota and postpaid behavior.
+
 ## WebRTC model-initialization race caught on 2026-10-11
 
 The Chrome Qwen mock originally opened the client-created DataChannel before it delivered `session.created`, and the UI marked the call as listening as soon as that DataChannel opened. This hid two production risks: provider events can arrive in either order, so an early `session.created` could cause `session.update` to be dropped; and the microphone track was attached to the offer and could transmit before the provider acknowledged configuration.
@@ -128,6 +149,18 @@ The client now reserves a bidirectional audio transceiver in the offer, handles 
 
 Verification on this branch: `npm test` passed all 62 unit tests, `npm run build` passed, and the Chrome UI E2E passed all 36 browser steps including the new ordering regression. This exercises a deterministic provider mock, not a live Qwen API. The current shell environment has no Qwen API key or workspace configured, so live microphone quality and provider latency remain unverified.
 
+## Combined Qwen and Volcano voice verification on 2026-10-11
+
+After adding the Volcano O2.0 and SeedDuplex 3.0 adapters, `npm test` passed 71/71, `npm run build` passed, and Chrome UI E2E passed all 39 browser steps at `artifacts/e2e/2026-10-11T12-31-55-348Z`. The UI run uses deterministic local provider mocks and checks Chinese speech dispatch into the tenant Agent, real task-result playback events, server-only credential handling, and the actionable SeedDuplex `45000030` error state. A local-only configuration probe confirms `DOTS_VOICE_PROVIDER=volcengine` resolves to the configured `doubao-seedduplex-3.0` provider without returning the key.
+
+No live call was made in this verification: the account's Speech Console still reports `端到端实时语音` as `未开通`, and the earlier handshake returned HTTP 403 `45000030`. The configured key proves local credential presence only; live microphone behavior, provider latency, and spoken audio from the real service remain unverified. Enabling the console resource requires the user's explicit approval because it can consume trial quota and switch to postpaid billing.
+
 After merging `origin/main` on 2026-10-11, the Qwen feature branch again passed `npm test` (62/62), `npm run build`, and `npm run test:e2e` (36 Chrome browser steps plus 8 cloud-computer checks). The Chrome flow dispatches a Chinese Qwen turn into the authenticated tenant Agent, speaks the actual task result from the deterministic provider mock, and checks that Agent runtime remains in the tenant cloud computer. Artifacts: `artifacts/e2e/2026-10-11T12-54-16-042Z/` and `artifacts/e2e/linux-cloud-computer-2026-10-11T12-56-19-866Z/`. No live Qwen credentials were available, so this does not prove a real provider session or latency.
 
 GitHub run `38141256517` exposed an E2E selector issue after Gamma accepted a shared-workspace invitation: the task link was hidden while the member page was in page-detail layout. The test now opens Activity and verifies the shared task card there. Reverification passed 62/62 unit tests, build, all 36 Chrome steps, and all 8 cloud-computer checks. Artifacts: `artifacts/e2e/2026-10-11T13-04-02-572Z/` and `artifacts/e2e/linux-cloud-computer-2026-10-11T13-06-06-095Z/`.
+
+## Volcano validation after syncing main on 2026-10-11
+
+After syncing the accepted Qwen feature and latest `main`, this branch passed 71/71 unit tests, `npm run build`, 39 Chrome browser E2E steps, and all 8 cloud-computer checks. The test artifacts are `artifacts/e2e/2026-10-11T13-14-12-085Z/` and `artifacts/e2e/linux-cloud-computer-2026-10-11T13-16-19-293Z/`. The E2E uses local provider mocks and does not prove a live call.
+
+The local-only provider probe resolves the configured instance to `doubao-seedduplex-3.0` without returning credentials. One attempt to inspect the live smoke command with `--help` unexpectedly performed a WebSocket handshake because the script does not parse help flags. It returned HTTP 403 `45000030` (`volc.speech.dialog` not granted), with no completed voice session. Do not pass `--help` to this live script or retry until the Speech Console resource is enabled with the user's explicit approval; activation can consume trial quota and switch to postpaid billing.

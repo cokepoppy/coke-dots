@@ -38,8 +38,10 @@ if (mode === 'unit') {
     [process.execPath, ['--import', 'tsx', 'tests/e2e/ui.e2e.ts']],
     [process.execPath, ['--import', 'tsx', 'tests/e2e/cloud-computer.e2e.ts']],
   ];
+} else if (mode === 'demo-path') {
+  commands = [[process.execPath, ['--import', 'tsx', 'tests/e2e/base-path-auth.e2e.ts']]];
 } else {
-  console.error('Usage: node scripts/run-isolated-tests.mjs <unit|e2e>');
+  console.error('Usage: node scripts/run-isolated-tests.mjs <unit|e2e|demo-path>');
   process.exitCode = 2;
   commands = [];
 }

@@ -11,6 +11,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 import { Entry } from '../../src/server/keyring.ts';
+import { WebSocket as NodeWebSocket, WebSocketServer } from 'ws';
+import { decodeVolcengineFrame, encodeVolcengineEvent } from '../../src/server/volcengine-voice.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const artifactStamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -21,6 +23,8 @@ const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-e2e-'));
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
 const sharedModelKeychainLockFile = join(tempRoot, 'simulated-shared-model-keychain-lock');
+const testKeyringDirectory = join(testDataDir, 'keyring');
+process.env.DOTS_TEST_KEYRING_DIR = testKeyringDirectory;
 const fixtureSource = join(projectRoot, 'tests', 'e2e', 'fixtures', 'computer.html');
 const fixtureDestination = join(projectRoot, 'dist', 'e2e-computer-fixture.html');
 const chromePath = findChromePath();
@@ -32,9 +36,17 @@ let server: ChildProcess | null = null;
 let mockModelServer: Server | null = null;
 let mockSlackServer: Server | null = null;
 let mockQwenSignalingServer: Server | null = null;
+let mockVolcEngineServer: WebSocketServer | null = null;
+let mockVolcEngineDuplexServer: WebSocketServer | null = null;
+let mockVolcEngineRejectedServer: Server | null = null;
 let mockSlackProviderOrigin = '';
 let mockQwenSignalingUrl = '';
 let mockQwenSignalingRequests: { authorization: string; contentType: string; sdp: string }[] = [];
+let mockVolcEngineUrl = '';
+let mockVolcEngineConnections: { headers: Record<string, string>; events: number[]; serverEvents: number[]; timeline: string[]; pcmBytes: number; spokenTexts: string[] }[] = [];
+let mockVolcEngineDuplexUrl = '';
+let mockVolcEngineDuplexConnections: { headers: Record<string, string>; events: string[]; timeline: string[]; pcmBytes: number; pcmPeak: number; nonSilentPcmSamples: number; spokenTexts: string[]; audioDeltas: number; sendTranscript: (transcript: string, turnId: string) => void }[] = [];
+let mockVolcEngineDuplexNextInitialTranscript = '请用中文整理本周人工智能产品更新的三个要点，并说明来源。';
 let mockSlackCodeExchanges = 0;
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
@@ -111,6 +123,9 @@ async function startMockModel() {
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
         const isVoiceTask = prompt.includes('E2E voice request — finish after the call ends');
         const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
+        const isVolcVoiceResponse = prompt.includes('请用中文整理本周人工智能产品更新的三个要点');
+        const isSeedDuplexClarification = prompt.includes('请用云电脑打开网页并告诉我标题。') && !prompt.includes('User reply:');
+        const isSeedDuplexClarificationReply = prompt.includes('User reply: 请打开 https://example.com/。');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
         const isParallelTask = prompt.includes('E2E parallel work —');
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
@@ -144,13 +159,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isKeychainResilienceTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isKeychainResilienceTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isKeychainResilienceTask ? '登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isKeychainResilienceTask ? '登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -246,6 +261,162 @@ async function startMockQwenSignaling() {
   return `http://127.0.0.1:${address.port}/realtime?model=qwen3.8-omni-flash-realtime`;
 }
 
+function encodeVolcServerFrame(eventId: number, payload: unknown, sessionId?: string, audio = false) {
+  const body = audio ? Buffer.from(payload as Uint8Array) : Buffer.from(JSON.stringify(payload), 'utf8');
+  const id = sessionId === undefined ? Buffer.alloc(0) : Buffer.concat([Buffer.from([0, Buffer.byteLength(sessionId)]), Buffer.from(sessionId, 'utf8')]);
+  const header = Buffer.from([0x11, ((audio ? 11 : 9) << 4) | 4, audio ? 0 : 0x10, 0]);
+  const event = Buffer.alloc(4); event.writeUInt32BE(eventId);
+  const payloadLength = Buffer.alloc(4); payloadLength.writeUInt32BE(body.byteLength);
+  return Buffer.concat([header, event, id, payloadLength, body]);
+}
+
+async function startMockVolcEngineProvider() {
+  mockVolcEngineConnections = [];
+  mockVolcEngineServer = new WebSocketServer({ port: 0, host: '127.0.0.1', maxPayload: 1024 * 1024, perMessageDeflate: false });
+  mockVolcEngineServer.on('connection', (socket, request) => {
+    const connection = {
+      headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(',') : String(value || '')])),
+      events: [] as number[], serverEvents: [] as number[], timeline: [] as string[], pcmBytes: 0, spokenTexts: [] as string[],
+    };
+    mockVolcEngineConnections.push(connection);
+    let activeSessionId = '';
+    let sentSpeech = false;
+    socket.on('message', (raw, isBinary) => {
+      if (!isBinary) return;
+      const frame = decodeVolcengineFrame(Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer));
+      if (frame.eventId === null) return;
+      connection.events.push(frame.eventId);
+      connection.timeline.push(`client:${frame.eventId}`);
+      let payload: Record<string, unknown> = {};
+      if (frame.payloadIsJson) {
+        try { payload = JSON.parse(frame.payload.toString('utf8')) as Record<string, unknown>; } catch { /* malformed client JSON is visible in the assertion set */ }
+      }
+      if (frame.eventId === 1) {
+        socket.send(encodeVolcServerFrame(50, {}, frame.sessionId || undefined));
+      } else if (frame.eventId === 100) {
+        activeSessionId = frame.sessionId || '';
+        socket.send(encodeVolcServerFrame(150, { dialog_id: 'mock-volc-dialog' }, activeSessionId));
+      } else if (frame.eventId === 200) {
+        connection.pcmBytes += frame.payload.byteLength;
+        if (!sentSpeech && activeSessionId) {
+          sentSpeech = true;
+          socket.send(encodeVolcServerFrame(450, { question_id: 'volc-question-e2e-0001' }, activeSessionId));
+          socket.send(encodeVolcServerFrame(451, { results: [{ text: '请用中文整理本周人工智能产品更新的三个要点，并说明来源。', is_interim: false }] }, activeSessionId));
+          socket.send(encodeVolcServerFrame(459, {}, activeSessionId));
+        }
+      } else if (frame.eventId === 500) {
+        connection.spokenTexts.push(String(payload.content || ''));
+        socket.send(encodeVolcServerFrame(350, { tts_type: 'chat_tts_text', text: payload.content || '' }, activeSessionId));
+        socket.send(encodeVolcServerFrame(352, Buffer.alloc(960, 1), activeSessionId, true));
+        socket.send(encodeVolcServerFrame(359, {}, activeSessionId));
+      } else if (frame.eventId === 102) {
+        connection.serverEvents.push(152);
+        connection.timeline.push('server:152');
+        socket.send(encodeVolcServerFrame(152, {}, activeSessionId));
+      }
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    mockVolcEngineServer!.once('error', reject);
+    mockVolcEngineServer!.once('listening', resolvePromise);
+  });
+  const address = mockVolcEngineServer.address();
+  assert(address && typeof address !== 'string');
+  return `ws://127.0.0.1:${address.port}/realtime`;
+}
+
+async function startMockVolcEngineDuplexProvider() {
+  mockVolcEngineDuplexConnections = [];
+  mockVolcEngineDuplexServer = new WebSocketServer({ port: 0, host: '127.0.0.1', maxPayload: 1024 * 1024, perMessageDeflate: false });
+  mockVolcEngineDuplexServer.on('connection', (socket, request) => {
+    const initialTranscript = mockVolcEngineDuplexNextInitialTranscript;
+    mockVolcEngineDuplexNextInitialTranscript = '请用中文整理本周人工智能产品更新的三个要点，并说明来源。';
+    const connection = {
+      headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(',') : String(value || '')])),
+      events: [] as string[], timeline: [] as string[], pcmBytes: 0, pcmPeak: 0, nonSilentPcmSamples: 0, spokenTexts: [] as string[], audioDeltas: 0,
+      sendTranscript: (transcript: string, turnId: string) => {
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.started', item_id: turnId }));
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.delta', item_id: turnId, delta: transcript }));
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: turnId, transcript }));
+      },
+    };
+    mockVolcEngineDuplexConnections.push(connection);
+    let sentTranscript = false;
+    socket.on('message', (raw, isBinary) => {
+      if (isBinary) { connection.timeline.push('unexpected-binary-client-frame'); return; }
+      let event: Record<string, unknown>;
+      try { event = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw)) as Record<string, unknown>; }
+      catch { connection.timeline.push('invalid-json-client-frame'); return; }
+      const type = typeof event.type === 'string' ? event.type : 'missing-type';
+      connection.events.push(type);
+      connection.timeline.push(`client:${type}`);
+      if (type === 'session.create') {
+        socket.send(JSON.stringify({ type: 'session.created', event_id: 'mock-session-created', session: { id: 'mock-seedduplex-session' } }));
+      } else if (type === 'input_audio_buffer.append') {
+        if (typeof event.audio === 'string') {
+          const pcm = Buffer.from(event.audio, 'base64');
+          connection.pcmBytes += pcm.byteLength;
+          for (let offset = 0; offset + 1 < pcm.byteLength; offset += 2) {
+            const sample = pcm.readInt16LE(offset);
+            connection.pcmPeak = Math.max(connection.pcmPeak, Math.abs(sample));
+            if (sample !== 0) connection.nonSilentPcmSamples += 1;
+          }
+        }
+        if (!sentTranscript) {
+          sentTranscript = true;
+          connection.sendTranscript(initialTranscript, 'duplex-e2e-turn-0001');
+        }
+      } else if (type === 'input_audio_mute.commit' || type === 'input_audio_unmute.commit') {
+        connection.timeline.push(`mute-control:${type}`);
+      } else if (type === 'speech_text_buffer.commit') {
+        if (typeof event.text === 'string') connection.spokenTexts.push(event.text);
+        socket.send(JSON.stringify({ type: 'response.output_audio.started', response_id: 'mock-response' }));
+        const pcm = Buffer.alloc(960);
+        for (let index = 0; index < pcm.length / 4; index += 1) pcm.writeFloatLE(Math.sin(index * 2 * Math.PI * 440 / 24000) * 0.5, index * 4);
+        socket.send(JSON.stringify({ type: 'response.output_audio.delta', response_id: 'mock-response', delta: pcm.toString('base64') }));
+        socket.send(JSON.stringify({ type: 'response.output_audio.done', response_id: 'mock-response' }));
+        connection.audioDeltas += 1;
+      } else if (type === 'session.close') {
+        connection.timeline.push('server:session.closed');
+        socket.send(JSON.stringify({ type: 'session.closed', event_id: 'mock-session-closed' }));
+      }
+    });
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    mockVolcEngineDuplexServer!.once('error', reject);
+    mockVolcEngineDuplexServer!.once('listening', resolvePromise);
+  });
+  const address = mockVolcEngineDuplexServer.address();
+  assert(address && typeof address !== 'string');
+  return `ws://127.0.0.1:${address.port}/duplex`;
+}
+
+async function startMockVolcEngineEntitlementRejection() {
+  mockVolcEngineRejectedServer = createHttpServer();
+  mockVolcEngineRejectedServer.on('upgrade', (_request, socket) => {
+    const body = JSON.stringify({ error: { code: 45000030, message: 'requested resource not granted [resource_id=volc.speech.dialog]' } });
+    socket.end('HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: ' + Buffer.byteLength(body) + '\r\nConnection: close\r\n\r\n' + body);
+  });
+  await new Promise<void>((resolvePromise, reject) => mockVolcEngineRejectedServer!.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  const address = mockVolcEngineRejectedServer.address();
+  assert(address && typeof address !== 'string');
+  return 'ws://127.0.0.1:' + address.port + '/duplex';
+}
+
+async function websocketUpgradeStatus(url: string, cookie: string) {
+  return await new Promise<number>(resolvePromise => {
+    const origin = new URL(url).origin.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+    const socket = new NodeWebSocket(url, { headers: { cookie, origin }, handshakeTimeout: 5000 });
+    socket.once('unexpected-response', (_request, response) => {
+      const status = response.statusCode || 0;
+      response.resume();
+      resolvePromise(status);
+    });
+    socket.once('open', () => { socket.close(); resolvePromise(101); });
+    socket.once('error', () => resolvePromise(0));
+  });
+}
+
 function captureServerOutput(child: ChildProcess) {
   for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => {
     const line = String(chunk);
@@ -274,6 +445,7 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_DSH_BIN: '',
       DOTS_KEYCHAIN_SERVICE: 'com.cokepoppy.coke-dots.e2e',
       DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE: sharedModelKeychainLockFile,
+      DOTS_TEST_KEYRING_DIR: testKeyringDirectory,
       SLACK_CLIENT_ID: 'coke-dots-slack-e2e-client',
       SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
       SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
@@ -283,6 +455,12 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_QWEN_WORKSPACE_ID: '',
       DOTS_QWEN_REGION: '',
       DASHSCOPE_API_KEY: '',
+      DOTS_VOLCENGINE_API_KEY: '',
+      DOTS_VOLCENGINE_APP_ID: '',
+      DOTS_VOLCENGINE_ACCESS_TOKEN: '',
+      DOTS_VOLCENGINE_RESOURCE_ID: '',
+      DOTS_E2E_VOLCENGINE_WS_URL: '',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: '',
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -361,12 +539,16 @@ async function screenshot(page: Page, name: string) {
 }
 
 async function waitForComputerScreenshot(page: Page) {
-  await page.waitForFunction(() => {
+  const screenshot = await page.waitForFunction(() => {
     const screenshot = document.querySelector<HTMLImageElement>('img[alt="独立浏览器画面"]');
-    if (!screenshot?.complete || screenshot.naturalWidth !== 1280 || screenshot.naturalHeight !== 820) return false;
+    if (!screenshot?.complete || screenshot.naturalWidth <= 0 || screenshot.naturalHeight <= 0) return false;
     const bounds = screenshot.getBoundingClientRect();
-    return bounds.width > 0 && bounds.height > 0;
+    if (bounds.width <= 0 || bounds.height <= 0) return false;
+    return { naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight, src: screenshot.currentSrc };
   }, null, { timeout: 20_000 });
+  const frame = await screenshot.jsonValue() as { naturalWidth: number; naturalHeight: number; src: string };
+  await screenshot.dispose();
+  return frame;
 }
 
 async function clickComputerScreen(page: Page, x: number, y: number) {
@@ -470,7 +652,7 @@ try {
   testModelName = 'e2e-shared-model';
   mockSlackProviderOrigin = await startMockSlackProvider();
   server = await startServer(e2ePort);
-  browser = await chromium.launch({ executablePath: chromePath, headless: true });
+  browser = await chromium.launch({ executablePath: chromePath, headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
   alphaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   betaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
   gammaContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1440, height: 1000 } } });
@@ -1430,13 +1612,15 @@ try {
       '(() => {',
       '  class FakeSpeechRecognition {',
       '    constructor() { this.onresult = null; this.onerror = null; this.onend = null; }',
-      '    start() { window.__dotsFakeRecognition = this; }',
+      '    start() { window.__dotsRecognitionStarts += 1; window.__dotsVoiceEvents.push("listening"); window.__dotsFakeRecognition = this; }',
       '    abort() {}',
       '    emit(text) { const result = Object.assign([{ transcript: text }], { isFinal: true }); const event = Object.assign(new Event("result"), { resultIndex: 0, results: [result] }); this.onresult(event); }',
       '  }',
       '  Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: FakeSpeechRecognition });',
       '  Object.defineProperty(window, "__dotsSpeechOutput", { configurable: true, value: [] });',
-      '  Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { cancel() {}, speak(utterance) { window.__dotsSpeechOutput.push(utterance.text); window.setTimeout(() => utterance.onend?.(), 0); } } });',
+      '  Object.defineProperty(window, "__dotsVoiceEvents", { configurable: true, value: [] });',
+      '  Object.defineProperty(window, "__dotsRecognitionStarts", { configurable: true, value: 0, writable: true });',
+      '  Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { cancel() {}, speak(utterance) { window.__dotsSpeechOutput.push(utterance.text); window.__dotsVoiceEvents.push("spoken:" + utterance.text); window.setTimeout(() => utterance.onend?.(), 0); } } });',
       '  Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { constructor(text) { this.text = text; } } });',
       '})()',
     ].join('\n');
@@ -1447,8 +1631,35 @@ try {
     await alphaPage!.getByLabel('名字').fill('dot');
     await alphaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
     await alphaPage!.locator('.profile-link strong').getByText('dot', { exact: true }).waitFor({ state: 'visible' });
+    const desktopViewport = alphaPage!.viewportSize();
+    assert(desktopViewport, 'The desktop call E2E must use a fixed browser viewport');
     await alphaPage!.getByTestId('profile-voice-call-launch').click();
-    const profileCall = alphaPage!.getByTestId('voice-call');
+    let profileCall = alphaPage!.getByTestId('voice-call');
+    await profileCall.waitFor({ state: 'visible' });
+    assert.equal(await profileCall.getAttribute('data-variant'), 'desktop', 'A call launched from the Dot profile on a desktop viewport must use the compact desktop UI');
+    assert.equal(await profileCall.locator('.voice-call-screen').count(), 0, 'Desktop profile calls must not render the handset UI');
+    const desktopCallBox = await profileCall.boundingBox();
+    assert(desktopCallBox && desktopCallBox.width < 350 && desktopCallBox.height < 220,
+      'The desktop call must render as a compact floating card');
+    assert.equal(await profileCall.locator('.voice-call-card-end').count(), 1, 'The active outgoing call must have exactly one red hang-up action');
+    assert.equal(await profileCall.getByRole('button', { name: /接听|回答/ }).count(), 0, 'An active outgoing call must not offer an answer action');
+    await waitFor(async () => {
+      const output = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+      return output.includes('你好，我是 dot，有什么我可以帮你？');
+    }, 10_000);
+    await alphaPage!.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeRecognition));
+    const desktopGreetingSequence = await alphaPage!.evaluate(() => (window as unknown as { __dotsVoiceEvents: string[] }).__dotsVoiceEvents.slice(0, 2));
+    assert.deepEqual(desktopGreetingSequence, ['spoken:你好，我是 dot，有什么我可以帮你？', 'listening'],
+      'The call must play a Chinese greeting before opening the browser microphone input');
+    await screenshot(alphaPage!, 'voice-call-compact-desktop');
+    await profileCall.getByRole('button', { name: '结束通话' }).click();
+    await profileCall.waitFor({ state: 'hidden' });
+
+    await alphaPage!.setViewportSize({ width: 690, height: 930 });
+    await openProfile(alphaPage!);
+    const greetingsBefore690 = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput.length);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    profileCall = alphaPage!.getByTestId('voice-call');
     await profileCall.waitFor({ state: 'visible' });
     const voiceProviderConfig = await alphaPage!.evaluate(async () => await (await fetch('/api/voice/provider')).json()) as { provider: string; configured: boolean; apiKey?: string };
     assert.deepEqual(voiceProviderConfig, { provider: 'browser', configured: true }, 'The browser fallback must be explicit and must not expose provider credentials');
@@ -1459,150 +1670,60 @@ try {
     assert.equal(unsupportedRealtimeStatus, 409, 'The browser provider must not be silently treated as a realtime model session');
     const crossTenantRealtimeStatus = await betaPage!.evaluate(async (id: string) => (await fetch(`/api/voice-calls/${id}/realtime-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sdp: 'v=0' }) })).status, activeCallId);
     assert.equal(crossTenantRealtimeStatus, 404, 'A different tenant cannot negotiate against another user’s active call');
-    assert.equal(await profileCall.getAttribute('data-variant'), 'handset');
-    assert.equal(await profileCall.locator('.voice-call-person > strong').innerText(), 'dot', 'The pixel-comparison frame must use the same visible Dot name as the reference video');
-    const handsetBox = await profileCall.boundingBox();
-    assert(handsetBox && handsetBox.height / handsetBox.width > 1.8 && handsetBox.height / handsetBox.width < 2.2, 'The standalone call should match the tall handset reference proportions');
-    assert.match(await profileCall.locator('.voice-call-screen').evaluate(element => getComputedStyle(element).backgroundImage), /radial-gradient.*linear-gradient/);
-    assert.equal(await profileCall.getByRole('button', { name: '结束通话' }).innerText(), 'End');
-    assert.equal(await profileCall.getByRole('button', { name: '关闭扬声器' }).innerText(), 'Speaker');
-    assert.equal(await profileCall.getByRole('button', { name: '静音' }).innerText(), 'Mute');
-    const handsetReference = JSON.parse(await readFile(join(projectRoot, 'research/comparisons/voice-call-mobile-v1-0650.json'), 'utf8')) as {
-      source: { crop: { width: number; height: number } };
-      controls: { name: string; center: { x: number; y: number }; diameter: number }[];
-      tolerance: { normalizedPosition: number; normalizedDiameter: number };
-    };
-    const handsetGeometry = await profileCall.evaluate(element => {
-      const dock = element.getBoundingClientRect();
-      return Array.from(element.querySelectorAll<HTMLElement>('.voice-call-control-icon')).map(icon => {
-        const box = icon.getBoundingClientRect();
-        return {
-          x: (box.left + box.width / 2 - dock.left) / dock.width,
-          y: (box.top + box.height / 2 - dock.top) / dock.height,
-          diameter: box.width / dock.width,
-        };
-      });
-    });
-    assert.equal(handsetGeometry.length, handsetReference.controls.length);
-    handsetReference.controls.forEach((reference, index) => {
-      const actual = handsetGeometry[index]!;
-      const x = reference.center.x / handsetReference.source.crop.width;
-      const y = reference.center.y / handsetReference.source.crop.height;
-      const diameter = reference.diameter / handsetReference.source.crop.width;
-      assert(Math.abs(actual.x - x) <= handsetReference.tolerance.normalizedPosition,
-        `${reference.name} center should match the 06:50.9 frame horizontally: expected ${x.toFixed(3)}, saw ${actual.x.toFixed(3)}`);
-      assert(Math.abs(actual.y - y) <= handsetReference.tolerance.normalizedPosition,
-        `${reference.name} center should match the 06:50.9 frame vertically: expected ${y.toFixed(3)}, saw ${actual.y.toFixed(3)}`);
-      assert(Math.abs(actual.diameter - diameter) <= handsetReference.tolerance.normalizedDiameter,
-        `${reference.name} diameter should match the 06:50.9 frame: expected ${diameter.toFixed(3)}, saw ${actual.diameter.toFixed(3)}`);
-    });
-    const upperFrameReference = JSON.parse(await readFile(join(projectRoot, 'research/comparisons/voice-call-v1-0626-upper-screen.json'), 'utf8')) as {
-      measuredElements: {
-        statusTimeLeft: number;
-        statusTimeBoxTop: number;
-        notchLeft: number;
-        notchTop: number;
-        notchWidth: number;
-        notchHeight: number;
-        earpieceLeft: number;
-        earpieceTop: number;
-        earpieceWidth: number;
-        earpieceHeight: number;
-        sensorLeft: number;
-        sensorTop: number;
-        sensorDiameter: number;
-        avatarTop: number;
-        avatarDiameter: number;
-        nameBoxTop: number;
-        timerBoxTop: number;
-        tolerancePx: { statusTime: number; notchPosition: number; notchSize: number; notchDetailPosition: number; notchDetailSize: number; avatarTop: number; avatarDiameter: number; textTop: number };
-      };
-    };
-    const upperFrameGeometry = await profileCall.evaluate(element => {
-      const dock = element.getBoundingClientRect();
-      const notch = element.querySelector<HTMLElement>('.voice-call-notch')!.getBoundingClientRect();
-      const notchElement = element.querySelector<HTMLElement>('.voice-call-notch')!;
-      const earpieceStyle = getComputedStyle(notchElement, '::before');
-      const sensorStyle = getComputedStyle(notchElement, '::after');
-      const avatar = element.querySelector<HTMLElement>('.voice-call-avatar')!.getBoundingClientRect();
-      const name = element.querySelector<HTMLElement>('.voice-call-person > strong')!.getBoundingClientRect();
-      const timer = element.querySelector<HTMLElement>('.voice-call-screen-timer')!.getBoundingClientRect();
-      const statusTime = element.querySelector<HTMLElement>('.voice-call-status-time')!.getBoundingClientRect();
-      const statusSilent = element.querySelector<HTMLElement>('.voice-call-status-leading .voice-call-silent')!.getBoundingClientRect();
-      return {
-        statusTimeLeft: statusTime.left - dock.left,
-        statusTimeBoxTop: statusTime.top - dock.top,
-        statusSilentGap: statusSilent.left - statusTime.right,
-        rightStatusIconCount: element.querySelectorAll('.voice-call-status-icons svg').length,
-        avatarTop: avatar.top - dock.top,
-        avatarDiameter: avatar.width,
-        nameBoxTop: name.top - dock.top,
-        timerBoxTop: timer.top - dock.top,
-        notchLeft: notch.left - dock.left,
-        notchTop: notch.top - dock.top,
-        notchWidth: notch.width,
-        notchHeight: notch.height,
-        earpieceLeft: notch.left - dock.left + Number.parseFloat(earpieceStyle.left),
-        earpieceTop: notch.top - dock.top + Number.parseFloat(earpieceStyle.top),
-        earpieceWidth: Number.parseFloat(earpieceStyle.width),
-        earpieceHeight: Number.parseFloat(earpieceStyle.height),
-        sensorLeft: notch.right - dock.left - Number.parseFloat(sensorStyle.right) - Number.parseFloat(sensorStyle.width),
-        sensorTop: notch.top - dock.top + Number.parseFloat(sensorStyle.top),
-        sensorDiameter: Number.parseFloat(sensorStyle.width),
-      };
-    });
-    const upperTolerance = upperFrameReference.measuredElements.tolerancePx;
-    assert(Math.abs(upperFrameGeometry.statusTimeLeft - upperFrameReference.measuredElements.statusTimeLeft) <= upperTolerance.statusTime,
-      `Status time should match the 06:26 frame horizontally: expected ${upperFrameReference.measuredElements.statusTimeLeft}px, saw ${upperFrameGeometry.statusTimeLeft.toFixed(1)}px`);
-    assert(Math.abs(upperFrameGeometry.statusTimeBoxTop - upperFrameReference.measuredElements.statusTimeBoxTop) <= upperTolerance.statusTime,
-      `Status time should match the 06:26 frame vertically: expected ${upperFrameReference.measuredElements.statusTimeBoxTop}px, saw ${upperFrameGeometry.statusTimeBoxTop.toFixed(1)}px`);
-    for (const key of ['notchLeft', 'notchTop'] as const) {
-      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchPosition,
-        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
-    }
-    for (const key of ['notchWidth', 'notchHeight'] as const) {
-      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchSize,
-        `Phone notch ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
-    }
-    for (const key of ['earpieceLeft', 'earpieceTop', 'sensorLeft', 'sensorTop'] as const) {
-      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailPosition,
-        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
-    }
-    for (const key of ['earpieceWidth', 'earpieceHeight', 'sensorDiameter'] as const) {
-      assert(Math.abs(upperFrameGeometry[key] - upperFrameReference.measuredElements[key]) <= upperTolerance.notchDetailSize,
-        `Phone notch detail ${key} should match the 06:26 frame: expected ${upperFrameReference.measuredElements[key]}px, saw ${upperFrameGeometry[key].toFixed(1)}px`);
-    }
-    assert(upperFrameGeometry.statusSilentGap >= 0 && upperFrameGeometry.statusSilentGap <= 6,
-      'The crossed-bell status glyph should sit immediately beside the time as in the 06:26 frame');
-    assert.equal(upperFrameGeometry.rightStatusIconCount, 2, 'Cellular and Wi-Fi status glyphs should remain grouped by the battery on the right');
-    assert(Math.abs(upperFrameGeometry.avatarTop - upperFrameReference.measuredElements.avatarTop) <= upperTolerance.avatarTop,
-      `Avatar top should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarTop}px, saw ${upperFrameGeometry.avatarTop.toFixed(1)}px`);
-    assert(Math.abs(upperFrameGeometry.avatarDiameter - upperFrameReference.measuredElements.avatarDiameter) <= upperTolerance.avatarDiameter,
-      `Avatar size should match the 06:26 frame: expected ${upperFrameReference.measuredElements.avatarDiameter}px, saw ${upperFrameGeometry.avatarDiameter.toFixed(1)}px`);
-    assert(Math.abs(upperFrameGeometry.nameBoxTop - upperFrameReference.measuredElements.nameBoxTop) <= upperTolerance.textTop,
-      `Dot name should match the 06:26 frame: expected ${upperFrameReference.measuredElements.nameBoxTop}px, saw ${upperFrameGeometry.nameBoxTop.toFixed(1)}px`);
-    assert(Math.abs(upperFrameGeometry.timerBoxTop - upperFrameReference.measuredElements.timerBoxTop) <= upperTolerance.textTop,
-      `Call timer should match the 06:26 frame: expected ${upperFrameReference.measuredElements.timerBoxTop}px, saw ${upperFrameGeometry.timerBoxTop.toFixed(1)}px`);
+    assert.equal(await profileCall.getAttribute('data-variant'), 'desktop', 'Every browser viewport must use the compact desktop call card');
+    const profileCallBox = await profileCall.boundingBox();
+    assert(profileCallBox && profileCallBox.width < 350 && profileCallBox.height < 220,
+      'The active call must stay a small floating card rather than expanding into a phone screen');
+    assert(profileCallBox && profileCallBox.x >= 0 && profileCallBox.y >= 0 && profileCallBox.x + profileCallBox.width <= 690 && profileCallBox.y + profileCallBox.height <= 930,
+      'The compact call card must fit the 690×930 browser viewport');
+    assert.equal(await profileCall.locator('.voice-call-card-end').count(), 1, 'The outgoing call must have one red hang-up action');
+    assert.equal(await profileCall.getByRole('button', { name: /接听|回答/ }).count(), 0, 'An already-connected outgoing call must not show an answer button');
+    assert.equal(await profileCall.locator('.voice-call-screen').count(), 0, 'Web calls must never render the mobile handset frame');
     await waitFor(async () => {
-      const [minutes, seconds] = (await profileCall.getByTestId('voice-call-timer').innerText()).split(':').map(Number);
-      return Number.isFinite(minutes) && Number.isFinite(seconds) && minutes * 60 + seconds >= 6;
+      const output = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
+      return output.slice(greetingsBefore690).includes('你好，我是 dot，有什么我可以帮你？');
     }, 10_000);
-    await screenshot(alphaPage!, 'voice-call-handset-reference');
-    await profileCall.screenshot({ path: join(screenshotsDir, 'voice-call-handset-phone.png') });
-    screenshotNames.push('voice-call-handset-phone.png');
-    await profileCall.getByRole('button', { name: '展开通话界面' }).click();
-    assert.equal(await profileCall.getByRole('button', { name: '收起通话界面' }).getAttribute('aria-pressed'), 'true');
-    await profileCall.getByRole('button', { name: '收起通话界面' }).click();
-    await profileCall.getByRole('button', { name: '关闭扬声器' }).click();
-    assert.equal(await profileCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
+    await waitFor(async () => {
+      const events = await alphaPage!.evaluate(() => (window as unknown as { __dotsVoiceEvents: string[] }).__dotsVoiceEvents);
+      return events.slice(-2).join('|') === 'spoken:你好，我是 dot，有什么我可以帮你？|listening';
+    }, 10_000);
+    const greetingSequence = await alphaPage!.evaluate(() => (window as unknown as { __dotsVoiceEvents: string[] }).__dotsVoiceEvents.slice(-2));
+    assert.deepEqual(greetingSequence, ['spoken:你好，我是 dot，有什么我可以帮你？', 'listening'],
+      'The call must play its Chinese greeting before starting browser speech recognition');
+    await screenshot(alphaPage!, 'voice-call-compact-690');
+    await profileCall.screenshot({ path: join(screenshotsDir, 'voice-call-compact-690.png') });
+    screenshotNames.push('voice-call-compact-690.png');
     await profileCall.getByRole('button', { name: '静音' }).click();
     assert.equal(await profileCall.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
     await profileCall.getByRole('button', { name: '取消静音' }).click();
+    await profileCall.getByRole('button', { name: '关闭扬声器' }).click();
+    assert.equal(await profileCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
     await profileCall.getByRole('button', { name: '打开扬声器' }).click();
     await delay(1100);
     assert.notEqual(await profileCall.getByTestId('voice-call-timer').innerText(), '0:00');
     await profileCall.getByRole('button', { name: '结束通话' }).click();
     await profileCall.waitFor({ state: 'hidden' });
+
+    await alphaPage!.setViewportSize({ width: 390, height: 844 });
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const narrowCall = alphaPage!.getByTestId('voice-call');
+    await narrowCall.waitFor({ state: 'visible' });
+    assert.equal(await narrowCall.getAttribute('data-variant'), 'desktop', 'Narrow browser windows must keep the web call card, not switch to a phone mockup');
+    const narrowCallBox = await narrowCall.boundingBox();
+    assert(narrowCallBox && narrowCallBox.width < 350 && narrowCallBox.height < 220,
+      'The narrow browser call must remain a compact card');
+    assert(narrowCallBox && narrowCallBox.x >= 0 && narrowCallBox.y >= 0 && narrowCallBox.x + narrowCallBox.width <= 390 && narrowCallBox.y + narrowCallBox.height <= 844,
+      'The compact call card must fit fully within a 390×844 viewport');
+    assert.equal(await narrowCall.locator('.voice-call-card-end').count(), 1);
+    assert.equal(await narrowCall.getByRole('button', { name: /接听|回答/ }).count(), 0);
+    await screenshot(alphaPage!, 'voice-call-compact-390');
+    await narrowCall.screenshot({ path: join(screenshotsDir, 'voice-call-compact-390.png') });
+    screenshotNames.push('voice-call-compact-390.png');
+    await narrowCall.getByRole('button', { name: '结束通话' }).click();
+    await narrowCall.waitFor({ state: 'hidden' });
+    await alphaPage!.setViewportSize(desktopViewport);
+    await openProfile(alphaPage!);
     await alphaPage!.getByLabel('名字').fill(originalDotName);
     await alphaPage!.getByRole('button', { name: '保存更改', exact: true }).click();
     await alphaPage!.locator('.profile-link strong').getByText(originalDotName, { exact: true }).waitFor({ state: 'visible' });
@@ -1636,15 +1757,19 @@ try {
     await contextCall.waitFor({ state: 'hidden' });
 
     await alphaPage!.getByTestId('voice-call-launch').click();
+    const recognitionStartsBeforeTaskCall = await alphaPage!.evaluate(() => (window as unknown as { __dotsRecognitionStarts: number }).__dotsRecognitionStarts);
     const call = alphaPage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
-    await alphaPage!.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__dotsFakeRecognition));
+    await alphaPage!.waitForFunction((previousStarts: number) => (window as unknown as { __dotsRecognitionStarts: number }).__dotsRecognitionStarts > previousStarts,
+      recognitionStartsBeforeTaskCall);
     assert.equal(await call.getAttribute('data-variant'), 'desktop');
     assert.equal(await call.locator('.voice-call-screen').count(), 0, 'Desktop chat calls should use the compact V2 controls, not the handset surface');
     const inlineBox = await call.boundingBox();
-    const contextBox = await alphaPage!.locator('.dot-context-panel').boundingBox();
-    assert(inlineBox && contextBox && inlineBox.y < 40 && inlineBox.x + inlineBox.width <= contextBox.x, 'Desktop call controls should sit at the upper right of the conversation pane, before the context panel');
-    assert.match(await call.getByRole('button', { name: '静音' }).evaluate(element => getComputedStyle(element).backgroundColor), /rgb\(40, 116, 95\)/);
+    assert(inlineBox && inlineBox.x > desktopViewport.width * .5 && inlineBox.x + inlineBox.width <= desktopViewport.width && inlineBox.y >= 0,
+      'The active call card should float on the right side of the browser without leaving the viewport');
+    assert.equal(await call.locator('.voice-call-card-end').count(), 1, 'The card should expose one red hang-up action');
+    assert.notEqual(await call.getByRole('button', { name: '静音' }).evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(40, 116, 95)',
+      'The microphone control must remain a neutral toggle, not an answer button');
     await screenshot(alphaPage!, 'voice-call-active-reference');
     await call.getByRole('button', { name: '静音' }).click();
     assert.equal(await call.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
@@ -1704,8 +1829,9 @@ try {
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, instruction);
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: instruction }).waitFor({ state: 'visible' });
+    await alphaPage!.getByText('最近的对话和进度', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await call.isVisible(), true, 'Recognizing a voice turn must keep the call open over the Dot conversation');
     await waitFor(() => Boolean(heldVoiceModelRelease), 10_000);
-    await alphaPage!.locator('.timeline .pill.working').waitFor({ state: 'visible', timeout: 10_000 });
     await waitFor(async () => (await call.getByTestId('voice-call-transcript').getAttribute('data-task-status'))?.includes('Dot 正在处理') || false, 10_000);
     await screenshot(alphaPage!, 'voice-call-task-running');
     speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
@@ -1716,11 +1842,14 @@ try {
       pageWindow.__dotsFakeRecognition?.emit(text);
     }, responseInstruction);
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: responseInstruction }).waitFor({ state: 'visible' });
+    await alphaPage!.getByText('最近的对话和进度', { exact: true }).waitFor({ state: 'visible' });
     await waitFor(async () => {
       speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
       return speechOutput.includes('Voice response returned from the model.');
     }, 10_000);
     assert(speechOutput.includes('Voice response returned from the model.'), 'The call should speak the completed task result, not only acknowledge receipt');
+    await alphaPage!.locator('.timeline .message.dot').filter({ hasText: 'Voice response returned from the model.' }).waitFor({ state: 'visible' });
+    assert.equal(await call.isVisible(), true, 'The Agent answer must return to the Dot conversation without navigating away from the active call');
     assert.equal(voiceStatePollingRequests, 0, 'Voice task progress should arrive on the authenticated event stream instead of polling /api/state');
     alphaPage!.off('request', countVoiceStatePolling);
     const composer = alphaPage!.getByTestId('task-composer');
@@ -1735,12 +1864,12 @@ try {
       return snapshot.tasks.some(task => task.instruction === text && task.status === 'done' && task.result === 'Voice request finished after the call ended.');
     }, instruction, { timeout: 15_000 });
     const alphaCalls = await alphaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json())) as { id: string; endedAt: string | null; durationSeconds: number | null }[];
-    assert.equal(alphaCalls.length, 4, 'Conversation header, context panel, composer, and Dot profile call entry points must each persist a call');
+    assert.equal(alphaCalls.length, 6, 'Three profile viewport checks plus the conversation header, context panel, and composer must each persist a call');
     assert(alphaCalls.every(item => item.endedAt), 'Ending each call must persist its completion time');
     assert(alphaCalls.some(item => item.durationSeconds !== null && item.durationSeconds >= 1));
 
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 4, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline [data-testid="chat-timeline-item"].voice-call-ended').length === 6, null, { timeout: 10_000 });
     await alphaPage!.waitForFunction(() => {
       const timeline = document.querySelector('.timeline');
       const composer = document.querySelector('.composer-wrap');
@@ -1748,14 +1877,14 @@ try {
     }, null, { timeout: 5_000 });
     const timelineTimes = await alphaPage!.locator('.timeline [data-testid="chat-timeline-item"]').evaluateAll(elements => elements.map(element => Date.parse(element.getAttribute('data-timestamp') || '')));
     assert(timelineTimes.every((time, index) => index === 0 || timelineTimes[index - 1]! <= time), 'Conversation entries and ended-call chips must appear in chronological order');
-    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 4, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
-    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 4, 'The ended-call state should retain the optional label visible in the reference');
+    assert.equal(await alphaPage!.getByText('Me: Call ended', { exact: true }).count(), 6, 'Each ended call should remain visible in the Dot conversation after the call panel closes');
+    assert.equal(await alphaPage!.getByText('Optional', { exact: true }).count(), 6, 'The ended-call state should retain the optional label visible in the reference');
     await screenshot(alphaPage!, 'voice-call-ended-in-conversation');
     await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
     await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
     await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
     await clickNav(alphaPage!, '你的 dot');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 4, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 6, null, { timeout: 10_000 });
     await alphaPage!.waitForFunction(() => {
       const timeline = document.querySelector('.timeline');
       const composer = document.querySelector('.composer-wrap');
@@ -1765,7 +1894,7 @@ try {
     await selectTenant(alphaPage!, 'Alpha workspace');
     await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 0, null, { timeout: 10_000 });
     await selectTenant(alphaPage!, 'Alpha Shared');
-    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 4, null, { timeout: 10_000 });
+    await alphaPage!.waitForFunction(() => document.querySelectorAll('.timeline .voice-call-ended').length === 6, null, { timeout: 10_000 });
 
     await selectTenant(betaPage!, 'Alpha Shared');
     const betaSharedCalls = await betaPage!.evaluate(async () => await fetch('/api/voice-calls').then(response => response.json()));
@@ -2217,12 +2346,10 @@ try {
     assert.equal(welcomeState.owner, 'agent');
     assert.equal(await alphaPage!.locator('.computer-dock span').count(), 3, 'The source computer view shows three dock icons');
     assert.equal(await alphaPage!.locator('.computer-controlbar.is-user-control').count(), 0, 'The agent-owned screen must keep the takeover affordance');
-    await waitForComputerScreenshot(alphaPage!);
-    const screenAspect = await alphaPage!.getByAltText('独立浏览器画面').evaluate(element => {
-      const image = element as HTMLImageElement;
-      return image.naturalWidth / image.naturalHeight;
-    });
-    assert.ok(Math.abs(screenAspect - 1280 / 820) < 0.001, 'The replicated remote screen aspect ratio changed');
+    const screenImage = await waitForComputerScreenshot(alphaPage!);
+    const screenAspect = screenImage.naturalWidth / screenImage.naturalHeight;
+    assert.ok(Math.abs(screenAspect - 1280 / 820) < 0.002,
+      `The replicated remote screen aspect ratio changed: expected 1280x820, saw ${screenImage.naturalWidth}x${screenImage.naturalHeight} (${screenAspect.toFixed(5)}) from ${screenImage.src}`);
     await screenshot(alphaPage!, '14-computer-dot-control');
   });
 
@@ -2434,6 +2561,265 @@ try {
     await failedCall.waitFor({ state: 'detached' });
   });
 
+  await recordStep('Volcano realtime WebSocket keeps credentials server-side and sends Chinese speech into the tenant Agent', async () => {
+    mockVolcEngineUrl = await startMockVolcEngineProvider();
+    await stopServer(server);
+    server = await startServer(e2ePort, { DOTS_VOICE_PROVIDER: 'volcengine' });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const unconfiguredCall = alphaPage!.getByTestId('voice-call');
+    await unconfiguredCall.getByRole('alert').filter({ hasText: 'SeedDuplex 实时语音 API Key' }).waitFor({ state: 'visible' });
+    await unconfiguredCall.getByRole('button', { name: '结束通话' }).click();
+
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_APP_ID: 'e2e-volc-app-id',
+      DOTS_VOLCENGINE_ACCESS_TOKEN: 'e2e-volc-access-token',
+      DOTS_VOLCENGINE_RESOURCE_ID: 'volc.speech.dialog',
+      DOTS_E2E_VOLCENGINE_WS_URL: mockVolcEngineUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await alphaContext!.grantPermissions(['microphone'], { origin: baseUrl });
+    await alphaPage!.evaluate(`(() => {
+      const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      Object.defineProperty(window, '__dotsVolcTrack', { configurable: true, value: null, writable: true });
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async constraints => {
+        const stream = await getUserMedia(constraints);
+        window.__dotsVolcTrack = stream.getAudioTracks()[0] || null;
+        return stream;
+      } } });
+    })()`);
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-provider') === 'volcengine');
+    await call.locator('[data-testid="voice-call-transcript"]').waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 20_000 });
+    assert.equal(mockVolcEngineConnections.length, 1, 'The authenticated call should establish exactly one provider socket');
+    const providerConnection = mockVolcEngineConnections[0];
+    assert.equal(providerConnection.headers['x-api-app-id'], 'e2e-volc-app-id');
+    assert.equal(providerConnection.headers['x-api-access-key'], 'e2e-volc-access-token');
+    assert.equal(providerConnection.headers['x-api-resource-id'], 'volc.speech.dialog');
+    assert.equal(providerConnection.headers['x-api-app-key'], 'PlgvMymc7f3tQnJ6');
+    const publicProviderInfo = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as Record<string, unknown>;
+    assert.deepEqual(publicProviderInfo, { provider: 'volcengine', configured: true, model: 'doubao-realtime-dialogue-2.0' }, 'Public provider state must not contain Volcano credentials');
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 30_000 });
+    assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM packets to the gateway');
+    assert(providerConnection.events.includes(100) && providerConnection.events.includes(200), 'Provider must see StartSession followed by audio TaskRequest frames');
+    assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be spoken through the provider TTS channel');
+    assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Finalized Chinese Volcano ASR text must start a normal tenant Agent task');
+
+    const activeCall = await alphaPage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
+    assert(activeCall, 'The realtime call must have a user-owned call record');
+    const betaCookie = (await betaContext!.cookies(baseUrl)).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+    const crossTenantUpgrade = await websocketUpgradeStatus(`${baseUrl.replace(/^http/, 'ws')}/api/voice-calls/${activeCall.id}/volcengine-stream`, betaCookie);
+    assert.equal(crossTenantUpgrade, 404, 'A different tenant cannot open another account’s voice stream');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcTrack: MediaStreamTrack }).__dotsVolcTrack.enabled), false, 'Mute must disable the captured microphone track');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcTrack: MediaStreamTrack }).__dotsVolcTrack.enabled), true, 'Unmute must resume microphone capture');
+    await screenshot(alphaPage!, 'volcengine-realtime-call-agent-result');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcTrack: MediaStreamTrack }).__dotsVolcTrack.readyState), 'ended', 'Ending a call must release the microphone');
+    await waitFor(() => {
+      const finishSession = providerConnection.timeline.indexOf('client:102');
+      const sessionFinished = providerConnection.timeline.indexOf('server:152');
+      const finishConnection = providerConnection.timeline.indexOf('client:2');
+      return finishSession >= 0 && sessionFinished > finishSession && finishConnection > sessionFinished;
+    }, 5_000).catch(() => undefined);
+    const finishSession = providerConnection.timeline.indexOf('client:102');
+    const sessionFinished = providerConnection.timeline.indexOf('server:152');
+    const finishConnection = providerConnection.timeline.indexOf('client:2');
+    assert(finishSession >= 0 && sessionFinished > finishSession && finishConnection > sessionFinished, `Call cleanup must await session closure before finishing the provider connection; received ${providerConnection.timeline.join(', ')}`);
+  });
+
+  await recordStep('SeedDuplex explains the observed 45000030 resource entitlement failure in Chinese', async () => {
+    const rejectedUrl = await startMockVolcEngineEntitlementRejection();
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-secret',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: rejectedUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    const alert = call.getByRole('alert').filter({ hasText: '端到端实时语音尚未开通' });
+    await alert.waitFor({ state: 'visible', timeout: 15_000 });
+    const visibleError = await alert.textContent();
+    assert.equal(visibleError?.includes('requested resource not granted'), false, 'Raw provider response text must not reach the browser');
+    assert.equal(visibleError?.includes('volc.speech.dialog'), false, 'Provider resource diagnostics must stay server-side');
+    await screenshot(alphaPage!, 'volcengine-resource-not-enabled');
+    await alphaPage!.waitForFunction(async () => {
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { endedAt: string | null }[];
+      return Boolean(calls[0]?.endedAt);
+    }, null, { timeout: 10_000 });
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
+    if (mockVolcEngineRejectedServer) {
+      await new Promise<void>((resolvePromise, reject) => mockVolcEngineRejectedServer!.close(error => error ? reject(error) : resolvePromise()));
+      mockVolcEngineRejectedServer = null;
+    }
+  });
+
+  await recordStep('SeedDuplex 3.0 JSON WebSocket keeps API Key private and dispatches Chinese speech to the tenant Agent', async () => {
+    mockVolcEngineDuplexUrl = await startMockVolcEngineDuplexProvider();
+    await stopServer(server);
+    server = await startServer(e2ePort, {
+      DOTS_VOICE_PROVIDER: 'volcengine',
+      DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-secret',
+      DOTS_E2E_VOLCENGINE_DUPLEX_WS_URL: mockVolcEngineDuplexUrl,
+    });
+    await alphaPage!.reload({ waitUntil: 'domcontentloaded' });
+    await alphaPage!.getByTestId('app-shell').waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true');
+    await alphaContext!.grantPermissions(['microphone'], { origin: baseUrl });
+    await alphaPage!.evaluate(`(() => {
+      const originalStart = AudioBufferSourceNode.prototype.start;
+      window.__dotsVolcPlaybackCapture = [];
+      AudioBufferSourceNode.prototype.start = function(...args) {
+        const buffer = this.buffer;
+        if (buffer && buffer.sampleRate === 24000) {
+          const data = buffer.getChannelData(0);
+          let peak = 0;
+          for (let index = 0; index < data.length; index += 1) peak = Math.max(peak, Math.abs(data[index]));
+          window.__dotsVolcPlaybackCapture.push({ sampleRate: buffer.sampleRate, length: data.length, peak });
+        }
+        return originalStart.apply(this, args);
+      };
+    })()`);
+    await alphaPage!.evaluate(`(() => {
+      const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      Object.defineProperty(window, '__dotsVolcDuplexTrack', { configurable: true, value: null, writable: true });
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async constraints => {
+        const stream = await getUserMedia(constraints);
+        window.__dotsVolcDuplexTrack = stream.getAudioTracks()[0] || null;
+        return stream;
+      } } });
+    })()`);
+    await openProfile(alphaPage!);
+    await alphaPage!.getByTestId('profile-voice-call-launch').click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => {
+      const dialog = document.querySelector('[data-testid="voice-call"]');
+      return dialog?.getAttribute('data-voice-provider') === 'volcengine' && dialog.getAttribute('data-voice-model') === 'doubao-seedduplex-3.0';
+    });
+    await alphaPage!.waitForFunction(() => {
+      const state = document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-state');
+      return state === 'sent' || state === 'no-frames' || state === 'context-suspended';
+    }, null, { timeout: 20_000 });
+    assert.equal(await call.getAttribute('data-voice-mic-state'), 'sent', 'The browser must start microphone PCM capture after SeedDuplex connects');
+    assert(await alphaPage!.getByTestId('voice-call-transcript').textContent().then(text => text?.includes('正在聆听')), 'The call should report listening only after microphone PCM frames have been sent');
+    assert(await call.getByTestId('voice-call-mic-meter').isVisible(), 'The caller must see microphone input activity during the SeedDuplex call');
+    await alphaPage!.waitForFunction(() => Number(document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-level')) > 0, null, { timeout: 10_000 });
+    assert(Number(await call.getAttribute('data-voice-mic-level')) > 0, 'The UI microphone meter must detect a non-silent input signal');
+    assert.equal(mockVolcEngineDuplexConnections.length, 1, 'The authenticated SeedDuplex call should open one provider connection');
+    const providerConnection = mockVolcEngineDuplexConnections[0];
+    assert.equal(providerConnection.headers['x-api-key'], 'e2e-seedduplex-secret', 'The shared API key must be sent only from the server');
+    assert(providerConnection.headers['x-api-request-id'], 'Each provider connection must carry a traceable request ID');
+    const publicProviderInfo = await alphaPage!.evaluate(async () => await fetch('/api/voice/provider').then(response => response.json())) as Record<string, unknown>;
+    assert.deepEqual(publicProviderInfo, { provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' }, 'Public provider state must not reveal the API key');
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.getAttribute('data-task-status')?.includes('已完成') === true, null, { timeout: 30_000 });
+    await waitFor(() => providerConnection.audioDeltas > 0, 5_000);
+    const playbackFrames = await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcPlaybackCapture: { sampleRate: number; length: number; peak: number }[] }).__dotsVolcPlaybackCapture);
+    assert(playbackFrames.some(frame => frame.sampleRate === 24_000 && frame.length === 240 && frame.peak >= 0.45), 'The browser must decode and schedule SeedDuplex float32 output at 24 kHz instead of dropping it or playing static');
+    assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM audio in realtime-sized packets');
+    assert(providerConnection.pcmPeak > 0 && providerConnection.nonSilentPcmSamples > 0, 'SeedDuplex must receive non-silent PCM from the selected microphone, not merely zero-filled frames');
+    assert(providerConnection.events.includes('session.create') && providerConnection.events.includes('input_audio_buffer.append'), 'SeedDuplex must use JSON session and audio events');
+    assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be submitted to SeedDuplex direct text-to-speech events');
+    assert(providerConnection.events.includes('speech_text_buffer.commit'), 'Agent status speech must use the provider direct-synthesis event');
+    assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Final Chinese speech transcript must start the normal tenant Agent task');
+
+    const activeCall = await alphaPage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
+    assert(activeCall, 'The SeedDuplex voice session must use the authenticated user-owned call record');
+    const betaCookie = (await betaContext!.cookies(baseUrl)).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+    const crossTenantUpgrade = await websocketUpgradeStatus(`${baseUrl.replace(/^http/, 'ws')}/api/voice-calls/${activeCall.id}/volcengine-stream`, betaCookie);
+    assert.equal(crossTenantUpgrade, 404, 'A different tenant cannot open another account’s SeedDuplex stream');
+    await call.getByRole('button', { name: '静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.enabled), false, 'Mute must disable microphone capture');
+    await call.getByRole('button', { name: '取消静音' }).click();
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.enabled), true, 'Unmute must resume microphone capture');
+    await waitFor(() => providerConnection.events.includes('input_audio_mute.commit') && providerConnection.events.includes('input_audio_unmute.commit'), 5_000);
+    await screenshot(alphaPage!, 'volcengine-seedduplex-call-agent-result');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
+    assert.equal(await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.readyState), 'ended', 'Ending the call must release the microphone');
+    await waitFor(() => providerConnection.events.includes('session.close') && providerConnection.timeline.includes('server:session.closed'), 5_000);
+  });
+
+  await recordStep('SeedDuplex keeps a spoken clarification in the same task and speaks the resumed result', async () => {
+    const transcript = '请用云电脑打开网页并告诉我标题。';
+    const reply = '请打开 https://example.com/。';
+    mockVolcEngineDuplexNextInitialTranscript = transcript;
+    const profileCallButton = alphaPage!.getByTestId('profile-voice-call-launch');
+    if (!(await profileCallButton.isVisible())) await openProfile(alphaPage!);
+    const playbackBefore = await alphaPage!.evaluate(() => (window as unknown as { __dotsVolcPlaybackCapture: unknown[] }).__dotsVolcPlaybackCapture.length);
+    await profileCallButton.click();
+    const call = alphaPage!.getByTestId('voice-call');
+    await call.waitFor({ state: 'visible' });
+    await alphaPage!.waitForFunction(() => document.querySelector('[data-testid="voice-call-transcript"]')?.textContent?.includes('正在聆听') === true, null, { timeout: 20_000 });
+    await call.locator('.voice-call-card-transcript').filter({ hasText: transcript }).waitFor({ state: 'visible', timeout: 15_000 });
+    await call.locator('.voice-call-card-task').filter({ hasText: '等待你的回复' }).waitFor({ state: 'visible', timeout: 15_000 });
+
+    const waitingState = await alphaPage!.evaluate(async () => {
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[];
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string; engine: string; result: string | null }[] };
+      return { call: calls.find(item => !item.endedAt), task: state.tasks.find(item => item.instruction === '请用云电脑打开网页并告诉我标题。') };
+    });
+    assert(waitingState.call, 'The spoken clarification must belong to an active account-owned call');
+    assert(waitingState.task, 'The spoken request must create one persisted task');
+    assert.equal(waitingState.task.status, 'waiting', 'The Agent must request the missing URL instead of claiming success');
+    const providerConnection = mockVolcEngineDuplexConnections.at(-1);
+    assert(providerConnection, 'The resumed conversation must use the active SeedDuplex connection');
+    await waitFor(() => providerConnection.spokenTexts.includes('请告诉我你要打开的网址。'), 10_000);
+
+    providerConnection.sendTranscript(reply, 'duplex-e2e-turn-0002');
+    providerConnection.sendTranscript(reply, 'duplex-e2e-turn-0002');
+    await call.locator('.voice-call-card-transcript').filter({ hasText: reply }).waitFor({ state: 'visible', timeout: 15_000 });
+    await call.locator('.voice-call-card-task').filter({ hasText: '已完成：请用云电脑打开网页并告诉我标题' }).waitFor({ state: 'visible', timeout: 20_000 });
+    await waitFor(() => providerConnection.audioDeltas >= 2, 10_000);
+
+    const resumedState = await alphaPage!.evaluate(async ({ transcriptText, replyText, callId }) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string; engine: string; result: string | null }[] };
+      const calls = await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[];
+      const tasks = state.tasks.filter(task => task.instruction.includes(transcriptText));
+      const task = tasks[0];
+      if (!task) throw new Error('The resumed voice task was not persisted');
+      const replay = await fetch(`/api/voice-calls/${callId}/turns`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ transcript: replyText, turnId: 'duplex-e2e-turn-0002', engine: task.engine }),
+      });
+      return { tasks, task, call: calls.find(item => item.id === callId), replayStatus: replay.status, replay: await replay.json() as { id?: string } };
+    }, { transcriptText: transcript, replyText: reply, callId: waitingState.call.id });
+    assert.equal(resumedState.tasks.length, 1, 'A spoken reply must resume the original task instead of creating a second task');
+    assert.equal(resumedState.task.status, 'done');
+    assert.equal(resumedState.task.result, '网页标题是「Example Domain」。');
+    assert(resumedState.task.instruction.includes(`User reply: ${reply}`), 'The resumed task must preserve the spoken URL reply');
+    assert.equal(resumedState.replayStatus, 200, 'A duplicate provider turn must return the original task');
+    assert.equal(resumedState.replay.id, resumedState.task.id, 'The replay must remain idempotently attached to the original task');
+    assert.equal(resumedState.call?.endedAt, null, 'The call must stay open while the resumed Agent answer is spoken');
+    assert(providerConnection.spokenTexts.includes('请告诉我你要打开的网址。'), 'The call must speak the Agent clarification');
+    assert(providerConnection.spokenTexts.includes('网页标题是「Example Domain」。'), 'The call must speak the completed Agent result');
+    const playbackAfter = await alphaPage!.evaluate(({ initialCount }) => (window as unknown as { __dotsVolcPlaybackCapture: { sampleRate: number; peak: number }[] }).__dotsVolcPlaybackCapture.slice(initialCount), { initialCount: playbackBefore });
+    assert(playbackAfter.length >= 2 && playbackAfter.every(frame => frame.sampleRate === 24_000 && frame.peak > 0), 'Both SeedDuplex responses must reach the browser audio playback path');
+    await screenshot(alphaPage!, 'seedduplex-multiturn-clarification-resumed');
+    await call.getByRole('button', { name: '结束通话' }).click();
+    await call.waitFor({ state: 'detached' });
+  });
+
   assert.deepEqual(pageErrors, [], `Browser runtime errors: ${pageErrors.join('; ')}`);
 } catch (error) {
   failure = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
@@ -2462,6 +2848,9 @@ try {
   } catch { /* Restore only the isolated E2E Keychain service. */ }
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
   if (mockQwenSignalingServer) await new Promise<void>(resolvePromise => mockQwenSignalingServer!.close(() => resolvePromise()));
+  if (mockVolcEngineServer) await new Promise<void>(resolvePromise => mockVolcEngineServer!.close(() => resolvePromise()));
+  if (mockVolcEngineDuplexServer) await new Promise<void>(resolvePromise => mockVolcEngineDuplexServer!.close(() => resolvePromise()));
+  if (mockVolcEngineRejectedServer) await new Promise<void>(resolvePromise => mockVolcEngineRejectedServer!.close(() => resolvePromise()));
   if (e2eSlackTokenAccount) {
     try { new Entry('com.cokepoppy.coke-dots.e2e', e2eSlackTokenAccount).deletePassword(); } catch { /* The OAuth test may have failed before writing its token. */ }
   }

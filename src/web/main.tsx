@@ -47,7 +47,7 @@ const statusText: Record<TaskStatus, string> = {
 const engineText: Record<TaskEngine, string> = { model: '模型 API', claude: 'Claude Code（已停用）', pi: 'Pi', dsh: 'DeepSeek Harness' };
 
 async function request(path: string, method: 'POST' | 'PATCH', body: object) {
-  const response = await fetch(`/api${path}`, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const response = await appFetch(`/api${path}`, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
@@ -114,14 +114,14 @@ function App() {
   }, [view, selected, selectedPageId]);
 
   useEffect(() => {
-    void fetch('/api/auth/me').then(async response => response.ok ? await response.json() as AuthContext : null)
+    void appFetch('/api/auth/me').then(async response => response.ok ? await response.json() as AuthContext : null)
       .then(setAuthContext).catch(() => setAuthContext(null)).finally(() => setAuthChecked(true));
-    void fetch('/api/auth/config').then(response => response.json()).then(data => { setGoogleConfigured(Boolean(data.googleConfigured)); setE2eAuthAvailable(Boolean(data.e2eAuthAvailable)); }).catch(() => { setGoogleConfigured(false); setE2eAuthAvailable(false); });
+    void appFetch('/api/auth/config').then(response => response.json()).then(data => { setGoogleConfigured(Boolean(data.googleConfigured)); setE2eAuthAvailable(Boolean(data.e2eAuthAvailable)); }).catch(() => { setGoogleConfigured(false); setE2eAuthAvailable(false); });
   }, []);
 
   useEffect(() => {
     if (!authContext) { setInvitations([]); return; }
-    const refresh = () => void fetch('/api/auth/invitations').then(async response => response.ok ? await response.json() as WorkspaceInvitation[] : [])
+    const refresh = () => void appFetch('/api/auth/invitations').then(async response => response.ok ? await response.json() as WorkspaceInvitation[] : [])
       .then(setInvitations).catch(() => setInvitations([]));
     refresh();
     const timer = window.setInterval(refresh, 15_000);
@@ -158,7 +158,7 @@ function App() {
     setPendingAttachments([]);
     if (!authContext) return;
     const controller = new AbortController();
-    void fetch('/api/attachments', { signal: controller.signal })
+    void appFetch('/api/attachments', { signal: controller.signal })
       .then(async response => response.ok ? await response.json() as AttachmentSummary[] : [])
       .then(items => setPendingAttachments(items))
       .catch(error => { if (error instanceof Error && error.name !== 'AbortError') setPendingAttachments([]); });
@@ -196,11 +196,11 @@ function App() {
   useEffect(() => {
     if (!authContext) return;
     setStateLoaded(false);
-    const stream = new EventSource('/api/events');
+    const stream = new EventSource(appPath('/api/events'));
     stream.onmessage = event => { setState(JSON.parse(event.data)); setStateLoaded(true); };
     stream.onerror = () => {
       setError('与本机服务的连接已断开，正在重连。');
-      void fetch('/api/auth/me').then(response => response.ok ? response.json() as Promise<AuthContext> : null).then(next => { if (!next) setAuthContext(null); }).catch(() => setAuthContext(null));
+      void appFetch('/api/auth/me').then(response => response.ok ? response.json() as Promise<AuthContext> : null).then(next => { if (!next) setAuthContext(null); }).catch(() => setAuthContext(null));
     };
     return () => stream.close();
   }, [authContext?.tenant.id]);
@@ -294,7 +294,7 @@ function App() {
     setUploadingAttachments(true); setError('');
     try {
       for (const file of Array.from(files)) {
-        const response = await fetch('/api/attachments', {
+        const response = await appFetch('/api/attachments', {
           method: 'POST',
           headers: { 'content-type': file.type || 'application/octet-stream', 'x-attachment-name': encodeURIComponent(file.name) },
           body: file,
@@ -312,7 +312,7 @@ function App() {
 
   async function removePendingAttachment(attachment: AttachmentSummary) {
     try {
-      const response = await fetch(`/api/attachments/${attachment.id}`, { method: 'DELETE' });
+      const response = await appFetch(`/api/attachments/${attachment.id}`, { method: 'DELETE' });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setPendingAttachments(current => current.filter(item => item.id !== attachment.id));
@@ -325,9 +325,14 @@ function App() {
   }
 
   async function submitVoiceTranscript(instruction: string, waitingTaskId: string | undefined, callId: string, turnId: string) {
-    const task = await request(`/voice-calls/${callId}/turns`, 'POST', { transcript: instruction, turnId, waitingTaskId, engine }) as Task;
-    setSelected(task.id); setSelectedPageId(null); setView('chat');
-    return task;
+    return await request(`/voice-calls/${callId}/turns`, 'POST', { transcript: instruction, turnId, waitingTaskId, engine }) as Task;
+  }
+
+  function startDotCall() {
+    setSelected(null);
+    setSelectedPageId(null);
+    setView('chat');
+    setVoiceCallOpen(true);
   }
 
   async function addScheduledWatch(url: string, intervalMinutes: number) {
@@ -344,7 +349,7 @@ function App() {
     if (authContext?.tenant.id === tenantId) return;
     setVoiceCallOpen(false); setPendingAttachments([]);
     try {
-      const response = await fetch('/api/auth/tenant', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId }) });
+      const response = await appFetch('/api/auth/tenant', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setAuthContext(data as AuthContext); setState(initial); setStateLoaded(false); setSelected(null); setSelectedPageId(null); setError('');
@@ -353,24 +358,24 @@ function App() {
 
   async function createTenant(name: string) {
     setVoiceCallOpen(false);
-    const response = await fetch('/api/tenants', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+    const response = await appFetch('/api/tenants', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    const refreshed = await fetch('/api/auth/me');
+    const refreshed = await appFetch('/api/auth/me');
     if (refreshed.ok) setAuthContext(await refreshed.json() as AuthContext);
     setState(initial); setStateLoaded(false); setSelected(null); setSelectedPageId(null);
   }
 
   async function logout() {
     setVoiceCallOpen(false);
-    try { await fetch('/api/auth/logout', { method: 'POST' }); }
+    try { await appFetch('/api/auth/logout', { method: 'POST' }); }
     finally { setAuthContext(null); setState(initial); setPendingAttachments([]); setSelectedPageId(null); }
   }
 
   async function acceptInvitation(invitation: WorkspaceInvitation) {
     try {
       setError('');
-      const response = await fetch(`/api/auth/invitations/${invitation.tenantId}/accept`, { method: 'POST' });
+      const response = await appFetch(`/api/auth/invitations/${invitation.tenantId}/accept`, { method: 'POST' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setAuthContext(data as AuthContext);
@@ -407,7 +412,7 @@ function App() {
       <button className="profile-link" onClick={() => { setSelectedPageId(null); setView('profile'); }}><DotAvatar appearance={state.profile} small /><span><strong>{state.profile.name}</strong><small>{authContext.user.email}</small></span><span>⌄</span></button>
     </aside>
     <main className="main">
-      <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div>{contextMode && !voiceCallOpen && <div className="dot-conversation-actions"><button type="button" data-testid="conversation-call-launch" className="conversation-call-launch" aria-label="Call" title="Call" onMouseDown={event => event.preventDefault()} onClick={() => setVoiceCallOpen(true)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 3.8 10 7.2 8.2 9.1a13 13 0 0 0 6.7 6.7l1.9-1.8 3.4 2.9-.8 3.2a1.8 1.8 0 0 1-2 1.4C9 20.2 3.8 15 2.5 6.6a1.8 1.8 0 0 1 1.4-2z" /></svg></button></div>}</header>
+      <header className="topbar"><span className="topbar-title">{view === 'chat' ? selectedTask?.title || state.profile.name : view === 'activity' ? 'Activity' : view === 'computer' ? '电脑' : view === 'profile' ? '你的 dot' : view === 'pages' ? 'Your Personal Scratchpad' : ''}</span><div className="surface-switcher" data-testid="surface-switcher" role="group" aria-label="Chat 与 Work"><button aria-pressed={!workSurface} onClick={() => { const previous = lastChatLocation.current; setSelected(previous.selected); setSelectedPageId(previous.selectedPageId); setView(previous.view); }}>Chat</button><button aria-pressed={workSurface} onClick={() => { setSelectedPageId(null); setView('activity'); }}>Work</button></div><div className="top-actions"><button className="theme-toggle" data-testid="theme-toggle" aria-label={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} aria-pressed={theme === 'dark'} title={`切换到${theme === 'light' ? '深色' : '浅色'}主题`} onClick={toggleTheme}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><span>{theme === 'light' ? '深色' : '浅色'}</span></button><WorkspaceSwitcher auth={authContext} onSwitch={switchTenant} onCreate={createTenant} onError={message => setError(message)} /><button className="logout-button" onClick={() => void logout()}>退出</button><span className="top-status"><span className="online" />本机运行中</span></div>{contextMode && !voiceCallOpen && <div className="dot-conversation-actions"><button type="button" data-testid="conversation-call-launch" className="conversation-call-launch" aria-label="Call" title="Call" onMouseDown={event => event.preventDefault()} onClick={startDotCall}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 3.8 10 7.2 8.2 9.1a13 13 0 0 0 6.7 6.7l1.9-1.8 3.4 2.9-.8 3.2a1.8 1.8 0 0 1-2 1.4C9 20.2 3.8 15 2.5 6.6a1.8 1.8 0 0 1 1.4-2z" /></svg></button></div>}</header>
       {invitations.length > 0 && <section className="invitation-banner" aria-label="工作区邀请">{invitations.map(invitation => <div className="invitation-banner-row" key={invitation.tenantId}><div><strong>工作区邀请：{invitation.tenantName}</strong><span>{invitation.email} · {invitation.role === 'admin' ? '管理员' : '成员'} · 有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</span></div><button onClick={() => void acceptInvitation(invitation)}>接受并打开工作区</button></div>)}</section>}
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}
       {computerConnectedToast && <div className="computer-connected-toast" data-testid="computer-connected-toast" role="status"><span className="computer-connected-icon" aria-hidden="true">✓</span><span>The computer is connected to your dot</span><button type="button" aria-label="Dismiss notification" onClick={() => setComputerConnectedToast(false)}>×</button></div>}
@@ -421,8 +426,8 @@ function App() {
         </div>}
         <div className="composer-wrap">
           {pendingAttachments.length > 0 && <ul className="pending-attachments" data-testid="pending-attachments" aria-label="待发送附件">{pendingAttachments.map(attachment => <li key={attachment.id} data-testid="pending-attachment"><span aria-hidden="true">▤</span><span className="attachment-name" title={attachment.name}>{attachment.name}</span><button type="button" aria-label={`移除附件 ${attachment.name}`} onClick={() => void removePendingAttachment(attachment)}>×</button></li>)}</ul>}
-          <div className="composer"><input ref={attachmentInputRef} className="attachment-input" data-testid="attachment-input" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.go,.rs,.java,.sql,.sh,.toml,.ini,.log,.c,.h,.cpp,.hpp" onChange={event => void uploadAttachments(event.currentTarget.files)} /><button className="attachment-button" data-testid="attachment-button" type="button" onMouseDown={event => event.preventDefault()} aria-label="添加附件" title="添加附件" disabled={uploadingAttachments || pendingAttachments.length >= 5} onClick={() => attachmentInputRef.current?.click()}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></button><textarea data-testid="task-composer" ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder={view === 'home' ? 'Ask ChatGPT' : 'Type a message'} /><DictationButton draft={draft} setDraft={setDraft} onError={setError} textareaRef={composerRef} /><div className="composer-bottom"><label>内核 <select data-testid="engine-select" value={engine} onChange={e => setEngine(e.target.value as Engine)}>{selectableEngines.map(id => <option key={id} value={id} disabled={state.remoteEngines.includes(id) && !state.availableEngines.includes(id)}>{engineText[id]}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="voice-call-launch" data-testid="voice-call-launch" type="button" onMouseDown={event => event.preventDefault()} aria-label={`拨打 ${state.profile.name}`} title={`拨打 ${state.profile.name}`} onClick={() => setVoiceCallOpen(true)}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg></button><button className="send" onMouseDown={event => event.preventDefault()} disabled={!stateLoaded || busy || !draft.trim() || (state.remoteEngines.includes(engine) && !state.availableEngines.includes(engine))} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint" data-testid="composer-hint">{state.modelSettings.apiKeyStatus === 'unreadable' && !state.availableEngines.includes(engine) ? '无法读取实例共享 API 密钥。请解锁运行 Coke Dots 服务的 Mac 登录钥匙串。' : state.remoteEngines.includes(engine) ? '任务由 Dot 的云电脑运行。' : state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；请先配置实例共享模型 API。'}</small></div>
-      </section>{view === 'chat' && selectedPageId ? <div className="scratchpad-page-split" data-testid="scratchpad-page-split"><ScratchpadNavigationPane tenantId={authContext.tenant.id} selectedPageId={selectedPageId} refreshKey={pageIndexVersion} onOpen={setSelectedPageId} onBack={() => { setSelectedPageId(null); setView('pages'); }} /><PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => { setSelectedPageId(null); setView('pages'); }} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /></div> : view === 'chat' && (selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onStartCall={() => setVoiceCallOpen(true)} onOpenSlack={() => setSlackModalOpen(true)} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
+          <div className="composer"><input ref={attachmentInputRef} className="attachment-input" data-testid="attachment-input" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.go,.rs,.java,.sql,.sh,.toml,.ini,.log,.c,.h,.cpp,.hpp" onChange={event => void uploadAttachments(event.currentTarget.files)} /><button className="attachment-button" data-testid="attachment-button" type="button" onMouseDown={event => event.preventDefault()} aria-label="添加附件" title="添加附件" disabled={uploadingAttachments || pendingAttachments.length >= 5} onClick={() => attachmentInputRef.current?.click()}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></button><textarea data-testid="task-composer" ref={composerRef} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }} placeholder={view === 'home' ? 'Ask ChatGPT' : 'Type a message'} /><DictationButton draft={draft} setDraft={setDraft} onError={setError} textareaRef={composerRef} /><div className="composer-bottom"><label>内核 <select data-testid="engine-select" value={engine} onChange={e => setEngine(e.target.value as Engine)}>{selectableEngines.map(id => <option key={id} value={id} disabled={state.remoteEngines.includes(id) && !state.availableEngines.includes(id)}>{engineText[id]}{state.availableEngines.includes(id) ? '' : ' · 未配置'}</option>)}</select></label><label className="schedule-toggle"><input type="checkbox" checked={schedule} onChange={e => setSchedule(e.target.checked)} /> 定期检查</label><button className="voice-call-launch" data-testid="voice-call-launch" type="button" onMouseDown={event => event.preventDefault()} aria-label={`拨打 ${state.profile.name}`} title={`拨打 ${state.profile.name}`} onClick={startDotCall}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg></button><button className="send" onMouseDown={event => event.preventDefault()} disabled={!stateLoaded || busy || !draft.trim() || (state.remoteEngines.includes(engine) && !state.availableEngines.includes(engine))} onClick={() => void submit()}>↑</button></div>{schedule && <RecurrenceEditor frequency={frequency} setFrequency={setFrequency} minutes={minutes} setMinutes={setMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />}</div><small className="hint" data-testid="composer-hint">{state.modelSettings.apiKeyStatus === 'unreadable' && !state.availableEngines.includes(engine) ? '无法读取实例共享 API 密钥。请解锁运行 Coke Dots 服务的 Mac 登录钥匙串。' : state.remoteEngines.includes(engine) ? '任务由 Dot 的云电脑运行。' : state.availableEngines.includes(engine) ? '任务由本机后台处理。' : '所选内核未配置；请先配置实例共享模型 API。'}</small></div>
+      </section>{view === 'chat' && selectedPageId ? <div className="scratchpad-page-split" data-testid="scratchpad-page-split"><ScratchpadNavigationPane tenantId={authContext.tenant.id} selectedPageId={selectedPageId} refreshKey={pageIndexVersion} onOpen={setSelectedPageId} onBack={() => { setSelectedPageId(null); setView('pages'); }} /><PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} onBack={() => { setSelectedPageId(null); setView('pages'); }} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /></div> : view === 'chat' && (selectedTask || entries.length > 0) && <DotContextPanel profile={state.profile} state={state} tenantId={authContext.tenant.id} onOpenComputer={() => setView('computer')} onStartCall={startDotCall} onOpenSlack={() => setSlackModalOpen(true)} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} />}</div>}
       {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
       {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
@@ -431,13 +436,13 @@ function App() {
         onOpenTask={task => { setSelected(task.id); setView('chat'); }}
         onNewTask={() => { setSchedule(true); setView('chat'); requestAnimationFrame(() => composerRef.current?.focus()); }}
         onAddWatch={addScheduledWatch} />}
-      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} onStartCall={() => setVoiceCallOpen(true)} />}
+      {view === 'profile' && <Profile state={state} auth={authContext} onError={setError} onEditAppearance={() => setAvatarEditorOpen(true)} onManageComputerAccess={() => setComputerAccessOpen(true)} onStartCall={startDotCall} />}
       {view === 'computer' && <ComputerView dotName={state.profile.name} localComputerEnabled={state.computerAccess.localComputer} onManageAccess={() => setComputerAccessOpen(true)} onError={setError} />}
     </main>
     {avatarSetupOpen && <DotSetupEditor profile={state.profile} onClose={() => setAvatarSetupOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, false, true)} />}
     {computerAccessOpen && <DotComputerChoice localComputer={state.computerAccess.localComputer} mode="settings" onSave={saveComputerAccess} onCancel={() => setComputerAccessOpen(false)} />}
     {avatarEditorOpen && <DotAvatarEditor profile={state.profile} onClose={() => setAvatarEditorOpen(false)} onSave={(appearance, name) => saveAvatarAppearance(appearance, name, !state.profile.onboardingCompletedAt)} />}
-    {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} displayMode={contextMode ? 'desktop' : 'handset'} onTranscript={submitVoiceTranscript} onClose={() => { setVoiceCallOpen(false); void refreshVoiceCalls().catch(reason => setError(reason instanceof Error ? reason.message : String(reason))); }} />}
+    {voiceCallOpen && <VoiceCall dotName={state.profile.name} appearance={state.profile} onTranscript={submitVoiceTranscript} onClose={() => { setVoiceCallOpen(false); void refreshVoiceCalls().catch(reason => setError(reason instanceof Error ? reason.message : String(reason))); }} />}
     {slackModalOpen && authContext && <SlackSetupModal key={authContext.tenant.id} dotName={state.profile.name} canManage={['owner', 'admin'].includes(authContext.tenant.role)} onClose={() => setSlackModalOpen(false)} onConnectSlack={() => {
       try { sessionStorage.setItem('coke-dots:slack-return-state', JSON.stringify({ view, selected })); } catch { /* Restore the home view if session storage is unavailable. */ }
       window.location.assign(appPath('/api/slack/oauth/start'));
@@ -464,7 +469,7 @@ function LoginScreen({ googleConfigured, e2eAuthAvailable }: { googleConfigured:
       const deadline = Date.now() + 10 * 60_000;
       while (Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 2000));
-        const response = await fetch('/api/auth/desktop/poll', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ handoffToken }) });
+        const response = await appFetch('/api/auth/desktop/poll', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ handoffToken }) });
         const data = await response.json();
         if (response.status === 202) continue;
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
@@ -478,13 +483,13 @@ function LoginScreen({ googleConfigured, e2eAuthAvailable }: { googleConfigured:
   async function signInE2e() {
     setDesktopError('');
     try {
-      const response = await fetch('/api/auth/e2e/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: e2eEmail }) });
+      const response = await appFetch('/api/auth/e2e/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: e2eEmail }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       window.location.reload();
     } catch (error) { setDesktopError(error instanceof Error ? error.message : String(error)); }
   }
-  return <main className="auth-page"><div className="auth-card"><div className="brand"><span className="brand-mark">●</span> Coke Dots</div><h1>让你的个人代理持续推进工作</h1><p>使用 Google 账号登录。每个工作区的任务、记录、模型密钥和浏览器会话相互隔离。</p>{authError && <div className="auth-error">{authErrors[authError] || '登录失败，请重试。'}</div>}{desktopError && <div className="auth-error">{desktopError}</div>}{googleConfigured ? isElectron ? <button className="google-login" disabled={desktopPending} onClick={() => void beginDesktopLogin()}><span>G</span>{desktopPending ? '等待浏览器完成登录…' : '使用 Google 登录'}</button> : <a className="google-login" href="/api/auth/google/start"><span>G</span>使用 Google 登录</a> : <div className="auth-setup"><strong>需要配置 Google OAuth</strong><span>在本机服务环境中设置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET，然后重启服务。</span></div>}{e2eAuthAvailable && <div className="e2e-login"><label htmlFor="e2e-email">E2E 测试账号</label><input id="e2e-email" type="email" value={e2eEmail} onChange={event => setE2eEmail(event.target.value)} /><button data-testid="e2e-sign-in" className="google-login" onClick={() => void signInE2e()}>测试环境登录</button></div>}<small>仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。</small></div></main>;
+  return <main className="auth-page"><div className="auth-card"><div className="brand"><span className="brand-mark">●</span> Coke Dots</div><h1>让你的个人代理持续推进工作</h1><p>使用 Google 账号登录。每个工作区的任务、记录、模型密钥和浏览器会话相互隔离。</p>{authError && <div className="auth-error">{authErrors[authError] || '登录失败，请重试。'}</div>}{desktopError && <div className="auth-error">{desktopError}</div>}{googleConfigured ? isElectron ? <button className="google-login" disabled={desktopPending} onClick={() => void beginDesktopLogin()}><span>G</span>{desktopPending ? '等待浏览器完成登录…' : '使用 Google 登录'}</button> : <a className="google-login" href={appPath('/api/auth/google/start')}><span>G</span>使用 Google 登录</a> : <div className="auth-setup"><strong>需要配置 Google OAuth</strong><span>在本机服务环境中设置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET，然后重启服务。</span></div>}{e2eAuthAvailable && <div className="e2e-login"><label htmlFor="e2e-email">E2E 测试账号</label><input id="e2e-email" type="email" value={e2eEmail} onChange={event => setE2eEmail(event.target.value)} /><button data-testid="e2e-sign-in" className="google-login" onClick={() => void signInE2e()}>测试环境登录</button></div>}<small>仅申请基本身份信息；Coke Dots 不会取得 Gmail 或 Google Drive 权限。</small></div></main>;
 }
 
 function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask, onOpenPage }: { tenantId: string; profileName: string; state: Snapshot; stateLoaded: boolean; onSelectTask: (taskId: string) => void; onOpenPage: (pageId: string, taskId?: string | null) => void }) {
@@ -502,7 +507,7 @@ function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask,
     const generation = ++pageGeneration.current;
     let current = true;
     setLoading(true); setLoadingOlder(false); setError(''); setEntries([]); setNextCursor(null);
-    void fetch('/api/activity?limit=50').then(async response => {
+    void appFetch('/api/activity?limit=50').then(async response => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       return data as { entries: Entry[]; nextCursor: number | null };
@@ -529,7 +534,7 @@ function ActivityView({ tenantId, profileName, state, stateLoaded, onSelectTask,
     const generation = pageGeneration.current;
     setLoadingOlder(true); setError('');
     try {
-      const response = await fetch(`/api/activity?limit=50&before=${nextCursor}`);
+      const response = await appFetch(`/api/activity?limit=50&before=${nextCursor}`);
       const data = await response.json() as { entries?: Entry[]; nextCursor?: number | null; error?: string };
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       if (requestedTenantId !== tenantIdRef.current || generation !== pageGeneration.current) return;
@@ -619,7 +624,7 @@ function TaskControls({ task, act, compact = false }: { task: Task; act: (task: 
     let active = true;
     setApproval(null); setApprovalLoaded(false); setApprovalError('');
     if (compact || task.status !== 'waiting') { setApprovalLoaded(true); return () => { active = false; }; }
-    void fetch(`/api/tasks/${task.id}/approval`).then(async response => {
+    void appFetch(`/api/tasks/${task.id}/approval`).then(async response => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       if (active) setApproval(data as PageActionApproval | null);
@@ -685,11 +690,11 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
   const canManageSharedModel = ['owner', 'admin'].includes(auth.tenant.role)
     && (!state.modelSettings.adminTenantId || state.modelSettings.adminTenantId === auth.tenant.id);
   const refreshMembers = async () => {
-    const response = await fetch(`/api/tenants/${auth.tenant.id}/members`);
+    const response = await appFetch(`/api/tenants/${auth.tenant.id}/members`);
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
     setMembers(await response.json() as TenantMember[]);
     if (['owner', 'admin'].includes(auth.tenant.role)) {
-      const inviteResponse = await fetch(`/api/tenants/${auth.tenant.id}/invitations`);
+      const inviteResponse = await appFetch(`/api/tenants/${auth.tenant.id}/invitations`);
       if (!inviteResponse.ok) throw new Error((await inviteResponse.json()).error || `HTTP ${inviteResponse.status}`);
       setInvitations(await inviteResponse.json() as WorkspaceInvitation[]);
     } else setInvitations([]);
@@ -701,7 +706,7 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
   useEffect(() => {
     let active = true;
     setMemoryDraft(''); setEditingMemory(null); setEditingDraft(''); setMemoryError(''); setMemories([]);
-    void fetch('/api/memories').then(async response => {
+    void appFetch('/api/memories').then(async response => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       if (active) setMemories(data as TenantMemory[]);
@@ -727,7 +732,7 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
   async function removeMemory(memory: TenantMemory) {
     setMemoryBusy(true); setMemoryError('');
     try {
-      const response = await fetch(`/api/memories/${memory.id}`, { method: 'DELETE' });
+      const response = await appFetch(`/api/memories/${memory.id}`, { method: 'DELETE' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setMemories(current => current.filter(item => item.id !== memory.id));
@@ -783,12 +788,12 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
       <div className="member-list">{members.map(member => <div className="member-row" key={member.id}>
         <span><strong>{member.name}</strong><small>{member.email}</small></span>
         <span className="member-role">{member.role === 'owner' ? '所有者' : member.role === 'admin' ? '管理员' : '成员'}</span>
-        {['owner', 'admin'].includes(auth.tenant.role) && member.role !== 'owner' && <button onClick={async () => { try { const response = await fetch(`/api/tenants/${auth.tenant.id}/members/${member.id}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>移除</button>}
+        {['owner', 'admin'].includes(auth.tenant.role) && member.role !== 'owner' && <button onClick={async () => { try { const response = await appFetch(`/api/tenants/${auth.tenant.id}/members/${member.id}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>移除</button>}
       </div>)}</div>
       {invitations.length > 0 && <div className="member-invitations" role="region" aria-label="待接受邀请"><strong>待接受邀请</strong>{invitations.map(invitation => <div className="member-row pending-invitation" key={invitation.email}>
         <span><strong>{invitation.email}</strong><small>有效期至 {new Date(invitation.expiresAt).toLocaleDateString('zh-CN')}</small></span>
         <span className="member-role">{invitation.role === 'admin' ? '管理员' : '成员'}</span>
-        <button aria-label={`撤销 ${invitation.email} 的邀请`} onClick={async () => { try { const response = await fetch(`/api/tenants/${auth.tenant.id}/invitations/${encodeURIComponent(invitation.email)}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>撤销</button>
+        <button aria-label={`撤销 ${invitation.email} 的邀请`} onClick={async () => { try { const response = await appFetch(`/api/tenants/${auth.tenant.id}/invitations/${encodeURIComponent(invitation.email)}`, { method: 'DELETE' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); await refreshMembers(); } catch (error) { setMembersError(String(error)); } }}>撤销</button>
       </div>)}</div>}
       <label>Google 账号邮箱<input type="email" value={memberEmail} onChange={e => { setMemberEmail(e.target.value); setMemberNotice(''); }} placeholder="teammate@example.com" /></label>
       <button className="primary" disabled={!['owner', 'admin'].includes(auth.tenant.role) || !memberEmail.trim()} onClick={async () => { try { const result = await request(`/tenants/${auth.tenant.id}/members`, 'POST', { email: memberEmail, role: 'member' }) as { invited: boolean }; setMemberEmail(''); setMembersError(''); setMemberNotice(result.invited ? '邀请已创建。对方在 Coke Dots 登录同一 Google 账号后，会看到待接受邀请。' : '成员已加入工作区。'); await refreshMembers(); } catch (e) { onError(String(e)); } }}>添加工作区成员</button>
