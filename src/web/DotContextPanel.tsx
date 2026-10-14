@@ -64,7 +64,7 @@ export function DotContextPanel({ profile, state, tenantId, onOpenComputer, onSt
     </ContextSection>
 
     <ContextSection title="Outputs" testId="context-outputs">
-      {outputs.length ? <div className="context-list">{outputs.map(task => <button className="context-output-row" key={task.id} onClick={() => onSelectTask(task.id)}><span className="context-output-icon" aria-hidden="true">▤</span><span className="context-row-copy"><strong>{task.title}</strong><small>Task result</small></span></button>)}</div> : <p className="context-empty">No outputs yet</p>}
+      {outputs.length ? <div className="context-list">{outputs.map(task => <button className="context-output-row" data-testid={`context-output-task-${task.id}`} key={task.id} onClick={() => onSelectTask(task.id)}><span className="context-output-icon" aria-hidden="true">▤</span><span className="context-row-copy"><strong>{task.title}</strong><small>{task.status === 'done' ? '打开结果和文件' : 'Task result'}</small></span></button>)}</div> : <p className="context-empty">No outputs yet</p>}
     </ContextSection>
 
   </aside>;

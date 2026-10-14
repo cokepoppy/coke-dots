@@ -12,6 +12,7 @@ import { effectiveModelConfig, loadModelSettings, migrateTenantModelKey, publicM
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { apiErrorResponse } from './computer-errors.ts';
+import { createArtifactPreviewTicket, verifyArtifactPreviewTicket } from './artifact-preview-ticket.ts';
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
 import { negotiateQwenRealtime, VoiceProviderError, voiceProviderInfo } from './voice-provider.ts';
@@ -98,9 +99,9 @@ const watchRunner = new WatchRunner(store, publish);
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-store');
-  if (!isLocalRequest(req)) return reply(res, 403, { error: 'Local access only' });
   const url = new URL(req.url || '/', `http://${host}:${port}`);
   const path = url.pathname;
+  if (!isLocalRequest(req, path)) return reply(res, 403, { error: 'Local access only' });
 
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
   if (path === '/auth/slack/callback' && req.method === 'GET') return slack.finish(req, res, url, auth.session(req));
@@ -123,6 +124,25 @@ const server = createServer(async (req, res) => {
     const session = auth.session(req);
     if (!session) return reply(res, 401, { error: '请先登录' });
     return reply(res, 200, { user: session.user, tenant: session.tenant, tenants: store.tenantsForUser(session.user.id) });
+  }
+  const sandboxArtifactPreview = path.match(/^\/api\/artifact-preview\/([a-f0-9-]{36})\/([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\/(.+)$/i);
+  if (sandboxArtifactPreview && req.method === 'GET') {
+    const [, taskId, ticket, rawPath] = sandboxArtifactPreview;
+    const claims = verifyArtifactPreviewTicket(ticket);
+    if (!claims || claims.taskId !== taskId) return reply(res, 404, { error: '文件预览已过期或不可用' });
+    const activeSession = auth.session(req);
+    if (activeSession && activeSession.tenant.id !== claims.tenantId) return reply(res, 404, { error: '文件预览已过期或不可用' });
+    const task = store.getTask(taskId, claims.tenantId);
+    if (!task) return reply(res, 404, { error: '文件预览已过期或不可用' });
+    try {
+      const artifactPath = rawPath.split('/').map(part => decodeURIComponent(part)).join('/');
+      const artifact = await computerFor(claims.tenantId).readTaskArtifact?.(task.id, artifactPath);
+      if (!artifact?.previewable) return reply(res, 404, { error: '文件预览已过期或不可用' });
+      return writeTaskArtifact(res, artifact);
+    } catch (error) {
+      const failure = apiErrorResponse(error);
+      return reply(res, failure.status, failure.body);
+    }
   }
   if (path === '/api/auth/desktop/start' && req.method === 'GET') return auth.beginDesktop(req, res, url);
   if (path === '/api/auth/logout' && req.method === 'POST') {
@@ -382,6 +402,52 @@ const server = createServer(async (req, res) => {
       return reply(res, 403, { error: '当前工作区尚未授权 Dot 使用本机 Chrome 工作区' });
     }
     const computer = computerFor(session.tenant.id);
+    const taskArtifactsMatch = path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/artifacts$/i);
+    if (taskArtifactsMatch && req.method === 'GET') {
+      const task = store.getTask(taskArtifactsMatch[1], session.tenant.id);
+      if (!task) return reply(res, 404, { error: '任务不存在' });
+      const artifacts = await computer.listTaskArtifacts?.(task.id) || [];
+      return reply(res, 200, { artifacts });
+    }
+    const taskArtifactPreviewUrlMatch = path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/artifacts\/preview-url$/i);
+    if (taskArtifactPreviewUrlMatch && req.method === 'GET') {
+      const task = store.getTask(taskArtifactPreviewUrlMatch[1], session.tenant.id);
+      if (!task) return reply(res, 404, { error: '任务不存在' });
+      if (!computer.readTaskArtifact) return reply(res, 404, { error: '该运行环境暂不提供云电脑文件预览' });
+      const artifactPath = url.searchParams.get('path') || '';
+      const artifact = await computer.readTaskArtifact(task.id, artifactPath);
+      if (!artifact.previewable) return reply(res, 415, { error: '该文件暂不支持预览' });
+      const ticket = createArtifactPreviewTicket(session.tenant.id, task.id);
+      const encodedPath = artifactPath.split('/').map(part => encodeURIComponent(part)).join('/');
+      return reply(res, 200, { url: `/api/artifact-preview/${task.id}/${ticket}/${encodedPath}` });
+    }
+    const taskArtifactContentMatch = path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/artifacts\/content$/i);
+    if (taskArtifactContentMatch && req.method === 'GET') {
+      const task = store.getTask(taskArtifactContentMatch[1], session.tenant.id);
+      if (!task) return reply(res, 404, { error: '任务不存在' });
+      if (!computer.readTaskArtifact) return reply(res, 404, { error: '该运行环境暂不提供云电脑文件预览' });
+      const artifactPath = url.searchParams.get('path') || '';
+      const artifact = await computer.readTaskArtifact(task.id, artifactPath);
+      return writeTaskArtifact(res, artifact);
+    }
+    const taskArtifactFileMatch = path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/artifacts\/file\/(.+)$/i);
+    if (taskArtifactFileMatch && req.method === 'GET') {
+      const task = store.getTask(taskArtifactFileMatch[1], session.tenant.id);
+      if (!task) return reply(res, 404, { error: '任务不存在' });
+      if (!computer.readTaskArtifact) return reply(res, 404, { error: '该运行环境暂不提供云电脑文件预览' });
+      let artifactPath: string;
+      try { artifactPath = taskArtifactFileMatch[2].split('/').map(part => decodeURIComponent(part)).join('/'); }
+      catch { return reply(res, 400, { error: '文件路径无效' }); }
+      const artifact = await computer.readTaskArtifact(task.id, artifactPath);
+      return writeTaskArtifact(res, artifact);
+    }
+    const taskArtifactOpenMatch = path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/artifacts\/open-in-computer$/i);
+    if (taskArtifactOpenMatch && req.method === 'POST') {
+      const task = store.getTask(taskArtifactOpenMatch[1], session.tenant.id);
+      if (!task) return reply(res, 404, { error: '任务不存在' });
+      if (!computer.openTaskArtifact) return reply(res, 404, { error: '该运行环境暂不支持在云电脑中打开文件' });
+      return reply(res, 200, await computer.openTaskArtifact(task.id, String(body.path || '')));
+    }
     if (path.startsWith('/api/computer/novnc/')) {
       if (req.method !== 'GET' || !computer.novncTarget) return reply(res, 404, { error: 'Not found' });
       if ((await computer.state()).owner !== 'user') return reply(res, 403, { error: '请先接管电脑再打开交互画面' });
@@ -580,13 +646,14 @@ const server = createServer(async (req, res) => {
   }
 });
 
-function isLocalRequest(req: IncomingMessage) {
+function isLocalRequest(req: IncomingMessage, path = '') {
   const remote = req.socket.remoteAddress;
   const hostname = req.headers.host?.split(':')[0];
   const origin = req.headers.origin;
   const oauthCallback = req.method === 'GET' && req.url?.split('?')[0] === '/auth/google/callback' && origin === 'https://accounts.google.com';
   const slackCallback = req.method === 'GET' && req.url?.split('?')[0] === '/auth/slack/callback' && ['https://slack.com', 'https://slack-gov.com'].includes(origin || '');
-  const allowedOrigin = !origin || isAllowedLocalOrigin(origin) || oauthCallback || slackCallback;
+  const sandboxArtifactPreview = req.method === 'GET' && path.startsWith('/api/artifact-preview/');
+  const allowedOrigin = !origin || isAllowedLocalOrigin(origin) || oauthCallback || slackCallback || (sandboxArtifactPreview && origin === 'null');
   return (remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1') &&
     (hostname === '127.0.0.1' || hostname === 'localhost') &&
     allowedOrigin;
@@ -648,6 +715,21 @@ function reply(res: ServerResponse, status: number, value: unknown) {
 function rejectUpgrade(socket: Duplex, status: number, message: string) {
   if (socket.destroyed || !socket.writable) return;
   socket.end(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+}
+
+function writeTaskArtifact(res: ServerResponse, artifact: { bytes: Buffer; mediaType: string; name: string; previewable: boolean }) {
+  if (artifact.bytes.length > 25 * 1024 * 1024) return reply(res, 413, { error: '文件超过 25 MB，暂不支持预览' });
+  const filename = artifact.name.replace(/[\r\n"\\]/g, '_').slice(0, 180) || 'artifact';
+  const encodedFilename = encodeURIComponent(filename);
+  res.writeHead(200, {
+    'Content-Type': artifact.mediaType,
+    'Content-Length': artifact.bytes.length,
+    'Content-Disposition': `inline; filename="artifact"; filename*=UTF-8''${encodedFilename}`,
+    'X-Content-Type-Options': 'nosniff',
+    ...(artifact.previewable ? { 'Content-Security-Policy': "sandbox allow-scripts; default-src 'self' data: blob: https: http:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https: http:; style-src 'self' 'unsafe-inline' https: http:; img-src 'self' data: blob: https: http:; font-src 'self' data: https: http:; connect-src https: http: wss: ws:; media-src 'self' data: blob: https: http:; object-src 'none'; base-uri 'none'; form-action 'none'" } : {}),
+    'Cache-Control': 'private, no-store',
+  });
+  res.end(artifact.bytes);
 }
 
 async function serveStatic(req: IncomingMessage, res: ServerResponse) {

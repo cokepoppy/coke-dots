@@ -25,6 +25,8 @@ const machines = new Map<string, { owner: 'agent' | 'user'; url: string; title: 
 const workerTokens = new Map<string, string>();
 const agentTokens = new Map<string, string>();
 const agentCalls: Record<string, unknown>[] = [];
+const taskArtifacts = new Map<string, { path: string; name: string; mediaType: string; size: number; previewable: boolean }[]>();
+const taskArtifactBodies = new Map<string, Map<string, string>>();
 const browserActions: { hash: string; action: string }[] = [];
 const remoteHttpPaths: string[] = [];
 const remoteUpgradePaths: string[] = [];
@@ -105,6 +107,20 @@ async function startRemote() {
         if (route === '/v1/control' && req.method === 'GET') return content(res, 200, 'application/json', JSON.stringify({ owner: machine.owner }));
         if (route === '/v1/control' && req.method === 'POST') { const body = await readJson(req); machine.owner = body.owner; return content(res, 200, 'application/json', JSON.stringify({ owner: machine.owner })); }
         if (route === '/v1/screenshot' && req.method === 'GET') return content(res, 200, 'image/png', screen);
+        if (route === '/v1/artifacts' && req.method === 'GET') {
+          const taskId = requestUrl.searchParams.get('taskId') || '';
+          return content(res, 200, 'application/json', JSON.stringify({ artifacts: taskArtifacts.get(taskId) || [] }));
+        }
+        if (route === '/v1/artifact' && req.method === 'GET') {
+          const taskId = requestUrl.searchParams.get('taskId') || '';
+          const artifactPath = requestUrl.searchParams.get('path') || '';
+          const body = taskArtifactBodies.get(taskId)?.get(artifactPath);
+          if (body === undefined) return content(res, 404, 'application/json', JSON.stringify({ error: 'artifact not found' }));
+          const mediaType = artifactPath.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'text/html; charset=utf-8';
+          res.writeHead(200, { 'content-type': mediaType, 'content-length': Buffer.byteLength(body), 'cache-control': 'no-store', 'x-dots-artifact-name': encodeURIComponent(artifactPath.split('/').at(-1) || 'artifact'), 'x-dots-artifact-previewable': 'true' });
+          res.end(body);
+          return;
+        }
         if (route === '/v1/commands' && req.method === 'POST') {
           const body = await readJson(req);
           browserActions.push({ hash, action: String(body.action || '') });
@@ -113,6 +129,7 @@ async function startRemote() {
             return content(res, 503, 'application/json', JSON.stringify({ error: '云电脑中的 Chromium 浏览器上下文暂不可用，正在重新连接', code: 'DOTS_BROWSER_CONTEXT_UNAVAILABLE' }));
           }
           if (body.action === 'navigate') { machine.url = String(body.url); machine.title = `Visited ${new URL(machine.url).hostname}`; }
+          if (body.action === 'open-artifact') { machine.url = `file:///workspace/tasks/${body.taskId}/${body.path}`; machine.title = String(body.path); }
           return content(res, 200, 'application/json', JSON.stringify({ ready: true }));
         }
       }
@@ -123,6 +140,13 @@ async function startRemote() {
         if (route === '/v1/tasks/run' && req.method === 'POST') {
           const body = await readJson(req);
           agentCalls.push(body);
+          const html = '<!doctype html><html><body><main id="demo-artifact">正在加载游戏…</main><script src="game.js"></script></body></html>';
+          const script = "document.querySelector('#demo-artifact').textContent = '俄罗斯方块预览';";
+          taskArtifacts.set(String(body.taskId), [
+            { path: 'game.js', name: 'game.js', mediaType: 'text/javascript', size: Buffer.byteLength(script), previewable: true },
+            { path: 'tetris.html', name: 'tetris.html', mediaType: 'text/html', size: Buffer.byteLength(html), previewable: true },
+          ]);
+          taskArtifactBodies.set(String(body.taskId), new Map([['tetris.html', html], ['game.js', script]]));
           return content(res, 200, 'application/json', JSON.stringify({ status: 'done', message: `Cloud task completed in ${body.engine}`, sessionId: 'cloud-session-1' }));
         }
       }
@@ -217,6 +241,11 @@ try {
     socket.on('socketerror', error => browserWebSocketEvents.push(`error:${error}`));
     socket.on('close', () => browserWebSocketEvents.push(`close:${socket.url()}`));
   });
+  page.on('console', message => logs.push(`browser console ${message.type()}: ${message.text()}`));
+  page.on('requestfailed', request => logs.push(`browser request failed ${request.url()}: ${request.failure()?.errorText || 'unknown error'}`));
+  page.on('response', response => {
+    if (response.url().includes('/artifacts/file/') && response.status() >= 400) void response.text().then(body => logs.push(`artifact response ${response.status()}: ${body.slice(0, 300)}`)).catch(() => undefined);
+  });
 
   await signIn(page, 'cloud-alpha@example.test');
   await page.evaluate(async () => {
@@ -298,11 +327,59 @@ try {
   assert.equal(agentCalls[0].cwd, `tasks/${created.task.id}`);
   assert.equal((agentCalls[0].computer as { baseUrl: string }).baseUrl, 'http://127.0.0.1:8082');
   assert.deepEqual(agentCalls[0].modelConfig, { apiKey: 'cloud-e2e-shared-api-key', baseUrl: 'https://api.deepseek.com/v1', model: 'cloud-e2e-model' }, 'The cloud Agent must receive the shared instance model profile in its task request');
+  const alphaArtifactChecks = await page.evaluate(async id => {
+    const listed = await fetch(`/api/tasks/${id}/artifacts`);
+    const listBody = await listed.json();
+    const content = await fetch(`/api/tasks/${id}/artifacts/content?path=${encodeURIComponent('tetris.html')}`);
+    const previewTicket = await fetch(`/api/tasks/${id}/artifacts/preview-url?path=${encodeURIComponent('tetris.html')}`);
+    return { listStatus: listed.status, artifacts: listBody.artifacts, contentStatus: content.status, contentType: content.headers.get('content-type'), csp: content.headers.get('content-security-policy'), html: await content.text(), previewTicketStatus: previewTicket.status, previewUrl: (await previewTicket.json()).url as string };
+  }, created.task.id);
+  assert.equal(alphaArtifactChecks.listStatus, 200);
+  assert.deepEqual(alphaArtifactChecks.artifacts, [
+    { path: 'game.js', name: 'game.js', mediaType: 'text/javascript', size: Buffer.byteLength("document.querySelector('#demo-artifact').textContent = '俄罗斯方块预览';"), previewable: true },
+    { path: 'tetris.html', name: 'tetris.html', mediaType: 'text/html', size: Buffer.byteLength('<!doctype html><html><body><main id="demo-artifact">正在加载游戏…</main><script src="game.js"></script></body></html>'), previewable: true },
+  ]);
+  assert.equal(alphaArtifactChecks.contentStatus, 200);
+  assert.equal(alphaArtifactChecks.contentType, 'text/html; charset=utf-8');
+  assert.match(alphaArtifactChecks.csp || '', /sandbox allow-scripts/);
+  assert.match(alphaArtifactChecks.html, /正在加载游戏/);
+  assert.equal(alphaArtifactChecks.previewTicketStatus, 200);
+  assert.match(alphaArtifactChecks.previewUrl, new RegExp(`/api/artifact-preview/${created.task.id}/`));
+  const linkedAsset = await page.evaluate(async id => {
+    const response = await fetch(`/api/tasks/${id}/artifacts/file/game.js`);
+    return { status: response.status, type: response.headers.get('content-type'), body: await response.text() };
+  }, created.task.id);
+  assert.deepEqual(linkedAsset, { status: 200, type: 'text/javascript; charset=utf-8', body: "document.querySelector('#demo-artifact').textContent = '俄罗斯方块预览';" }, 'Relative assets must resolve through the same task-scoped artifact route');
+  await page.locator('.sidebar button.nav[aria-label="你的 dot"]').click();
+  await page.getByTestId('dot-context-panel').waitFor({ state: 'visible' });
+  await page.getByTestId(`context-output-task-${created.task.id}`).click();
+  await page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]').waitFor({ state: 'visible' });
+  await page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]').getByRole('button', { name: '预览' }).click();
+  await page.frameLocator('[data-testid="task-artifact-preview"]').locator('#demo-artifact').filter({ hasText: '俄罗斯方块预览' }).waitFor({ state: 'visible' });
+  assert.equal(await page.frameLocator('[data-testid="task-artifact-preview"]').locator('#demo-artifact').textContent(), '俄罗斯方块预览', 'Clicking preview must render the task file inside the signed-in conversation');
   await page.screenshot({ path: join(artifacts, '03-agent-task-done.png') });
+  await page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]').getByTestId('open-artifact-in-computer').click();
+  await page.getByTestId('computer-workspace').waitFor({ state: 'visible' });
+  await page.getByRole('status').filter({ hasText: 'You have control' }).waitFor({ state: 'visible' });
+  assert.equal(machines.get(alphaHash)?.url, `file:///workspace/tasks/${created.task.id}/tetris.html`, 'One click must open the generated HTML in the tenant cloud computer browser');
+  assert(browserActions.some(entry => entry.hash === alphaHash && entry.action === 'open-artifact'), 'Opening the task output should be a visible, authenticated cloud-browser action');
+  await page.getByRole('button', { name: 'Return control' }).click();
+  await page.getByRole('status').filter({ hasText: 'Dot has control' }).waitFor({ state: 'visible' });
 
   const betaContext = await browser.newContext({ viewport: { width: 1440, height: 980 }, deviceScaleFactor: 1 });
   const betaPage = await betaContext.newPage();
   await signIn(betaPage, 'cloud-beta@example.test');
+  const crossTenantArtifact = await betaPage.evaluate(async id => {
+    const response = await fetch(`/api/tasks/${id}/artifacts`);
+    return { status: response.status, body: await response.json() };
+  }, created.task.id);
+  assert.deepEqual(crossTenantArtifact, { status: 404, body: { error: '任务不存在' } }, 'A tenant must not enumerate another tenant task files');
+  const crossTenantContentStatus = await betaPage.evaluate(async id => (await fetch(`/api/tasks/${id}/artifacts/content?path=${encodeURIComponent('tetris.html')}`)).status, created.task.id);
+  assert.equal(crossTenantContentStatus, 404, 'A tenant must not read another tenant task files');
+  const crossTenantPreviewStatus = await betaPage.evaluate(async previewUrl => (await fetch(previewUrl)).status, alphaArtifactChecks.previewUrl);
+  assert.equal(crossTenantPreviewStatus, 404, 'A signed preview URL must not expose a tenant artifact to a different signed-in tenant');
+  const crossTenantOpenStatus = await betaPage.evaluate(async id => (await fetch(`/api/tasks/${id}/artifacts/open-in-computer`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: 'tetris.html' }) })).status, created.task.id);
+  assert.equal(crossTenantOpenStatus, 404, 'A tenant cannot open another tenant file in a computer');
   await chooseComputer(betaPage);
   const betaHash = [...machines.keys()].find(hash => hash !== alphaHash);
   assert(betaHash, 'Second tenant did not receive its own desktop identity');
@@ -327,7 +404,7 @@ try {
   await betaPage.screenshot({ path: join(artifacts, '04-beta-isolated-desktop.png') });
   await betaContext.close();
   await alphaContext.close();
-  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'recoverable browser-context status and error code', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'tenant token and runtime separation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', checks: ['cloud screenshot', 'local permission independence', 'recoverable browser-context status and error code', 'authenticated noVNC WebSocket proxy', 'takeover browser navigation/click/type', 'return control', 'remote Agent kernel dispatch', 'chat artifact list and iframe preview with linked assets', 'sandboxed HTML preview headers', 'one-click cloud-browser artifact open and return control', 'cross-tenant artifact read/open denial', 'tenant token and runtime separation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);
