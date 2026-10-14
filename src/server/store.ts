@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isReasoningEffort, type ActionRuleMode, type AppliedPersonalDotMemoryUpdate, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type PersonalActionRule, type PersonalDotMemory, type PersonalDotMemoryUpdate, type ReasoningEffort, type ScheduleSpec, type ScratchpadPageAction, type SlackEventMonitor, type Snapshot, type Task, type TaskStatus, type VoiceCallSession, type Watch, type WebsiteSignInRequest, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
+import type { GmailProactiveReviewSettings } from '../shared/types.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
 export interface AppUser { id: string; email: string; name: string }
@@ -15,6 +16,7 @@ export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantS
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
 export interface GmailOAuthFlow { stateHash: string; userId: string; codeVerifier: string; expiresAt: string; returnTo: string }
 export interface GmailConnection { userId: string; email: string; connectedAt: string; scopes: string[] }
+export interface GmailProactiveReviewRun { taskId: string; userId: string; tenantId: string; sinceAt: string; throughAt: string; pageToken: string | null; nextPageToken: string | null; messageIds: string[]; status: string }
 export interface SlackOAuthFlow { stateHash: string; tenantId: string; userId: string; expiresAt: string; returnTo: string }
 export interface SlackInstallation { tenantId: string; teamId: string; teamName: string; scopes: string[]; installedAt: string; contactEnabled: boolean }
 export interface SlackInboundMessage { eventId: string; teamId: string; slackUserId: string; sourceChannelId: string; replyChannelId: string; eventType: 'message.im' | 'app_mention' | 'message.channels'; text: string }
@@ -71,6 +73,23 @@ export class Store {
       CREATE TABLE IF NOT EXISTS gmail_connections (
         user_id TEXT PRIMARY KEY REFERENCES users(id), email TEXT NOT NULL, connected_at TEXT NOT NULL, scopes_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS gmail_proactive_review_preferences (
+        user_id TEXT PRIMARY KEY REFERENCES users(id), enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+        next_run_at TEXT, last_run_at TEXT, last_error TEXT, review_since_at TEXT, review_through_at TEXT, page_token TEXT, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS gmail_proactive_review_due ON gmail_proactive_review_preferences(enabled,next_run_at);
+      CREATE TABLE IF NOT EXISTS gmail_proactive_review_runs (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id),
+        tenant_id TEXT NOT NULL REFERENCES tenants(id), since_at TEXT NOT NULL, through_at TEXT NOT NULL DEFAULT '', page_token TEXT,
+        next_page_token TEXT, message_ids_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL CHECK(status IN ('queued','working','completed','failed','cancelled')), created_at TEXT NOT NULL, completed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS gmail_proactive_review_runs_user ON gmail_proactive_review_runs(user_id,status,created_at DESC);
+      CREATE TABLE IF NOT EXISTS gmail_proactive_reviewed_messages (
+        user_id TEXT NOT NULL REFERENCES users(id), message_id TEXT NOT NULL, reviewed_at TEXT NOT NULL,
+        PRIMARY KEY(user_id,message_id)
+      );
+      CREATE INDEX IF NOT EXISTS gmail_proactive_reviewed_time ON gmail_proactive_reviewed_messages(user_id,reviewed_at DESC);
       CREATE TABLE IF NOT EXISTS slack_oauth_flows (
         state_hash TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
         expires_at TEXT NOT NULL, return_to TEXT NOT NULL
@@ -235,6 +254,13 @@ export class Store {
     this.addColumnIfMissing('tasks', 'created_by_user_id', 'TEXT REFERENCES users(id)');
     this.addColumnIfMissing('tasks', 'execution_mode', "TEXT NOT NULL DEFAULT 'standard'");
     this.addColumnIfMissing('tasks', 'task_context', "TEXT NOT NULL DEFAULT ''");
+    this.addColumnIfMissing('gmail_proactive_review_preferences', 'review_since_at', 'TEXT');
+    this.addColumnIfMissing('gmail_proactive_review_preferences', 'review_through_at', 'TEXT');
+    this.addColumnIfMissing('gmail_proactive_review_preferences', 'page_token', 'TEXT');
+    this.addColumnIfMissing('gmail_proactive_review_runs', 'through_at', "TEXT NOT NULL DEFAULT ''");
+    this.addColumnIfMissing('gmail_proactive_review_runs', 'page_token', 'TEXT');
+    this.addColumnIfMissing('gmail_proactive_review_runs', 'next_page_token', 'TEXT');
+    this.db.exec("UPDATE gmail_proactive_review_runs SET through_at=created_at WHERE through_at=''");
     this.addColumnIfMissing('watches', 'last_content', 'TEXT');
     this.addColumnIfMissing('watches', 'last_task_id', 'TEXT');
     this.addColumnIfMissing('page_action_approvals', 'decided_by', 'TEXT REFERENCES users(id)');
@@ -360,8 +386,167 @@ export class Store {
   }
 
   disconnectGmail(userId: string) {
+    const taskIds = this.disableGmailProactiveReview(userId);
     this.db.prepare('DELETE FROM gmail_oauth_flows WHERE user_id=?').run(userId);
     this.db.prepare('DELETE FROM gmail_connections WHERE user_id=?').run(userId);
+    return taskIds;
+  }
+
+  gmailProactiveReviewSettings(userId: string): GmailProactiveReviewSettings {
+    const row = this.db.prepare(`SELECT enabled,next_run_at AS nextRunAt,last_run_at AS lastRunAt,last_error AS lastError
+      FROM gmail_proactive_review_preferences WHERE user_id=?`).get(userId) as
+      { enabled: number; nextRunAt: string | null; lastRunAt: string | null; lastError: string | null } | undefined;
+    return row ? { enabled: row.enabled === 1, nextRunAt: row.nextRunAt, lastRunAt: row.lastRunAt, lastError: row.lastError }
+      : { enabled: false, nextRunAt: null, lastRunAt: null, lastError: null };
+  }
+
+  setGmailProactiveReview(userId: string, enabled: boolean, now = new Date().toISOString()): string[] {
+    if (enabled && !this.gmailConnection(userId)) throw new Error('请先连接 Gmail，再开启主动复查。');
+    if (enabled && !this.personalTenantIdForGmailReview(userId)) throw new Error('主动复查需要只有你本人加入的个人工作区；请先检查个人工作区成员。');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (enabled) {
+        this.db.prepare(`INSERT INTO gmail_proactive_review_preferences(user_id,enabled,next_run_at,last_run_at,last_error,updated_at)
+          VALUES (?,1,?,NULL,NULL,?) ON CONFLICT(user_id) DO UPDATE SET enabled=1,next_run_at=excluded.next_run_at,last_error=NULL,updated_at=excluded.updated_at`)
+          .run(userId, now, now);
+        this.db.exec('COMMIT');
+        return [];
+      }
+      const rows = this.db.prepare(`SELECT task_id AS taskId,tenant_id AS tenantId FROM gmail_proactive_review_runs
+        WHERE user_id=? AND status IN ('queued','working')`).all(userId) as { taskId: string; tenantId: string }[];
+      this.db.prepare(`INSERT INTO gmail_proactive_review_preferences(user_id,enabled,next_run_at,last_run_at,last_error,updated_at)
+        VALUES (?,0,NULL,NULL,NULL,?) ON CONFLICT(user_id) DO UPDATE SET enabled=0,next_run_at=NULL,last_error=NULL,updated_at=excluded.updated_at`)
+        .run(userId, now);
+      this.db.prepare(`UPDATE gmail_proactive_review_preferences SET review_since_at=NULL,review_through_at=NULL,page_token=NULL WHERE user_id=?`).run(userId);
+      this.db.prepare(`UPDATE gmail_proactive_review_runs SET status='cancelled',completed_at=? WHERE user_id=? AND status IN ('queued','working')`).run(now, userId);
+      for (const row of rows) this.db.prepare(`UPDATE tasks SET status='stopped',next_run_at=NULL,error=NULL,updated_at=?
+        WHERE id=? AND tenant_id=? AND status IN ('queued','working','scheduled')`).run(now, row.taskId, row.tenantId);
+      this.db.exec('COMMIT');
+      return rows.map(row => row.taskId);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  disableGmailProactiveReview(userId: string, now = new Date().toISOString()) {
+    return this.setGmailProactiveReview(userId, false, now);
+  }
+
+  private personalTenantIdForGmailReview(userId: string): string | null {
+    const row = this.db.prepare(`SELECT t.id FROM tenants t JOIN memberships m ON m.tenant_id=t.id AND m.user_id=?
+      WHERE t.kind='personal' AND (SELECT COUNT(*) FROM memberships all_members WHERE all_members.tenant_id=t.id)=1`).get(userId) as { id: string } | undefined;
+    return row?.id || null;
+  }
+
+  dueGmailProactiveReviewers(now = new Date().toISOString()): { userId: string; tenantId: string; lastRunAt: string | null }[] {
+    return this.db.prepare(`SELECT p.user_id AS userId,t.id AS tenantId,p.last_run_at AS lastRunAt
+      FROM gmail_proactive_review_preferences p
+      JOIN gmail_connections c ON c.user_id=p.user_id
+      JOIN memberships m ON m.user_id=p.user_id
+      JOIN tenants t ON t.id=m.tenant_id AND t.kind='personal'
+      WHERE p.enabled=1 AND p.next_run_at IS NOT NULL AND p.next_run_at<=?
+        AND (SELECT COUNT(*) FROM memberships all_members WHERE all_members.tenant_id=t.id)=1
+        AND NOT EXISTS (SELECT 1 FROM gmail_proactive_review_runs r WHERE r.status IN ('queued','working'))
+      ORDER BY p.next_run_at ASC LIMIT 100`).all(now) as { userId: string; tenantId: string; lastRunAt: string | null }[];
+  }
+
+  createGmailProactiveReviewTask(userId: string, tenantId: string, engine: Engine, now = new Date().toISOString()): Task | null {
+    const id = randomUUID();
+    const instruction = '每天主动复查 Gmail：只读检查自上次复查以来最新的邮件，提炼值得长期记住的个人偏好或持续事项。';
+    const title = '主动复查 Gmail 并更新个人记忆';
+    const nowMs = Date.parse(now);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const eligible = this.db.prepare(`SELECT p.last_run_at AS lastRunAt,p.review_since_at AS reviewSinceAt,
+        p.review_through_at AS reviewThroughAt,p.page_token AS pageToken FROM gmail_proactive_review_preferences p
+        JOIN gmail_connections c ON c.user_id=p.user_id
+        WHERE p.user_id=? AND p.enabled=1 AND p.next_run_at IS NOT NULL AND p.next_run_at<=?`).get(userId, now) as
+        { lastRunAt: string | null; reviewSinceAt: string | null; reviewThroughAt: string | null; pageToken: string | null } | undefined;
+      if (!eligible || this.personalTenantIdForGmailReview(userId) !== tenantId) { this.db.exec('COMMIT'); return null; }
+      const running = this.db.prepare(`SELECT 1 FROM gmail_proactive_review_runs WHERE status IN ('queued','working')`).get();
+      if (running) { this.db.exec('COMMIT'); return null; }
+      const sinceAt = eligible.reviewSinceAt || eligible.lastRunAt || new Date(nowMs - 24 * 60 * 60_000).toISOString();
+      const throughAt = eligible.reviewThroughAt || now;
+      const pageToken = eligible.reviewSinceAt && eligible.reviewThroughAt ? eligible.pageToken : null;
+      this.db.prepare(`INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,reasoning_effort,agent_session_id,schedule_json,execution_mode,created_by_user_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(id, tenantId, title, instruction, 'queued', -1, now, null, null, null, now, now, engine, 'high', null, null, 'read-only', userId);
+      this.db.prepare(`INSERT INTO gmail_proactive_review_runs(task_id,user_id,tenant_id,since_at,through_at,page_token,message_ids_json,status,created_at)
+        VALUES (?,?,?,?,?,?,?,'queued',?)`).run(id, userId, tenantId, sinceAt, throughAt, pageToken, '[]', now);
+      this.db.prepare(`UPDATE gmail_proactive_review_preferences SET next_run_at=NULL,review_since_at=?,review_through_at=?,page_token=?,updated_at=? WHERE user_id=?`)
+        .run(sinceAt, throughAt, pageToken, now, userId);
+      this.addEntry('user', instruction, id, tenantId);
+      this.addEntry('system', 'Dot 已开始每天一次的 Gmail 只读复查；邮件内容不会被发送或修改。', id, tenantId);
+      this.db.exec('COMMIT');
+      return this.getTask(id, tenantId);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  gmailProactiveReviewRun(taskId: string, tenantId: string): GmailProactiveReviewRun | null {
+    const row = this.db.prepare(`SELECT task_id AS taskId,user_id AS userId,tenant_id AS tenantId,since_at AS sinceAt,through_at AS throughAt,
+      page_token AS pageToken,next_page_token AS nextPageToken,message_ids_json AS messageIdsJson,status
+      FROM gmail_proactive_review_runs WHERE task_id=? AND tenant_id=?`).get(taskId, tenantId) as
+      { taskId: string; userId: string; tenantId: string; sinceAt: string; throughAt: string; pageToken: string | null; nextPageToken: string | null; messageIdsJson: string; status: string } | undefined;
+    return row ? { taskId: row.taskId, userId: row.userId, tenantId: row.tenantId, sinceAt: row.sinceAt, throughAt: row.throughAt,
+      pageToken: row.pageToken, nextPageToken: row.nextPageToken, messageIds: JSON.parse(row.messageIdsJson) as string[], status: row.status } : null;
+  }
+
+  markGmailProactiveReviewWorking(taskId: string, tenantId: string) {
+    this.db.prepare(`UPDATE gmail_proactive_review_runs SET status='working' WHERE task_id=? AND tenant_id=? AND status='queued'`).run(taskId, tenantId);
+    return this.gmailProactiveReviewRun(taskId, tenantId);
+  }
+
+  unreviewedGmailMessageIds(userId: string, messageIds: string[]): string[] {
+    if (!messageIds.length) return [];
+    const placeholders = messageIds.map(() => '?').join(',');
+    const seen = new Set((this.db.prepare(`SELECT message_id AS id FROM gmail_proactive_reviewed_messages WHERE user_id=? AND message_id IN (${placeholders})`)
+      .all(userId, ...messageIds) as { id: string }[]).map(row => row.id));
+    return messageIds.filter(id => !seen.has(id));
+  }
+
+  setGmailProactiveReviewRunMessages(taskId: string, tenantId: string, messageIds: string[]) {
+    if (messageIds.length > 10 || messageIds.some(id => !id || id.length > 200)) throw new Error('Gmail 主动复查的邮件列表无效');
+    this.db.prepare(`UPDATE gmail_proactive_review_runs SET message_ids_json=? WHERE task_id=? AND tenant_id=? AND status IN ('queued','working')`)
+      .run(JSON.stringify([...new Set(messageIds)]), taskId, tenantId);
+  }
+
+  completeGmailProactiveReview(taskId: string, tenantId: string, options: { nextPageToken?: string | null; now?: string } = {}) {
+    const now = options.now || new Date().toISOString();
+    const nextPageToken = options.nextPageToken || null;
+    if (nextPageToken && nextPageToken.length > 8_000) throw new Error('Gmail 主动复查分页标记无效');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const run = this.gmailProactiveReviewRun(taskId, tenantId);
+      if (!run || !['queued', 'working'].includes(run.status)) { this.db.exec('COMMIT'); return false; }
+      for (const messageId of run.messageIds) this.db.prepare(`INSERT OR IGNORE INTO gmail_proactive_reviewed_messages(user_id,message_id,reviewed_at) VALUES (?,?,?)`).run(run.userId, messageId, now);
+      this.db.prepare(`DELETE FROM gmail_proactive_reviewed_messages WHERE user_id=? AND reviewed_at<?`).run(run.userId, new Date(Date.parse(now) - 90 * 24 * 60 * 60_000).toISOString());
+      this.db.prepare(`UPDATE gmail_proactive_review_runs SET next_page_token=?,status='completed',completed_at=? WHERE task_id=? AND tenant_id=?`)
+        .run(nextPageToken, now, taskId, tenantId);
+      if (nextPageToken) {
+        this.db.prepare(`UPDATE gmail_proactive_review_preferences SET review_since_at=?,review_through_at=?,page_token=?,
+          next_run_at=CASE WHEN enabled=1 THEN ? ELSE NULL END,last_error=NULL,updated_at=? WHERE user_id=?`)
+          .run(run.sinceAt, run.throughAt, nextPageToken, new Date(Date.parse(now) + 5 * 60_000).toISOString(), now, run.userId);
+      } else {
+        this.db.prepare(`UPDATE gmail_proactive_review_preferences SET last_run_at=?,review_since_at=NULL,review_through_at=NULL,page_token=NULL,
+          next_run_at=CASE WHEN enabled=1 THEN ? ELSE NULL END,last_error=NULL,updated_at=? WHERE user_id=?`)
+          .run(run.throughAt, new Date(Date.parse(now) + 24 * 60 * 60_000).toISOString(), now, run.userId);
+      }
+      this.db.exec('COMMIT');
+      return true;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  failGmailProactiveReview(taskId: string, tenantId: string, message: string, requiresReconnect = false, now = new Date().toISOString()) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const run = this.gmailProactiveReviewRun(taskId, tenantId);
+      if (!run || !['queued', 'working'].includes(run.status)) { this.db.exec('COMMIT'); return false; }
+      const safeMessage = message.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 400);
+      this.db.prepare(`UPDATE gmail_proactive_review_runs SET status='failed',completed_at=? WHERE task_id=? AND tenant_id=?`).run(now, taskId, tenantId);
+      this.db.prepare(`UPDATE gmail_proactive_review_preferences SET enabled=CASE WHEN ? THEN 0 ELSE enabled END,
+        next_run_at=CASE WHEN ? OR enabled=0 THEN NULL ELSE ? END,last_error=?,updated_at=? WHERE user_id=?`)
+        .run(requiresReconnect ? 1 : 0, requiresReconnect ? 1 : 0, new Date(Date.parse(now) + 6 * 60 * 60_000).toISOString(), safeMessage, now, run.userId);
+      this.db.exec('COMMIT');
+      return true;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   createSlackOAuthFlow(flow: SlackOAuthFlow) {
@@ -1092,11 +1277,16 @@ export class Store {
     try {
       const task = this.db.prepare('SELECT status,parent_task_id AS parentTaskId,execution_mode AS executionMode FROM tasks WHERE tenant_id=? AND id=?')
         .get(tenantId, taskId) as { status: TaskStatus; parentTaskId: string | null; executionMode: string } | undefined;
-      if (!task || task.status !== 'working' || task.parentTaskId || task.executionMode !== 'standard') {
+      const proactiveReview = this.db.prepare(`SELECT 1 FROM gmail_proactive_review_runs r JOIN memberships m ON m.tenant_id=r.tenant_id AND m.user_id=r.user_id
+        WHERE r.task_id=? AND r.tenant_id=? AND r.user_id=? AND r.status='working' AND r.tenant_id=?
+        AND (SELECT COUNT(*) FROM memberships all_members WHERE all_members.tenant_id=r.tenant_id)=1`).get(taskId, tenantId, userId, tenantId);
+      if (proactiveReview && updates.length > 2) throw new Error('Gmail 主动复查每次最多保存两条个人记忆');
+      if (!task || task.status !== 'working' || task.parentTaskId || (task.executionMode !== 'standard' && !(task.executionMode === 'read-only' && proactiveReview))) {
         this.db.exec('COMMIT');
         return [];
       }
       for (const update of updates) {
+        if (proactiveReview && update.action === 'forget') continue;
         if (update.action === 'remember') {
           const note = normalizePersonalDotMemory(update.note);
           const duplicate = this.db.prepare('SELECT id FROM personal_dot_memories WHERE user_id=? AND lower(note)=lower(?)').get(userId, note) as { id: string } | undefined;
@@ -1550,9 +1740,8 @@ export class Store {
     return this.getTask(id, tenantId);
   }
 
-  stopTask(id: string, tenantId: string, actorUserId: string): { task: Task; cancelledApprovals: number } | null {
+  stopTask(id: string, tenantId: string, actorUserId: string, now = new Date().toISOString()): { task: Task; cancelledApprovals: number } | null {
     if (!this.isTenantMember(tenantId, actorUserId)) throw new Error('你不是该工作区成员');
-    const now = new Date().toISOString();
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const task = this.getTask(id, tenantId);
@@ -1561,6 +1750,15 @@ export class Store {
       const updated = this.db.prepare("UPDATE tasks SET status='stopped',next_run_at=NULL,updated_at=? WHERE tenant_id=? AND id=? AND status IN ('queued','working','delegating','waiting','scheduled','paused')")
         .run(now, tenantId, id);
       if (!Number(updated.changes)) { this.db.exec('ROLLBACK'); return null; }
+      const gmailReview = this.gmailProactiveReviewRun(id, tenantId);
+      if (gmailReview && ['queued', 'working'].includes(gmailReview.status)) {
+        const nextRunAt = new Date(Date.parse(now) + 24 * 60 * 60_000).toISOString();
+        this.db.prepare(`UPDATE gmail_proactive_review_runs SET status='cancelled',completed_at=? WHERE task_id=? AND tenant_id=?`)
+          .run(now, id, tenantId);
+        this.db.prepare(`UPDATE gmail_proactive_review_preferences SET review_since_at=NULL,review_through_at=NULL,page_token=NULL,
+          next_run_at=CASE WHEN enabled=1 THEN ? ELSE NULL END,last_error=?,updated_at=? WHERE user_id=?`)
+          .run(nextRunAt, '本次主动复查已停止；下次复查仍按每日计划进行。', now, gmailReview.userId);
+      }
       const cancelled = this.db.prepare("UPDATE page_action_approvals SET status='cancelled',decided_at=?,decided_by=? WHERE tenant_id=? AND task_id=? AND status='pending'")
         .run(now, actorUserId, tenantId, id);
       const cancelledSignIn = this.db.prepare("UPDATE website_sign_in_requests SET status='cancelled',updated_at=? WHERE tenant_id=? AND task_id=? AND status IN ('pending','submitted')")

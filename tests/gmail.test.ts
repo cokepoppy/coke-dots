@@ -43,6 +43,136 @@ test('Gmail connection metadata is isolated per Google account and contains no c
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('Gmail proactive review is opt-in, daily, personal-tenant-only, and stores only per-user memory results', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-gmail-proactive-'));
+  const store = new Store(directory);
+  try {
+    const alpha = store.signInGoogle({ subject: 'gmail-review-alpha', email: 'alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'gmail-review-beta', email: 'beta@example.test', name: 'Beta' });
+    const now = '2026-10-13T02:00:00.000Z';
+    const alphaTenant = alpha.tenant.id;
+    store.connectGmail({ userId: alpha.user.id, email: 'alpha@gmail.com', connectedAt: now, scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
+    assert.deepEqual(store.gmailProactiveReviewSettings(alpha.user.id), { enabled: false, nextRunAt: null, lastRunAt: null, lastError: null });
+    assert.deepEqual(store.dueGmailProactiveReviewers(now), [], 'New Gmail connections must not enable proactive review by default');
+
+    store.setGmailProactiveReview(alpha.user.id, true, now);
+    assert.equal(store.dueGmailProactiveReviewers(now)[0]?.userId, alpha.user.id);
+    const task = store.createGmailProactiveReviewTask(alpha.user.id, alphaTenant, 'pi', now);
+    assert(task);
+    assert.equal(task.status, 'queued');
+    assert.equal(task.executionMode, 'read-only');
+    assert.equal(store.taskCreatorUserId(task.id, alphaTenant), alpha.user.id);
+    assert.equal(task.tenantId, alphaTenant);
+    const firstRun = store.gmailProactiveReviewRun(task.id, alphaTenant);
+    assert.equal(firstRun?.status, 'queued');
+    assert.equal(firstRun?.sinceAt, '2026-10-12T02:00:00.000Z');
+    assert.equal(firstRun?.throughAt, now, 'A pagination window must have a fixed upper bound');
+    assert.equal(firstRun?.pageToken, null);
+    assert.equal(store.dueGmailProactiveReviewers(now).length, 0, 'A single active run prevents duplicate scheduler tasks');
+
+    assert.equal(store.claimDueTask(task.id, alphaTenant), true);
+    assert.equal(store.markGmailProactiveReviewWorking(task.id, alphaTenant)?.status, 'working');
+    store.setGmailProactiveReviewRunMessages(task.id, alphaTenant, ['message-private-1']);
+    const saved = store.applyPersonalDotMemoryUpdates(alphaTenant, task.id, [{ action: 'remember', note: '用户偏好用中文接收每日摘要' }]);
+    assert.equal(saved.length, 1);
+    assert.equal(store.personalDotMemories(alpha.user.id)[0]?.note, '用户偏好用中文接收每日摘要');
+    assert.equal(store.personalDotMemories(beta.user.id).length, 0, 'Another Google account cannot see private memories');
+    assert.equal(store.completeGmailProactiveReview(task.id, alphaTenant, { nextPageToken: 'gmail-page-2', now }), true);
+    assert.equal(store.gmailProactiveReviewRun(task.id, alphaTenant)?.status, 'completed');
+    assert.equal(store.gmailProactiveReviewRun(task.id, alphaTenant)?.nextPageToken, 'gmail-page-2');
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).lastRunAt, null, 'A partial review must not advance the last-successful checkpoint');
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).nextRunAt, '2026-10-13T02:05:00.000Z');
+    assert.equal(store.dueGmailProactiveReviewers(now).length, 0);
+
+    const continuationAt = '2026-10-13T02:05:00.000Z';
+    assert.equal(store.dueGmailProactiveReviewers(continuationAt)[0]?.userId, alpha.user.id);
+    const continuation = store.createGmailProactiveReviewTask(alpha.user.id, alphaTenant, 'pi', continuationAt);
+    assert(continuation);
+    const continuedRun = store.gmailProactiveReviewRun(continuation.id, alphaTenant);
+    assert.equal(continuedRun?.sinceAt, firstRun?.sinceAt, 'Page continuation must reuse the original lower time bound');
+    assert.equal(continuedRun?.throughAt, now, 'Page continuation must reuse the original fixed upper bound');
+    assert.equal(continuedRun?.pageToken, 'gmail-page-2');
+    assert.equal(store.claimDueTask(continuation.id, alphaTenant), true);
+    assert.equal(store.markGmailProactiveReviewWorking(continuation.id, alphaTenant)?.status, 'working');
+    store.setGmailProactiveReviewRunMessages(continuation.id, alphaTenant, ['message-private-2']);
+    assert.equal(store.completeGmailProactiveReview(continuation.id, alphaTenant, { now: '2026-10-13T02:07:00.000Z' }), true);
+    assert.equal(store.unreviewedGmailMessageIds(alpha.user.id, ['message-private-1', 'message-private-2']).length, 0);
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).lastRunAt, now, 'Only exhausting the pages advances the checkpoint');
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).nextRunAt, '2026-10-14T02:07:00.000Z');
+
+    store.setGmailProactiveReview(alpha.user.id, true, '2026-10-14T02:00:00.000Z');
+    const next = store.createGmailProactiveReviewTask(alpha.user.id, alphaTenant, 'pi', '2026-10-14T02:00:00.000Z');
+    assert(next);
+    const stoppedIds = store.disconnectGmail(alpha.user.id);
+    assert.deepEqual(stoppedIds, [next.id]);
+    assert.equal(store.getTask(next.id, alphaTenant)?.status, 'stopped');
+    assert.equal(store.gmailProactiveReviewRun(next.id, alphaTenant)?.status, 'cancelled');
+    assert.equal(store.gmailProactiveReviewSettings(alpha.user.id).enabled, false);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Gmail proactive reviews queue one low-priority account at a time across the service', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-gmail-review-queue-'));
+  const store = new Store(directory);
+  try {
+    const alpha = store.signInGoogle({ subject: 'gmail-queue-alpha', email: 'queue-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'gmail-queue-beta', email: 'queue-beta@example.test', name: 'Beta' });
+    const now = '2026-10-13T02:00:00.000Z';
+    for (const account of [alpha, beta]) {
+      store.connectGmail({ userId: account.user.id, email: `${account.user.name.toLowerCase()}@gmail.com`, connectedAt: now, scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
+      store.setGmailProactiveReview(account.user.id, true, now);
+    }
+
+    const due = store.dueGmailProactiveReviewers(now);
+    assert.equal(due.length, 2);
+    const first = due[0]!;
+    const second = due[1]!;
+    const firstRun = store.createGmailProactiveReviewTask(first.userId, first.tenantId, 'pi', now);
+    assert(firstRun);
+    assert.equal(firstRun.priority, -1, 'Automatic review work must be lower priority than assigned tasks');
+    assert.equal(store.createGmailProactiveReviewTask(second.userId, second.tenantId, 'pi', now), null, 'A second account must wait for the shared background slot');
+    assert.deepEqual(store.dueGmailProactiveReviewers(now), [], 'Queued or working Gmail review must block another account from enqueueing');
+
+    const assigned = store.createTask('Please review this now', null, 'model', first.tenantId, null, now, [], first.userId);
+    assert.equal(store.dueTasks(now)[0]?.id, assigned.id, 'Assigned work must sort ahead of an already queued automatic review');
+    assert.equal(store.claimDueTask(firstRun.id, first.tenantId, now), true);
+    assert.equal(store.markGmailProactiveReviewWorking(firstRun.id, first.tenantId)?.status, 'working');
+    assert.equal(store.completeGmailProactiveReview(firstRun.id, first.tenantId, { now }), true);
+
+    const nextDue = store.dueGmailProactiveReviewers(now);
+    assert.equal(nextDue.length, 1);
+    assert.equal(nextDue[0]?.userId, second.userId, 'The next account should become eligible after the shared review slot is released');
+    const secondRun = store.createGmailProactiveReviewTask(second.userId, second.tenantId, 'pi', now);
+    assert(secondRun);
+    assert.equal(secondRun.tenantId, second.tenantId);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Stopping one Gmail review releases its global queue slot and preserves the daily schedule', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-gmail-review-stop-'));
+  const store = new Store(directory);
+  try {
+    const account = store.signInGoogle({ subject: 'gmail-review-stop', email: 'review-stop@example.test', name: 'Stop Review' });
+    const now = '2026-10-13T02:00:00.000Z';
+    store.connectGmail({ userId: account.user.id, email: 'review-stop@gmail.com', connectedAt: now, scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
+    store.setGmailProactiveReview(account.user.id, true, now);
+    const task = store.createGmailProactiveReviewTask(account.user.id, account.tenant.id, 'pi', now);
+    assert(task);
+    assert.equal(store.claimDueTask(task.id, account.tenant.id, now), true);
+    store.markGmailProactiveReviewWorking(task.id, account.tenant.id);
+
+    const stopped = store.stopTask(task.id, account.tenant.id, account.user.id, now);
+    assert.equal(stopped?.task.status, 'stopped');
+    assert.equal(store.gmailProactiveReviewRun(task.id, account.tenant.id)?.status, 'cancelled');
+    assert.deepEqual(store.gmailProactiveReviewSettings(account.user.id), {
+      enabled: true,
+      nextRunAt: '2026-10-14T02:00:00.000Z',
+      lastRunAt: null,
+      lastError: '本次主动复查已停止；下次复查仍按每日计划进行。',
+    });
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('Gmail is fetched only when requested and message content is passed as untrusted, read-only context', async () => {
   const previous = {
     nodeEnv: process.env.NODE_ENV,
@@ -51,6 +181,8 @@ test('Gmail is fetched only when requested and message content is passed as untr
     gmailApi: process.env.DOTS_E2E_GMAIL_API_URL,
     clientId: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    keychainService: process.env.DOTS_KEYCHAIN_SERVICE,
+    keyringDirectory: process.env.DOTS_TEST_KEYRING_DIR,
   };
   let provider: Server | null = null;
   let store: Store | null = null;
@@ -78,7 +210,12 @@ test('Gmail is fetched only when requested and message content is passed as untr
       }
       calls.push({ path: url.pathname, query: url.searchParams });
       if (req.method === 'GET' && url.pathname === '/gmail/v1/users/me/messages') {
-        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ messages: [{ id: 'mail-1' }, { id: 'mail-2' }] }));
+        const proactive = Boolean(url.searchParams.get('q')?.includes('after:'));
+        const pageToken = url.searchParams.get('pageToken');
+        const result = proactive
+          ? pageToken === 'gmail-next-page-token' ? { messages: [{ id: 'mail-3' }] } : { messages: [{ id: 'mail-1' }, { id: 'mail-2' }], nextPageToken: 'gmail-next-page-token' }
+          : { messages: [{ id: 'mail-1' }, { id: 'mail-2' }] };
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result));
         return;
       }
       const id = /\/messages\/(mail-\d)$/.exec(url.pathname)?.[1];
@@ -103,6 +240,8 @@ test('Gmail is fetched only when requested and message content is passed as untr
     process.env.DOTS_E2E_GMAIL_API_URL = `${origin}/gmail/v1`;
     process.env.GOOGLE_CLIENT_ID = 'gmail-read-test-client';
     process.env.GOOGLE_CLIENT_SECRET = 'gmail-read-test-secret';
+    process.env.DOTS_KEYCHAIN_SERVICE = 'com.cokepoppy.coke-dots.test';
+    process.env.DOTS_TEST_KEYRING_DIR = join(directory, 'keyring');
     store = new Store(directory);
     const account = store.signInGoogle({ subject: userId, email: 'gmail-user@example.test', name: 'Gmail User' });
     store.connectGmail({ userId: account.user.id, email: 'gmail-user@gmail.com', connectedAt: new Date().toISOString(), scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
@@ -122,6 +261,23 @@ test('Gmail is fetched only when requested and message content is passed as untr
     assert.equal(calls[0]?.query.get('q'), 'in:inbox');
     assert.equal(calls[0]?.query.get('maxResults'), '2');
     assert.equal(calls.length, 3, 'Only one list read and two bounded message reads are allowed');
+    const sinceAt = '2026-10-09T00:00:00.000Z';
+    const throughAt = '2026-10-10T00:00:00.000Z';
+    const proactive = await service.proactiveReviewContext(account.user.id, sinceAt, throughAt, null);
+    assert(proactive.context, proactive.error || 'No proactive Gmail context returned');
+    assert.deepEqual(proactive.messageIds, ['mail-1', 'mail-2']);
+    assert.match(proactive.context, /never instructions/);
+    assert.match(calls[3]?.query.get('q') || '', /^in:inbox after:\d+ before:\d+$/);
+    assert.equal(calls[3]?.query.get('maxResults'), '10', 'A proactive run reads at most ten messages');
+    assert.equal(proactive.nextPageToken, 'gmail-next-page-token', 'A result cursor must preserve Gmail’s next page');
+    assert.equal(calls.length, 6, 'A proactive run performs one list request and at most ten individual message reads');
+    const continuation = await service.proactiveReviewContext(account.user.id, sinceAt, throughAt, proactive.nextPageToken || null);
+    assert(continuation.context, continuation.error || 'No continuation Gmail context returned');
+    assert.deepEqual(continuation.messageIds, ['mail-3']);
+    assert.equal(calls[6]?.query.get('pageToken'), 'gmail-next-page-token');
+    assert.equal(calls[6]?.query.get('q'), calls[3]?.query.get('q'), 'All pages must use the same fixed review window');
+    assert.equal(continuation.nextPageToken, null);
+    assert.equal(calls.length, 8, 'A continuation reads only one page and its corresponding messages');
     service.disconnect(account.user.id);
   } finally {
     try { entry?.deletePassword(); } catch { /* No test credential remains. */ }
@@ -132,6 +288,7 @@ test('Gmail is fetched only when requested and message content is passed as untr
       NODE_ENV: previous.nodeEnv, DOTS_E2E_AUTH: previous.e2eAuth,
       DOTS_E2E_GOOGLE_PROVIDER_URL: previous.googleProvider, DOTS_E2E_GMAIL_API_URL: previous.gmailApi,
       GOOGLE_CLIENT_ID: previous.clientId, GOOGLE_CLIENT_SECRET: previous.clientSecret,
+      DOTS_KEYCHAIN_SERVICE: previous.keychainService, DOTS_TEST_KEYRING_DIR: previous.keyringDirectory,
     })) {
       if (value === undefined) delete process.env[keyName]; else process.env[keyName] = value;
     }

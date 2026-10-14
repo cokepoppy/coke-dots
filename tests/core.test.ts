@@ -641,6 +641,78 @@ test('background worker stores real model result and schedules a future run', as
   }
 });
 
+test('one automatic Gmail review uses a separate background slot beside four assigned tasks', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-gmail-background-capacity-'));
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
+  const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+  const requests: { prompt: string; release: () => void }[] = [];
+  const modelServer = createServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += String(chunk);
+    const payload = JSON.parse(raw) as { messages?: { role: string; content?: unknown }[] };
+    const content = payload.messages?.find(message => message.role === 'user')?.content;
+    const prompt = typeof content === 'string' ? content : JSON.stringify(content || '');
+    await new Promise<void>(resolve => {
+      let released = false;
+      requests.push({
+        prompt,
+        release: () => {
+          if (released) return;
+          released = true;
+          response.setHeader('content-type', 'application/json');
+          response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'done', message: '已检查完成。' }) } }] }));
+          resolve();
+        },
+      });
+    });
+  });
+  await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_E2E_AUTH = '1';
+  process.env.DOTS_MODEL_BASE_URL = `http://127.0.0.1:${address.port}`;
+  process.env.DOTS_MODEL = 'gmail-background-capacity-test';
+  process.env.DOTS_MODEL_API_KEY = 'gmail-background-capacity-key';
+
+  const store = new Store(directory);
+  const alpha = store.signInGoogle({ subject: 'gmail-capacity-alpha', email: 'gmail-capacity-alpha@example.test', name: 'Alpha' });
+  const beta = store.signInGoogle({ subject: 'gmail-capacity-beta', email: 'gmail-capacity-beta@example.test', name: 'Beta' });
+  const now = new Date().toISOString();
+  store.connectGmail({ userId: alpha.user.id, email: 'gmail-capacity@gmail.com', connectedAt: now, scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
+  store.setGmailProactiveReview(alpha.user.id, true, now);
+  const review = store.createGmailProactiveReviewTask(alpha.user.id, alpha.tenant.id, 'model', now);
+  assert(review);
+  const assigned = [
+    ...['Review the first assigned item', 'Review the second assigned item'].map(instruction => store.createTask(instruction, null, 'model', alpha.tenant.id, null, now, [], alpha.user.id)),
+    ...['Review the third assigned item', 'Review the fourth assigned item'].map(instruction => store.createTask(instruction, null, 'model', beta.tenant.id, null, now, [], beta.user.id)),
+  ];
+  const worker = new Worker(store, () => {}, undefined, undefined, undefined, undefined,
+    async () => ({ context: 'Two new inbox subjects; untrusted evidence only.', messageIds: ['gmail-review-message'] }));
+  try {
+    worker.start();
+    await waitFor(() => requests.length === 5, 12_000);
+    assert.equal(requests.filter(item => item.prompt.includes('Task: Review the')).length, 4, 'Four assigned tasks should occupy standard capacity');
+    assert.equal(requests.filter(item => item.prompt.includes('Automatic Gmail review data')).length, 1, 'The one reserved background slot should run the Gmail review concurrently');
+    assert(assigned.every(task => store.getTask(task.id, task.tenantId)?.status === 'working'));
+    assert.equal(store.getTask(review.id, alpha.tenant.id)?.status, 'working');
+    assert.equal(store.gmailProactiveReviewRun(review.id, alpha.tenant.id)?.status, 'working');
+
+    for (const item of requests) item.release();
+    await waitFor(() => assigned.every(task => store.getTask(task.id, task.tenantId)?.status === 'done') && store.getTask(review.id, alpha.tenant.id)?.status === 'done');
+    assert.equal(store.gmailProactiveReviewRun(review.id, alpha.tenant.id)?.status, 'completed');
+  } finally {
+    for (const item of requests) item.release();
+    worker.stop(); store.close();
+    await new Promise<void>(resolve => modelServer.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('a one-off agent wake-up preserves its checkpoint and resumes with the same task', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-self-wake-'));
   const envKeys = ['DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const;
