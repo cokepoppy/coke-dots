@@ -71,6 +71,54 @@ test('cloud Agent tasks explain an unavailable K3D Secret before dispatch', asyn
   assert.equal(result.remoteDispatches, 0, 'The Agent pod must not receive a request when the K3D Secret cannot be read');
 });
 
+test('worker dispatches Pi to the cloud kernel when Pi is enabled by the default runtime configuration', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-cloud-default-pi-'));
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_PI_ENABLED', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_MODEL_SECRET_DIR', 'DOTS_TEST_MODEL_SECRET_SCOPE', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE'] as const;
+  const previous = new Map(envKeys.map(key => [key, process.env[key]]));
+  Object.assign(process.env, {
+    NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_MODEL_BASE_URL: 'https://api.example.test/v1', DOTS_MODEL: 'cloud-default-pi-model',
+    DOTS_MODEL_API_KEY: 'cloud-default-pi-fixture-key', DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_PI_ENABLED: '1',
+    DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.default-pi.${randomUUID()}`,
+    DOTS_TEST_MODEL_SECRET_DIR: join(directory, 'secrets'), DOTS_TEST_MODEL_SECRET_SCOPE: randomUUID(),
+  });
+  delete process.env.DOTS_AGENT_KERNELS_JSON;
+  delete process.env.DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE;
+  const store = new Store(directory);
+  const account = store.signInGoogle({ subject: `cloud-default-pi-${randomUUID()}`, email: 'cloud-default-pi@example.test', name: 'Test Dot' });
+  store.setAppSetting('modelBaseUrl', 'https://api.example.test/v1');
+  store.setAppSetting('modelName', 'cloud-default-pi-model');
+  const task = store.createTask('Use the default cloud Pi kernel', null, 'pi', account.tenant.id);
+  let receivedModel = '';
+  let dispatches = 0;
+  const computer = {
+    async runAgentTask(input: { modelConfig?: { model: string } }) {
+      dispatches += 1;
+      receivedModel = input.modelConfig?.model || '';
+      return { status: 'done', message: 'Cloud Pi task completed.' };
+    },
+  } as unknown as ComputerRuntime;
+  const worker = new Worker(store, () => {}, join(directory, 'workspaces'), async () => {}, () => computer);
+
+  try {
+    await worker.tick();
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && store.getTask(task.id, account.tenant.id)?.status === 'working') {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(dispatches, 1, 'The enabled default Pi runtime must receive the task once');
+    assert.equal(receivedModel, 'cloud-default-pi-model', 'The configured shared model profile must be sent to the cloud Pi runtime');
+    assert.equal(store.getTask(task.id, account.tenant.id)?.status, 'done');
+    assert.equal(store.getTask(task.id, account.tenant.id)?.result, 'Cloud Pi task completed.');
+  } finally {
+    worker.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('cloud Agent dispatch grants default writes only in the tenant task directory', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-cloud-write-access-'));
   const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_MODEL_SECRET_DIR', 'DOTS_TEST_MODEL_SECRET_SCOPE', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE'] as const;

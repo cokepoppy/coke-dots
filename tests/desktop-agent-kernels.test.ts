@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { desktopAgentKernels } from '../src/server/desktop-agent-kernels.ts';
+import { desktopAgentEngineIds, desktopAgentKernels } from '../src/server/desktop-agent-kernels.ts';
 
 test('Linux desktop gets the Pi cloud kernel by default when Pi is enabled', () => {
-  assert.deepEqual(desktopAgentKernels({ DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_PI_ENABLED: '1' }), {
+  const environment = { DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_PI_ENABLED: '1' };
+  assert.deepEqual(desktopAgentKernels(environment), {
     pi: { command: 'node', args: ['/opt/coke-dots/cloud-kernel-adapter.mjs'] },
   });
+  assert.deepEqual(desktopAgentEngineIds(environment), ['pi']);
 });
 
 test('explicit kernel JSON overrides the Pi default and only enables supported valid adapters', () => {

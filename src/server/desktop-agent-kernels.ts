@@ -41,3 +41,7 @@ export function desktopAgentKernels(environment: NodeJS.ProcessEnv = process.env
   }
   return {};
 }
+
+export function desktopAgentEngineIds(environment: NodeJS.ProcessEnv = process.env): DesktopAgentEngine[] {
+  return Object.keys(desktopAgentKernels(environment)) as DesktopAgentEngine[];
+}

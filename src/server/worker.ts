@@ -6,6 +6,7 @@ import { Store } from './store.ts';
 import { adapters, formatAgentPrompt, parseDecision, type AgentRequest, type Engine } from './adapters.ts';
 import type { ComputerRuntime } from './computer.ts';
 import { ComputerControlOwnedByUserError } from './computer-errors.ts';
+import { desktopAgentEngineIds } from './desktop-agent-kernels.ts';
 import { effectiveModelConfig, loadModelSettings, sharedModelApiKeyStatus } from './model-settings.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
 
@@ -64,7 +65,7 @@ export class Worker {
     );
     const adapter = adapters[task.engine];
     const computer = this.computerFor?.(task.tenantId);
-    const remoteEngines = parseRemoteEngines();
+    const remoteEngines: Engine[] = desktopAgentEngineIds();
     const requiresDesktopRuntime = Boolean(computer?.runAgentTask && process.env.DOTS_COMPUTER_BACKEND === 'linux-desktop' && remoteEngines.includes(task.engine));
     const modelConfig = requiresDesktopRuntime ? effectiveModelConfig(task.tenantId) : null;
     const useDesktopRuntime = requiresDesktopRuntime && Boolean(modelConfig);
@@ -198,14 +199,6 @@ export class Worker {
     try { this.notify(this.store.getProfile(tenantId).name, body); }
     catch { /* A desktop notification must never stop background work. */ }
   }
-}
-
-function parseRemoteEngines(): Engine[] {
-  if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [];
-  try {
-    const configured = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, unknown>;
-    return (Object.keys(configured) as string[]).filter((engine): engine is Engine => ['pi', 'dsh'].includes(engine) && Boolean(configured[engine]));
-  } catch { return []; }
 }
 
 function explicitScratchpadRequest(instruction: string) {
