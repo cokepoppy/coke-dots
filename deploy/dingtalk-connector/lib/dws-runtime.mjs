@@ -158,7 +158,7 @@ export function parseAuthStatus(payload, profile, now = Date.now()) {
   const expiry = Date.parse(payload.expires_at);
   if (payload.token_valid !== true || !Number.isFinite(expiry) || expiry <= now) return { authenticated: false };
   return {
-    authenticated: true, expiresAt: new Date(expiry).toISOString(),
+    authenticated: true, corpId: profile.corpId, expiresAt: new Date(expiry).toISOString(),
     accountName: typeof payload.user_name === 'string' ? payload.user_name.slice(0, 200) : undefined,
     organizationName: typeof payload.corp_name === 'string' ? payload.corp_name.slice(0, 200) : undefined,
   };

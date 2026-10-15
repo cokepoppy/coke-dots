@@ -12,6 +12,18 @@ import {
   parseEncryptionKey,
   sealProfileBytes,
 } from '../deploy/dingtalk-connector/gateway.mjs';
+import { parseAuthStatus } from '../deploy/dingtalk-connector/lib/dws-runtime.mjs';
+
+test('verified DWS identity carries only the organization identifier needed for Stream matching', () => {
+  const profile = { corpId: 'corp-one', userId: 'user-one' };
+  const payload = { success: true, authenticated: true, corp_id: 'corp-one', user_id: 'user-one', token_valid: true,
+    expires_at: new Date(Date.now() + 60_000).toISOString(), user_name: 'Dot user', corp_name: 'Test org' };
+  assert.deepEqual(parseAuthStatus(payload, profile), {
+    authenticated: true, corpId: 'corp-one', expiresAt: payload.expires_at, accountName: 'Dot user', organizationName: 'Test org',
+  });
+  assert.throws(() => parseAuthStatus({ ...payload, corp_id: 'another-corp' }, profile), /DWS_PROFILE_MISMATCH/);
+  assert.deepEqual(parseAuthStatus({ success: true, authenticated: false }, profile), { authenticated: false });
+});
 
 test('DWS profile archives are authenticated and bound to one tenant/user identity', () => {
   const key = randomBytes(32);

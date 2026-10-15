@@ -1,8 +1,8 @@
 # Coke Dots 钉钉渠道与主动排障方案
 
 日期：2026-10-15
-基线：`origin/main` / `255c26275851a596017e79caa271a3d7b25fd2a7`
-实施分支：`feature/dingtalk-channel-connection`
+基线：`origin/main` / `aff75474242b76a1278c2e1477f55b120b809f8a`
+实施分支：`codex/dingtalk-stream-event-ingestion`
 
 ## 结论
 
@@ -25,6 +25,15 @@
 - 已接入 DWS CLI v1.0.64。官方群搜索输出使用 `result.chats[]`、`openConversationId` 和 `name`；下一页使用 `hasMore` / `nextCursor`。适配器只返回群 ID、名称和分页信息，不传递原始 CLI 输出。
 - DWS 网关独立运行，DWS profile 以 tenant + user 分区，用独立 K8s Secret 提供 AES-256-GCM 包装密钥；明文 profile 和临时归档限定在 memory-backed `/run/dws`。Dot Agent 不读取该目录。
 - 已完成的自动化证据仅包括本地假 DWS CLI、加密持久化/重启恢复、租户隔离测试和模拟授权的 Chrome E2E。真实组织授权、IM 权限、Stream 事件、群消息读取及公网版本尚未验证；弹窗选择群不会启用监听或发送。
+
+### Phase 2 实施状态（2026-10-15）
+
+- 在专用分支 `codex/dingtalk-stream-event-ingestion`（基于最新 `origin/main` `aff7547`）接入官方 `dingtalk-stream` SDK，注册 `/v1.0/im/bot/messages/get` 的 Stream CALLBACK。Dots 控制平面运行自己的 Stream 客户端；服务使用出站长连接，不开放机器人公网入站 Webhook。
+- 已加入“实时告警监听”区域。必须先保存群，再由用户逐群开启；仅接收被 @机器人的群文本回调。界面显示 Stream 连接、组织不匹配、Pi/共享模型未就绪和 E2E 模拟状态，不把 DWS 用户 OAuth 伪装成机器人连接。
+- 已将 DWS 验证的钉钉组织 ID 保存在群选择记录；回调中的机器人组织 ID须与租户已保存的组织及会话匹配。共享机器人 AppKey/AppSecret 只从 Dots API 进程环境读取，不能返回给浏览器。进程只需要 `DOTS_DINGTALK_STREAM_CLIENT_ID` 和 `DOTS_DINGTALK_STREAM_CLIENT_SECRET`；可选 `DOTS_DINGTALK_STREAM_CORP_ID` 是部署级固定组织限制，不是必需配置。当前 Mac Dots 外部环境尚未配置这两个 Stream 变量，因此真实连接和回调仍未验证。
+- 事件仅在对应 Dots 用户已选并启用该群的租户中入队，按 `(tenant_id, provider_message_id)` 去重；仅在数据库提交后 ACK。正式任务固定使用 `pi`，由现有 Worker 分发到该租户 Debian 云电脑。回调正文作为不可信数据；当前任务限只读排查，不写代码、不创建 PR、不发群消息。
+- 官方 Stream 协议允许同一应用建立多个连接，但采用随机选择一个 Stream 通道投递，不是广播。因此迁移期间不能让旧 Coke Codex 网关与 Dots 同时作为消费者，否则部分告警会送到旧网关。用户已确认当前不使用 Coke Codex App；Dots 实际连接并验证就绪后，应把旧网关缩容到 0 保留回滚，而不是删除。旧 Deployment 当前仍为 1/1，尚未修改。[Stream 多连接投递说明](https://opensource.dingtalk.com/developerpedia/docs/learn/stream/protocol/)
+- 自动化证据：Store 覆盖组织/用户/租户隔离、组织匹配、Pi 入队和重复事件；Chrome E2E 点击模拟授权、保存群、开启监听、注入测试告警、验证任务完成、重复投递与第二租户隔离。该浏览器测试使用 E2E 专用 HTTP 模型桩，不证明真实 Stream 在线、Pi 云电脑执行或公网版本可用。完整 Chrome 主 E2E 的 45 个步骤通过；后续 cloud-computer 子套件在整套命令中遇到 Beta DSH 超时，单独重跑通过。真实钉钉回调仍待专用测试机器人验证。
 
 ### Dots 渠道体验
 

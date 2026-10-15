@@ -137,6 +137,7 @@ async function startMockModel() {
         const isDelegationAggregate = prompt.includes('E2E delegation goal — build a launch packet') && prompt.includes('Delegated task results:');
         const isSharedModelTask = prompt.includes('E2E shared model call from Beta account');
         const isSecretResilienceTask = prompt.includes('E2E transient K3D outage — use the cached shared model credential');
+        const isDingTalkAlertTask = prompt.includes('这是一条由已授权的钉钉监控群事件自动触发');
         const delegatedChild = ['Market scan', 'Competitor scan', 'Launch risks'].find(title => prompt.includes(`E2E delegated child — ${title.toLowerCase()}`));
         if (isPauseTask && !pauseModelHeld) {
           pauseModelHeld = true;
@@ -169,7 +170,7 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isMobileVoiceReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isSecretResilienceTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isMobileVoiceReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isSecretResilienceTask || isDingTalkAlertTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
@@ -1287,10 +1288,20 @@ try {
     await screenshot(alphaPage!, 'dingtalk-group-search');
     await resumedModal.getByRole('checkbox').check();
     await resumedModal.getByTestId('dingtalk-groups-save').click();
-    await resumedModal.getByRole('status').filter({ hasText: '当前不会自动读取群消息或向群发送消息' }).waitFor({ state: 'visible' });
+    await resumedModal.getByRole('status').filter({ hasText: '是否开始监听，需要为每个群单独开启' }).waitFor({ state: 'visible' });
     const savedGroups = await alphaPage!.evaluate(async () => await (await fetch('/api/dingtalk/groups/selected')).json()) as { conversationId: string; name: string }[];
     assert.deepEqual(savedGroups, [{ conversationId: 'e2e-incident-alerts', name: '系统监控告警群' }]);
     assert.equal(JSON.stringify(savedGroups).includes('tenantId'), false, 'The UI DTO must not expose internal tenant/user database fields');
+    const incidentMonitor = resumedModal.getByTestId('dingtalk-monitor-e2e-incident-alerts');
+    await incidentMonitor.waitFor({ state: 'visible' });
+    assert.equal(await incidentMonitor.isEnabled(), true, 'The E2E Stream and test Agent should allow an explicit monitor opt-in');
+    const monitorSaveResponse = alphaPage!.waitForResponse(response => response.url().includes('/api/dingtalk/monitors') && response.request().method() === 'PUT');
+    await incidentMonitor.click();
+    const monitorResponse = await monitorSaveResponse;
+    const monitorResponseBody = await monitorResponse.text();
+    assert.equal(monitorResponse.status(), 200, `Monitor opt-in API failed: ${monitorResponse.status()} ${monitorResponseBody}`);
+    assert.equal(await incidentMonitor.isChecked(), true, 'The monitor should visibly turn on after the user opts in');
+    await resumedModal.getByText('已开启 · 仅响应 @机器人').waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'dingtalk-selected-group');
     await resumedModal.getByRole('button', { name: '关闭钉钉设置' }).click();
     assert.equal(await alphaPage!.getByTestId('task-composer').inputValue(), '保留的钉钉设置草稿', 'Opening the connector must preserve the chat draft');
@@ -1464,6 +1475,49 @@ try {
     const betaModelRequest = mockModelRequests.slice(requestStart).find(request => request.prompt.includes(sharedModelInstruction));
     assert.equal(betaModelRequest?.authorization, `Bearer ${testModelApiKey}`, 'Beta must execute a real authenticated model HTTP request with the instance-shared credential');
     await screenshot(betaPage!, 'shared-model-task-from-beta');
+  });
+
+  await recordStep('A monitored DingTalk alert starts one isolated background task and ignores delivery retries', async () => {
+    await clickNav(alphaPage!, '你的 dot');
+    await alphaPage!.getByTestId('dot-context-panel').getByRole('button', { name: '钉钉' }).click();
+    const modal = alphaPage!.getByRole('dialog', { name: '连接钉钉' });
+    await modal.waitFor({ state: 'visible' });
+    const monitor = modal.getByTestId('dingtalk-monitor-e2e-incident-alerts');
+    await monitor.waitFor({ state: 'visible' });
+    assert.equal(await monitor.isChecked(), true, 'The user opt-in must survive closing and reopening the connector');
+    const requestStart = mockModelRequests.length;
+    const event = { messageId: 'e2e-stream-alert-001', conversationId: 'e2e-incident-alerts', text: '支付 API 返回 500，Trace ID: e2e-trace-2026' };
+    const accepted = await alphaPage!.evaluate(async (payload) => {
+      const response = await fetch('/api/dingtalk/e2e/stream-message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+      return { status: response.status, body: await response.json() as { kind: string; taskId: string | null; testOnly: boolean; engine: string } };
+    }, event);
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.body.kind, 'queued');
+    assert.equal(accepted.body.testOnly, true);
+    assert.equal(accepted.body.engine, 'model', 'The isolated browser harness uses its fake Model API; production Stream tasks default to Pi');
+    assert(accepted.body.taskId, 'The accepted alert should create a task in Alpha personal workspace');
+    await alphaPage!.waitForFunction(async (taskId: string) => {
+      const state = await (await fetch('/api/state')).json() as { tasks: { id: string; status: string; engine: string; instruction: string }[] };
+      const task = state.tasks.find(item => item.id === taskId);
+      return task?.status === 'done' && task.engine === 'model' && task.instruction.includes('e2e-trace-2026');
+    }, accepted.body.taskId!, { timeout: 20_000 });
+    await waitFor(() => mockModelRequests.slice(requestStart).some(request => request.prompt.includes('e2e-trace-2026')), 5_000);
+    const modelRequest = mockModelRequests.slice(requestStart).find(request => request.prompt.includes('e2e-trace-2026'));
+    assert.match(modelRequest?.prompt || '', /外部不可信数据/);
+    assert.match(modelRequest?.prompt || '', /不要修改代码、写入业务系统/);
+    const duplicate = await alphaPage!.evaluate(async (payload) => {
+      const response = await fetch('/api/dingtalk/e2e/stream-message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+      return { status: response.status, body: await response.json() as { kind: string; taskId: string | null } };
+    }, event);
+    assert.equal(duplicate.status, 200);
+    assert.equal(duplicate.body.kind, 'duplicate');
+    assert.equal(duplicate.body.taskId, null, 'A provider retry must not create a second task');
+    const betaState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { tasks: { instruction: string }[] };
+    assert.equal(betaState.tasks.some(task => task.instruction.includes('e2e-trace-2026')), false, 'The external alert must not cross into a different Google tenant');
+    const betaMonitors = await betaPage!.evaluate(async () => await (await fetch('/api/dingtalk/monitors')).json()) as { groups: unknown[] };
+    assert.deepEqual(betaMonitors.groups, [], 'The second Google tenant must not inherit Alpha group monitor state');
+    await screenshot(alphaPage!, 'dingtalk-alert-task-complete');
+    await modal.getByRole('button', { name: '关闭钉钉设置' }).click();
   });
 
   await recordStep('Chrome completes an Alpha task during a transient K3D Secret read outage', async () => {

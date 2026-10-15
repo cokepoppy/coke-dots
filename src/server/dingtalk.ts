@@ -47,7 +47,7 @@ export class DingTalkService {
   private readonly serviceToken: string;
   private readonly ticketSecret: string;
   private readonly e2eMock: boolean;
-  private readonly mockAccounts = new Map<string, { state: string; accountName?: string; organizationName?: string; expiresAt?: string }>();
+  private readonly mockAccounts = new Map<string, { state: string; accountName?: string; organizationName?: string; corpId?: string; expiresAt?: string }>();
   private readonly mockAuthorizations = new Map<string, DingTalkAuthorization & { owner: string; testOnly: true }>();
 
   constructor(env: NodeJS.ProcessEnv = process.env) {
@@ -130,7 +130,7 @@ export class DingTalkService {
     const auth = this.mockAuthorizations.get(id);
     if (!auth || auth.owner !== ownerKey(session)) throw new Error(publicErrors.CONNECTOR_AUTHORIZATION_NOT_FOUND);
     auth.state = 'authorized';
-    this.mockAccounts.set(auth.owner, { state: 'identity-verified', accountName: '测试钉钉账号', organizationName: 'Dots E2E 测试组织', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    this.mockAccounts.set(auth.owner, { state: 'identity-verified', accountName: '测试钉钉账号', organizationName: 'Dots E2E 测试组织', corpId: 'e2e-corp', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
     return { id, state: 'authorized', installation: this.mockAccounts.get(auth.owner) };
   }
 

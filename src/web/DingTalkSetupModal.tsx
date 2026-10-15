@@ -33,11 +33,14 @@ interface AuthorizationFlow {
 
 interface DingTalkGroup { conversationId: string; name: string }
 interface GroupSearch { groups: DingTalkGroup[]; hasMore: boolean; nextCursor?: string }
+interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; canEnable: boolean; reason?: string }
+interface DingTalkMonitors { stream: { configured: boolean; connected: boolean; ready: boolean; testOnly?: boolean }; groups: DingTalkMonitorGroup[] }
 
 export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
   const [status, setStatus] = useState<DingTalkStatus | null>(null);
   const [flow, setFlow] = useState<AuthorizationFlow | null>(null);
   const [selected, setSelected] = useState<DingTalkGroup[]>([]);
+  const [monitors, setMonitors] = useState<DingTalkMonitors | null>(null);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<DingTalkGroup[]>([]);
   const [cursor, setCursor] = useState('0');
@@ -59,12 +62,14 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
     setLoading(true);
     setError('');
     try {
-      const [nextStatus, nextSelected] = await Promise.all([
+      const [nextStatus, nextSelected, nextMonitors] = await Promise.all([
         appFetch('/api/dingtalk').then(response => readJson<DingTalkStatus>(response)),
         appFetch('/api/dingtalk/groups/selected').then(response => readJson<DingTalkGroup[]>(response)),
+        appFetch('/api/dingtalk/monitors').then(response => readJson<DingTalkMonitors>(response)),
       ]);
       setStatus(nextStatus);
       setSelected(nextSelected);
+      setMonitors(nextMonitors);
       const account = nextStatus.account;
       if (account.id && (account.state === 'starting' || account.state === 'awaiting-user' || account.state === 'verifying')) {
         setFlow({
@@ -92,7 +97,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
         if (disposed) return;
         setFlow(next);
         if (next.state === 'authorized') {
-          setNotice('钉钉账号已连接。群消息仍未启用监听。');
+          setNotice('钉钉账号已连接。你可以为已保存的群单独开启 @机器人 事件监听。');
           await refresh();
         } else if (['failed', 'cancelled', 'expired'].includes(next.state)) {
           setError(next.reason || authorizationError(next.state));
@@ -163,8 +168,24 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
     setWorking(true); setError(''); setNotice('');
     try {
       const saved = await appFetch('/api/dingtalk/groups/selected', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ groups: selected }) }).then(response => readJson<DingTalkGroup[]>(response));
-      setSelected(saved); setNotice('已保存群选择。当前不会自动读取群消息或向群发送消息。');
+      setSelected(saved);
+      const nextMonitors = await appFetch('/api/dingtalk/monitors').then(response => readJson<DingTalkMonitors>(response));
+      setMonitors(nextMonitors);
+      setNotice('已保存群选择。是否开始监听，需要为每个群单独开启。');
     } catch (reason) { setError(reason instanceof Error ? reason.message : '保存群选择失败。'); }
+    finally { setWorking(false); }
+  }
+
+  async function toggleMonitor(group: DingTalkMonitorGroup) {
+    if (working || (!group.enabled && !group.canEnable)) return;
+    setWorking(true); setError(''); setNotice('');
+    try {
+      const updated = await appFetch('/api/dingtalk/monitors', { method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ conversationId: group.conversationId, enabled: !group.enabled }) })
+        .then(response => readJson<{ conversationId: string; enabled: boolean }>(response));
+      setMonitors(current => current ? { ...current, groups: current.groups.map(item => item.conversationId === updated.conversationId ? { ...item, enabled: updated.enabled } : item) } : current);
+      setNotice(updated.enabled ? '已开启此群的实时告警排查。机器人需要已加入群，且仅处理 @机器人的文本消息。' : '已暂停此群监听。');
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '更新群监听失败。'); }
     finally { setWorking(false); }
   }
 
@@ -216,14 +237,23 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
           {results.length > 0 && <div className="dingtalk-group-results" role="group" aria-label="钉钉群搜索结果">
             {results.map(group => <label className="dingtalk-group-row" key={group.conversationId}>
               <input type="checkbox" checked={selectedIds.has(group.conversationId)} onChange={() => toggleGroup(group)} />
-              <span><strong>{group.name}</strong><small>已选择后仍不会开始自动监听</small></span>
+              <span><strong>{group.name}</strong><small>保存后可在下方单独开启监听</small></span>
             </label>)}
             {hasMore && <button className="dingtalk-setup-secondary" type="button" disabled={working} onClick={() => void searchGroups(cursor, true)}>加载更多</button>}
           </div>}
           {results.length === 0 && query && <p className="dingtalk-empty-results">搜索结果会显示在这里。</p>}
-          {selected.length > 0 && <div className="dingtalk-selected-groups"><strong>已选群聊</strong>{selected.map(group => <span key={group.conversationId}>{group.name}<button type="button" aria-label={`移除群 ${group.name}`} onClick={() => toggleGroup(group)}>×</button></span>)}</div>}
+          {selected.length > 0 && <div className="dingtalk-selected-groups"><strong>待保存群聊</strong>{selected.map(group => <span key={group.conversationId}>{group.name}<button type="button" aria-label={`移除群 ${group.name}`} onClick={() => toggleGroup(group)}>×</button></span>)}</div>}
           <button className="dingtalk-setup-primary" type="button" data-testid="dingtalk-groups-save" disabled={working || !status?.configured} onClick={() => void saveGroups()}>{working ? '处理中…' : '保存群选择'}</button>
-          <p className="dingtalk-setup-footnote">选择群聊只保存范围，不会自动读取消息、邀请机器人或发送内容。主动监控与处置流程需要后续单独启用和配置。</p>
+          {monitors && <div className="dingtalk-monitor-section" data-testid="dingtalk-monitor-section">
+            <div className="dingtalk-section-title"><div><h3>实时告警监听</h3><p>{monitors.stream.ready ? '机器人 Stream 已连接' : monitors.stream.configured ? '机器人 Stream 正在等待连接' : '实例尚未配置机器人 Stream'}</p></div><span>{monitors.groups.filter(group => group.enabled).length} 个启用</span></div>
+            {monitors.stream.testOnly && <p className="dingtalk-monitor-note">当前为浏览器自动化测试模拟状态，不代表生产钉钉机器人已经连接。</p>}
+            {monitors.groups.length === 0 ? <p className="dingtalk-empty-results">先搜索并保存至少一个群聊。</p> : monitors.groups.map(group => <label className="dingtalk-monitor-row" key={group.conversationId}>
+              <span><strong>{group.groupName}</strong><small>{group.enabled ? (monitors.stream.ready ? '已开启 · 仅响应 @机器人' : '已开启，但机器人连接中断') : group.reason || '关闭'}</small></span>
+              <input type="checkbox" role="switch" aria-label={`监听群 ${group.groupName}`} data-testid={`dingtalk-monitor-${group.conversationId}`}
+                checked={group.enabled} disabled={working || (!group.enabled && !group.canEnable)} onChange={() => void toggleMonitor(group)} />
+            </label>)}
+            <p className="dingtalk-setup-footnote">开启后，钉钉 Stream 会把 @机器人的群文本实时推送到服务端，并为本工作区创建 Pi 云电脑只读排查任务。不同工作区的任务和群监听相互隔离；不会自动回复钉钉群。</p>
+          </div>}
           <button className="dingtalk-setup-secondary dingtalk-disconnect" type="button" disabled={working} onClick={() => void disconnect()}>断开钉钉账号</button>
         </div>}
       </>}

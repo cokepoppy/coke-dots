@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@napi-rs/keyring": "^2.1.0",
+    "dingtalk-stream": "2.1.7-beta.1",
     "google-auth-library": "^11.1.0",
     "playwright-core": "^1.56.1",
     "react": "^19.2.0",

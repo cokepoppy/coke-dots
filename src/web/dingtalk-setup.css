@@ -46,6 +46,21 @@
 .dingtalk-selected-groups > span { display: flex; align-items: center; gap: 6px; padding: 4px 7px; border-radius: 6px; background: #f1eff2; color: #4b4850; font-size: 10px; }
 .dingtalk-selected-groups button { padding: 0; border: 0; background: transparent; color: #77737d; font-size: 14px; line-height: 1; cursor: pointer; }
 .dingtalk-setup-footnote { margin: 11px 0 0; color: #85818b; font-size: 10px; line-height: 1.5; }
+.dingtalk-monitor-section { margin-top: 18px; padding: 14px 12px 11px; border: 1px solid #ece9ed; border-radius: 10px; background: #fcfbfc; }
+.dingtalk-monitor-section .dingtalk-section-title { margin-bottom: 9px; }
+.dingtalk-monitor-section .dingtalk-section-title h3 { font-size: 13px; }
+.dingtalk-monitor-section .dingtalk-section-title p { font-size: 10px; }
+.dingtalk-monitor-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 49px; padding: 7px 2px; border-top: 1px solid #f0edf1; }
+.dingtalk-monitor-row > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.dingtalk-monitor-row strong { overflow: hidden; color: #39363e; font-size: 11px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.dingtalk-monitor-row small,.dingtalk-monitor-note { color: #85818b; font-size: 10px; line-height: 1.4; }
+.dingtalk-monitor-row input { flex: 0 0 auto; width: 34px; height: 19px; accent-color: #458861; cursor: pointer; }
+.dingtalk-monitor-row input:disabled { cursor: not-allowed; }
+.dingtalk-monitor-note { margin: 0 0 8px; }
+.dots-dark .dingtalk-monitor-section { border-color: #303036; background: #1b1b1f; }
+.dots-dark .dingtalk-monitor-row { border-color: #303036; }
+.dots-dark .dingtalk-monitor-row strong { color: #f0f0f2; }
+.dots-dark .dingtalk-monitor-row small,.dots-dark .dingtalk-monitor-note { color: #aaa5af; }
 .dingtalk-disconnect { margin-top: 13px; color: #ad4c49; }
 .dingtalk-setup-notice-box { display: flex; flex-direction: column; gap: 7px; padding: 15px; border: 1px solid #eee7d5; border-radius: 10px; background: #fffaf0; color: #625236; font-size: 12px; line-height: 1.5; }
 .dingtalk-setup-notice-box span { color: #77737d; }
