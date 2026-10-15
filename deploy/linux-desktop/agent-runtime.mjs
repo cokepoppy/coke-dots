@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, realpath } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 
@@ -46,10 +46,18 @@ async function controlOwner() {
   return (await response.json()).owner;
 }
 
-function safeWorkspace(value) {
-  const target = path.resolve(workspace, String(value || '.'));
-  if (target !== workspace && !target.startsWith(`${workspace}${path.sep}`)) throw new Error('task directory is outside the desktop workspace');
-  return target;
+async function safeTaskWorkspace(value, taskId) {
+  const relativeTaskDirectory = path.posix.join('tasks', taskId);
+  if (String(value || '') !== relativeTaskDirectory) throw new Error('task working directory must match its task id');
+  await mkdir(workspace, { recursive: true, mode: 0o700 });
+  const workspaceRoot = await realpath(workspace);
+  const taskRoot = path.join(workspaceRoot, 'tasks');
+  await mkdir(taskRoot, { recursive: true, mode: 0o700 });
+  if (await realpath(taskRoot) !== taskRoot) throw new Error('task directory root must not be a symbolic link');
+  const taskDirectory = path.join(taskRoot, taskId);
+  await mkdir(taskDirectory, { recursive: true, mode: 0o700 });
+  if (await realpath(taskDirectory) !== taskDirectory) throw new Error('task directory must not be a symbolic link');
+  return taskDirectory;
 }
 
 function requireModelConfig(value) {
@@ -120,8 +128,7 @@ async function executeKernel(input, requestSignal, slot) {
   const modelConfig = requireModelConfig(input.modelConfig);
   if (await controlOwner() !== 'agent') return { taskId, status: 'waiting', pausedForControl: true, message: '电脑目前由你控制。我已暂停这项工作；交还电脑后点击“继续”即可恢复。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
 
-  const cwd = safeWorkspace(input.cwd);
-  await mkdir(cwd, { recursive: true, mode: 0o700 });
+  const cwd = await safeTaskWorkspace(input.cwd, taskId);
   if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
   const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)));
   const child = spawn(adapter.command, adapter.args, { cwd, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });

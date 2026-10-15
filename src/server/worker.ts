@@ -103,6 +103,7 @@ export class Worker {
         tenantId: task.tenantId, prompt: `${task.instruction}${attachmentContext}`, memories: this.store.tenantMemories(task.tenantId).map(memory => memory.note),
         pages: this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
         actionRule: this.store.tenantActionRule(task.tenantId),
+        cloudComputerTask: useDesktopRuntime,
         allowDelegation: !task.parentTaskId && children.length === 0,
         availableEngines,
         delegatedResults: children.map(child => ({ title: child.title, status: child.status, result: child.result, error: child.error })),

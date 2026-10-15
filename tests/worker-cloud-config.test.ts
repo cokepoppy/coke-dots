@@ -68,6 +68,50 @@ test('cloud Agent tasks explain an unreadable system credential store before dis
   assert.equal(result.remoteDispatches, 0, 'The Agent pod must not receive a request when Keychain access fails');
 });
 
+test('cloud Agent dispatch grants default writes only in the tenant task directory', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-cloud-write-access-'));
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE'] as const;
+  const previous = new Map(envKeys.map(key => [key, process.env[key]]));
+  Object.assign(process.env, {
+    NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_MODEL_BASE_URL: 'https://api.example.test/v1', DOTS_MODEL: 'cloud-write-test-model',
+    DOTS_MODEL_API_KEY: 'cloud-write-fixture-key', DOTS_COMPUTER_BACKEND: 'linux-desktop',
+    DOTS_AGENT_KERNELS_JSON: JSON.stringify({ pi: { command: '/bin/false', args: [] } }), DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.write.${randomUUID()}`,
+  });
+  delete process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE;
+  const store = new Store(directory);
+  const account = store.signInGoogle({ subject: `computer-write-${randomUUID()}`, email: 'computer-write@example.test', name: 'Test Dot' });
+  store.setAppSetting('modelBaseUrl', 'https://api.example.test/v1');
+  store.setAppSetting('modelName', 'cloud-write-test-model');
+  const task = store.createTask('Create a Minesweeper game in the cloud computer', null, 'pi', account.tenant.id);
+  let receivedPrompt = '';
+  const computer = {
+    async runAgentTask(input: { prompt: string }) {
+      receivedPrompt = input.prompt;
+      return { status: 'done', message: 'Created minesweeper.html in this task directory.' };
+    },
+  } as unknown as ComputerRuntime;
+  const worker = new Worker(store, () => {}, join(directory, 'workspaces'), async () => {}, () => computer);
+
+  try {
+    await worker.tick();
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && store.getTask(task.id, account.tenant.id)?.status === 'working') {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(store.getTask(task.id, account.tenant.id)?.status, 'done');
+    assert.match(receivedPrompt, /read, create, and edit files in the current working directory without asking the user for another approval/);
+    assert.match(receivedPrompt, /Do not write outside the current task directory/);
+    assert.doesNotMatch(receivedPrompt, /Do not .*edit files/);
+  } finally {
+    worker.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('a cloud Agent task interrupted by computer takeover is persisted as paused and can be resumed', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-computer-takeover-pause-'));
   const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE'] as const;

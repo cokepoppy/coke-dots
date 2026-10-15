@@ -59,6 +59,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       "const keyInEnv = Object.values(process.env).includes(modelKey) || Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN) || Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN);",
       "const configDelivered = input.modelConfig?.apiKey === modelKey && input.modelConfig?.baseUrl === 'https://api.example.test/v1' && input.modelConfig?.model === 'runtime-test-model';",
       "await appendFile(process.env.DOTS_TEST_MARKER, `start ${input.taskId} config=${configDelivered} keyInEnv=${keyInEnv}\\n`);",
+      "await (await import('node:fs/promises')).writeFile('minesweeper.html', '<!doctype html><title>Minesweeper</title>');",
       "if (input.prompt === 'hold') await new Promise(resolve => setTimeout(resolve, 30000));",
       'await new Promise(resolve => setTimeout(resolve, 80));',
       "await appendFile(process.env.DOTS_TEST_MARKER, `end ${input.taskId}\\n`);",
@@ -97,11 +98,11 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     assert.equal(disabled.status, 400, 'The cloud runtime must reject Claude Code even if an old environment still lists it');
     assert.match((await disabled.json() as { error?: string }).error || '', /not enabled for this workspace/);
     const modelConfig = { apiKey: 'cloud-runtime-model-key-never-print', baseUrl: 'https://api.example.test/v1', model: 'runtime-test-model' };
-    const submit = async (taskId: string, prompt: string, config: typeof modelConfig | null = modelConfig) => {
+    const submit = async (taskId: string, prompt: string, config: typeof modelConfig | null = modelConfig, cwd = `tasks/${taskId}`) => {
       const response = await fetch(`${runtimeUrl}/v1/tasks/run`, {
         method: 'POST',
         headers: { authorization: 'Bearer agent-test-token-never-print', 'content-type': 'application/json' },
-        body: JSON.stringify({ engine: 'dsh', taskId, prompt, cwd: `tasks/${taskId}`, sessionId: null, ...(config ? { modelConfig: config } : {}) }),
+        body: JSON.stringify({ engine: 'dsh', taskId, prompt, cwd, sessionId: null, ...(config ? { modelConfig: config } : {}) }),
       });
       return { status: response.status, body: await response.json() as { status?: string; message?: string; error?: string } };
     };
@@ -111,6 +112,11 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     assert.match(missingConfig.body.error || '', /Shared Model API configuration is required/);
     assert.doesNotMatch(await readFile(markerPath, 'utf8').catch(() => ''), /44444444-4444-4444-8444-444444444444/, 'Missing model config must be rejected before starting the adapter');
 
+    const wrongTaskDirectory = await submit('66666666-6666-4666-8666-666666666666', 'reject another task directory', modelConfig, 'tasks/11111111-1111-4111-8111-111111111111');
+    assert.equal(wrongTaskDirectory.status, 400, 'A cloud Agent must not be started in a different task directory');
+    assert.match(wrongTaskDirectory.body.error || '', /must match its task id/);
+    assert.doesNotMatch(await readFile(markerPath, 'utf8').catch(() => ''), /66666666-6666-4666-8666-666666666666/, 'A mismatched task directory must be rejected before starting the adapter');
+
     const firstId = '11111111-1111-4111-8111-111111111111';
     const secondId = '22222222-2222-4222-8222-222222222222';
     const [first, second] = await Promise.all([submit(firstId, 'first'), submit(secondId, 'second')]);
@@ -119,6 +125,8 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     assert.equal(first.body.message, 'shared model config delivered via stdin; runtime token isolated');
     assert.equal(second.body.message, 'shared model config delivered via stdin; runtime token isolated');
     assert.doesNotMatch(JSON.stringify([first.body, second.body]), /cloud-runtime-model-key-never-print/, 'Agent output must not persist or return the shared API credential');
+    assert.equal(await readFile(join(workspace, 'tasks', firstId, 'minesweeper.html'), 'utf8'), '<!doctype html><title>Minesweeper</title>',
+      'The cloud Agent working directory must allow the requested file deliverable to be written');
     const markers = (await readFile(markerPath, 'utf8')).trim().split('\n');
     assert(markers.filter(line => line.startsWith('start ')).every(line => line.includes('config=true keyInEnv=false')), 'The adapter must receive model config over stdin, never via environment');
     const events = markers.map(line => line.split(' ')[0]);
