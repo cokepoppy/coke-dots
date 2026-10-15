@@ -339,6 +339,7 @@ try {
   const debugState = await page.evaluate(async () => await fetch('/api/state').then(response => response.json()) as { availableEngines: string[]; tasks: { id: string; engine: string; status: string; result: string | null; error: string | null }[] });
   assert.equal(agentCalls.length, 1, `Expected one remote Agent dispatch; created=${JSON.stringify(created)}, state=${JSON.stringify(debugState.tasks.find(task => task.id === created.task.id))}, engines=${JSON.stringify(debugState.availableEngines)}, calls=${JSON.stringify(agentCalls)}, remotePaths=${JSON.stringify(remoteHttpPaths.filter(path => path.includes('/agent/')))}, logs=${logs.join('')}`);
   assert.equal(agentCalls[0].engine, 'pi');
+  assert.equal(agentCalls[0].allowWorkspaceFileWrites, true, 'A Chrome-created Pi task must receive its default, task-scoped file creation capability');
   assert.equal(agentCalls[0].cwd, `tasks/${created.task.id}`);
   assert.equal((agentCalls[0].computer as { baseUrl: string }).baseUrl, 'http://127.0.0.1:8082');
   assert.deepEqual(agentCalls[0].modelConfig, { apiKey: 'cloud-e2e-shared-api-key', baseUrl: 'https://api.deepseek.com/v1', model: 'cloud-e2e-model' }, 'The cloud Agent must receive the shared instance model profile in its task request');

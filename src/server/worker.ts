@@ -114,7 +114,7 @@ export class Worker {
         onEvent: message => { this.store.addEntry('system', message, task.id, task.tenantId); this.onChange(); },
       };
       const decision = useDesktopRuntime
-        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines })
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, allowWorkspaceFileWrites: task.engine === 'pi', signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines })
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;

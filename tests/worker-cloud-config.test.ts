@@ -135,9 +135,11 @@ test('cloud Agent dispatch grants default writes only in the tenant task directo
   store.setAppSetting('modelName', 'cloud-write-test-model');
   const task = store.createTask('Create a Minesweeper game in the cloud computer', null, 'pi', account.tenant.id);
   let receivedPrompt = '';
+  let receivedFileWriteCapability = false;
   const computer = {
-    async runAgentTask(input: { prompt: string }) {
+    async runAgentTask(input: { prompt: string; allowWorkspaceFileWrites?: boolean }) {
       receivedPrompt = input.prompt;
+      receivedFileWriteCapability = input.allowWorkspaceFileWrites === true;
       return { status: 'done', message: 'Created minesweeper.html in this task directory.' };
     },
   } as unknown as ComputerRuntime;
@@ -150,7 +152,9 @@ test('cloud Agent dispatch grants default writes only in the tenant task directo
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     assert.equal(store.getTask(task.id, account.tenant.id)?.status, 'done');
-    assert.match(receivedPrompt, /read, create, and edit files in the current working directory without asking the user for another approval/);
+    assert.equal(receivedFileWriteCapability, true, 'A Pi task sent to the tenant cloud computer must receive its scoped file creation capability');
+    assert.match(receivedPrompt, /when the Pi create_task_file tool is available, create a new file there without asking the user for another approval/);
+    assert.match(receivedPrompt, /tool cannot overwrite an existing file/);
     assert.match(receivedPrompt, /Do not write outside the current task directory/);
     assert.doesNotMatch(receivedPrompt, /Do not .*edit files/);
   } finally {

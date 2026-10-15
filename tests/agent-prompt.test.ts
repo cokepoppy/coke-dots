@@ -10,12 +10,12 @@ const baseRequest: AgentRequest = {
   onEvent: () => {},
 };
 
-test('cloud-computer tasks can write deliverables in their task directory without repeated approval', () => {
+test('cloud-computer Pi tasks can create deliverables in their task directory without repeated approval', () => {
   const prompt = formatAgentPrompt({ ...baseRequest, cloudComputerTask: true });
-  assert.match(prompt, /read, create, and edit files in the current working directory without asking the user for another approval/);
-  assert.match(prompt, /Save requested deliverables there and report their relative paths/);
+  assert.match(prompt, /when the Pi create_task_file tool is available, create a new file there without asking the user for another approval/);
+  assert.match(prompt, /The tool cannot overwrite an existing file/);
+  assert.match(prompt, /Save requested deliverables in the current task directory and report their relative paths/);
   assert.match(prompt, /Do not write outside the current task directory/);
-  assert.doesNotMatch(prompt, /Do not .*edit files/);
 });
 
 test('non-cloud tasks are not told they can write files', () => {
