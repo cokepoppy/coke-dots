@@ -136,6 +136,52 @@ test('Pi cloud browser tool uses only its scoped read-only bridge capability', a
   }
 });
 
+test('Pi exposes only the task-scoped DingTalk document tools and keeps their grant out of prompts and environment', async () => {
+  const { root, task } = await makeWorkspace();
+  const requests: Array<{ authorization: string; body: Record<string, unknown> }> = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+    requests.push({ authorization: String(request.headers.authorization || ''), body });
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ ok: true, data: body.action === 'create' ? { nodeId: 'created-doc-1', verified: true, url: 'https://alidocs.dingtalk.com/document/edit?docId=created-doc-1' } : { documents: [{ nodeId: 'doc-1', name: '值班手册' }], count: 1 } }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const token = 'task-scoped-dingtalk-document-token';
+  let toolOutputs: unknown[] = [];
+  const sdk = {
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+    ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+    SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-dingtalk-session' }), open: () => { throw new Error('unexpected'); } },
+    createAgentSession: async (options: Record<string, any>) => {
+      assert.deepEqual(options.tools, ['read', 'grep', 'find', 'ls', 'search_dingtalk_documents', 'fetch_dingtalk_document', 'create_dingtalk_document']);
+      const byName = new Map(options.customTools.map((tool: { name: string }) => [tool.name, tool]));
+      toolOutputs = [
+        await (byName.get('search_dingtalk_documents') as any).execute('search-1', { query: '值班手册' }),
+        await (byName.get('create_dingtalk_document') as any).execute('create-1', { name: '排障报告', content: 'Trace ID: trace-1' }),
+      ];
+      return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
+    },
+  };
+  try {
+    const prompt = '请搜索钉钉值班手册并把排障报告创建为钉钉文档。';
+    await runCloudKernel({ engine: 'pi', prompt, cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig, dingtalkDocumentsBridge: { url: `http://127.0.0.1:${address.port}/api/agent/dingtalk/documents`, token, actions: ['search', 'fetch', 'create'] } }, { piSdk: sdk });
+    assert.equal(requests.length, 2);
+    assert(requests.every(request => request.authorization === `Bearer ${token}`));
+    assert.deepEqual(requests.map(request => request.body.action), ['search', 'create']);
+    assert.equal(requests[1]?.body.name, '排障报告');
+    assert.doesNotMatch(prompt, new RegExp(token));
+    assert.equal(Object.values(process.env).includes(token), false, 'The task-scoped grant is not exported through the adapter environment');
+    assert.doesNotMatch(JSON.stringify(toolOutputs), new RegExp(token), 'Tool responses never return the grant');
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('DeepSeek Harness routes the shared OpenAI-compatible profile through its pi-ai adapter and a task-local runtime home', async () => {
   const { root, task } = await makeWorkspace();
   const captured: { launch: Record<string, any> | null; provider: string | null } = { launch: null, provider: null };
@@ -174,6 +220,44 @@ test('DeepSeek Harness routes the shared OpenAI-compatible profile through its p
     assert.equal(written.some(name => name.endsWith('.mjs')), false, 'Per-run browser plugins are removed after completion');
     assert.match(safetyPatch, /- id: tool-bash\n  disabled: true/);
     assert.match(safetyPatch, /- id: tool-fs-search\n  disabled: true/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('DeepSeek Harness registers a temporary scoped DingTalk plugin without putting its grant in process environment', async () => {
+  const { root, task } = await makeWorkspace();
+  const token = 'task-scoped-dingtalk-grant-test-value';
+  const captured: { launch: Record<string, any> | null; patch: string; plugin: string; envHasToken: boolean } = { launch: null, patch: '', plugin: '', envHasToken: false };
+  const sdk = {
+    DeepSeekHarness: class {
+      constructor(options: Record<string, any>) { captured.launch = options.launch; }
+      async run() {
+        const launch = captured.launch!;
+        captured.patch = await readFile(launch.args[3], 'utf8');
+        const pluginName = (await readdir(launch.env.DSH_HOME)).find(name => name.endsWith('-dingtalk-documents.mjs'));
+        assert(pluginName);
+        captured.plugin = await readFile(join(launch.env.DSH_HOME, pluginName), 'utf8');
+        captured.envHasToken = Object.values(launch.env).includes(token);
+        return { finalResponse: decision, sessionId: 'dsh-dingtalk-session' };
+      }
+      async close() {}
+    },
+  };
+  try {
+    const output = await runCloudKernel({
+      engine: 'dsh', prompt: '请创建钉钉排障报告', cwd: task, workspace: root,
+      taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
+      dingtalkDocumentsBridge: { url: 'https://dots.example.test/dots-demo/api/agent/dingtalk/documents', token, actions: ['search', 'fetch', 'create'] },
+    }, { dshSdk: sdk });
+    assert.equal(output.message, 'cloud kernel completed');
+    assert.equal(captured.envHasToken, false);
+    assert.match(captured.patch, /coke-dots-dingtalk-documents-/);
+    assert.doesNotMatch(captured.patch, new RegExp(token));
+    assert.match(captured.plugin, /search_dingtalk_documents/);
+    assert.match(captured.plugin, /fetch_dingtalk_document/);
+    assert.match(captured.plugin, /create_dingtalk_document/);
+    assert.match(captured.plugin, new RegExp(token), 'The delegated token stays in the temporary restricted plugin that the DSH tools cannot read');
+    assert.doesNotMatch(captured.plugin, new RegExp(modelConfig.apiKey));
+    assert.equal((await readdir(join(await realpath(task), '.coke-dots-agent-runtime', 'dsh-home'))).some(name => name.includes('dingtalk-documents')), false, 'The capability-bearing plugin is removed after the task returns');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -8,6 +8,7 @@ import { Store } from '../src/server/store.ts';
 import { Worker } from '../src/server/worker.ts';
 import type { ComputerRuntime } from '../src/server/computer.ts';
 import { ComputerControlOwnedByUserError } from '../src/server/computer-errors.ts';
+import { DingTalkService } from '../src/server/dingtalk.ts';
 
 async function runCloudConfigPreflight(secretMode: 'missing' | 'unavailable') {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-cloud-model-config-'));
@@ -157,6 +158,60 @@ test('cloud Agent dispatch grants default writes only in the tenant task directo
     assert.match(receivedPrompt, /tool cannot overwrite an existing file/);
     assert.match(receivedPrompt, /Do not write outside the current task directory/);
     assert.doesNotMatch(receivedPrompt, /Do not .*edit files/);
+  } finally {
+    worker.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an owned explicit document task', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-cloud-dingtalk-bridge-'));
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_E2E_DINGTALK', 'DOTS_PUBLIC_ORIGIN', 'DOTS_BASE_PATH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_MODEL_SECRET_DIR', 'DOTS_TEST_MODEL_SECRET_SCOPE', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE'] as const;
+  const previous = new Map(envKeys.map(key => [key, process.env[key]]));
+  Object.assign(process.env, {
+    NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_E2E_DINGTALK: '1', DOTS_PUBLIC_ORIGIN: 'https://dots.example.test', DOTS_BASE_PATH: '/dots-demo',
+    DOTS_MODEL_BASE_URL: 'https://api.example.test/v1', DOTS_MODEL: 'dingtalk-bridge-test-model', DOTS_MODEL_API_KEY: 'dingtalk-bridge-model-test-key',
+    DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_AGENT_KERNELS_JSON: JSON.stringify({ pi: { command: '/bin/false', args: [] } }),
+    DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.dingtalk.${randomUUID()}`,
+    DOTS_TEST_MODEL_SECRET_DIR: join(directory, 'secrets'), DOTS_TEST_MODEL_SECRET_SCOPE: randomUUID(),
+  });
+  delete process.env.DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE;
+  const store = new Store(directory);
+  const account = store.signInGoogle({ subject: `cloud-dingtalk-${randomUUID()}`, email: 'cloud-dingtalk@example.test', name: 'Test Dot' });
+  store.setAppSetting('modelBaseUrl', 'https://api.example.test/v1');
+  store.setAppSetting('modelName', 'dingtalk-bridge-test-model');
+  const task = store.createTask('请把这次排障报告写入钉钉文档', null, 'pi', account.tenant.id, null, null, [], account.user.id);
+  let receivedBridge: { url: string; token: string; actions: Array<'search' | 'fetch' | 'create'> } | undefined;
+  const computer = {
+    async runAgentTask(input: { dingtalkDocumentsBridge?: typeof receivedBridge }) {
+      receivedBridge = input.dingtalkDocumentsBridge;
+      return { status: 'done', message: 'Task completed.' };
+    },
+  } as unknown as ComputerRuntime;
+  const service = new DingTalkService();
+  const worker = new Worker(store, () => {}, join(directory, 'workspaces'), async () => {}, () => computer, service);
+
+  try {
+    await worker.tick();
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && store.getTask(task.id, account.tenant.id)?.status === 'working') await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(store.getTask(task.id, account.tenant.id)?.status, 'done');
+    assert.equal(store.taskOwnerUserId(task.id, account.tenant.id), account.user.id);
+    assert(receivedBridge);
+    assert.equal(receivedBridge.url, 'https://dots.example.test/dots-demo/api/agent/dingtalk/documents');
+    assert.deepEqual(receivedBridge.actions, ['search', 'fetch', 'create']);
+    const grant = service.verifyAgentDocumentGrant(receivedBridge.token);
+    assert.equal(grant?.tenantId, account.tenant.id);
+    assert.equal(grant?.userId, account.user.id);
+    assert.equal(grant?.taskId, task.id);
+
+    const readOnly = service.agentDocumentBridge(account.tenant.id, account.user.id, randomUUID(), '搜索钉钉文档');
+    assert(readOnly);
+    assert.deepEqual(readOnly.actions, ['search', 'fetch']);
   } finally {
     worker.stop();
     store.close();

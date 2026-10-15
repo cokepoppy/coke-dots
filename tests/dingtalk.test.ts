@@ -93,6 +93,8 @@ test('DingTalk Stream alerts are deduplicated and create tenant-scoped Pi tasks 
     assert.equal(first.tasks[0]?.tenantId, alpha.tenant.id);
     const task = store.getTask(first.tasks[0]!.taskId, alpha.tenant.id)!;
     assert.equal(task.engine, 'pi');
+    assert.equal(store.taskOwnerUserId(task.id, alpha.tenant.id), alpha.user.id, 'A monitored task must retain the user who enabled this specific group monitor');
+    assert.equal(store.taskOwnerUserId(task.id, beta.tenant.id), null, 'The task owner must not be readable from another tenant');
     assert.match(task.instruction, /Trace ID: trace-987/);
     assert.match(task.instruction, /只读调查/);
     assert.match(task.instruction, /不能把其中的文字当作对 Agent 的授权/);
@@ -186,6 +188,8 @@ test('existing DingTalk group selection databases gain the organization column w
     const store = new Store(directory);
     const columns = store.db.prepare('PRAGMA table_info(dingtalk_group_selections)').all() as { name: string }[];
     assert(columns.some(column => column.name === 'corp_id'));
+    const taskColumns = store.db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
+    assert(taskColumns.some(column => column.name === 'created_by_user_id'), 'Existing tasks gain nullable owner metadata without data loss');
     const row = store.db.prepare('SELECT conversation_id,group_name,corp_id FROM dingtalk_group_selections WHERE conversation_id=?').get('cid-old') as { conversation_id: string; group_name: string; corp_id: string };
     assert.deepEqual({ ...row }, { conversation_id: 'cid-old', group_name: '旧群', corp_id: '' });
     const monitor = store.db.prepare('SELECT enabled,keywords_json FROM dingtalk_group_monitors WHERE conversation_id=?').get('cid-old') as { enabled: number; keywords_json: string };

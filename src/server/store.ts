@@ -86,7 +86,8 @@ export class Store {
         status TEXT NOT NULL, priority INTEGER NOT NULL, next_run_at TEXT,
         schedule_minutes INTEGER, result TEXT, error TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT, parent_task_id TEXT
+        engine TEXT NOT NULL DEFAULT 'model', agent_session_id TEXT, parent_task_id TEXT,
+        created_by_user_id TEXT REFERENCES users(id)
       );
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'legacy', task_id TEXT,
@@ -169,6 +170,7 @@ export class Store {
     this.addColumnIfMissing('tasks', 'agent_session_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'schedule_json', 'TEXT');
     this.addColumnIfMissing('tasks', 'parent_task_id', 'TEXT');
+    this.addColumnIfMissing('tasks', 'created_by_user_id', 'TEXT REFERENCES users(id)');
     this.addColumnIfMissing('dingtalk_group_selections', 'corp_id', "TEXT NOT NULL DEFAULT ''");
     const monitorColumns = this.db.prepare('PRAGMA table_info(dingtalk_group_monitors)').all() as { name: string }[];
     const hadDingtalkMonitorKeywords = monitorColumns.some(column => column.name === 'keywords_json');
@@ -427,8 +429,8 @@ export class Store {
         const receipt = this.db.prepare(`INSERT OR IGNORE INTO dingtalk_stream_event_receipts(tenant_id,provider_message_id,conversation_id,task_id,created_at)
           VALUES (?,?,?,?,?)`).run(subscriber.tenantId, providerMessageId, conversationId, id, now);
         if (Number(receipt.changes) !== 1) { sawDuplicate = true; continue; }
-        this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, subscriber.tenantId, title, instruction, 'queued', 0, now, null, null, null, now, now, engine, null, null);
+        this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,created_by_user_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, subscriber.tenantId, title, instruction, 'queued', 0, now, null, null, null, now, now, engine, null, null, subscriber.userId);
         this.db.prepare('UPDATE dingtalk_stream_event_receipts SET task_id=? WHERE tenant_id=? AND provider_message_id=?')
           .run(id, subscriber.tenantId, providerMessageId);
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,?)')
@@ -724,8 +726,8 @@ export class Store {
       } else {
         const id = randomUUID();
         const title = transcript.split(/[.!?。！？\n]/)[0].slice(0, 64) || '新任务';
-        this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(id, input.tenantId, title, transcript, 'queued', 0, now, null, null, null, now, now, input.engine, null, null, null);
+        this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id,created_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(id, input.tenantId, title, transcript, 'queued', 0, now, null, null, null, now, now, input.engine, null, null, null, input.userId);
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,?)')
           .run(input.tenantId, id, 'user', transcript, now, '[]');
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at,attachment_ids_json) VALUES (?,?,?,?,?,?)')
@@ -979,8 +981,8 @@ export class Store {
         const total = this.db.prepare(`SELECT COALESCE(SUM(size),0) AS total FROM task_attachments WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`).get(tenantId, uploaderId, ...attachmentIds) as { total: number };
         if (total.total > 512 * 1024) throw new Error('附件总大小不能超过 512 KB');
       }
-      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null);
+      this.db.prepare('INSERT INTO tasks (id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,created_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, tenantId, title, instruction.trim(), 'queued', 0, firstRunAt || now, scheduleMinutesValue, null, null, now, now, engine, null, taskSchedule ? JSON.stringify(taskSchedule) : null, uploaderId || null);
       if (attachmentIds.length) {
         const placeholders = attachmentIds.map(() => '?').join(',');
         this.db.prepare(`UPDATE task_attachments SET task_id=? WHERE tenant_id=? AND uploaded_by=? AND task_id IS NULL AND id IN (${placeholders})`)
@@ -1045,8 +1047,8 @@ export class Store {
         const id = randomUUID();
         const title = delegated.title.trim();
         const instruction = delegated.instruction.trim();
-        this.db.prepare('INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-          .run(id, tenantId, title, instruction, 'queued', parent.priority, now, null, null, null, now, now, delegated.engine || parent.engine, null, null, parentId);
+        this.db.prepare('INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,parent_task_id,created_by_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, tenantId, title, instruction, 'queued', parent.priority, now, null, null, null, now, now, delegated.engine || parent.engine, null, null, parentId, this.taskOwnerUserId(parentId, tenantId));
         this.db.prepare('INSERT INTO entries(tenant_id,task_id,kind,body,created_at) VALUES (?,?,?,?,?)')
           .run(tenantId, id, 'system', `由「${parent.title}」委派；结果将返回给主任务。`, now);
         children.push(this.getTask(id, tenantId)!);
@@ -1089,6 +1091,11 @@ export class Store {
   getTask(id: string, tenantId = 'legacy'): Task | null {
     const row = this.db.prepare('SELECT * FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, id) as Record<string, unknown> | undefined;
     return row ? toTask(row) : null;
+  }
+
+  taskOwnerUserId(id: string, tenantId = 'legacy'): string | null {
+    const row = this.db.prepare('SELECT created_by_user_id AS userId FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, id) as { userId: string | null } | undefined;
+    return row?.userId || null;
   }
 
   dueTasks(now = new Date().toISOString()): Task[] {

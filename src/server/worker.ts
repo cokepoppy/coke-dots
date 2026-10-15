@@ -9,6 +9,7 @@ import { ComputerControlOwnedByUserError } from './computer-errors.ts';
 import { desktopAgentEngineIds } from './desktop-agent-kernels.ts';
 import { effectiveModelConfig, loadModelSettings, sharedModelApiKeyStatus } from './model-settings.ts';
 import { sendDesktopNotification, type DesktopNotifier } from './notifications.ts';
+import type { DingTalkService } from './dingtalk.ts';
 
 export class Worker {
   private static readonly maxActiveTasks = 4;
@@ -19,7 +20,7 @@ export class Worker {
   private activeByTenant = new Map<string, number>();
   private stopped = false;
 
-  constructor(private store: Store, private onChange: () => void, private workspaceRoot = join(process.cwd(), 'data', 'workspaces'), private notify: DesktopNotifier = sendDesktopNotification, private computerFor?: (tenantId: string) => ComputerRuntime) {}
+  constructor(private store: Store, private onChange: () => void, private workspaceRoot = join(process.cwd(), 'data', 'workspaces'), private notify: DesktopNotifier = sendDesktopNotification, private computerFor?: (tenantId: string) => ComputerRuntime, private dingtalk?: DingTalkService) {}
 
   start() { this.stopped = false; this.timer = setInterval(() => void this.tick(), 2000); void this.tick(); }
   stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null; }
@@ -113,8 +114,12 @@ export class Worker {
         signal,
         onEvent: message => { this.store.addEntry('system', message, task.id, task.tenantId); this.onChange(); },
       };
+      const taskOwnerUserId = this.store.taskOwnerUserId(task.id, task.tenantId);
+      const dingtalkDocumentsBridge = useDesktopRuntime && taskOwnerUserId && !task.parentTaskId
+        ? this.dingtalk?.agentDocumentBridge(task.tenantId, taskOwnerUserId, task.id, task.instruction) || undefined
+        : undefined;
       const decision = useDesktopRuntime
-        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, allowWorkspaceFileWrites: task.engine === 'pi', signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines })
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, allowWorkspaceFileWrites: task.engine === 'pi', ...(dingtalkDocumentsBridge ? { dingtalkDocumentsBridge } : {}), signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines })
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;

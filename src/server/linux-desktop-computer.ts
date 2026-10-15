@@ -147,7 +147,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     return this.connection?.novncUrl ?? null;
   }
 
-  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; allowWorkspaceFileWrites?: boolean; signal?: AbortSignal }) {
+  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; allowWorkspaceFileWrites?: boolean; dingtalkDocumentsBridge?: { url: string; token: string; actions: Array<'search' | 'fetch' | 'create'> }; signal?: AbortSignal }) {
     await this.ensureConnection();
     const owner = await this.request('/v1/control');
     if (!owner.ok) await this.throwWorkerError(owner, `Linux 云电脑控制权读取失败（HTTP ${owner.status}）`);
@@ -158,7 +158,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     const response = await fetch(url, {
       method: 'POST',
       headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ engine: input.engine, taskId: input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, ...(input.modelConfig ? { modelConfig: input.modelConfig } : {}), ...(input.engine === 'pi' && input.allowWorkspaceFileWrites === true ? { allowWorkspaceFileWrites: true } : {}), computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
+      body: JSON.stringify({ engine: input.engine, taskId: input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, ...(input.modelConfig ? { modelConfig: input.modelConfig } : {}), ...(input.engine === 'pi' && input.allowWorkspaceFileWrites === true ? { allowWorkspaceFileWrites: true } : {}), ...(input.dingtalkDocumentsBridge ? { dingtalkDocumentsBridge: input.dingtalkDocumentsBridge } : {}), computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken } }),
       signal: input.signal ? AbortSignal.any([AbortSignal.timeout(15 * 60_000), input.signal]) : AbortSignal.timeout(15 * 60_000),
     });
     const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; pausedForControl?: boolean };

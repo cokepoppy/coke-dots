@@ -97,7 +97,7 @@ const sessionHeartbeat = setInterval(() => {
   }
 }, 30_000);
 
-const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor);
+const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor, dingtalk);
 const watchRunner = new WatchRunner(store, publish);
 const dingtalkStream = new DingTalkStreamService(message => {
   const result = store.ingestDingtalkMessage(message);
@@ -110,6 +110,21 @@ const server = createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const url = new URL(req.url || '/', `http://${host}:${port}`);
   const path = routePath(url.pathname);
+  if (path === '/api/agent/dingtalk/documents') {
+    if (req.method !== 'POST') return reply(res, 405, { error: '方法不支持' });
+    const authorization = req.headers.authorization || '';
+    const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    const grant = dingtalk.verifyAgentDocumentGrant(token);
+    if (!grant) return reply(res, 401, { error: 'Agent 钉钉文档授权无效或已过期' });
+    const task = store.getTask(grant.taskId, grant.tenantId);
+    if (!task || store.taskOwnerUserId(grant.taskId, grant.tenantId) !== grant.userId) return reply(res, 404, { error: '任务不存在' });
+    if (task.status !== 'working') return reply(res, 409, { error: '任务已结束，钉钉文档授权已收回' });
+    let body: Record<string, unknown>;
+    try { body = await readJson(req, 600 * 1024); }
+    catch (error) { return reply(res, 413, { error: error instanceof Error ? error.message : '请求体无效' }); }
+    try { return reply(res, 200, { ok: true, data: await dingtalk.runAgentDocumentOperation(grant, body) }); }
+    catch (error) { return reply(res, 400, { ok: false, error: error instanceof Error ? error.message : '钉钉文档操作失败' }); }
+  }
   if (!isLocalRequest(req, path, requestBoundary)) return reply(res, 403, { error: 'Local access only' });
 
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);

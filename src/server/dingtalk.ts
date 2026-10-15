@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import type { AuthSession } from './store.ts';
+import { createDingTalkAgentBridge, deterministicDingTalkCreateRequestId, verifyDingTalkAgentGrant, type DingTalkAgentGrant, type DingTalkAgentBridge } from './dingtalk-agent-bridge.ts';
 
 interface DingTalkGatewayResponse<T> { ok: boolean; data?: T; error?: string }
 
@@ -82,6 +83,8 @@ export class DingTalkService {
   private readonly serviceToken: string;
   private readonly ticketSecret: string;
   private readonly e2eMock: boolean;
+  private readonly publicOrigin: string;
+  private readonly basePath: string;
   private readonly mockAccounts = new Map<string, { state: string; accountName?: string; organizationName?: string; corpId?: string; expiresAt?: string }>();
   private readonly mockAuthorizations = new Map<string, DingTalkAuthorization & { owner: string; testOnly: true }>();
   private readonly mockDocuments = new Map<string, Map<string, { nodeId: string; name: string; content: string; url: string }>>();
@@ -92,6 +95,8 @@ export class DingTalkService {
     this.ticketSecret = env.DINGTALK_CONNECTOR_TICKET_SECRET?.trim() || '';
     this.gatewayUrl = parseGatewayUrl(env.DINGTALK_CONNECTOR_GATEWAY_URL);
     this.e2eMock = env.NODE_ENV === 'test' && env.DOTS_E2E_AUTH === '1' && env.DOTS_E2E_DINGTALK === '1';
+    this.publicOrigin = env.DOTS_PUBLIC_ORIGIN?.trim() || '';
+    this.basePath = env.DOTS_BASE_PATH?.trim() || '';
   }
 
   configured() {
@@ -99,6 +104,45 @@ export class DingTalkService {
   }
 
   isE2eMock() { return this.e2eMock; }
+
+  agentDocumentBridge(tenantId: string, userId: string, taskId: string, instruction: string): DingTalkAgentBridge | null {
+    if (!this.configured() || (!this.ticketSecret && !this.e2eMock)) return null;
+    return createDingTalkAgentBridge({
+      tenantId, userId, taskId, instruction, publicOrigin: this.publicOrigin, basePath: this.basePath,
+      secret: this.ticketSecret || 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes',
+    });
+  }
+
+  verifyAgentDocumentGrant(token: string): DingTalkAgentGrant | null {
+    if (!this.configured()) return null;
+    return verifyDingTalkAgentGrant(token, this.ticketSecret || (this.e2eMock ? 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes' : ''));
+  }
+
+  async runAgentDocumentOperation(grant: DingTalkAgentGrant, input: unknown) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('钉钉 Agent 请求无效');
+    const body = input as Record<string, unknown>;
+    const operation = String(body.action || '');
+    if (!grant.actions.includes(operation as 'search' | 'fetch' | 'create')) throw new Error('当前任务没有此钉钉文档操作权限');
+    const session: AuthSession = {
+      tokenHash: '',
+      user: { id: grant.userId, email: '', name: '' },
+      tenant: { id: grant.tenantId, name: '', role: 'member', kind: 'workspace' },
+      expiresAt: new Date(grant.expiresAt * 1000).toISOString(),
+    };
+    if (operation === 'search') return this.searchDocuments(session, { query: String(body.query || ''), limit: typeof body.limit === 'number' ? body.limit : undefined });
+    if (operation === 'fetch') return this.fetchDocument(session, { node: String(body.node || '') });
+    if (operation === 'create') {
+      const name = String(body.name || '');
+      const content = String(body.content || '');
+      return this.createDocument(session, {
+        requestId: deterministicDingTalkCreateRequestId(grant.taskId, this.ticketSecret || 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes'),
+        name, content, confirmed: true,
+        ...(typeof body.folder === 'string' ? { folder: body.folder } : {}),
+        ...(typeof body.workspace === 'string' ? { workspace: body.workspace } : {}),
+      });
+    }
+    throw new Error('当前任务没有此钉钉文档操作权限');
+  }
 
   async status(session: AuthSession) {
     if (this.e2eMock) {
