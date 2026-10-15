@@ -5,7 +5,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Store } from '../src/server/store.ts';
-import { normalizeDingTalkRobotMessage, dingtalkStreamConfiguration } from '../src/server/dingtalk-stream.ts';
+import { DingTalkStreamService, normalizeDingTalkRobotMessage, dingtalkStreamConfiguration } from '../src/server/dingtalk-stream.ts';
+
+test('callback-only Stream client is ready after its WebSocket opens even without SYSTEM/REGISTERED', () => {
+  const service = new DingTalkStreamService(() => undefined, {
+    DOTS_DINGTALK_STREAM_CLIENT_ID: 'app-one',
+    DOTS_DINGTALK_STREAM_CLIENT_SECRET: 'secret',
+    DOTS_DINGTALK_STREAM_CORP_ID: 'corp-one',
+  });
+  (service as unknown as { client: { connected: boolean; registered: boolean } }).client = {
+    connected: true,
+    registered: false,
+  };
+  assert.deepEqual(service.status(), { configured: true, connected: true, ready: true, testOnly: false });
+  assert.equal(service.canMonitor('corp-one'), true);
+  assert.equal(service.canMonitor('corp-two'), false);
+});
 
 test('DingTalk Stream normalizes only this app organization group-text callbacks and drops webhook credentials', () => {
   const configuration = { clientId: 'app-one', clientSecret: 'not-returned', corpId: 'corp-one' };

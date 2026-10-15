@@ -67,8 +67,10 @@ export class DingTalkStreamService {
   status(): DingTalkStreamStatus {
     if (this.testOnly) return { configured: true, connected: true, ready: true, testOnly: true };
     const connected = Boolean(this.client?.connected);
-    const registered = Boolean(this.client?.registered);
-    return { configured: Boolean(this.configuration), connected, ready: connected && registered, testOnly: false };
+    // Robot callbacks are declared in the gateway-connection request before the
+    // WebSocket opens. The SDK's `registered` flag only tracks a separate
+    // SYSTEM/REGISTERED frame and can remain false for CALLBACK-only clients.
+    return { configured: Boolean(this.configuration), connected, ready: connected, testOnly: false };
   }
 
   canMonitor(corpId: string): boolean {
@@ -81,6 +83,7 @@ export class DingTalkStreamService {
       clientId: this.configuration.clientId,
       clientSecret: this.configuration.clientSecret,
       autoReconnect: true,
+      keepAlive: true,
       debug: false,
       maxPendingCallbackHandlers: 20,
       subscriptions: [{ type: 'CALLBACK', topic: TOPIC_ROBOT }],
