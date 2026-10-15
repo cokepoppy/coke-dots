@@ -191,6 +191,17 @@ function safeVerificationUrl(raw) {
 function sanitizeGroups(payload) {
   const raw = extractGroupRows(payload);
   if (payload?.success !== true || !raw) throw new Error('DWS_GROUP_SEARCH_INVALID_RESULT');
+  const groups = sanitizeGroupRows(raw);
+  const page = payload.result && !Array.isArray(payload.result) ? payload.result : payload;
+  return {
+    groups,
+    hasMore: page.hasMore === true,
+    ...(typeof page.nextCursor === 'string' || typeof page.nextCursor === 'number' ? { nextCursor: String(page.nextCursor).slice(0, 200) } : {}),
+  };
+}
+
+function sanitizeGroupRows(raw) {
+  if (!Array.isArray(raw)) throw new Error('DWS_GROUP_SEARCH_INVALID_RESULT');
   const groups = [];
   for (const group of raw) {
     const conversationId = groupConversationId(group);
@@ -199,12 +210,7 @@ function sanitizeGroups(payload) {
     groups.push({ conversationId: conversationId.slice(0, 512), name: name.slice(0, 200) });
   }
   if (groups.length !== raw.length) throw new Error('DWS_GROUP_SEARCH_INVALID_RESULT');
-  const page = payload.result && !Array.isArray(payload.result) ? payload.result : payload;
-  return {
-    groups,
-    hasMore: page.hasMore === true,
-    ...(typeof page.nextCursor === 'string' || typeof page.nextCursor === 'number' ? { nextCursor: String(page.nextCursor).slice(0, 200) } : {}),
-  };
+  return groups;
 }
 
 function extractGroupRows(payload) {
@@ -224,12 +230,33 @@ function groupName(group) {
 }
 
 function sanitizeGroupList(payload) {
-  const groups = sanitizeGroups(payload);
-  const page = payload.result && !Array.isArray(payload.result) ? payload.result : payload;
-  const failures = Array.isArray(page.failures) ? page.failures.length : 0;
-  const hasMore = page.hasMore === true;
+  // DWS v1.0.64's `chat +my-groups --page-all --format json` shortcut
+  // writes a direct projection (`groups`, `complete`, `hasMore`,
+  // `paginationKnown`, `failures`), without the `success/result` envelope
+  // used by the lower-level `chat search` command.
+  const shortcutPage = payload && typeof payload === 'object' &&
+    Array.isArray(payload.groups) && Number.isSafeInteger(payload.count) && payload.count === payload.groups.length &&
+    Number.isSafeInteger(payload.pagesFetched) && payload.pagesFetched >= 1 && payload.paginationKnown === true &&
+    typeof payload.complete === 'boolean' && typeof payload.hasMore === 'boolean' &&
+    Array.isArray(payload.failures) && Number.isSafeInteger(payload.failedCount) &&
+    payload.failedCount >= 0 && payload.failedCount === payload.failures.length;
+  let groups;
+  let page;
+  if (shortcutPage) {
+    groups = sanitizeGroupRows(payload.groups);
+    page = payload;
+  } else {
+    groups = sanitizeGroups(payload).groups;
+    page = payload.result && !Array.isArray(payload.result) ? payload.result : payload;
+    if (typeof page.complete !== 'boolean' || typeof page.hasMore !== 'boolean') throw new Error('DWS_GROUP_SEARCH_INVALID_RESULT');
+  }
+  const failures = Math.max(Array.isArray(page.failures) ? page.failures.length : 0,
+    Number.isSafeInteger(page.failedCount) && page.failedCount >= 0 ? page.failedCount : 0);
+  const hasMore = page.hasMore;
   return {
-    ...groups,
+    groups,
+    hasMore,
+    ...(typeof page.nextCursor === 'string' || typeof page.nextCursor === 'number' ? { nextCursor: String(page.nextCursor).slice(0, 200) } : {}),
     complete: page.complete === true && !hasMore && failures === 0,
     failureCount: failures,
   };

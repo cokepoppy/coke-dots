@@ -71,10 +71,20 @@ if (group === 'profile' && command === 'list') {
   const pageLimit = args[args.indexOf('--page-limit') + 1];
   const cursorIndex = args.indexOf('--cursor');
   if (!args.includes('--page-all') || !args.includes('--profile') || pageLimit === undefined || (cursorIndex >= 0 && args[cursorIndex + 1] !== 'next-page')) process.exit(2);
-  console.log(JSON.stringify({ success: true, result: {
-    groups: [{ openConversationId: cursorIndex >= 0 ? 'cid-alerts-2' : 'cid-alerts', title: cursorIndex >= 0 ? '发布告警群' : '系统监控告警群' }],
-    complete: pageLimit !== '1', hasMore: pageLimit === '1', ...(pageLimit === '1' ? { nextCursor: 'next-page' } : {}),
-  } }));
+  console.log(JSON.stringify({
+    count: 1,
+    groups: [{ conversationId: cursorIndex >= 0 ? 'cid-alerts-2' : 'cid-alerts', name: cursorIndex >= 0 ? '发布告警群' : '系统监控告警群' }],
+    pagesFetched: 1,
+    paginationKnown: true,
+    complete: pageLimit !== '1',
+    hasMore: pageLimit === '1',
+    stopReason: pageLimit === '1' ? 'page_limit' : 'source_complete',
+    truncatedByPageLimit: pageLimit === '1',
+    truncatedByResultLimit: false,
+    failedCount: 0,
+    failures: [],
+    ...(pageLimit === '1' ? { nextCursor: 'next-page' } : {}),
+  }));
 } else if (group === 'doc' && command === '+create') {
   const name = args[args.indexOf('--name') + 1];
   const body = await readStdin();
