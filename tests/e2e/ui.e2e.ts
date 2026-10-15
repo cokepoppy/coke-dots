@@ -1311,8 +1311,14 @@ try {
     assert.equal(documentFlow.updateWithoutConfirmation.status, 400, 'Document update must stop without explicit confirmation');
     assert.equal(documentFlow.updated.status, 200);
     assert.match(JSON.stringify(documentFlow.fetchedAfterUpdate.data.content), /已确认写入/);
-    await resumedModal.getByTestId('dingtalk-group-query').fill('系统告警');
-    await resumedModal.getByTestId('dingtalk-group-query').fill('系统告警');
+    const groupQuery = resumedModal.getByTestId('dingtalk-group-query');
+    await groupQuery.fill('e2e-unmatched-group');
+    await resumedModal.getByTestId('dingtalk-group-search').click();
+    const emptyGroups = resumedModal.getByTestId('dingtalk-group-empty-state');
+    await emptyGroups.waitFor({ state: 'visible' });
+    assert.match(await emptyGroups.innerText(), /没有找到.*e2e-unmatched-group/);
+    await groupQuery.fill('系统告警');
+    assert.equal(await emptyGroups.count(), 0, 'Changing the query must clear the previous empty-state result');
     await resumedModal.getByTestId('dingtalk-group-search').click();
     const result = resumedModal.getByRole('group', { name: '钉钉群搜索结果' }).getByText('系统监控告警群');
     await result.waitFor({ state: 'visible' });

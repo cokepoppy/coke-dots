@@ -44,6 +44,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
   const [keywordDrafts, setKeywordDrafts] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<DingTalkGroup[]>([]);
+  const [searchedQuery, setSearchedQuery] = useState<string | null>(null);
   const [cursor, setCursor] = useState('0');
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -163,9 +164,11 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
     const cleanQuery = query.trim();
     if (!cleanQuery || working) return;
     setWorking(true); setError(''); setNotice('');
+    if (!append) { setResults([]); setSearchedQuery(null); }
     try {
       const page = await appFetch('/api/dingtalk/groups/search', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: cleanQuery, cursor: nextCursor }) }).then(response => readJson<GroupSearch>(response));
       setResults(current => append ? mergeGroups(current, page.groups) : page.groups);
+      setSearchedQuery(cleanQuery);
       setCursor(page.nextCursor || '0'); setHasMore(page.hasMore);
     } catch (reason) { setError(reason instanceof Error ? reason.message : '钉钉群搜索失败。'); }
     finally { setWorking(false); }
@@ -263,7 +266,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
         {isConnected && <div className="dingtalk-groups-section">
           <div className="dingtalk-section-title"><div><h3>选择群聊</h3><p>按群名称搜索你有权访问的会话</p></div><span>{selected.length}/20</span></div>
           <form className="dingtalk-search" onSubmit={event => { event.preventDefault(); void searchGroups(); }}>
-            <input aria-label="搜索钉钉群聊" data-testid="dingtalk-group-query" value={query} onChange={event => setQuery(event.currentTarget.value)} placeholder="输入群名称关键词" maxLength={100} />
+            <input aria-label="搜索钉钉群聊" data-testid="dingtalk-group-query" value={query} onChange={event => { setQuery(event.currentTarget.value); setResults([]); setSearchedQuery(null); setCursor('0'); setHasMore(false); }} placeholder="输入群名称关键词" maxLength={100} />
             <button type="submit" data-testid="dingtalk-group-search" disabled={working || !query.trim()}>搜索</button>
           </form>
           {results.length > 0 && <div className="dingtalk-group-results" role="group" aria-label="钉钉群搜索结果">
@@ -273,7 +276,9 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
             </label>)}
             {hasMore && <button className="dingtalk-setup-secondary" type="button" disabled={working} onClick={() => void searchGroups(cursor, true)}>加载更多</button>}
           </div>}
-          {results.length === 0 && query && <p className="dingtalk-empty-results">搜索结果会显示在这里。</p>}
+          {results.length === 0 && query && searchedQuery === query.trim()
+            ? <p className="dingtalk-empty-results" data-testid="dingtalk-group-empty-state" role="status">没有找到与“{searchedQuery}”匹配的群聊。试试更短的关键词，或确认当前钉钉账号有权访问该群。</p>
+            : results.length === 0 && query && <p className="dingtalk-empty-results">输入群名关键词并点击搜索。</p>}
           {selected.length > 0 && <div className="dingtalk-selected-groups"><strong>待保存群聊</strong>{selected.map(group => <span key={group.conversationId}>{group.name}<button type="button" aria-label={`移除群 ${group.name}`} onClick={() => toggleGroup(group)}>×</button></span>)}</div>}
           <button className="dingtalk-setup-primary" type="button" data-testid="dingtalk-groups-save" disabled={working || !status?.configured} onClick={() => void saveGroups()}>{working ? '处理中…' : '保存群选择'}</button>
           {monitors && <div className="dingtalk-monitor-section" data-testid="dingtalk-monitor-section">
