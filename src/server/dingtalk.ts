@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import type { AuthSession } from './store.ts';
 import { createDingTalkAgentBridge, deterministicDingTalkCreateRequestId, verifyDingTalkAgentGrant, type DingTalkAgentGrant, type DingTalkAgentBridge } from './dingtalk-agent-bridge.ts';
+import { createDingTalkCalendarAgentBridge, verifyDingTalkCalendarAgentGrant, type DingTalkCalendarAgentGrant, type DingTalkCalendarAgentBridge } from './dingtalk-calendar-agent-bridge.ts';
 
 interface DingTalkGatewayResponse<T> { ok: boolean; data?: T; error?: string }
 
@@ -76,6 +77,9 @@ const publicErrors: Record<string, string> = {
   DWS_DOC_REQUEST_ID_INVALID: '钉钉文档写入缺少有效的幂等请求 ID。',
   DWS_DOC_REQUEST_CONFLICT: '同一个请求 ID 被用于不同的文档内容，请先核对操作结果。',
   DWS_DOC_OPERATION_STORAGE_FAILED: '钉钉文档操作记录无法安全保存，写入已停止。',
+  DWS_CALENDAR_RANGE_INVALID: '日程查询时间范围无效；请提供带时区的 ISO 时间，范围最多 31 天。',
+  DWS_CALENDAR_CURSOR_INVALID: '日程分页游标无效。',
+  DWS_CALENDAR_LIST_FAILED: '钉钉日历没有返回可验证的日程列表。',
 };
 
 export class DingTalkService {
@@ -113,9 +117,42 @@ export class DingTalkService {
     });
   }
 
+  agentCalendarBridge(tenantId: string, userId: string, taskId: string, instruction: string): DingTalkCalendarAgentBridge | null {
+    if (!this.configured() || (!this.ticketSecret && !this.e2eMock)) return null;
+    return createDingTalkCalendarAgentBridge({
+      tenantId, userId, taskId, instruction, publicOrigin: this.publicOrigin, basePath: this.basePath,
+      secret: this.ticketSecret || 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes',
+    });
+  }
+
   verifyAgentDocumentGrant(token: string): DingTalkAgentGrant | null {
     if (!this.configured()) return null;
     return verifyDingTalkAgentGrant(token, this.ticketSecret || (this.e2eMock ? 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes' : ''));
+  }
+
+  verifyAgentCalendarGrant(token: string): DingTalkCalendarAgentGrant | null {
+    if (!this.configured()) return null;
+    return verifyDingTalkCalendarAgentGrant(token, this.ticketSecret || (this.e2eMock ? 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes' : ''));
+  }
+
+  async runAgentCalendarOperation(grant: DingTalkCalendarAgentGrant, input: unknown) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('钉钉 Agent 日历请求无效');
+    const body = input as Record<string, unknown>;
+    if (body.action !== 'list' || !grant.actions.includes('list')) throw new Error('当前任务没有此钉钉日历操作权限');
+    const session: AuthSession = {
+      tokenHash: '',
+      user: { id: grant.userId, email: '', name: '' },
+      tenant: { id: grant.tenantId, name: '', role: 'member', kind: 'workspace' },
+      expiresAt: new Date(grant.expiresAt * 1000).toISOString(),
+    };
+    const range = validateCalendarQuery(body);
+    if (this.e2eMock) {
+      requireMockDingTalkIdentity(this.mockAccounts, session);
+      return { events: [], count: 0, complete: true, start: range.start, end: range.end, testOnly: true };
+    }
+    this.requireConfigured();
+    try { return await this.call(session, '/v1/calendar/events', 'POST', range); }
+    catch (error) { throw serviceError(error); }
   }
 
   async runAgentDocumentOperation(grant: DingTalkAgentGrant, input: unknown) {
@@ -446,6 +483,26 @@ function validateMockDocumentWrite(input: { requestId?: unknown; name?: unknown;
   if (typeof input.content !== 'string' || input.content.includes('\0')) return 'DWS_DOC_CONTENT_INVALID';
   if (Buffer.byteLength(input.content, 'utf8') > 512 * 1024) return 'DWS_DOC_CONTENT_TOO_LARGE';
   return null;
+}
+
+function validateCalendarQuery(body: Record<string, unknown>) {
+  const now = Date.now();
+  const hasStart = body.start !== undefined;
+  const hasEnd = body.end !== undefined;
+  if (hasStart !== hasEnd) throw new Error(publicErrors.DWS_CALENDAR_RANGE_INVALID);
+  const start = hasStart ? parseCalendarTimestamp(body.start) : now;
+  const end = hasEnd ? parseCalendarTimestamp(body.end) : now + 7 * 24 * 60 * 60 * 1000;
+  if (end <= start || end - start > 31 * 24 * 60 * 60 * 1000) throw new Error(publicErrors.DWS_CALENDAR_RANGE_INVALID);
+  const cursor = body.cursor === undefined ? '' : String(body.cursor);
+  if (cursor.length > 2048 || cursor.includes('\0')) throw new Error(publicErrors.DWS_CALENDAR_CURSOR_INVALID);
+  return { start: new Date(start).toISOString(), end: new Date(end).toISOString(), ...(cursor ? { cursor } : {}) };
+}
+
+function parseCalendarTimestamp(value: unknown) {
+  if (typeof value !== 'string' || value.length > 64 || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) throw new Error(publicErrors.DWS_CALENDAR_RANGE_INVALID);
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) throw new Error(publicErrors.DWS_CALENDAR_RANGE_INVALID);
+  return parsed;
 }
 
 function assertAuthorizationId(value: string) {

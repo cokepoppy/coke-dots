@@ -125,6 +125,21 @@ const server = createServer(async (req, res) => {
     try { return reply(res, 200, { ok: true, data: await dingtalk.runAgentDocumentOperation(grant, body) }); }
     catch (error) { return reply(res, 400, { ok: false, error: error instanceof Error ? error.message : '钉钉文档操作失败' }); }
   }
+  if (path === '/api/agent/dingtalk/calendar') {
+    if (req.method !== 'POST') return reply(res, 405, { error: '方法不支持' });
+    const authorization = req.headers.authorization || '';
+    const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    const grant = dingtalk.verifyAgentCalendarGrant(token);
+    if (!grant) return reply(res, 401, { error: 'Agent 钉钉日历授权无效或已过期' });
+    const task = store.getTask(grant.taskId, grant.tenantId);
+    if (!task || store.taskOwnerUserId(grant.taskId, grant.tenantId) !== grant.userId) return reply(res, 404, { error: '任务不存在' });
+    if (task.status !== 'working') return reply(res, 409, { error: '任务已结束，钉钉日历授权已收回' });
+    let body: Record<string, unknown>;
+    try { body = await readJson(req, 16 * 1024); }
+    catch (error) { return reply(res, 413, { error: error instanceof Error ? error.message : '请求体无效' }); }
+    try { return reply(res, 200, { ok: true, data: await dingtalk.runAgentCalendarOperation(grant, body) }); }
+    catch (error) { return reply(res, 400, { ok: false, error: error instanceof Error ? error.message : '钉钉日历读取失败' }); }
+  }
   if (!isLocalRequest(req, path, requestBoundary)) return reply(res, 403, { error: 'Local access only' });
 
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);

@@ -11,6 +11,7 @@ import {
 } from './lib/dws-runtime.mjs';
 import { createDwsAuthorizationManager } from './lib/dws-authorization-manager.mjs';
 import { createDwsDocumentOperations } from './lib/dws-documents.mjs';
+import { createDwsCalendarOperations } from './lib/dws-calendar.mjs';
 
 const encryptedMagic = Buffer.from('CDWS1');
 const maxArchiveBytes = 32 * 1024 * 1024;
@@ -34,6 +35,7 @@ const allowedErrors = new Set([
   'DWS_DOC_COMMIT_UNKNOWN', 'DWS_DOC_RETRYABLE_FAILURE', 'DWS_DOC_CONFIRMATION_REQUIRED',
   'DWS_DOC_UPDATE_COMMAND_INVALID', 'DWS_DOC_REQUEST_ID_INVALID', 'DWS_DOC_REQUEST_CONFLICT',
   'DWS_DOC_OPERATION_STORAGE_FAILED', 'DINGTALK_REQUEST_TOO_LARGE',
+  'DWS_CALENDAR_RANGE_INVALID', 'DWS_CALENDAR_CURSOR_INVALID', 'DWS_CALENDAR_LIST_FAILED',
   'CONNECTOR_AUTHORIZATION_NOT_FOUND', 'CONNECTOR_IDENTITY_READBACK_FAILED',
 ]);
 
@@ -345,6 +347,34 @@ export function createDingtalkConnectorGateway({
       });
     },
     writeOnce: createDocumentWriteOnce(storageRoot),
+  });
+  const calendar = createDwsCalendarOperations({
+    withAuthenticatedProfile: async (principal, work) => {
+      if (process.platform !== 'linux' && !(process.platform === 'darwin' && macTestOnly)) throw new Error('DWS_GATEWAY_REQUIRES_LINUX');
+      const ownerKey = principalKey(principal);
+      return withOwnerLock(ownerKey, async () => {
+        const workspace = await createPrincipalProfileWorkspace(principal, 'calendar');
+        let restored = false;
+        try {
+          restored = await restoreEncryptedProfile({ storageRoot, ownerKey, masterKey, destinationRoot: workspace.root, tempRoot: managedTmpRoot });
+          if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
+          await verifyBinary(binary);
+          const owner = await prepareProfileRoot(workspace.root, principal);
+          const env = isolatedEnvironment(owner, { proxy, macTestOnly });
+          const call = (args, options = {}) => runDws(binary, [...args, '--format', 'json'], {
+            cwd: owner, env, timeoutMs: 60_000, maxBytes: 1024 * 1024, parseJsonOnFailure: true, ...options,
+          });
+          const profile = selectCurrentProfile(await call(['profile', 'list']));
+          if (!profile) throw new Error('DWS_PROFILE_SELECTION_REQUIRED');
+          const authStatus = parseAuthStatus(await call(['auth', 'status', '--profile', profile.selector]), profile);
+          if (!authStatus.authenticated) throw new Error('DWS_DOC_AUTHORIZATION_REQUIRED');
+          return await work({ call, profile, ownerKey });
+        } finally {
+          if (restored) await writeEncryptedProfile({ storageRoot, ownerKey, masterKey, sourceRoot: workspace.root, tempRoot: managedTmpRoot }).catch(() => undefined);
+          await rm(workspace.root, { recursive: true, force: true });
+        }
+      });
+    },
   });
 
   async function initialize() {
@@ -721,6 +751,10 @@ export function createDingtalkConnectorGateway({
         const body = await readBody(req, maxDocumentRequestBytes);
         const operation = { create: 'createDocument', fetch: 'fetchDocument', search: 'searchDocuments', update: 'updateDocument' }[documentRoute[1]];
         return send(200, { ok: true, data: await documents[operation](ownerPrincipal(ticket), body) });
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/calendar/events') {
+        const body = await readBody(req, 16 * 1024);
+        return send(200, { ok: true, data: await calendar.listEvents(ownerPrincipal(ticket), body) });
       }
       if (req.method === 'POST' && url.pathname === '/v1/monitors/events') return await streamGroupMessages(ticket, await readBody(req), req, res);
       if (req.method === 'DELETE' && url.pathname === '/v1/account') return send(200, { ok: true, data: await disconnect(ticket) });

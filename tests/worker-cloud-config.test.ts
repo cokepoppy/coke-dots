@@ -186,9 +186,11 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
   store.setAppSetting('modelName', 'dingtalk-bridge-test-model');
   const task = store.createTask('请把这次排障报告写入钉钉文档', null, 'pi', account.tenant.id, null, null, [], account.user.id);
   let receivedBridge: { url: string; token: string; actions: Array<'search' | 'fetch' | 'create'> } | undefined;
+  let receivedCalendarBridge: { url: string; token: string; actions: Array<'list'> } | undefined;
   const computer = {
-    async runAgentTask(input: { dingtalkDocumentsBridge?: typeof receivedBridge }) {
+    async runAgentTask(input: { dingtalkDocumentsBridge?: typeof receivedBridge; dingtalkCalendarBridge?: typeof receivedCalendarBridge }) {
       receivedBridge = input.dingtalkDocumentsBridge;
+      receivedCalendarBridge = input.dingtalkCalendarBridge;
       return { status: 'done', message: 'Task completed.' };
     },
   } as unknown as ComputerRuntime;
@@ -212,6 +214,19 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     const readOnly = service.agentDocumentBridge(account.tenant.id, account.user.id, randomUUID(), '搜索钉钉文档');
     assert(readOnly);
     assert.deepEqual(readOnly.actions, ['search', 'fetch']);
+
+    const calendarTask = store.createTask('读取本周钉钉日程并准备会议', null, 'pi', account.tenant.id, null, null, [], account.user.id);
+    await worker.tick();
+    const calendarDeadline = Date.now() + 2_000;
+    while (Date.now() < calendarDeadline && store.getTask(calendarTask.id, account.tenant.id)?.status === 'working') await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(store.getTask(calendarTask.id, account.tenant.id)?.status, 'done');
+    assert(receivedCalendarBridge);
+    assert.equal(receivedCalendarBridge.url, 'https://dots.example.test/dots-demo/api/agent/dingtalk/calendar');
+    assert.deepEqual(receivedCalendarBridge.actions, ['list']);
+    const calendarGrant = service.verifyAgentCalendarGrant(receivedCalendarBridge.token);
+    assert.equal(calendarGrant?.tenantId, account.tenant.id);
+    assert.equal(calendarGrant?.userId, account.user.id);
+    assert.equal(calendarGrant?.taskId, calendarTask.id);
   } finally {
     worker.stop();
     store.close();

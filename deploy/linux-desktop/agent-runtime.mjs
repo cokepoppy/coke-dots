@@ -94,6 +94,21 @@ function validateDingTalkDocumentsBridge(value) {
   return { url: url.toString(), token: value.token, actions: [...new Set(value.actions)] };
 }
 
+function validateDingTalkCalendarBridge(value) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.url !== 'string' || typeof value.token !== 'string' || value.token.length > 4096 || !value.token) {
+    throw new Error('DingTalk calendar bridge configuration is invalid');
+  }
+  let url;
+  try { url = new URL(value.url); } catch { throw new Error('DingTalk calendar bridge URL is invalid'); }
+  const localHttp = url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname);
+  if ((!localHttp && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash || !url.pathname.endsWith('/api/agent/dingtalk/calendar')) {
+    throw new Error('DingTalk calendar bridge URL is invalid');
+  }
+  if (!Array.isArray(value.actions) || value.actions.length !== 1 || value.actions[0] !== 'list') throw new Error('DingTalk calendar bridge scope is invalid');
+  return { url: url.toString(), token: value.token, actions: ['list'] };
+}
+
 function redactSecret(value, secret) {
   if (typeof value === 'string') return secret ? value.split(secret).join('[redacted]') : value;
   if (Array.isArray(value)) return value.map(item => redactSecret(item, secret));
@@ -144,6 +159,7 @@ async function executeKernel(input, requestSignal, slot) {
   if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
   const modelConfig = requireModelConfig(input.modelConfig);
   const dingtalkDocumentsBridge = validateDingTalkDocumentsBridge(input.dingtalkDocumentsBridge);
+  const dingtalkCalendarBridge = validateDingTalkCalendarBridge(input.dingtalkCalendarBridge);
   if (await controlOwner() !== 'agent') return { taskId, status: 'waiting', pausedForControl: true, message: '电脑目前由你控制。我已暂停这项工作；交还电脑后点击“继续”即可恢复。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
 
   const cwd = await safeTaskWorkspace(input.cwd, taskId);
@@ -167,6 +183,7 @@ async function executeKernel(input, requestSignal, slot) {
       actions: ['navigate', 'click', 'type', 'screenshot'],
     },
     ...(dingtalkDocumentsBridge ? { dingtalkDocumentsBridge } : {}),
+    ...(dingtalkCalendarBridge ? { dingtalkCalendarBridge } : {}),
   }));
   const timer = setTimeout(() => child.kill('SIGTERM'), 14 * 60_000);
   const controlPoll = setInterval(() => { void controlOwner().then(owner => { if (owner === 'user') pauseActive(); }).catch(() => child.kill('SIGTERM')); }, 500);
@@ -185,6 +202,7 @@ async function executeKernel(input, requestSignal, slot) {
     try {
       result = redactSecret(JSON.parse(stdout), modelConfig.apiKey);
       if (dingtalkDocumentsBridge) result = redactSecret(result, dingtalkDocumentsBridge.token);
+      if (dingtalkCalendarBridge) result = redactSecret(result, dingtalkCalendarBridge.token);
     } catch { throw new Error('Agent adapter must return a JSON decision'); }
     if (!['done', 'waiting', 'scheduled', 'delegating'].includes(result.status) || typeof result.message !== 'string' || !result.message.trim()) throw new Error('Agent adapter returned an invalid decision');
     return { taskId, ...result, engine, message: result.message.slice(0, 20_000), sessionId: typeof result.sessionId === 'string' ? result.sessionId : null };

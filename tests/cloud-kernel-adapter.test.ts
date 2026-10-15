@@ -48,6 +48,49 @@ test('Pi cloud kernel keeps the shared key in memory and the native session insi
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('Pi exposes one task-scoped read-only DingTalk calendar tool and sends only the bounded list request', async () => {
+  const { root, task } = await makeWorkspace();
+  const captured: { payload: Record<string, unknown> | null } = { payload: null };
+  let calendarTool: any;
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    captured.payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ ok: true, data: { events: [], count: 0, complete: true } }));
+  });
+  await new Promise<void>((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const token = 'calendar-agent-token-not-in-environment';
+  const sdk = {
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+    ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+    SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-calendar-session' }), open: () => { throw new Error('unexpected'); } },
+    createAgentSession: async (options: Record<string, any>) => {
+      assert(options.tools.includes('list_dingtalk_calendar_events'));
+      assert.equal(options.tools.some((name: string) => /create|update|cancel.*calendar/i.test(name)), false);
+      calendarTool = options.customTools.find((tool: { name: string }) => tool.name === 'list_dingtalk_calendar_events');
+      return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
+    },
+  };
+  try {
+    await runCloudKernel({
+      engine: 'pi', prompt: '读取本周钉钉日程', cwd: task, workspace: root,
+      taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
+      dingtalkCalendarBridge: { url: `http://127.0.0.1:${address.port}/api/agent/dingtalk/calendar`, token, actions: ['list'] },
+    }, { piSdk: sdk });
+    const result = await calendarTool.execute('calendar-1', {});
+    assert.match(result.content[0].text, /"events":\[\]/);
+    assert.equal(captured.payload?.action, 'list');
+    assert.equal('start' in (captured.payload || {}), false, 'The gateway supplies a verified seven-day default range');
+    assert.equal(JSON.stringify(captured.payload).includes(token), false);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Pi file output is create-only, bounded, and confined to its authorized task directory', async () => {
   const { root, task } = await makeWorkspace();
   const captured: { tool: any } = { tool: null };
@@ -258,6 +301,39 @@ test('DeepSeek Harness registers a temporary scoped DingTalk plugin without putt
     assert.match(captured.plugin, new RegExp(token), 'The delegated token stays in the temporary restricted plugin that the DSH tools cannot read');
     assert.doesNotMatch(captured.plugin, new RegExp(modelConfig.apiKey));
     assert.equal((await readdir(join(await realpath(task), '.coke-dots-agent-runtime', 'dsh-home'))).some(name => name.includes('dingtalk-documents')), false, 'The capability-bearing plugin is removed after the task returns');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('DeepSeek Harness exposes a temporary read-only DingTalk calendar tool for the authorized task', async () => {
+  const { root, task } = await makeWorkspace();
+  const token = 'task-scoped-calendar-grant-never-in-env';
+  const captured: { launch: Record<string, any> | null; plugin: string; envHasToken: boolean } = { launch: null, plugin: '', envHasToken: false };
+  const sdk = {
+    DeepSeekHarness: class {
+      constructor(options: Record<string, any>) { captured.launch = options.launch; }
+      async run() {
+        const launch = captured.launch!;
+        const pluginName = (await readdir(launch.env.DSH_HOME)).find(name => name.endsWith('-dingtalk-calendar.mjs'));
+        assert(pluginName);
+        captured.plugin = await readFile(join(launch.env.DSH_HOME, pluginName), 'utf8');
+        captured.envHasToken = Object.values(launch.env).includes(token);
+        return { finalResponse: decision, sessionId: 'dsh-calendar-session' };
+      }
+      async close() {}
+    },
+  };
+  try {
+    await runCloudKernel({
+      engine: 'dsh', prompt: '读取本周钉钉日程', cwd: task, workspace: root,
+      taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
+      dingtalkCalendarBridge: { url: 'https://dots.example.test/dots-demo/api/agent/dingtalk/calendar', token, actions: ['list'] },
+    }, { dshSdk: sdk });
+    assert.equal(captured.envHasToken, false);
+    assert.match(captured.plugin, /list_dingtalk_calendar_events/);
+    assert.match(captured.plugin, /Read-only/);
+    assert.doesNotMatch(captured.plugin, /create_dingtalk_calendar|update_dingtalk_calendar|cancel_dingtalk_calendar/);
+    assert.match(captured.plugin, new RegExp(token));
+    assert.equal((await readdir(join(await realpath(task), '.coke-dots-agent-runtime', 'dsh-home'))).some(name => name.endsWith('-dingtalk-calendar.mjs')), false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

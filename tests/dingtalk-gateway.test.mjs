@@ -98,6 +98,8 @@ if (group === 'profile' && command === 'list') {
     await writeFile(docsPath, JSON.stringify(docs));
     console.log(JSON.stringify({ contractVersion: 'doc.operation.v1', complete: true, status: 'success', data: { nodeId, verified: true, documentUrl: 'https://alidocs.dingtalk.com/document/edit?docId=' + nodeId } }));
   }
+} else if (group === 'calendar' && command === 'event' && args[2] === 'list') {
+  console.log(JSON.stringify({ success: true, result: { events: [{ eventId: 'event-1', title: '排障复盘', description: '讨论 trace-live-1', accessToken: 'MUST-NOT-LEAK' }], hasMore: false } }));
 } else if (group === 'event' && command === '+listen-im') {
   if (!args.includes('--flatten')) {
     console.error('flatten is required for a normalized event stream');
@@ -167,6 +169,15 @@ if (group === 'profile' && command === 'list') {
     } while (authorization.data?.state !== 'authorized' && Date.now() < deadline);
     assert.equal(authorization.data?.state, 'authorized', JSON.stringify(authorization));
     assert.equal(authorization.data.installation.accountName, '测试用户');
+
+    const calendar = await call('/v1/calendar/events', { method: 'POST', body: { start: '2026-10-16T00:00:00Z', end: '2026-10-17T00:00:00Z' } }).then(response => response.json());
+    assert.equal(calendar.data.count, 1);
+    assert.equal(calendar.data.complete, true);
+    assert.equal(calendar.data.events[0].title, '排障复盘');
+    assert.equal(JSON.stringify(calendar).includes('MUST-NOT-LEAK'), false, 'Calendar result must redact credential-like fields');
+    const invalidCalendarRange = await call('/v1/calendar/events', { method: 'POST', body: { start: '2026-10-01T00:00:00Z', end: '2026-11-15T00:00:00Z' } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(invalidCalendarRange.status, 400);
+    assert.equal(invalidCalendarRange.body.error, 'DWS_CALENDAR_RANGE_INVALID');
 
     const search = await call('/v1/groups/search', { method: 'POST', body: { query: '告警', cursor: '0' } }).then(response => response.json());
     assert.deepEqual(search.data.groups, [{ conversationId: 'cid-alerts', name: '系统监控告警群' }], 'Adapt the official DWS result.chats contract');
