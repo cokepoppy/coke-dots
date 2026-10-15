@@ -21,7 +21,8 @@ RUN install -d -o node -g node /workspace /opt/coke-dots /tmp/.X11-unix \
 WORKDIR /opt/coke-dots
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
-    && npm cache clean --force
+    && npm cache clean --force \
+    && install -d -o node -g node "$HOME" "$HOME/.config" "$HOME/.vnc"
 
 COPY --chmod=0755 deploy/linux-desktop/start-desktop.sh /usr/local/bin/start-dots-desktop
 COPY --chmod=0644 deploy/linux-desktop/computer-worker.mjs /opt/coke-dots/computer-worker.mjs

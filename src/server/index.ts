@@ -21,12 +21,20 @@ import { createConnection } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer } from 'ws';
 import { bridgeVolcengineVoiceCall } from './volcengine-voice-gateway.ts';
+import { isAllowedOrigin, isLocalRequest } from './request-boundary.ts';
 
 const envFile = resolve(process.env.DOTS_ENV_FILE || '.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const port = Number(process.env.DOTS_PORT || 4317);
 const host = '127.0.0.1';
+const basePath = normalizeBasePath(process.env.DOTS_BASE_PATH || '');
+const requestBoundary = {
+  port,
+  publicOrigin: process.env.DOTS_PUBLIC_ORIGIN,
+  publicHost: process.env.DOTS_PUBLIC_HOST,
+  trustedProxyToken: process.env.DOTS_TRUSTED_PROXY_TOKEN,
+};
 const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
 const priorModelAdminTenantId = store.getAppSetting('modelSettingsAdminTenantId');
@@ -94,12 +102,12 @@ const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-store');
   const url = new URL(req.url || '/', `http://${host}:${port}`);
-  const path = url.pathname;
-  if (!isLocalRequest(req, path)) return reply(res, 403, { error: 'Local access only' });
+  const path = routePath(url.pathname);
+  if (!isLocalRequest(req, path, requestBoundary)) return reply(res, 403, { error: 'Local access only' });
 
   if (path === '/auth/google/callback' && req.method === 'GET') return auth.finish(req, res, url);
   if (path === '/auth/slack/callback' && req.method === 'GET') return slack.finish(req, res, url, auth.session(req));
-  if (!path.startsWith('/api/')) return serveStatic(req, res);
+  if (!path.startsWith('/api/')) return serveStatic(req, res, path);
   if (path === '/api/health' && req.method === 'GET') return reply(res, 200, { ok: true });
   if (path === '/api/auth/config' && req.method === 'GET') return reply(res, 200, { googleConfigured: auth.configured(), e2eAuthAvailable: auth.e2eAuthAvailable() });
   if (path === '/api/auth/google/start' && req.method === 'GET') return auth.begin(req, res);
@@ -445,7 +453,7 @@ const server = createServer(async (req, res) => {
     if (path.startsWith('/api/computer/novnc/')) {
       if (req.method !== 'GET' || !computer.novncTarget) return reply(res, 404, { error: 'Not found' });
       if ((await computer.state()).owner !== 'user') return reply(res, 403, { error: '请先接管电脑再打开交互画面' });
-      return proxyNoVnc(req, res, computer);
+      return proxyNoVnc(req, res, computer, path);
     }
     if (path === '/api/computer' && req.method === 'GET') return reply(res, 200, await computer.state());
     if (path === '/api/computer/screenshot' && req.method === 'GET') {
@@ -640,31 +648,25 @@ const server = createServer(async (req, res) => {
   }
 });
 
-function isLocalRequest(req: IncomingMessage, path = '') {
-  const remote = req.socket.remoteAddress;
-  const hostname = req.headers.host?.split(':')[0];
-  const origin = req.headers.origin;
-  const oauthCallback = req.method === 'GET' && req.url?.split('?')[0] === '/auth/google/callback' && origin === 'https://accounts.google.com';
-  const slackCallback = req.method === 'GET' && req.url?.split('?')[0] === '/auth/slack/callback' && ['https://slack.com', 'https://slack-gov.com'].includes(origin || '');
-  const sandboxArtifactPreview = req.method === 'GET' && path.startsWith('/api/artifact-preview/');
-  const allowedOrigin = !origin || isAllowedLocalOrigin(origin) || oauthCallback || slackCallback || (sandboxArtifactPreview && origin === 'null');
-  return (remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1') &&
-    (hostname === '127.0.0.1' || hostname === 'localhost') &&
-    allowedOrigin;
-}
-
 function validMutationOrigin(req: IncomingMessage) {
   if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method || '')) return true;
   if (!req.headers.origin) return false;
-  return isAllowedLocalOrigin(req.headers.origin);
+  return isAllowedOrigin(req.headers.origin, requestBoundary);
 }
 
-function isAllowedLocalOrigin(value: string) {
-  try {
-    const origin = new URL(value);
-    const allowedPorts = new Set(['5173', String(port)]);
-    return origin.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(origin.hostname) && allowedPorts.has(origin.port) && origin.origin === value;
-  } catch { return false; }
+function normalizeBasePath(value: string) {
+  const trimmed = value.trim().replace(/^\/+|\/+$/g, '');
+  if (!trimmed) return '';
+  if (!/^[a-zA-Z0-9/_-]+$/.test(trimmed) || trimmed.split('/').some(part => !part || part === '.' || part === '..')) {
+    throw new Error('DOTS_BASE_PATH must be a safe URL path');
+  }
+  return `/${trimmed}`;
+}
+
+function routePath(pathname: string) {
+  if (!basePath) return pathname;
+  if (pathname === basePath || pathname === `${basePath}/`) return '/';
+  return pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : pathname;
 }
 
 async function readJson(req: IncomingMessage, maxBytes = 32_000): Promise<Record<string, unknown>> {
@@ -726,15 +728,18 @@ function writeTaskArtifact(res: ServerResponse, artifact: { bytes: Buffer; media
   res.end(artifact.bytes);
 }
 
-async function serveStatic(req: IncomingMessage, res: ServerResponse) {
+async function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string) {
   if (req.method !== 'GET') return reply(res, 405, { error: 'Method not allowed' });
-  const pathname = new URL(req.url || '/', `http://${host}:${port}`).pathname;
   if (pathname.includes('..')) return reply(res, 404, { error: 'Not found' });
   const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
   const file = join(resolve('./dist'), relative);
   try {
     const bytes = await readFile(file);
-    const type = extname(file) === '.html' ? 'text/html; charset=utf-8' : extname(file) === '.js' ? 'text/javascript; charset=utf-8' : extname(file) === '.css' ? 'text/css; charset=utf-8' : 'application/octet-stream';
+    const type = ({
+      '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+      '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.ico': 'image/x-icon',
+      '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.json': 'application/json; charset=utf-8',
+    } as Record<string, string>)[extname(file)] || 'application/octet-stream';
     res.writeHead(200, { 'Content-Type': type });
     res.end(bytes);
   } catch { reply(res, 404, { error: 'Not found' }); }
@@ -765,10 +770,11 @@ server.on('upgrade', (req, client, head) => {
   void (async () => {
     try {
       const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
-      const realtimeVoiceMatch = requestUrl.pathname.match(/^\/api\/voice-calls\/([a-f0-9-]+)\/volcengine-stream$/i);
+      const path = routePath(requestUrl.pathname);
+      const realtimeVoiceMatch = path.match(/^\/api\/voice-calls\/([a-f0-9-]+)\/volcengine-stream$/i);
       if (realtimeVoiceMatch) {
         const origin = req.headers.origin || '';
-        if (!isLocalRequest(req) || !isAllowedLocalOrigin(origin)) return rejectUpgrade(client, 403, 'Forbidden');
+        if (!isLocalRequest(req, path, requestBoundary) || !isAllowedOrigin(origin, requestBoundary)) return rejectUpgrade(client, 403, 'Forbidden');
         const session = auth.session(req);
         if (!session) return rejectUpgrade(client, 401, 'Unauthorized');
         const call = store.getVoiceCall(session.tenant.id, session.user.id, realtimeVoiceMatch[1]);
@@ -783,7 +789,7 @@ server.on('upgrade', (req, client, head) => {
         return;
       }
       const prefix = '/api/computer/novnc/';
-      if (!requestUrl.pathname.startsWith(prefix) || !isLocalRequest(req) || !isAllowedLocalOrigin(req.headers.origin || '')) return client.destroy();
+      if (!path.startsWith(prefix) || !isLocalRequest(req, path, requestBoundary) || !isAllowedOrigin(req.headers.origin || '', requestBoundary)) return client.destroy();
       const session = auth.session(req);
       if (!session || (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop' && store.getSetting('localComputerEnabled', session.tenant.id) === 'false')) return client.destroy();
       const computer = computerFor(session.tenant.id);
@@ -797,7 +803,7 @@ server.on('upgrade', (req, client, head) => {
       client.once('close', discard); upstream.once('close', discard);
       upstream.once('error', () => client.destroy());
       upstream.once('connect', () => {
-        const subPath = `${target.pathname.replace(/\/$/, '')}${requestUrl.pathname.slice('/api/computer/novnc'.length) || '/'}`;
+        const subPath = `${target.pathname.replace(/\/$/, '')}${path.slice('/api/computer/novnc'.length) || '/'}`;
         const headers: string[] = [];
         for (let index = 0; index < req.rawHeaders.length; index += 2) {
           const key = req.rawHeaders[index];
@@ -812,10 +818,10 @@ server.on('upgrade', (req, client, head) => {
   })();
 });
 
-async function proxyNoVnc(req: IncomingMessage, res: ServerResponse, computer: ComputerRuntime) {
+async function proxyNoVnc(req: IncomingMessage, res: ServerResponse, computer: ComputerRuntime, pathname: string) {
   const prefix = '/api/computer/novnc/';
   const current = new URL(req.url || '/', `http://${host}:${port}`);
-  let suffix = current.pathname.slice(prefix.length);
+  let suffix = pathname.slice(prefix.length);
   try { suffix = suffix.split('/').map(part => decodeURIComponent(part)).join('/'); }
   catch { return reply(res, 400, { error: 'Invalid noVNC path' }); }
   if (!suffix || suffix.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\\'))) return reply(res, 404, { error: 'Not found' });

@@ -20,10 +20,17 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
   assert.equal(service.spec.ports.some(port => port.port === 9222), false, 'Raw Chromium CDP must stay inside the Pod');
   const secret = list.items.find(item => item.kind === 'Secret') as { stringData: Record<string, string> };
   assert.deepEqual(secret.stringData, { LINUX_DESKTOP_WORKER_TOKEN: 'worker-secret', DOTS_AGENT_RUNTIME_TOKEN: 'agent-secret' });
-  const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { automountServiceAccountToken: boolean; containers: { securityContext: { runAsNonRoot: boolean; allowPrivilegeEscalation: boolean } }[] } } } };
+  const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: {
+    automountServiceAccountToken: boolean;
+    containers: { name: string; env: { name: string; valueFrom?: { secretKeyRef?: { name: string; key: string } } }[]; securityContext: { runAsNonRoot: boolean; allowPrivilegeEscalation: boolean } }[];
+  } } } };
+  const containers = deployment.spec.template.spec.containers;
   assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
-  assert.equal(deployment.spec.template.spec.containers[0].securityContext.runAsNonRoot, true);
-  assert.equal(deployment.spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation, false);
+  assert.deepEqual(containers.map(container => container.name), ['desktop'], 'the Agent runtime runs inside the cloud-computer container, not in a competing sidecar');
+  assert.equal(containers[0].securityContext.runAsNonRoot, true);
+  assert.equal(containers[0].securityContext.allowPrivilegeEscalation, false);
+  assert.deepEqual(containers[0].env.find(item => item.name === 'DOTS_AGENT_RUNTIME_TOKEN')?.valueFrom?.secretKeyRef,
+    { name: 'desktop-runtime', key: 'DOTS_AGENT_RUNTIME_TOKEN' });
 });
 
 test('production cloud computers reject mutable worker tags and expose the selected release image', () => {

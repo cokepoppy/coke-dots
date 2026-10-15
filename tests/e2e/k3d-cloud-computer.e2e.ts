@@ -205,14 +205,14 @@ try {
   const runtimeResponse = await fetch(`http://127.0.0.1:${agentPort}/v1/tasks/run`, {
     method: 'POST',
     headers: { authorization: `Bearer ${agentToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ engine: 'dsh', taskId: runtimeTaskId, prompt: 'real Debian 13 runtime smoke', sessionId: null, cwd: 'tasks/runtime-smoke', modelConfig: k3dModelConfig }),
+    body: JSON.stringify({ engine: 'dsh', taskId: runtimeTaskId, prompt: 'real Debian 13 runtime smoke', sessionId: null, cwd: `tasks/${runtimeTaskId}`, modelConfig: k3dModelConfig }),
   });
   const runtimeResult = await runtimeResponse.json() as { status?: string; message?: string; engine?: string };
   assert.equal(runtimeResponse.status, 200, `The live Agent runtime must execute its configured adapter: ${JSON.stringify(runtimeResult)}`);
   assert.equal(runtimeResult.status, 'done');
   assert.equal(runtimeResult.engine, 'dsh');
   assert.match(runtimeResult.message || '', /Adapter completed: real Debian 13 runtime smoke; shared model config received: true; model key in child environment: false/);
-  const workspacePath = `/workspace/tasks/runtime-smoke/runtime-persistence.txt`;
+  const workspacePath = `/workspace/tasks/${runtimeTaskId}/runtime-persistence.txt`;
   assert.equal(command(['kubectl', '-n', namespace, 'exec', desktopPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The real Agent runtime must leave its task artifact in the tenant workspace PVC');
   agentPortForward.kill('SIGTERM');
   agentPortForward = null;

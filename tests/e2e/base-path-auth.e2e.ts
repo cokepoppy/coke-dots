@@ -1,19 +1,19 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign as signBytes } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createReadStream } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http';
 import { connect as createNetConnection, createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { extname, join, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { WebSocketServer } from 'ws';
 
 const projectRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
-const distRoot = join(projectRoot, 'dist');
 const basePath = '/dots-demo';
+const publicHost = 'trusted-dots.example.test';
+const proxyToken = 'base-path-trusted-proxy-test-secret';
 const artifactRoot = resolve(process.env.DOTS_E2E_ARTIFACTS || join(projectRoot, 'artifacts', 'e2e', `base-path-${new Date().toISOString().replace(/[:.]/g, '-')}`));
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-base-path-'));
 const dataDir = join(tempRoot, 'data');
@@ -109,10 +109,6 @@ async function startMockVolcengineDuplexProvider() {
   const address = voiceProvider.address();
   assert(address && typeof address !== 'string');
   return `ws://127.0.0.1:${address.port}/duplex`;
-}
-
-function contentType(path: string) {
-  return ({ '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' } as Record<string, string>)[extname(path)] || 'application/octet-stream';
 }
 
 function fakeMicrophoneWave(sampleRate = 48_000, durationSeconds = 3) {
@@ -220,6 +216,9 @@ async function main() {
       DOTS_PORT: String(backendPort),
       DOTS_BASE_PATH: basePath,
       DOTS_APP_URL: `http://127.0.0.1:${frontendPort}${basePath}`,
+      DOTS_PUBLIC_ORIGIN: 'https://trusted-dots.example.test',
+      DOTS_PUBLIC_HOST: publicHost,
+      DOTS_TRUSTED_PROXY_TOKEN: proxyToken,
       DOTS_E2E_GOOGLE_OAUTH_ORIGIN: oauthOrigin,
       DOTS_E2E_AUTH: '1',
       DOTS_VOICE_PROVIDER: 'volcengine',
@@ -234,6 +233,27 @@ async function main() {
   });
   await waitForBackend(`http://127.0.0.1:${backendPort}/api/auth/config`);
 
+  const proxyRequestStatus = (path: string, headers: Record<string, string>) => new Promise<number>((resolvePromise, reject) => {
+    const upstream = httpRequest({
+      hostname: '127.0.0.1', port: backendPort, method: 'GET', path, headers,
+    }, response => { response.resume(); resolvePromise(response.statusCode || 0); });
+    upstream.once('error', reject);
+    upstream.end();
+  });
+  assert.equal(await proxyRequestStatus('/api/health', { host: publicHost }), 403, 'a public Host without the proxy token must be rejected');
+  const publicProxyHeaders = { host: publicHost, 'x-dots-proxy-token': proxyToken, origin: 'https://trusted-dots.example.test' };
+  assert.equal(await proxyRequestStatus('/api/health', publicProxyHeaders), 200, 'the configured public host should be accepted from the loopback proxy with the token');
+  assert.equal(await proxyRequestStatus(`${basePath}/api/health`, publicProxyHeaders), 200, 'the public mount prefix must be preserved and routed by the app');
+  assert.equal(await proxyRequestStatus('/api/health', {
+    host: 'attacker.example.test',
+    'x-dots-proxy-token': proxyToken,
+  }), 403, 'the proxy token must not authorize another Host');
+  assert.equal(await proxyRequestStatus('/api/health', {
+    host: 'trusted-dots.example.test',
+    'x-dots-proxy-token': proxyToken,
+    origin: 'https://attacker.example.test',
+  }), 403, 'the public proxy must still enforce the configured browser origin');
+
   proxy = createHttpServer((incoming, outgoing) => {
     const incomingUrl = new URL(incoming.url || '/', `http://127.0.0.1:${frontendPort}`);
     const callbackPath = `${basePath}/auth/google/callback`;
@@ -242,53 +262,44 @@ async function main() {
       oauthCallbackCookieSeen = cookieHeader.split(';').some(item => item.trim().startsWith('coke_dots_oauth_state='));
       oauthTrace.push(`CALLBACK cookie=${oauthCallbackCookieSeen ? 'present' : 'missing'}`);
     }
-    if (incomingUrl.pathname.startsWith(`${basePath}/api/`) || incomingUrl.pathname === callbackPath) {
-      const upstream = httpRequest({
-        hostname: '127.0.0.1', port: backendPort, method: incoming.method,
-        path: `${incomingUrl.pathname.slice(basePath.length)}${incomingUrl.search}`,
-        headers: { ...incoming.headers, host: `127.0.0.1:${frontendPort}` },
-      }, response => {
-        const setCookies = (response.headers['set-cookie'] || []).map(String);
-        if (incomingUrl.pathname === `${basePath}/api/auth/google/start`) {
-          oauthCookieScopeCorrect = setCookies.some(cookie => cookie.startsWith('coke_dots_oauth_state=') && cookie.includes(`Path=${basePath}/auth/google/callback`) && cookie.includes('HttpOnly') && cookie.includes('SameSite=Lax'));
-        }
-        if (incomingUrl.pathname === callbackPath) {
-          oauthCookieClearScopeCorrect = setCookies.some(cookie => cookie.startsWith('coke_dots_oauth_state=') && cookie.includes(`Path=${basePath}/auth/google/callback`) && cookie.includes('Max-Age=0'));
-        }
-        if (incomingUrl.pathname === callbackPath) oauthTrace.push(`CALLBACK response=${response.statusCode || 0}`);
-        outgoing.writeHead(response.statusCode || 502, response.headers);
-        response.pipe(outgoing);
-      });
-      upstream.on('error', () => { if (!outgoing.headersSent) outgoing.writeHead(502); outgoing.end(); });
-      incoming.pipe(upstream);
-      return;
-    }
-
-    const relative = incomingUrl.pathname === `${basePath}/` || incomingUrl.pathname === basePath
-      ? 'index.html'
-      : incomingUrl.pathname.startsWith(`${basePath}/`)
-        ? incomingUrl.pathname.slice(basePath.length + 1)
-        : null;
-    if (!relative) { outgoing.writeHead(404); outgoing.end('Not found'); return; }
-    const filePath = resolve(distRoot, relative);
-    if (!filePath.startsWith(`${distRoot}${sep}`) && filePath !== join(distRoot, 'index.html')) { outgoing.writeHead(400); outgoing.end(); return; }
-    createReadStream(filePath)
-      .once('error', () => { if (!outgoing.headersSent) outgoing.writeHead(404); outgoing.end('Not found'); })
-      .once('open', () => { outgoing.writeHead(200, { 'content-type': contentType(filePath), 'cache-control': 'no-store' }); })
-      .pipe(outgoing);
+    const upstream = httpRequest({
+      hostname: '127.0.0.1', port: backendPort, method: incoming.method,
+      path: `${incomingUrl.pathname}${incomingUrl.search}`,
+      headers: { ...incoming.headers, host: publicHost, 'x-dots-proxy-token': proxyToken },
+    }, response => {
+      const setCookies = (response.headers['set-cookie'] || []).map(String);
+      if (incomingUrl.pathname === `${basePath}/api/auth/google/start`) {
+        oauthCookieScopeCorrect = setCookies.some(cookie => cookie.startsWith('coke_dots_oauth_state=') && cookie.includes(`Path=${basePath}/auth/google/callback`) && cookie.includes('HttpOnly') && cookie.includes('SameSite=Lax'));
+      }
+      if (incomingUrl.pathname === callbackPath) {
+        oauthCookieClearScopeCorrect = setCookies.some(cookie => cookie.startsWith('coke_dots_oauth_state=') && cookie.includes(`Path=${basePath}/auth/google/callback`) && cookie.includes('Max-Age=0'));
+        oauthTrace.push(`CALLBACK response=${response.statusCode || 0}`);
+      }
+      outgoing.writeHead(response.statusCode || 502, response.headers);
+      response.pipe(outgoing);
+    });
+    upstream.on('error', () => { if (!outgoing.headersSent) outgoing.writeHead(502); outgoing.end(); });
+    incoming.pipe(upstream);
   });
   proxy.on('upgrade', (incoming, client, head) => {
     const incomingUrl = new URL(incoming.url || '/', `http://127.0.0.1:${frontendPort}`);
     if (!incomingUrl.pathname.startsWith(`${basePath}/api/`)) { client.destroy(); return; }
     const upstream = createNetConnection({ host: '127.0.0.1', port: backendPort });
     upstream.once('connect', () => {
-      const upstreamPath = `${incomingUrl.pathname.slice(basePath.length)}${incomingUrl.search}`;
+      const upstreamPath = `${incomingUrl.pathname}${incomingUrl.search}`;
       const headers: string[] = [];
+      let hasHost = false;
+      let hasProxyToken = false;
       for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
         const key = incoming.rawHeaders[index];
         const value = incoming.rawHeaders[index + 1];
-        headers.push(`${key}: ${key.toLowerCase() === 'host' ? `127.0.0.1:${backendPort}` : value}`);
+        const lowerKey = key.toLowerCase();
+        if (lowerKey === 'x-dots-proxy-token') { headers.push(`${key}: ${proxyToken}`); hasProxyToken = true; }
+        else if (lowerKey === 'host') { headers.push(`Host: ${publicHost}`); hasHost = true; }
+        else headers.push(`${key}: ${value}`);
       }
+      if (!hasHost) headers.push(`Host: ${publicHost}`);
+      if (!hasProxyToken) headers.push(`X-Dots-Proxy-Token: ${proxyToken}`);
       upstream.write(`${incoming.method || 'GET'} ${upstreamPath} HTTP/${incoming.httpVersion}\r\n${headers.join('\r\n')}\r\n\r\n`);
       if (head.length) upstream.write(head);
       upstream.pipe(client);
