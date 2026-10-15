@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DotAppearance, Snapshot, Task, VoiceCallSession } from '../shared/types.ts';
+import { SpeechTurnCollector } from '../shared/speech-turn.ts';
 import { decodeVolcengineFloat32Pcm } from '../shared/volcengine-audio.ts';
 import { appFetch, appPath, appWebSocketUrl } from './api.ts';
 import { DotAvatar } from './DotAvatar.tsx';
@@ -604,18 +605,15 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
       if (!recognition) {
         recognition = new Recognition();
         recognition.lang = navigator.language || 'zh-CN';
-        recognition.continuous = true;
+        // Treat one browser recognition session as one spoken turn. Continuous
+        // mode can replay cumulative final results on mobile Chrome and create
+        // duplicate chat tasks from the same utterance.
+        recognition.continuous = false;
         recognition.interimResults = true;
+        let turn = new SpeechTurnCollector();
+        let turnId = `browser-${crypto.randomUUID()}`;
         recognition.onresult = event => {
-          const finalParts: string[] = [];
-          for (let index = event.resultIndex; index < event.results.length; index += 1) {
-            const result = event.results[index];
-            if (result?.isFinal) {
-              const text = result[0]?.transcript?.trim();
-              if (text) finalParts.push(text);
-            }
-          }
-          processTranscript(finalParts.join(' '));
+          turn.accept(event.resultIndex, event.results);
         };
         recognition.onerror = event => {
           if (!activeRef.current) return;
@@ -626,6 +624,10 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
           if (event.error !== 'no-speech' && event.error !== 'aborted') setStatus('语音输入暂不可用：' + event.error);
         };
         recognition.onend = () => {
+          const finalTranscript = turn.finish();
+          if (finalTranscript) processTranscript(finalTranscript, turnId);
+          turn = new SpeechTurnCollector();
+          turnId = `browser-${crypto.randomUUID()}`;
           if (!activeRef.current || mutedRef.current || speakingRef.current) return;
           window.setTimeout(() => startRecognitionRef.current(), 180);
         };

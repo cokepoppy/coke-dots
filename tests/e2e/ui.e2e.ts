@@ -562,7 +562,9 @@ function browserVoiceMockScript() {
     '    constructor() { this.onresult = null; this.onerror = null; this.onend = null; }',
     '    start() { window.__dotsRecognitionStarts += 1; window.__dotsVoiceEvents.push("listening"); window.__dotsFakeRecognition = this; }',
     '    abort() {}',
-    '    emit(text) { const result = Object.assign([{ transcript: text }], { isFinal: true }); const event = Object.assign(new Event("result"), { resultIndex: 0, results: [result] }); this.onresult(event); }',
+    '    emitResults(texts, resultIndex = 0) { const results = texts.map(text => Object.assign([{ transcript: text }], { isFinal: true })); const event = Object.assign(new Event("result"), { resultIndex, results }); this.onresult?.(event); }',
+    '    emit(text) { this.emitResults([text]); this.onend?.(); }',
+    '    emitRepeated(text) { this.emitResults([text]); this.emitResults([text]); this.onend?.(); }',
     '  }',
     '  Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: FakeSpeechRecognition });',
     '  Object.defineProperty(window, "__dotsSpeechOutput", { configurable: true, value: [] });',
@@ -1898,10 +1900,16 @@ try {
     const clarification = 'E2E voice clarification — ask which launch date to use';
     const clarificationPromptStart = mockModelPrompts.length;
     await alphaPage!.evaluate((text: string) => {
-      const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
-      pageWindow.__dotsFakeRecognition?.emit(text);
+      const pageWindow = window as unknown as { __dotsFakeRecognition?: { emitRepeated: (value: string) => void } };
+      pageWindow.__dotsFakeRecognition?.emitRepeated(text);
     }, clarification);
     await alphaPage!.locator('.timeline .message.user p').filter({ hasText: clarification }).waitFor({ state: 'visible' });
+    await waitFor(async () => {
+      const state = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { tasks: { instruction: string }[] };
+      return state.tasks.filter(task => task.instruction === clarification).length === 1;
+    }, 10_000);
+    assert.equal(await alphaPage!.locator('.timeline .message.user p').filter({ hasText: clarification }).count(), 1,
+      'Repeated final-result callbacks for one browser recognition turn must produce one user message');
     await call.getByTestId('voice-call-transcript').waitFor({ state: 'attached' });
     await waitFor(async () => (await call.getByTestId('voice-call-transcript').getAttribute('data-task-status')) === '等待你的回复', 15_000);
     await waitFor(async () => {
