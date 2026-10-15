@@ -1,4 +1,4 @@
-import { appFetch, appPath } from './api.ts';
+import { appFetch, appOriginRelativePath, appPath } from './api.ts';
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import './computer.css';
 
@@ -10,6 +10,8 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
   const [frame, setFrame] = useState(0);
   const [busy, setBusy] = useState(false);
   const keyboardQueue = useRef<Promise<void>>(Promise.resolve());
+  const noVncPath = appOriginRelativePath('/api/computer/novnc/websockify');
+  const noVncViewer = appPath(`/api/computer/novnc/vnc_lite.html?scale=1&autoconnect=1&path=${encodeURIComponent(noVncPath)}`);
 
   async function refresh() {
     try {
@@ -74,7 +76,7 @@ export function ComputerView({ dotName, localComputerEnabled, onManageAccess, on
     {!state.ready ? <div className="computer-empty"><div className="computer-icon">▣</div><h2>打开独立电脑</h2><p>{state.backend === 'linux-desktop' ? '这台 Debian 云电脑和 Agent 运行时在独立工作区内持续运行。' : '工作区会话保存在 Coke Dots 专用 Chrome 配置中。'}</p><button disabled={busy} onClick={() => void action('open', { dotName })}>打开电脑</button></div> : <div className={`computer-workspace${state.owner === 'user' ? ' has-user-control' : ''}`} data-testid="computer-workspace">
       {state.backend === 'linux-desktop' ? <div className="computer-stage is-linux-desktop" data-testid="linux-desktop-stage">
         {state.owner === 'user'
-          ? <iframe title="Linux 云桌面" data-testid="linux-desktop-view" src={appPath("/api/computer/novnc/vnc_lite.html?scale=1&autoconnect=1&path=api/computer/novnc/websockify")} />
+          ? <iframe title="Linux 云桌面" data-testid="linux-desktop-view" src={noVncViewer} />
           : <img src={appPath(`/api/computer/screenshot?t=${frame}`)} alt="Linux 云桌面画面" />}
       </div> : <div className="computer-stage">
         <div className="computer-browser-window">

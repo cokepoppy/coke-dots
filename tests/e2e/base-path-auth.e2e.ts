@@ -431,6 +431,31 @@ async function main() {
   assert.equal(providerResponse.status, 200, 'The voice provider API must resolve through the base path');
   assert.deepEqual(providerResponse.body, { provider: 'volcengine', configured: true, model: 'doubao-seedduplex-3.0' }, 'The prefixed API must report the configured Doubao SeedDuplex provider without exposing its API key');
 
+  // Exercise the real ComputerView under the public mount path. A live Linux
+  // desktop is covered by the cloud-computer E2E; here the API and viewer are
+  // intercepted so this test can assert the exact noVNC URL without K3D.
+  await page.route(`**${basePath}/api/computer`, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ ready: true, owner: 'user', url: '', title: '', backend: 'linux-desktop', width: 1440, height: 900 }),
+  }));
+  await page.route(`**${basePath}/api/computer/novnc/vnc_lite.html*`, route => route.fulfill({
+    status: 200,
+    contentType: 'text/html',
+    body: '<!doctype html><title>noVNC path fixture</title>',
+  }));
+  await page.getByTestId('mobile-chat-menu-toggle').click();
+  await page.getByTestId('mobile-navigation').getByRole('button', { name: '▣ 电脑' }).click();
+  const noVncFrame = page.getByTestId('linux-desktop-view');
+  await noVncFrame.waitFor({ state: 'visible' });
+  const noVncUrl = new URL(await noVncFrame.getAttribute('src') || '', baseUrl);
+  assert.equal(noVncUrl.pathname, `${basePath}/api/computer/novnc/vnc_lite.html`, 'The noVNC viewer must be served below the public mount path');
+  assert.equal(noVncUrl.searchParams.get('path'), 'dots-demo/api/computer/novnc/websockify', 'The noVNC WebSocket path must retain the public mount prefix relative to the origin');
+  await page.unroute(`**${basePath}/api/computer`);
+  await page.unroute(`**${basePath}/api/computer/novnc/vnc_lite.html*`);
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('app-shell').waitFor({ state: 'visible' });
+
   const mobileDotNav = page.getByTestId('mobile-dot-nav');
   if (await mobileDotNav.isVisible().catch(() => false)) await mobileDotNav.click();
   const connectedToast = page.getByTestId('computer-connected-toast');
