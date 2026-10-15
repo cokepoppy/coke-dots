@@ -261,6 +261,11 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
       <div className="dingtalk-setup-heading"><span className="dingtalk-logo" aria-hidden="true">钉</span><div><h2 id="dingtalk-setup-title">连接钉钉</h2><p>把 Dot 连接到你的钉钉账号</p></div></div>
       {loading ? <p className="dingtalk-setup-status" role="status">正在读取连接状态…</p> : <>
         {status && !status.configured && <div className="dingtalk-setup-notice-box" role="status"><strong>钉钉连接服务尚未配置</strong><span>当前版本没有连接到隔离的 DWS 连接服务，暂时不能开始账号授权。</span></div>}
+        {monitors && <section className={`dingtalk-stream-status ${monitors.stream.ready ? 'is-ready' : 'is-unready'}`} data-testid="dingtalk-app-stream-status" aria-label="Dots 应用机器人 Stream 状态">
+          <div className="dingtalk-stream-status-heading"><div><strong>Dots 应用机器人 Stream</strong><p>接收连接到此 Dots 应用的机器人回调。</p></div><span className="dingtalk-stream-status-badge" data-testid="dingtalk-app-stream-status-label">{streamStatusText(monitors.stream)}</span></div>
+          <p>这与个人账号的 DWS 群监听分开。下方监听只作用于你明确保存并开启的群。</p>
+          {monitors.stream.testOnly && <small>这是浏览器自动化测试的模拟 Stream 状态，不代表公网应用连接状态。</small>}
+        </section>}
         {account?.state === 'not-installed' && status?.configured && !activeFlow && <div className="dingtalk-setup-card">
           <span className="dingtalk-setup-kicker">账号连接</span><h3>使用钉钉设备授权登录</h3>
           <p>点击后会生成一次性验证码。请在钉钉官方页面确认登录；凭据保存在独立连接服务，不会写入聊天或任务记录。</p>
@@ -306,7 +311,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
           <button className="dingtalk-setup-primary" type="button" data-testid="dingtalk-groups-save" disabled={working || !status?.configured} onClick={() => void saveGroups()}>{working ? '处理中…' : '保存群选择'}</button>
           {monitors && <div className="dingtalk-monitor-section" data-testid="dingtalk-monitor-section">
             <div className="dingtalk-section-title"><div><h3>实时告警监听</h3><p>通过当前钉钉账号的 DWS 个人 IM 事件流接收指定群消息</p></div><span>{monitors.groups.filter(group => group.enabled).length} 个启用</span></div>
-            {monitors.stream.testOnly && <p className="dingtalk-monitor-note">当前为浏览器自动化测试模拟状态，不代表真实钉钉事件流已经连接。</p>}
+            {status?.testOnly && <p className="dingtalk-monitor-note" data-testid="dingtalk-dws-test-mode">当前为浏览器自动化测试模拟的 DWS 个人事件监听，不代表真实群消息已经接入。</p>}
             {monitors.groups.length === 0 ? <p className="dingtalk-empty-results">先搜索并保存至少一个群聊。</p> : monitors.groups.map(group => <div className="dingtalk-monitor-row" key={group.conversationId}>
               <div className="dingtalk-monitor-heading">
                 <span><strong>{group.groupName}</strong><small>{group.enabled ? listenerStatusText(group.listenerState) : group.keywords.length ? '已配置条件 · 监听已关闭' : group.reason || '先设置关注关键词'}</small></span>
@@ -349,4 +354,12 @@ function listenerStatusText(state: DingTalkMonitorGroup['listenerState']) {
   if (state === 'listening') return '监听中 · 收到消息后自动启动 Pi 排查';
   if (state === 'reconnecting') return '连接中断 · 正在自动重连';
   return '正在连接 DWS 实时事件流';
+}
+
+function streamStatusText(stream: DingTalkMonitors['stream']) {
+  if (stream.testOnly) return stream.ready ? '测试模拟 · 已连接' : '测试模拟 · 未就绪';
+  if (stream.ready) return '已连接';
+  if (stream.configured && stream.connected) return '已连接 · 等待就绪';
+  if (stream.configured) return '已配置 · 尚未连接';
+  return '未配置';
 }

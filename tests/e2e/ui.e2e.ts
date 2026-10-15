@@ -1285,6 +1285,14 @@ try {
     await resumedModal.getByTestId('dingtalk-e2e-authorize').click();
     await resumedModal.getByTestId('dingtalk-connected-state').waitFor({ state: 'visible' });
     assert.match(await resumedModal.getByTestId('dingtalk-connected-state').innerText(), /测试钉钉账号/);
+    const appStreamStatus = resumedModal.getByTestId('dingtalk-app-stream-status');
+    await appStreamStatus.waitFor({ state: 'visible' });
+    assert.match(await appStreamStatus.innerText(), /Dots 应用机器人 Stream/);
+    assert.match(await resumedModal.getByTestId('dingtalk-app-stream-status-label').innerText(), /测试模拟 · 已连接/);
+    assert.match(await appStreamStatus.innerText(), /与个人账号的 DWS 群监听分开/);
+    await resumedModal.getByTestId('dingtalk-dws-test-mode').waitFor({ state: 'visible' });
+    assert.match(await resumedModal.getByTestId('dingtalk-dws-test-mode').innerText(), /模拟的 DWS 个人事件监听/);
+    await screenshot(alphaPage!, 'dingtalk-stream-status-boundaries');
     const documentFlow = await alphaPage!.evaluate(async () => {
       const createdResponse = await fetch('/api/dingtalk/docs/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
         requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Chrome E2E 故障报告', content: '# Trace chrome-e2e\n已完成模拟排查', confirmed: true,
