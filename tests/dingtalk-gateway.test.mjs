@@ -50,6 +50,7 @@ const profileFile = path.join(config, '${profilesFile}');
 const tokenFile = path.join(config, 'credentials.json');
 await mkdir(config, { recursive: true });
 const readProfiles = async () => { try { return JSON.parse(await readFile(profileFile, 'utf8')); } catch { return []; } };
+const args = process.argv.slice(2);
 if (group === 'profile' && command === 'list') {
   const profiles = await readProfiles();
   console.log(JSON.stringify({ success: true, profiles }));
@@ -63,6 +64,15 @@ if (group === 'profile' && command === 'list') {
   console.log(JSON.stringify({ success: true, authenticated: true, token_valid: true, corp_id: 'corp-e2e', user_id: 'user-e2e', corp_name: '测试组织', user_name: '测试用户', expires_at: '2099-01-01T00:00:00.000Z' }));
 } else if (group === 'chat' && command === 'search') {
   console.log(JSON.stringify({ success: true, result: { query: '告警', chats: [{ openConversationId: 'cid-alerts', name: '系统监控告警群' }], hasMore: true, nextCursor: 'next-page', complete: false } }));
+} else if (group === 'event' && command === '+listen-im') {
+  if (!args.includes('--flatten')) {
+    console.error('flatten is required for a normalized event stream');
+    process.exitCode = 2;
+  }
+  if (process.exitCode) process.exit();
+  process.stderr.write('[event] ready event_count=1 bus_pid=7 subscribe_id=sub-test\\n');
+  console.log(JSON.stringify({ conversation_id: 'cid-alerts', message_id: 'msg-live-1', sender: '监控机器人', sender_open_dingtalk_id: 'sender-1', content: '支付服务 500 错误，Trace ID: trace-live-1' }));
+  setInterval(() => {}, 1000);
 } else {
   console.error('unsupported fake dws command');
   process.exitCode = 2;
@@ -86,7 +96,7 @@ if (group === 'profile' && command === 'list') {
   await gateway.listen('127.0.0.1');
   const origin = `http://127.0.0.1:${baseEnv.DINGTALK_CONNECTOR_PORT}`;
 
-  async function call(route, { principal = principalAlpha, method = 'GET', body, ticket } = {}) {
+  async function call(route, { principal = principalAlpha, method = 'GET', body, ticket, signal } = {}) {
     return fetch(`${origin}${route}`, {
       method,
       headers: {
@@ -95,6 +105,7 @@ if (group === 'profile' && command === 'list') {
         ...(body ? { 'content-type': 'application/json' } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(signal ? { signal } : {}),
     });
   }
 
@@ -102,7 +113,7 @@ if (group === 'profile' && command === 'list') {
     const initial = await call('/v1/status').then(response => response.json());
     assert.deepEqual(initial.data, { state: 'not-installed' });
     const started = await call('/v1/authorization', { method: 'POST', body: {} }).then(response => response.json());
-    assert.equal(started.data.state, 'awaiting-user');
+    assert.equal(started.data?.state, 'awaiting-user', `Unexpected authorization response: ${JSON.stringify(started)}`);
     assert.equal(started.data.userCode, 'E2E-DEVICE');
     assert.equal(started.data.authorizationUrl, 'https://login.dingtalk.com/oauth2/device?user_code=E2E-DEVICE');
     assert.equal(JSON.stringify(started).includes('DO-NOT-LEAK'), false, 'DWS device code must not be returned');
@@ -127,6 +138,28 @@ if (group === 'profile' && command === 'list') {
     assert.deepEqual(search.data.groups, [{ conversationId: 'cid-alerts', name: '系统监控告警群' }], 'Adapt the official DWS result.chats contract');
     assert.equal(search.data.hasMore, true);
     assert.equal(search.data.nextCursor, 'next-page');
+
+    const controller = new AbortController();
+    const liveResponse = await call('/v1/monitors/events', { method: 'POST', body: { conversationId: 'cid-alerts' }, signal: controller.signal });
+    assert.equal(liveResponse.status, 200, 'The selected-group DWS event listener should become ready before the stream opens');
+    assert.match(liveResponse.headers.get('content-type') || '', /application\/x-ndjson/);
+    const reader = liveResponse.body.getReader();
+    const decoder = new TextDecoder();
+    let streamText = '';
+    const streamDeadline = Date.now() + 5_000;
+    while (!streamText.includes('msg-live-1') && Date.now() < streamDeadline) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      streamText += decoder.decode(chunk.value, { stream: true });
+    }
+    assert.match(streamText, /"type":"ready"/);
+    assert.match(streamText, /"messageId":"msg-live-1"/);
+    assert.match(streamText, /Trace ID: trace-live-1/);
+    assert.equal(streamText.includes('sender_open_dingtalk_id'), false, 'The connector must not forward raw DWS event envelopes');
+    const duplicateMonitor = await call('/v1/monitors/events', { method: 'POST', body: { conversationId: 'cid-alerts' } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(duplicateMonitor.status, 409, 'A second process must not subscribe to the same principal and group twice');
+    controller.abort();
+    await reader.cancel().catch(() => undefined);
     const beta = await call('/v1/status', { principal: principalBeta }).then(response => response.json());
     assert.deepEqual(beta.data, { state: 'not-installed' });
 

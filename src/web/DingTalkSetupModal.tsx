@@ -33,7 +33,7 @@ interface AuthorizationFlow {
 
 interface DingTalkGroup { conversationId: string; name: string }
 interface GroupSearch { groups: DingTalkGroup[]; hasMore: boolean; nextCursor?: string }
-interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; canEnable: boolean; reason?: string }
+interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; canEnable: boolean; listenerState?: 'off' | 'starting' | 'listening' | 'reconnecting'; reason?: string }
 interface DingTalkMonitors { stream: { configured: boolean; connected: boolean; ready: boolean; testOnly?: boolean }; groups: DingTalkMonitorGroup[] }
 
 export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
@@ -51,6 +51,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
   const [notice, setNotice] = useState('');
 
   const selectedIds = useMemo(() => new Set(selected.map(group => group.conversationId)), [selected]);
+  const hasEnabledMonitor = monitors?.groups.some(group => group.enabled) || false;
 
   async function readJson<T>(response: Response): Promise<T> {
     const body = await response.json().catch(() => ({})) as T & { error?: string };
@@ -89,6 +90,20 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
   useEffect(() => { void refresh(); }, []);
 
   useEffect(() => {
+    if (!hasEnabledMonitor) return;
+    let disposed = false;
+    const refreshMonitorState = async () => {
+      try {
+        const next = await appFetch('/api/dingtalk/monitors').then(response => readJson<DingTalkMonitors>(response));
+        if (!disposed) setMonitors(next);
+      } catch { /* Preserve the last known state during a transient status request failure. */ }
+    };
+    void refreshMonitorState();
+    const timer = window.setInterval(() => { void refreshMonitorState(); }, 2000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [hasEnabledMonitor]);
+
+  useEffect(() => {
     if (!flow || !['starting', 'awaiting-user', 'verifying'].includes(flow.state)) return;
     let disposed = false;
     const poll = async () => {
@@ -97,7 +112,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
         if (disposed) return;
         setFlow(next);
         if (next.state === 'authorized') {
-          setNotice('钉钉账号已连接。你可以为已保存的群单独开启 @机器人 事件监听。');
+          setNotice('钉钉账号已连接。你可以为已保存的群单独开启个人消息实时监听。');
           await refresh();
         } else if (['failed', 'cancelled', 'expired'].includes(next.state)) {
           setError(next.reason || authorizationError(next.state));
@@ -184,7 +199,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
         body: JSON.stringify({ conversationId: group.conversationId, enabled: !group.enabled }) })
         .then(response => readJson<{ conversationId: string; enabled: boolean }>(response));
       setMonitors(current => current ? { ...current, groups: current.groups.map(item => item.conversationId === updated.conversationId ? { ...item, enabled: updated.enabled } : item) } : current);
-      setNotice(updated.enabled ? '已开启此群的实时告警排查。机器人需要已加入群，且仅处理 @机器人的文本消息。' : '已暂停此群监听。');
+      setNotice(updated.enabled ? '已开启此群的实时消息监听；普通群消息和告警无需 @机器人。' : '已暂停此群监听。');
     } catch (reason) { setError(reason instanceof Error ? reason.message : '更新群监听失败。'); }
     finally { setWorking(false); }
   }
@@ -245,14 +260,14 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
           {selected.length > 0 && <div className="dingtalk-selected-groups"><strong>待保存群聊</strong>{selected.map(group => <span key={group.conversationId}>{group.name}<button type="button" aria-label={`移除群 ${group.name}`} onClick={() => toggleGroup(group)}>×</button></span>)}</div>}
           <button className="dingtalk-setup-primary" type="button" data-testid="dingtalk-groups-save" disabled={working || !status?.configured} onClick={() => void saveGroups()}>{working ? '处理中…' : '保存群选择'}</button>
           {monitors && <div className="dingtalk-monitor-section" data-testid="dingtalk-monitor-section">
-            <div className="dingtalk-section-title"><div><h3>实时告警监听</h3><p>{monitors.stream.ready ? '机器人 Stream 已连接' : monitors.stream.configured ? '机器人 Stream 正在等待连接' : '实例尚未配置机器人 Stream'}</p></div><span>{monitors.groups.filter(group => group.enabled).length} 个启用</span></div>
-            {monitors.stream.testOnly && <p className="dingtalk-monitor-note">当前为浏览器自动化测试模拟状态，不代表生产钉钉机器人已经连接。</p>}
+            <div className="dingtalk-section-title"><div><h3>实时告警监听</h3><p>通过当前钉钉账号的 DWS 个人 IM 事件流接收指定群消息</p></div><span>{monitors.groups.filter(group => group.enabled).length} 个启用</span></div>
+            {monitors.stream.testOnly && <p className="dingtalk-monitor-note">当前为浏览器自动化测试模拟状态，不代表真实钉钉事件流已经连接。</p>}
             {monitors.groups.length === 0 ? <p className="dingtalk-empty-results">先搜索并保存至少一个群聊。</p> : monitors.groups.map(group => <label className="dingtalk-monitor-row" key={group.conversationId}>
-              <span><strong>{group.groupName}</strong><small>{group.enabled ? (monitors.stream.ready ? '已开启 · 仅响应 @机器人' : '已开启，但机器人连接中断') : group.reason || '关闭'}</small></span>
+              <span><strong>{group.groupName}</strong><small>{group.enabled ? listenerStatusText(group.listenerState) : group.reason || '关闭'}</small></span>
               <input type="checkbox" role="switch" aria-label={`监听群 ${group.groupName}`} data-testid={`dingtalk-monitor-${group.conversationId}`}
                 checked={group.enabled} disabled={working || (!group.enabled && !group.canEnable)} onChange={() => void toggleMonitor(group)} />
             </label>)}
-            <p className="dingtalk-setup-footnote">开启后，钉钉 Stream 会把 @机器人的群文本实时推送到服务端，并为本工作区创建 Pi 云电脑只读排查任务。不同工作区的任务和群监听相互隔离；不会自动回复钉钉群。</p>
+            <p className="dingtalk-setup-footnote">开启后，Dots 使用当前钉钉账号订阅这个群的实时消息；普通告警无需 @机器人。收到消息后会在本工作区创建 Pi 云电脑只读排查任务。不同工作区相互隔离；不会自动回复群聊。</p>
           </div>}
           <button className="dingtalk-setup-secondary dingtalk-disconnect" type="button" disabled={working} onClick={() => void disconnect()}>断开钉钉账号</button>
         </div>}
@@ -273,4 +288,10 @@ function authorizationError(state: AuthorizationFlow['state']) {
   if (state === 'expired') return '钉钉授权已过期，请重新开始。';
   if (state === 'cancelled') return '已取消钉钉授权。';
   return '钉钉授权失败，请检查组织是否允许 DWS CLI 登录。';
+}
+
+function listenerStatusText(state: DingTalkMonitorGroup['listenerState']) {
+  if (state === 'listening') return '监听中 · 收到消息后自动启动 Pi 排查';
+  if (state === 'reconnecting') return '连接中断 · 正在自动重连';
+  return '正在连接 DWS 实时事件流';
 }

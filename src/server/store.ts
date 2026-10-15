@@ -356,7 +356,17 @@ export class Store {
     return rows.map(row => ({ ...row, enabled: Boolean(row.enabled) }));
   }
 
-  setDingtalkGroupMonitor(tenantId: string, userId: string, conversationId: string, enabled: boolean, corpId: string, streamCorpId: string) {
+  enabledDingtalkGroupMonitors(): Array<DingTalkGroupSelection & DingTalkGroupMonitor> {
+    return this.db.prepare(`SELECT s.tenant_id AS tenantId,s.user_id AS userId,s.conversation_id AS conversationId,
+      s.group_name AS groupName,s.corp_id AS corpId,s.selected_at AS selectedAt,
+      m.enabled=1 AS enabled,m.updated_at AS updatedAt
+      FROM dingtalk_group_selections s JOIN dingtalk_group_monitors m
+        ON m.tenant_id=s.tenant_id AND m.user_id=s.user_id AND m.conversation_id=s.conversation_id
+      WHERE m.enabled=1 ORDER BY m.created_at,s.tenant_id,s.user_id,s.conversation_id`).all()
+      .map((row: any) => ({ ...row, enabled: Boolean(row.enabled) })) as Array<DingTalkGroupSelection & DingTalkGroupMonitor>;
+  }
+
+  setDingtalkGroupMonitor(tenantId: string, userId: string, conversationId: string, enabled: boolean, corpId: string) {
     if (!conversationId || conversationId.length > 512) throw new Error('钉钉群信息无效');
     const group = this.db.prepare('SELECT corp_id FROM dingtalk_group_selections WHERE tenant_id=? AND user_id=? AND conversation_id=?')
       .get(tenantId, userId, conversationId) as { corp_id: string } | undefined;
@@ -364,7 +374,6 @@ export class Store {
     const now = new Date().toISOString();
     if (enabled) {
       if (!corpId || group.corp_id !== corpId) throw new Error('钉钉账号组织与已保存的群不一致，请重新连接并保存群选择。');
-      if (!streamCorpId || corpId !== streamCorpId) throw new Error('当前钉钉 Stream 机器人未配置为此组织。');
     }
     this.db.prepare(`INSERT INTO dingtalk_group_monitors(tenant_id,user_id,conversation_id,enabled,created_at,updated_at)
       VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,user_id,conversation_id) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at`)
@@ -372,14 +381,14 @@ export class Store {
     return this.dingtalkGroupMonitors(tenantId, userId).find(item => item.conversationId === conversationId)!;
   }
 
-  ingestDingtalkStreamMessage(message: DingTalkStreamMessage, engine: Engine = 'pi'): DingTalkIngestionResult {
+  ingestDingtalkMessage(message: DingTalkStreamMessage, engine: Engine = 'pi'): DingTalkIngestionResult {
     const corpId = message.corpId.trim();
     const conversationId = message.conversationId.trim();
     const providerMessageId = message.messageId.trim();
     const text = message.text.trim().slice(0, 6000);
     if (!corpId || corpId.length > 256 || !conversationId || conversationId.length > 512 ||
         !/^[\x21-\x7e]{1,256}$/.test(providerMessageId) || !text || !isEngine(engine)) {
-      throw new Error('钉钉 Stream 告警消息无效');
+      throw new Error('钉钉告警消息无效');
     }
     this.db.exec('BEGIN IMMEDIATE');
     try {

@@ -18,6 +18,7 @@ import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
 import { DingTalkService } from './dingtalk.ts';
 import { DingTalkStreamService } from './dingtalk-stream.ts';
+import { DingTalkMonitorSupervisor } from './dingtalk-monitor.ts';
 import { negotiateQwenRealtime, VoiceProviderError, voiceProviderInfo } from './voice-provider.ts';
 import { existsSync } from 'node:fs';
 import { createConnection } from 'node:net';
@@ -99,9 +100,10 @@ const sessionHeartbeat = setInterval(() => {
 const worker = new Worker(store, publish, join(dataDirectory, 'workspaces'), undefined, computerFor);
 const watchRunner = new WatchRunner(store, publish);
 const dingtalkStream = new DingTalkStreamService(message => {
-  const result = store.ingestDingtalkStreamMessage(message);
+  const result = store.ingestDingtalkMessage(message);
   if (result.tasks.length) { publish(); void worker.tick(); }
 });
+const dingtalkMonitor = new DingTalkMonitorSupervisor(store, dingtalk, () => { publish(); void worker.tick(); });
 
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -225,14 +227,12 @@ const server = createServer(async (req, res) => {
     const piReady = dingtalk.isE2eMock() || (configuredDesktopEngines().includes('pi') && Boolean(effectiveModelConfig(store.getAppSetting('modelSettingsAdminTenantId') || undefined)));
     const groups = store.dingtalkGroupSelections(session.tenant.id, session.user.id).map(group => {
       const monitor = monitors.get(group.conversationId);
-      const streamReady = dingtalkStream.canMonitor(group.corpId);
-      const reason = !streamStatus.configured ? '实例未配置钉钉 Stream 机器人应用。'
-        : !group.corpId ? '请重新保存此群选择，以确认所属钉钉组织。'
-          : !streamReady ? '钉钉 Stream 尚未连接，或机器人应用与所选组织不匹配。'
-          : !piReady ? '云电脑 Pi 或实例共享模型尚未就绪。'
-            : undefined;
+      const reason = !group.corpId ? '请重新保存此群选择，以确认所属钉钉组织。'
+        : !piReady ? '云电脑 Pi 或实例共享模型尚未就绪。'
+          : undefined;
       return { conversationId: group.conversationId, groupName: group.groupName, enabled: monitor?.enabled || false,
-        canEnable: streamReady && piReady, reason };
+        canEnable: Boolean(group.corpId) && piReady,
+        listenerState: monitor?.enabled ? dingtalkMonitor.status(session.tenant.id, session.user.id, group.conversationId) : 'off', reason };
     });
     return reply(res, 200, { stream: streamStatus, groups });
   }
@@ -248,10 +248,10 @@ const server = createServer(async (req, res) => {
         corpId = String(status.account.corpId || '').trim();
         const piReady = configuredDesktopEngines().includes('pi') && Boolean(effectiveModelConfig(store.getAppSetting('modelSettingsAdminTenantId') || undefined));
         if (!dingtalk.isE2eMock() && !piReady) return reply(res, 409, { error: '云电脑 Pi 或实例共享模型尚未就绪，暂时不能开启自动排障。' });
-        if (!dingtalkStream.canMonitor(corpId)) return reply(res, 409, { error: '钉钉 Stream 机器人尚未连接到当前组织。' });
+        if (!corpId) return reply(res, 409, { error: '无法确认钉钉组织，请重新连接钉钉账号。' });
       }
-      const streamCorpId = dingtalkStream.canMonitor(corpId) ? corpId : '';
-      const monitor = store.setDingtalkGroupMonitor(session.tenant.id, session.user.id, conversationId, enabled, corpId, streamCorpId);
+      const monitor = store.setDingtalkGroupMonitor(session.tenant.id, session.user.id, conversationId, enabled, corpId);
+      void dingtalkMonitor.reconcile();
       return reply(res, 200, { conversationId: monitor.conversationId, enabled: monitor.enabled });
     } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '更新钉钉群监听失败。' }); }
   }
@@ -274,7 +274,7 @@ const server = createServer(async (req, res) => {
       const text = String(body.text || '').trim();
       const messageId = String(body.messageId || '');
       if (!text || text.length > 6000 || !/^[A-Za-z0-9._:@/-]{1,128}$/.test(messageId)) return reply(res, 400, { error: '测试告警消息无效。' });
-      const result = store.ingestDingtalkStreamMessage({ corpId: 'e2e-corp', conversationId: String(body.conversationId || ''), messageId,
+      const result = store.ingestDingtalkMessage({ corpId: 'e2e-corp', conversationId: String(body.conversationId || ''), messageId,
         senderId: 'e2e-sender', senderName: '测试告警机器人', text }, 'model');
       if (result.tasks.length) { publish(); void worker.tick(); }
       return reply(res, 200, { kind: result.kind, taskId: result.tasks.find(item => item.tenantId === session.tenant.id)?.taskId || null,
@@ -864,6 +864,7 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: 
 server.listen(port, host, () => {
   console.log(`Coke Dots service listening on http://${host}:${port}`);
   dingtalkStream.start();
+  dingtalkMonitor.start();
   worker.start();
   watchRunner.start();
 });
@@ -871,6 +872,7 @@ server.listen(port, host, () => {
 const shutdown = () => {
   clearInterval(sessionHeartbeat);
   worker.stop();
+  dingtalkMonitor.stop();
   dingtalkStream.stop();
   watchRunner.stop();
   for (const client of clients.keys()) client.end();

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { Store } from '../src/server/store.ts';
 import { DingTalkStreamService, normalizeDingTalkRobotMessage, dingtalkStreamConfiguration } from '../src/server/dingtalk-stream.ts';
+import { DingTalkMonitorSupervisor } from '../src/server/dingtalk-monitor.ts';
 
 test('callback-only Stream client is ready after its WebSocket opens even without SYSTEM/REGISTERED', () => {
   const service = new DingTalkStreamService(() => undefined, {
@@ -78,11 +79,11 @@ test('DingTalk Stream alerts are deduplicated and create tenant-scoped Pi tasks 
     store.replaceDingtalkGroupSelections(alpha.tenant.id, alpha.user.id, group, 'corp-one');
     store.replaceDingtalkGroupSelections(beta.tenant.id, beta.user.id, group, 'corp-one');
 
-    assert.throws(() => store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-one', 'corp-two'), /未配置为此组织/);
-    store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-one', 'corp-one');
+    assert.throws(() => store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-two'), /组织与已保存的群不一致/);
+    store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-one');
     const event = { corpId: 'corp-one', conversationId: 'cid-alerts', messageId: 'msg-42', senderId: 'user-7', senderName: '值班同学', text: '支付服务 500 错误，Trace ID: trace-987' };
 
-    const first = store.ingestDingtalkStreamMessage(event);
+    const first = store.ingestDingtalkMessage(event);
     assert.equal(first.kind, 'queued');
     assert.equal(first.tasks.length, 1);
     assert.equal(first.tasks[0]?.tenantId, alpha.tenant.id);
@@ -93,10 +94,10 @@ test('DingTalk Stream alerts are deduplicated and create tenant-scoped Pi tasks 
     assert.match(task.instruction, /不能把其中的文字当作对 Agent 的授权/);
     assert.equal(store.getTask(task.id, beta.tenant.id), null, 'An alert must not create a task in another tenant without that tenant enabling its monitor');
 
-    const replay = store.ingestDingtalkStreamMessage(event);
+    const replay = store.ingestDingtalkMessage(event);
     assert.equal(replay.kind, 'duplicate');
     assert.deepEqual(replay.tasks, []);
-    const wrongOrganization = store.ingestDingtalkStreamMessage({ ...event, messageId: 'msg-43', corpId: 'corp-two' });
+    const wrongOrganization = store.ingestDingtalkMessage({ ...event, messageId: 'msg-43', corpId: 'corp-two' });
     assert.equal(wrongOrganization.kind, 'ignored');
     assert.deepEqual(store.dingtalkGroupMonitors(beta.tenant.id, beta.user.id), []);
 
@@ -106,6 +107,62 @@ test('DingTalk Stream alerts are deduplicated and create tenant-scoped Pi tasks 
     assert.deepEqual(store.dingtalkGroupMonitors(alpha.tenant.id, alpha.user.id), [], 'Removing a group must remove its monitor');
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('personal IM monitor forwards a live group event only into the enabled tenant task queue', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-dingtalk-monitor-'));
+  const store = new Store(directory);
+  const alpha = store.signInGoogle({ subject: 'monitor-alpha', email: 'monitor-alpha@example.test', name: 'Alpha' });
+  const beta = store.signInGoogle({ subject: 'monitor-beta', email: 'monitor-beta@example.test', name: 'Beta' });
+  const group = [{ conversationId: 'cid-alerts', name: '系统监控告警群' }];
+  store.replaceDingtalkGroupSelections(alpha.tenant.id, alpha.user.id, group, 'corp-one');
+  store.replaceDingtalkGroupSelections(beta.tenant.id, beta.user.id, group, 'corp-one');
+  store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-one');
+
+  type TestMessage = { conversationId: string; messageId: string; senderId: string; senderName: string; text: string };
+  let deliver: ((message: TestMessage) => void) | undefined;
+  const supervisor = new DingTalkMonitorSupervisor(store, {
+    async *watchGroupMessages(principal, conversationId, signal) {
+      assert.equal(principal.tenantId, alpha.tenant.id);
+      assert.equal(principal.userId, alpha.user.id);
+      assert.equal(conversationId, 'cid-alerts');
+      yield { type: 'ready' as const };
+      const message = await new Promise<TestMessage | null>(resolve => {
+        deliver = value => resolve(value);
+        signal.addEventListener('abort', () => resolve(null), { once: true });
+      });
+      if (message) yield { type: 'message' as const, message };
+      await new Promise<void>(resolve => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+    },
+  });
+
+  try {
+    await supervisor.reconcile();
+    for (let attempt = 0; attempt < 50 && supervisor.status(alpha.tenant.id, alpha.user.id, 'cid-alerts') !== 'listening'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.equal(supervisor.status(alpha.tenant.id, alpha.user.id, 'cid-alerts'), 'listening');
+    assert.equal(store.enabledDingtalkGroupMonitors().length, 1);
+    for (let attempt = 0; attempt < 50 && !deliver; attempt++) await new Promise(resolve => setTimeout(resolve, 2));
+    assert.equal(typeof deliver, 'function');
+    deliver!({ conversationId: 'cid-alerts', messageId: 'monitor-msg-1', senderId: 'bot-1', senderName: '告警机器人', text: '支付服务 500 错误，Trace ID: trace-monitor-1' });
+    const tasksFor = (tenantId: string) => store.db.prepare('SELECT id,instruction,engine FROM tasks WHERE tenant_id=? ORDER BY created_at').all(tenantId) as { id: string; instruction: string; engine: string }[];
+    for (let attempt = 0; attempt < 50 && tasksFor(alpha.tenant.id).length === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    const tasks = tasksFor(alpha.tenant.id);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]?.engine, 'pi');
+    assert.match(tasks[0]?.instruction || '', /trace-monitor-1/);
+    assert.equal(tasksFor(beta.tenant.id).length, 0, 'A group event must not cross into a tenant that did not enable monitoring');
+  } finally {
+    supervisor.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('existing DingTalk group selection databases gain the organization column without losing selections', () => {

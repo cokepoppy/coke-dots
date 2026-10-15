@@ -1301,7 +1301,7 @@ try {
     const monitorResponseBody = await monitorResponse.text();
     assert.equal(monitorResponse.status(), 200, `Monitor opt-in API failed: ${monitorResponse.status()} ${monitorResponseBody}`);
     assert.equal(await incidentMonitor.isChecked(), true, 'The monitor should visibly turn on after the user opts in');
-    await resumedModal.getByText('已开启 · 仅响应 @机器人').waitFor({ state: 'visible' });
+    await resumedModal.getByText('监听中 · 收到消息后自动启动 Pi 排查').waitFor({ state: 'visible', timeout: 5000 });
     await screenshot(alphaPage!, 'dingtalk-selected-group');
     await resumedModal.getByRole('button', { name: '关闭钉钉设置' }).click();
     assert.equal(await alphaPage!.getByTestId('task-composer').inputValue(), '保留的钉钉设置草稿', 'Opening the connector must preserve the chat draft');

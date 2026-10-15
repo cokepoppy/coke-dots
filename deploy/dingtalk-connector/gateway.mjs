@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 import {
   inspectDwsProfile, isolatedEnvironment, prepareProfileRoot, principalKey,
@@ -22,6 +23,7 @@ const allowedErrors = new Set([
   'DWS_PROCESS_TIMEOUT', 'DWS_PROCESS_START_FAILED', 'DWS_PROCESS_FAILED', 'DWS_INVALID_JSON',
   'DWS_OUTPUT_TOO_LARGE', 'DWS_AUTHORIZATION_START_TIMEOUT', 'DWS_AUTHORIZATION_FAILED',
   'DWS_AUTHORIZATION_INVALID_RESULT', 'DWS_AUTHORIZATION_EXPIRED', 'DWS_PROFILE_BUSY',
+  'DWS_EVENT_LISTENER_FAILED', 'DWS_MONITOR_ALREADY_ACTIVE',
   'CONNECTOR_AUTHORIZATION_NOT_FOUND', 'CONNECTOR_IDENTITY_READBACK_FAILED',
 ]);
 
@@ -199,8 +201,8 @@ function sanitizeGroups(payload) {
 function publicError(error) {
   const code = typeof error?.message === 'string' && allowedErrors.has(error.message) ? error.message : 'DINGTALK_CONNECTOR_REQUEST_FAILED';
   const status = code === 'CONNECTOR_AUTHORIZATION_NOT_FOUND' ? 404 :
-    code === 'DWS_PROFILE_BUSY' ? 409 :
-      ['DWS_PROCESS_TIMEOUT', 'DWS_PROCESS_FAILED'].includes(code) ? 502 : 400;
+    ['DWS_PROFILE_BUSY', 'DWS_MONITOR_ALREADY_ACTIVE'].includes(code) ? 409 :
+      ['DWS_PROCESS_TIMEOUT', 'DWS_PROCESS_FAILED', 'DWS_EVENT_LISTENER_FAILED'].includes(code) ? 502 : 400;
   return { status, body: { ok: false, error: code } };
 }
 
@@ -209,6 +211,7 @@ export function createDingtalkConnectorGateway({
   binary = env.DINGTALK_CONNECTOR_DWS_BINARY || '/usr/local/bin/dws',
   verifyBinary = verifyDwsBinary,
   runDws = runDwsProcess,
+  spawnProcess = spawn,
   inspectProfile = inspectDwsProfile,
   macTestOnly = false,
 } = {}) {
@@ -224,6 +227,7 @@ export function createDingtalkConnectorGateway({
   const usedTicketNonces = new Map();
   const flows = new Map();
   const locks = new Map();
+  const activeMonitors = new Map();
 
   async function initialize() {
     await ensurePrivateStorageRoot(storageRoot);
@@ -378,8 +382,179 @@ export function createDingtalkConnectorGateway({
     const ownerKey = principalKey(ownerPrincipal(ticket));
     const flow = [...flows.values()].find(item => item.ownerKey === ownerKey);
     if (flow) { await flow.manager.cancel(flow.principal, flow.id).catch(() => undefined); await removeFlow(flow); }
+    for (const [key, listener] of activeMonitors) {
+      if (listener.ownerKey === ownerKey) listener.stop();
+    }
     await rm(path.join(storageRoot, `${ownerKey}.dws`), { force: true });
     return { disconnected: true, serverGrantRevoked: false };
+  }
+
+  async function streamGroupMessages(ticket, body, req, res) {
+    const conversationId = typeof body?.conversationId === 'string' ? body.conversationId.trim() : '';
+    if (!conversationId || conversationId.length > 512) throw new Error('DWS_GROUP_QUERY_INVALID');
+    const ownerKey = principalKey(ownerPrincipal(ticket));
+    const monitorKey = `${ownerKey}:${conversationId}`;
+    if (activeMonitors.has(monitorKey)) throw new Error('DWS_MONITOR_ALREADY_ACTIVE');
+
+    let workspace;
+    let child;
+    let ready = false;
+    let streamOpen = false;
+    let cancelled = false;
+    let closed = false;
+    let output = '';
+    let errors = '';
+    let outputBytes = 0;
+    let readyTimer;
+    let heartbeat;
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    const pendingEvents = [];
+    let resolveClosed;
+    const closedPromise = new Promise(resolve => { resolveClosed = resolve; });
+    let resolveReady;
+    let rejectReady;
+    const readyPromise = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    const listener = {
+      ownerKey,
+      stop() {
+        cancelled = true;
+        if (closed) return;
+        child?.kill('SIGTERM');
+        if (!res.destroyed && res.headersSent) res.end();
+      },
+    };
+
+    const sendFrame = value => {
+      if (!res.destroyed && res.headersSent) res.write(`${JSON.stringify(value)}\n`);
+    };
+    const processOutputLine = line => {
+      if (!line.trim()) return;
+      let value;
+      try { value = JSON.parse(line); } catch { return; }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+      const eventConversationId = String(value.conversation_id || value.conversationId || conversationId).trim();
+      const messageId = String(value.message_id || value.messageId || '').trim();
+      const text = typeof value.content === 'string' ? value.content : '';
+      if (eventConversationId !== conversationId || !messageId || !text.trim()) return;
+      const event = {
+        type: 'message',
+        message: {
+          conversationId,
+          messageId: messageId.slice(0, 256),
+          senderId: String(value.sender_open_dingtalk_id || '').slice(0, 256),
+          senderName: String(value.sender || '').slice(0, 200),
+          text: text.slice(0, 6000),
+        },
+      };
+      if (streamOpen) sendFrame(event);
+      else if (pendingEvents.length < 100) pendingEvents.push(event);
+    };
+
+    const start = async () => withOwnerLock(ownerKey, async () => {
+      if (activeMonitors.has(monitorKey)) throw new Error('DWS_MONITOR_ALREADY_ACTIVE');
+      workspace = await createProfileWorkspace(ticket, 'monitor');
+      const restored = await restoreEncryptedProfile({ storageRoot, ownerKey, masterKey, destinationRoot: workspace.root, tempRoot: managedTmpRoot });
+      if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
+      const profileState = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, macTestOnly, verifyBinary });
+      if (profileState.state !== 'identity-verified') throw new Error('DWS_PROFILE_NOT_AUTHENTICATED');
+      const owner = await prepareProfileRoot(workspace.root, workspace.principal);
+      const profilePayload = await runDws(binary, ['profile', 'list', '--format', 'json'], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }) });
+      const profile = selectCurrentProfile(profilePayload);
+      if (!profile) throw new Error('DWS_PROFILE_SELECTION_REQUIRED');
+      child = spawnProcess(binary, [
+        'event', '+listen-im', '--kind', 'group', '--chat-id', conversationId,
+        '--events', 'message', '--flatten', '-f', 'ndjson', '--profile', profile.selector,
+      ], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      if (cancelled) child.kill('SIGTERM');
+      const versionInfo = await stat(path.join(storageRoot, `${ownerKey}.dws`));
+      listener.child = child;
+      listener.workspace = workspace;
+      listener.profileVersion = `${versionInfo.size}:${versionInfo.mtimeMs}`;
+      child.stdout.on('data', chunk => {
+        outputBytes += chunk.length;
+        if (outputBytes > 8 * 1024 * 1024) { child.kill('SIGTERM'); return; }
+        output += stdoutDecoder.write(chunk);
+        let boundary;
+        while ((boundary = output.indexOf('\n')) >= 0) {
+          const line = output.slice(0, boundary);
+          output = output.slice(boundary + 1);
+          processOutputLine(line);
+        }
+        if (output.length > 256 * 1024) { output = ''; child.kill('SIGTERM'); }
+      });
+      child.stderr.on('data', chunk => {
+        errors += stderrDecoder.write(chunk);
+        let boundary;
+        while ((boundary = errors.indexOf('\n')) >= 0) {
+          const line = errors.slice(0, boundary);
+          errors = errors.slice(boundary + 1);
+          if (!ready && line.includes('[event] ready')) resolveReady();
+        }
+        if (errors.length > 64 * 1024) errors = errors.slice(-1024);
+      });
+      child.once('error', () => rejectReady(new Error('DWS_EVENT_LISTENER_FAILED')));
+      child.once('close', () => {
+        if (!ready) rejectReady(new Error('DWS_EVENT_LISTENER_FAILED'));
+        closed = true;
+        resolveClosed();
+      });
+      activeMonitors.set(monitorKey, listener);
+      readyTimer = setTimeout(() => rejectReady(new Error('DWS_EVENT_LISTENER_FAILED')), 30_000);
+      await readyPromise;
+      ready = true;
+    });
+
+    const stop = () => listener.stop();
+    req.once('aborted', stop);
+    res.once('close', stop);
+    try {
+      await start();
+      clearTimeout(readyTimer);
+      res.writeHead(200, {
+        'content-type': 'application/x-ndjson; charset=utf-8',
+        'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no',
+      });
+      sendFrame({ type: 'ready' });
+      streamOpen = true;
+      for (const event of pendingEvents.splice(0)) sendFrame(event);
+      heartbeat = setInterval(() => sendFrame({ type: 'ping' }), 20_000);
+      await closedPromise;
+      if (!res.destroyed) res.end();
+    } catch (error) {
+      clearTimeout(readyTimer);
+      const failure = publicError(error);
+      if (!res.headersSent) {
+        const payload = Buffer.from(JSON.stringify({ ok: false, error: failure.body.error }));
+        res.writeHead(failure.status, { 'content-type': 'application/json; charset=utf-8', 'content-length': payload.length, 'cache-control': 'no-store' });
+        res.end(payload);
+      } else if (!res.destroyed) {
+        sendFrame({ type: 'error', error: failure.body.error });
+        res.end();
+      }
+    } finally {
+      clearTimeout(readyTimer);
+      clearInterval(heartbeat);
+      req.off('aborted', stop);
+      res.off('close', stop);
+      if (child && !closed) {
+        child?.kill('SIGTERM');
+        await Promise.race([closedPromise, new Promise(resolve => setTimeout(resolve, 5_000))]);
+        if (!closed) child?.kill('SIGKILL');
+      }
+      if (activeMonitors.get(monitorKey) === listener) activeMonitors.delete(monitorKey);
+      if (workspace) {
+        try {
+          const encryptedPath = path.join(storageRoot, `${ownerKey}.dws`);
+          const current = await stat(encryptedPath);
+          const currentVersion = `${current.size}:${current.mtimeMs}`;
+          if (listener.profileVersion && currentVersion === listener.profileVersion) {
+            await withOwnerLock(ownerKey, () => writeEncryptedProfile({ storageRoot, ownerKey, masterKey, sourceRoot: workspace.root, tempRoot: managedTmpRoot }));
+          }
+        } catch { /* Keep the existing encrypted profile if it changed or cannot be refreshed. */ }
+        await rm(workspace.root, { recursive: true, force: true });
+      }
+    }
   }
 
   async function readBody(req) {
@@ -419,6 +594,7 @@ export function createDingtalkConnectorGateway({
       if (authorizationMatch && req.method === 'GET') return send(200, { ok: true, data: await pollAuthorization(ticket, authorizationMatch[1]) });
       if (authorizationMatch && req.method === 'DELETE') return send(200, { ok: true, data: await cancelAuthorization(ticket, authorizationMatch[1]) });
       if (req.method === 'POST' && url.pathname === '/v1/groups/search') return send(200, { ok: true, data: await searchGroups(ticket, await readBody(req)) });
+      if (req.method === 'POST' && url.pathname === '/v1/monitors/events') return await streamGroupMessages(ticket, await readBody(req), req, res);
       if (req.method === 'DELETE' && url.pathname === '/v1/account') return send(200, { ok: true, data: await disconnect(ticket) });
       return send(404, { ok: false, error: 'NOT_FOUND' });
     } catch (error) {
@@ -439,6 +615,9 @@ export function createDingtalkConnectorGateway({
     async close() {
       for (const flow of flows.values()) await flow.manager.cancel(flow.principal, flow.id).catch(() => undefined);
       flows.clear();
+      for (const listener of activeMonitors.values()) listener.stop();
+      await Promise.all([...activeMonitors.values()].map(listener => listener.child ? new Promise(resolve => listener.child.once('close', resolve)) : Promise.resolve()));
+      activeMonitors.clear();
       if (server.listening) await new Promise(resolve => server.close(() => resolve()));
     },
   };
