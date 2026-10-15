@@ -443,10 +443,10 @@ try {
   }, betaTask.id, { timeout: 20_000 });
   const betaStateAfterTask = await betaPage.evaluate(async id => {
     const state = await fetch('/api/state').then(response => response.json()) as { availableEngines: string[]; remoteEngines: string[]; modelSettings: { hasKey: boolean; apiKeyStatus: string }; tasks: { id: string; engine: string; status: string; error: string | null }[] };
-    return { ...state.tasks.find(task => task.id === id), availableEngines: state.availableEngines, remoteEngines: state.remoteEngines, modelSettings: state.modelSettings };
+    return { ...state.tasks.find(task => task.id === id), tasks: state.tasks, availableEngines: state.availableEngines, remoteEngines: state.remoteEngines, modelSettings: state.modelSettings };
   }, betaTask.id);
   const betaAgentCall = agentCalls.find(call => call.taskId === betaTask.id);
-  assert(betaAgentCall, `The second tenant cloud task must reach its isolated Agent runtime; betaState=${JSON.stringify(betaStateAfterTask)}, alphaTask=${created.task.id}, betaHash=${betaHash}, tenant=${await betaPage.getByTestId('app-shell').getAttribute('data-tenant-id')}, calls=${JSON.stringify(agentCalls.map(call => ({ taskId: call.taskId, engine: call.engine, hasModelConfig: Boolean(call.modelConfig) })))}`);
+  assert(betaAgentCall, `The second tenant cloud task must reach its isolated Agent runtime; betaState=${JSON.stringify(betaStateAfterTask)}, betaMachine=${JSON.stringify(machines.get(betaHash))}, betaActions=${JSON.stringify(browserActions.filter(action => action.hash === betaHash))}, alphaTask=${created.task.id}, betaHash=${betaHash}, tenant=${await betaPage.getByTestId('app-shell').getAttribute('data-tenant-id')}, calls=${JSON.stringify(agentCalls.map(call => ({ taskId: call.taskId, engine: call.engine, hasModelConfig: Boolean(call.modelConfig) })))}, betaRemotePaths=${JSON.stringify(remoteHttpPaths.filter(path => path.includes(`/${betaHash}/`)))}, logs=${logs.join('')}`);
   assert.deepEqual(betaAgentCall.modelConfig, { apiKey: 'cloud-e2e-shared-api-key', baseUrl: 'https://api.deepseek.com/v1', model: 'cloud-e2e-model' }, 'A second tenant must reuse the same instance model profile');
   assert.notEqual(agentTokens.get(alphaHash), agentTokens.get(betaHash), 'Tenant Agent runtime bearer tokens were shared');
   assert.notEqual(machines.get(alphaHash), machines.get(betaHash), 'Tenants shared one desktop state object');

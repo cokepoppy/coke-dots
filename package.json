@@ -12,6 +12,7 @@
     "build:linux-desktop-image": "bash scripts/build-linux-desktop-image.sh \"${DOTS_K3D_CLUSTER:-tp1121-sandbox-dev}\"",
     "test": "node scripts/run-isolated-tests.mjs unit",
     "test:e2e": "npm run build && node scripts/run-isolated-tests.mjs e2e",
+    "test:e2e:cloud-computer": "npm run build && node scripts/run-isolated-tests.mjs cloud-computer",
     "test:e2e:k3d": "npm run build:linux-desktop-image && npm run build && node --import tsx tests/e2e/k3d-cloud-computer.e2e.ts",
     "test:live-model": "node --import tsx scripts/live-model-smoke.ts",
     "test:live-volcengine-voice": "node --import tsx scripts/live-volcengine-voice-smoke.ts",
