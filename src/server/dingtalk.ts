@@ -16,6 +16,11 @@ export interface DingTalkGroupSearch {
   nextCursor?: string;
 }
 
+export interface DingTalkGroupList extends DingTalkGroupSearch {
+  complete: boolean;
+  failureCount: number;
+}
+
 export interface DingTalkPersonalMessage {
   conversationId: string;
   messageId: string;
@@ -47,6 +52,7 @@ const publicErrors: Record<string, string> = {
   DWS_PROFILE_SELECTION_REQUIRED: '钉钉账号状态不明确，请断开后重新连接。',
   DWS_PROFILE_ALREADY_CONNECTED: '钉钉账号已经连接。',
   DWS_GROUP_QUERY_INVALID: '请输入要搜索的群名称关键词。',
+  DWS_GROUP_LIST_LIMIT_INVALID: '群聊加载参数无效，请重新加载。',
   DWS_GROUP_SEARCH_INVALID_RESULT: '钉钉没有返回可识别的群聊结果，请重试。',
   DWS_EVENT_LISTENER_FAILED: '钉钉群消息实时监听未能启动，请检查当前账号的事件订阅权限。',
   DWS_MONITOR_ALREADY_ACTIVE: '这个钉钉群已经有一个实时监听连接。',
@@ -240,6 +246,21 @@ export class DingTalkService {
     }
     this.requireConfigured();
     try { return await this.call(session, '/v1/groups/search', 'POST', { query: cleanQuery, cursor: cleanCursor }); }
+    catch (error) { throw serviceError(error); }
+  }
+
+  async listGroups(session: AuthSession, cursor = '0', pageLimit = 50): Promise<DingTalkGroupList> {
+    const cleanCursor = String(cursor || '0');
+    if (cleanCursor.length > 200 || !Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > 50) throw new Error('DWS_GROUP_LIST_LIMIT_INVALID');
+    if (this.e2eMock) {
+      if (this.mockAccounts.get(ownerKey(session))?.state !== 'identity-verified') throw new Error(publicErrors.DWS_PROFILE_NOT_AUTHENTICATED);
+      return {
+        groups: [{ conversationId: 'e2e-incident-alerts', name: '系统监控告警群' }],
+        complete: true, hasMore: false, failureCount: 0,
+      };
+    }
+    this.requireConfigured();
+    try { return await this.call(session, '/v1/groups/list', 'POST', { cursor: cleanCursor, pageLimit }); }
     catch (error) { throw serviceError(error); }
   }
 

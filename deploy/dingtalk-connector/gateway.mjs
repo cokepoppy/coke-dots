@@ -20,7 +20,7 @@ const maxDocumentRequestBytes = 600 * 1024;
 const maxTicketLifetimeSeconds = 120;
 const allowedErrors = new Set([
   'DWS_PLATFORM_UNSUPPORTED', 'DWS_BINARY_UNSAFE', 'DWS_BINARY_CHECKSUM_MISMATCH',
-  'DWS_PROFILE_SELECTION_REQUIRED', 'DWS_PROFILE_MISMATCH', 'DWS_AUTH_STATUS_UNAVAILABLE', 'DWS_PROFILE_ALREADY_CONNECTED',
+  'DWS_PROFILE_SELECTION_REQUIRED', 'DWS_PROFILE_MISMATCH', 'DWS_AUTH_STATUS_UNAVAILABLE', 'DWS_PROFILE_ALREADY_CONNECTED', 'DWS_GROUP_LIST_LIMIT_INVALID',
   'DWS_PROFILE_NOT_INSTALLED', 'DWS_PROFILE_NOT_AUTHENTICATED', 'DWS_GROUP_QUERY_INVALID',
   'DWS_GROUP_SEARCH_INVALID_RESULT', 'DWS_LOGOUT_READBACK_FAILED',
   'DWS_PROCESS_TIMEOUT', 'DWS_PROCESS_START_FAILED', 'DWS_PROCESS_FAILED', 'DWS_INVALID_JSON',
@@ -189,24 +189,49 @@ function safeVerificationUrl(raw) {
 }
 
 function sanitizeGroups(payload) {
-  const raw = Array.isArray(payload?.result) ? payload.result :
-    Array.isArray(payload?.result?.groups) ? payload.result.groups :
-      Array.isArray(payload?.result?.chats) ? payload.result.chats :
-        Array.isArray(payload?.result?.items) ? payload.result.items :
-      Array.isArray(payload?.groups) ? payload.groups : null;
+  const raw = extractGroupRows(payload);
   if (payload?.success !== true || !raw) throw new Error('DWS_GROUP_SEARCH_INVALID_RESULT');
   const groups = [];
   for (const group of raw) {
-    const conversationId = String(group?.openConversationId || group?.open_conversation_id || group?.conversationId || '').trim();
-    const name = String(group?.title || group?.name || group?.groupName || group?.conversationName || '').trim();
+    const conversationId = groupConversationId(group);
+    const name = groupName(group);
     if (!conversationId || !name) continue;
     groups.push({ conversationId: conversationId.slice(0, 512), name: name.slice(0, 200) });
   }
+  if (groups.length !== raw.length) throw new Error('DWS_GROUP_SEARCH_INVALID_RESULT');
   const page = payload.result && !Array.isArray(payload.result) ? payload.result : payload;
   return {
     groups,
     hasMore: page.hasMore === true,
     ...(typeof page.nextCursor === 'string' || typeof page.nextCursor === 'number' ? { nextCursor: String(page.nextCursor).slice(0, 200) } : {}),
+  };
+}
+
+function extractGroupRows(payload) {
+  return Array.isArray(payload?.result) ? payload.result :
+    Array.isArray(payload?.result?.groups) ? payload.result.groups :
+      Array.isArray(payload?.result?.chats) ? payload.result.chats :
+        Array.isArray(payload?.result?.items) ? payload.result.items :
+          Array.isArray(payload?.groups) ? payload.groups : null;
+}
+
+function groupConversationId(group) {
+  return String(group?.openConversationId || group?.open_conversation_id || group?.conversationId || '').trim();
+}
+
+function groupName(group) {
+  return String(group?.title || group?.name || group?.groupName || group?.conversationName || group?.chatName || '').trim();
+}
+
+function sanitizeGroupList(payload) {
+  const groups = sanitizeGroups(payload);
+  const page = payload.result && !Array.isArray(payload.result) ? payload.result : payload;
+  const failures = Array.isArray(page.failures) ? page.failures.length : 0;
+  const hasMore = page.hasMore === true;
+  return {
+    ...groups,
+    complete: page.complete === true && !hasMore && failures === 0,
+    failureCount: failures,
   };
 }
 
@@ -530,6 +555,36 @@ export function createDingtalkConnectorGateway({
     });
   }
 
+  async function listGroups(ticket, body) {
+    const cursor = typeof body.cursor === 'string' && body.cursor.length <= 200 ? body.cursor : '0';
+    const pageLimit = Number(body.pageLimit ?? 50);
+    if (!cursor || !Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > 50) throw new Error('DWS_GROUP_LIST_LIMIT_INVALID');
+    const ownerKey = principalKey(ownerPrincipal(ticket));
+    return withOwnerLock(ownerKey, async () => {
+      const workspace = await createProfileWorkspace(ticket, 'list-groups');
+      let restored = false;
+      try {
+        restored = await restoreEncryptedProfile({ storageRoot, ownerKey, masterKey, destinationRoot: workspace.root, tempRoot: managedTmpRoot });
+        if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
+        const statusValue = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, macTestOnly, verifyBinary });
+        if (statusValue.state !== 'identity-verified') throw new Error('DWS_PROFILE_NOT_AUTHENTICATED');
+        const owner = await prepareProfileRoot(workspace.root, workspace.principal);
+        const profilePayload = await runDws(binary, ['profile', 'list', '--format', 'json'], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }) });
+        const profile = selectCurrentProfile(profilePayload);
+        if (!profile) throw new Error('DWS_PROFILE_SELECTION_REQUIRED');
+        const args = ['chat', '+my-groups', '--page-all', '--page-limit', String(pageLimit), '--format', 'json', '--profile', profile.selector];
+        if (cursor !== '0') args.splice(5, 0, '--cursor', cursor);
+        const result = await runDws(binary, args, {
+          cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }), timeoutMs: 60_000, maxBytes: 2 * 1024 * 1024,
+        });
+        return sanitizeGroupList(result);
+      } finally {
+        if (restored) await writeEncryptedProfile({ storageRoot, ownerKey, masterKey, sourceRoot: workspace.root, tempRoot: managedTmpRoot }).catch(() => undefined);
+        await rm(workspace.root, { recursive: true, force: true });
+      }
+    });
+  }
+
   async function disconnect(ticket) {
     const ownerKey = principalKey(ownerPrincipal(ticket));
     const flow = [...flows.values()].find(item => item.ownerKey === ownerKey);
@@ -746,6 +801,7 @@ export function createDingtalkConnectorGateway({
       if (authorizationMatch && req.method === 'GET') return send(200, { ok: true, data: await pollAuthorization(ticket, authorizationMatch[1]) });
       if (authorizationMatch && req.method === 'DELETE') return send(200, { ok: true, data: await cancelAuthorization(ticket, authorizationMatch[1]) });
       if (req.method === 'POST' && url.pathname === '/v1/groups/search') return send(200, { ok: true, data: await searchGroups(ticket, await readBody(req)) });
+      if (req.method === 'POST' && url.pathname === '/v1/groups/list') return send(200, { ok: true, data: await listGroups(ticket, await readBody(req)) });
       const documentRoute = url.pathname.match(/^\/v1\/docs\/(create|fetch|search|update)$/);
       if (req.method === 'POST' && documentRoute) {
         const body = await readBody(req, maxDocumentRequestBytes);

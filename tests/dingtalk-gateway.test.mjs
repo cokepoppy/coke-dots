@@ -67,6 +67,14 @@ if (group === 'profile' && command === 'list') {
   console.log(JSON.stringify({ success: true, authenticated: true, token_valid: true, corp_id: 'corp-e2e', user_id: 'user-e2e', corp_name: '测试组织', user_name: '测试用户', expires_at: '2099-01-01T00:00:00.000Z' }));
 } else if (group === 'chat' && command === 'search') {
   console.log(JSON.stringify({ success: true, result: { query: '告警', chats: [{ openConversationId: 'cid-alerts', name: '系统监控告警群' }], hasMore: true, nextCursor: 'next-page', complete: false } }));
+} else if (group === 'chat' && command === '+my-groups') {
+  const pageLimit = args[args.indexOf('--page-limit') + 1];
+  const cursorIndex = args.indexOf('--cursor');
+  if (!args.includes('--page-all') || !args.includes('--profile') || pageLimit === undefined || (cursorIndex >= 0 && args[cursorIndex + 1] !== 'next-page')) process.exit(2);
+  console.log(JSON.stringify({ success: true, result: {
+    groups: [{ openConversationId: cursorIndex >= 0 ? 'cid-alerts-2' : 'cid-alerts', title: cursorIndex >= 0 ? '发布告警群' : '系统监控告警群' }],
+    complete: pageLimit !== '1', hasMore: pageLimit === '1', ...(pageLimit === '1' ? { nextCursor: 'next-page' } : {}),
+  } }));
 } else if (group === 'doc' && command === '+create') {
   const name = args[args.indexOf('--name') + 1];
   const body = await readStdin();
@@ -183,6 +191,31 @@ if (group === 'profile' && command === 'list') {
     assert.deepEqual(search.data.groups, [{ conversationId: 'cid-alerts', name: '系统监控告警群' }], 'Adapt the official DWS result.chats contract');
     assert.equal(search.data.hasMore, true);
     assert.equal(search.data.nextCursor, 'next-page');
+
+    const groups = await call('/v1/groups/list', { method: 'POST', body: { cursor: '0', pageLimit: 50 } }).then(response => response.json());
+    assert.deepEqual(groups.data.groups, [{ conversationId: 'cid-alerts', name: '系统监控告警群' }], 'Load current user groups through the DWS group-list shortcut');
+    assert.equal(groups.data.complete, true);
+    assert.equal(groups.data.hasMore, false);
+    assert.equal(groups.data.failureCount, 0);
+
+    const otherUserGroupList = await call('/v1/groups/list', { principal: principalBeta, method: 'POST', body: { cursor: '0', pageLimit: 50 } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(otherUserGroupList.status, 400, 'Another Dots tenant/user must not enumerate this identity’s joined groups');
+    assert.equal(otherUserGroupList.body.error, 'DWS_PROFILE_NOT_INSTALLED');
+    assert.equal(JSON.stringify(otherUserGroupList).includes('系统监控告警群'), false);
+
+    const partialGroups = await call('/v1/groups/list', { method: 'POST', body: { cursor: '0', pageLimit: 1 } }).then(response => response.json());
+    assert.equal(partialGroups.data.complete, false, 'Do not call a capped group list complete');
+    assert.equal(partialGroups.data.hasMore, true);
+    assert.equal(partialGroups.data.nextCursor, 'next-page');
+    assert.equal(partialGroups.data.failureCount, 0);
+
+    const nextGroupPage = await call('/v1/groups/list', { method: 'POST', body: { cursor: partialGroups.data.nextCursor, pageLimit: 50 } }).then(response => response.json());
+    assert.deepEqual(nextGroupPage.data.groups, [{ conversationId: 'cid-alerts-2', name: '发布告警群' }]);
+    assert.equal(nextGroupPage.data.complete, true);
+
+    const invalidGroupPage = await call('/v1/groups/list', { method: 'POST', body: { cursor: '0', pageLimit: 51 } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(invalidGroupPage.status, 400);
+    assert.equal(invalidGroupPage.body.error, 'DWS_GROUP_LIST_LIMIT_INVALID');
 
     const unconfirmedCreate = await call('/v1/docs/create', { method: 'POST', body: { requestId: '00000000-0000-4000-8000-000000000000', name: '未确认报告', content: '不可写入' } }).then(async response => ({ status: response.status, body: await response.json() }));
     assert.equal(unconfirmedCreate.status, 400);

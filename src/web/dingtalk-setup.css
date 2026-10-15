@@ -33,6 +33,7 @@
 .dingtalk-search input { width: 100%; min-width: 0; height: 37px; padding: 0 11px; border: 1px solid #e2dfe4; border-radius: 8px; outline: none; background: #fff; color: #29272e; font: inherit; font-size: 12px; }
 .dingtalk-search input:focus { border-color: #9cc8ae; box-shadow: 0 0 0 3px #d8f0e1; }
 .dingtalk-search button { min-width: 62px; border: 0; border-radius: 8px; background: #29272e; color: #fff; font: inherit; font-size: 12px; cursor: pointer; }
+.dingtalk-group-list { width: 100%; margin-top: 8px; }
 .dingtalk-group-results { max-height: 190px; overflow: auto; margin-top: 10px; padding: 4px; border: 1px solid #ece9ed; border-radius: 9px; }
 .dingtalk-group-row { min-height: 47px; display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 7px; cursor: pointer; }
 .dingtalk-group-row:hover { background: #f6f4f7; }

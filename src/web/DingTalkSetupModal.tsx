@@ -32,7 +32,7 @@ interface AuthorizationFlow {
 }
 
 interface DingTalkGroup { conversationId: string; name: string }
-interface GroupSearch { groups: DingTalkGroup[]; hasMore: boolean; nextCursor?: string }
+interface GroupSearch { groups: DingTalkGroup[]; hasMore: boolean; nextCursor?: string; complete?: boolean; failureCount?: number }
 interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; keywords: string[]; canEnable: boolean; listenerState?: 'off' | 'starting' | 'listening' | 'reconnecting'; reason?: string }
 interface DingTalkMonitors { stream: { configured: boolean; connected: boolean; ready: boolean; testOnly?: boolean }; groups: DingTalkMonitorGroup[] }
 
@@ -45,6 +45,9 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<DingTalkGroup[]>([]);
   const [searchedQuery, setSearchedQuery] = useState<string | null>(null);
+  const [resultMode, setResultMode] = useState<'search' | 'list' | null>(null);
+  const [listComplete, setListComplete] = useState<boolean | null>(null);
+  const [listFailureCount, setListFailureCount] = useState(0);
   const [cursor, setCursor] = useState('0');
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -164,13 +167,26 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
     const cleanQuery = query.trim();
     if (!cleanQuery || working) return;
     setWorking(true); setError(''); setNotice('');
-    if (!append) { setResults([]); setSearchedQuery(null); }
+    if (!append) { setResults([]); setSearchedQuery(null); setResultMode(null); setListComplete(null); setListFailureCount(0); }
     try {
       const page = await appFetch('/api/dingtalk/groups/search', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: cleanQuery, cursor: nextCursor }) }).then(response => readJson<GroupSearch>(response));
       setResults(current => append ? mergeGroups(current, page.groups) : page.groups);
-      setSearchedQuery(cleanQuery);
+      setSearchedQuery(cleanQuery); setResultMode('search'); setListComplete(null); setListFailureCount(0);
       setCursor(page.nextCursor || '0'); setHasMore(page.hasMore);
     } catch (reason) { setError(reason instanceof Error ? reason.message : '钉钉群搜索失败。'); }
+    finally { setWorking(false); }
+  }
+
+  async function listGroups(nextCursor = '0', append = false) {
+    if (working) return;
+    setWorking(true); setError(''); setNotice('');
+    if (!append) { setResults([]); setSearchedQuery(null); setResultMode(null); setListComplete(null); setListFailureCount(0); }
+    try {
+      const page = await appFetch('/api/dingtalk/groups/list', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cursor: nextCursor, pageLimit: 50 }) }).then(response => readJson<GroupSearch>(response));
+      setResults(current => append ? mergeGroups(current, page.groups) : page.groups);
+      setResultMode('list'); setListComplete(page.complete === true); setListFailureCount(page.failureCount || 0);
+      setCursor(page.nextCursor || '0'); setHasMore(page.hasMore);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '加载钉钉群聊失败。'); }
     finally { setWorking(false); }
   }
 
@@ -264,21 +280,28 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
           {account.expiresAt && <small>凭据有效期至 {new Date(account.expiresAt).toLocaleString()}</small>}
         </div>}
         {isConnected && <div className="dingtalk-groups-section">
-          <div className="dingtalk-section-title"><div><h3>选择群聊</h3><p>按群名称搜索你有权访问的会话</p></div><span>{selected.length}/20</span></div>
+          <div className="dingtalk-section-title"><div><h3>选择群聊</h3><p>搜索群名，或加载当前账号加入的群</p></div><span>{selected.length}/20</span></div>
           <form className="dingtalk-search" onSubmit={event => { event.preventDefault(); void searchGroups(); }}>
-            <input aria-label="搜索钉钉群聊" data-testid="dingtalk-group-query" value={query} onChange={event => { setQuery(event.currentTarget.value); setResults([]); setSearchedQuery(null); setCursor('0'); setHasMore(false); }} placeholder="输入群名称关键词" maxLength={100} />
+            <input aria-label="搜索钉钉群聊" data-testid="dingtalk-group-query" value={query} onChange={event => { setQuery(event.currentTarget.value); setResults([]); setSearchedQuery(null); setResultMode(null); setListComplete(null); setListFailureCount(0); setCursor('0'); setHasMore(false); }} placeholder="输入群名称关键词" maxLength={100} />
             <button type="submit" data-testid="dingtalk-group-search" disabled={working || !query.trim()}>搜索</button>
           </form>
-          {results.length > 0 && <div className="dingtalk-group-results" role="group" aria-label="钉钉群搜索结果">
+          <button className="dingtalk-setup-secondary dingtalk-group-list" type="button" data-testid="dingtalk-group-list" disabled={working} onClick={() => void listGroups()}>{working && resultMode === null ? '正在加载…' : '加载我加入的群'}</button>
+          {results.length > 0 && <div className="dingtalk-group-results" role="group" aria-label={resultMode === 'list' ? '我加入的钉钉群聊' : '钉钉群搜索结果'}>
             {results.map(group => <label className="dingtalk-group-row" key={group.conversationId}>
               <input type="checkbox" checked={selectedIds.has(group.conversationId)} onChange={() => toggleGroup(group)} />
               <span><strong>{group.name}</strong><small>保存后可在下方单独开启监听</small></span>
             </label>)}
-            {hasMore && <button className="dingtalk-setup-secondary" type="button" disabled={working} onClick={() => void searchGroups(cursor, true)}>加载更多</button>}
+            {hasMore && <button className="dingtalk-setup-secondary" type="button" disabled={working} onClick={() => void (resultMode === 'list' ? listGroups(cursor, true) : searchGroups(cursor, true))}>{resultMode === 'list' ? '加载更多群聊' : '加载更多搜索结果'}</button>}
           </div>}
-          {results.length === 0 && query && searchedQuery === query.trim()
+          {results.length === 0 && resultMode === 'search' && query && searchedQuery === query.trim()
             ? <p className="dingtalk-empty-results" data-testid="dingtalk-group-empty-state" role="status">没有找到与“{searchedQuery}”匹配的群聊。试试更短的关键词，或确认当前钉钉账号有权访问该群。</p>
-            : results.length === 0 && query && <p className="dingtalk-empty-results">输入群名关键词并点击搜索。</p>}
+            : results.length === 0 && resultMode === 'list' && listComplete === true
+              ? <p className="dingtalk-empty-results" data-testid="dingtalk-group-list-empty-state" role="status">当前钉钉账号没有可访问的群聊。</p>
+              : results.length === 0 && resultMode === 'list' && listComplete === false
+                ? <p className="dingtalk-empty-results" data-testid="dingtalk-group-list-incomplete" role="status">群列表尚未完整加载{listFailureCount > 0 ? `（${listFailureCount} 项失败）` : ''}。请继续加载或稍后重试。</p>
+                : results.length === 0 && resultMode === null && <p className="dingtalk-empty-results">可以搜索群名，也可以加载当前账号加入的全部群。</p>}
+          {resultMode === 'list' && listComplete === true && results.length > 0 && <p className="dingtalk-empty-results" data-testid="dingtalk-group-list-complete" role="status">已加载当前账号加入的全部群聊，共 {results.length} 个。</p>}
+          {resultMode === 'list' && listComplete === false && results.length > 0 && <p className="dingtalk-empty-results" data-testid="dingtalk-group-list-incomplete" role="status">群列表尚未完整加载{listFailureCount > 0 ? `（${listFailureCount} 项失败）` : ''}。请继续加载更多群聊或稍后重试。</p>}
           {selected.length > 0 && <div className="dingtalk-selected-groups"><strong>待保存群聊</strong>{selected.map(group => <span key={group.conversationId}>{group.name}<button type="button" aria-label={`移除群 ${group.name}`} onClick={() => toggleGroup(group)}>×</button></span>)}</div>}
           <button className="dingtalk-setup-primary" type="button" data-testid="dingtalk-groups-save" disabled={working || !status?.configured} onClick={() => void saveGroups()}>{working ? '处理中…' : '保存群选择'}</button>
           {monitors && <div className="dingtalk-monitor-section" data-testid="dingtalk-monitor-section">

@@ -232,6 +232,12 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, await dingtalk.searchGroups(session, String(body.query || ''), String(body.cursor || '0')));
     } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '钉钉群搜索失败。' }); }
   }
+  if (path === '/api/dingtalk/groups/list' && req.method === 'POST') {
+    try {
+      const body = await readJson(req);
+      return reply(res, 200, await dingtalk.listGroups(session, String(body.cursor || '0'), Number(body.pageLimit ?? 50)));
+    } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '加载钉钉群聊失败。' }); }
+  }
   if (path === '/api/dingtalk/groups/selected' && req.method === 'GET') {
     const selected = store.dingtalkGroupSelections(session.tenant.id, session.user.id)
       .map(item => ({ conversationId: item.conversationId, name: item.groupName }));
