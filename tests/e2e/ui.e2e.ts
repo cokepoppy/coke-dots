@@ -472,6 +472,7 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
       SLACK_REDIRECT_URI: `${baseUrl}/auth/slack/callback`,
       DOTS_E2E_SLACK_PROVIDER_URL: mockSlackProviderOrigin,
+      DOTS_E2E_DINGTALK: '1',
       DOTS_VOICE_PROVIDER: '',
       DOTS_QWEN_API_KEY: '',
       DOTS_QWEN_WORKSPACE_ID: '',
@@ -1259,6 +1260,43 @@ try {
     assert.equal(mockSlackCodeExchanges, 1, 'Chrome should complete exactly one Slack OAuth code exchange');
   });
 
+  await recordStep('Connect the DingTalk account, search a group, and save a scoped selection', async () => {
+    const contextPanel = alphaPage!.getByTestId('dot-context-panel');
+    await alphaPage!.getByTestId('task-composer').fill('保留的钉钉设置草稿');
+    await contextPanel.getByRole('button', { name: '钉钉' }).click();
+    const modal = alphaPage!.getByRole('dialog', { name: '连接钉钉' });
+    await modal.waitFor({ state: 'visible' });
+    await modal.getByTestId('dingtalk-authorize').click();
+    await modal.getByTestId('dingtalk-user-code').waitFor({ state: 'visible' });
+    assert.equal(await modal.getByTestId('dingtalk-user-code').innerText(), 'E2E-CODE');
+    assert.equal(await modal.getByRole('link', { name: '打开钉钉授权页面' }).getAttribute('href'), 'https://login.dingtalk.com/oauth2/device?user_code=E2E-CODE');
+    await screenshot(alphaPage!, 'dingtalk-device-authorization');
+    await modal.getByRole('button', { name: '关闭钉钉设置' }).click();
+    await contextPanel.getByRole('button', { name: '钉钉' }).click();
+    const resumedModal = alphaPage!.getByRole('dialog', { name: '连接钉钉' });
+    await resumedModal.getByTestId('dingtalk-user-code').waitFor({ state: 'visible' });
+    assert.equal(await resumedModal.getByTestId('dingtalk-user-code').innerText(), 'E2E-CODE', 'Reopening the connector must resume the pending device authorization');
+    await screenshot(alphaPage!, 'dingtalk-resumed-device-authorization');
+    await resumedModal.getByTestId('dingtalk-e2e-authorize').click();
+    await resumedModal.getByTestId('dingtalk-connected-state').waitFor({ state: 'visible' });
+    assert.match(await resumedModal.getByTestId('dingtalk-connected-state').innerText(), /测试钉钉账号/);
+    await resumedModal.getByTestId('dingtalk-group-query').fill('系统告警');
+    await resumedModal.getByTestId('dingtalk-group-search').click();
+    const result = resumedModal.getByRole('group', { name: '钉钉群搜索结果' }).getByText('系统监控告警群');
+    await result.waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, 'dingtalk-group-search');
+    await resumedModal.getByRole('checkbox').check();
+    await resumedModal.getByTestId('dingtalk-groups-save').click();
+    await resumedModal.getByRole('status').filter({ hasText: '当前不会自动读取群消息或向群发送消息' }).waitFor({ state: 'visible' });
+    const savedGroups = await alphaPage!.evaluate(async () => await (await fetch('/api/dingtalk/groups/selected')).json()) as { conversationId: string; name: string }[];
+    assert.deepEqual(savedGroups, [{ conversationId: 'e2e-incident-alerts', name: '系统监控告警群' }]);
+    assert.equal(JSON.stringify(savedGroups).includes('tenantId'), false, 'The UI DTO must not expose internal tenant/user database fields');
+    await screenshot(alphaPage!, 'dingtalk-selected-group');
+    await resumedModal.getByRole('button', { name: '关闭钉钉设置' }).click();
+    assert.equal(await alphaPage!.getByTestId('task-composer').inputValue(), '保留的钉钉设置草稿', 'Opening the connector must preserve the chat draft');
+    assert.equal(await alphaPage!.evaluate(async () => JSON.stringify(await (await fetch('/api/dingtalk')).json()).includes('token')), false, 'The account status API must not return credentials');
+  });
+
   await recordStep('Dot computer shortcut opens the tenant-isolated browser workspace', async () => {
     await alphaPage!.getByTestId('dot-computer-row').click();
     await alphaPage!.getByRole('heading', { name: '打开独立电脑' }).waitFor({ state: 'visible' });
@@ -1275,6 +1313,8 @@ try {
     assert.deepEqual(betaState.computerAccess, { dotComputer: true, localComputer: true, configured: false }, 'A different account must receive its own unconfigured computer-access choice');
     const betaSlackState = await betaPage!.evaluate(async () => await (await fetch('/api/slack')).json()) as { installations: unknown[] };
     assert.deepEqual(betaSlackState.installations, [], 'Beta must not inherit Alpha personal Slack installations');
+    const betaDingTalkGroups = await betaPage!.evaluate(async () => await (await fetch('/api/dingtalk/groups/selected')).json()) as unknown[];
+    assert.deepEqual(betaDingTalkGroups, [], 'Beta must not inherit Alpha DingTalk group selections');
     await assertNoVisibleText(betaPage!, alphaPrivateTask);
     await screenshot(betaPage!, '04-beta-isolated');
   });

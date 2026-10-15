@@ -1,0 +1,77 @@
+.dingtalk-setup-backdrop { position: fixed; inset: 0; z-index: 121; display: grid; place-items: center; padding: 20px; background: #19171d55; backdrop-filter: blur(2px); }
+.dingtalk-setup-dialog { position: relative; width: min(500px, 100%); max-height: min(88vh, 820px); overflow: auto; padding: 24px; border: 1px solid #eae7ec; border-radius: 14px; background: #fff; color: #29272e; box-shadow: 0 20px 70px #17131d30; }
+.dingtalk-setup-close { position: absolute; top: 13px; right: 15px; width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent; color: #85818b; font-size: 23px; line-height: 1; cursor: pointer; }
+.dingtalk-setup-close:hover { background: #f4f2f5; color: #39363e; }
+.dingtalk-setup-heading { display: flex; align-items: center; gap: 12px; margin: 0 36px 19px 0; }
+.dingtalk-logo { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px; background: #e9f2ff; color: #287be0; font-size: 19px; font-weight: 750; }
+.dingtalk-setup-heading h2 { margin: 0 0 3px; font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
+.dingtalk-setup-heading p,.dingtalk-setup-status { margin: 0; color: #85818b; font-size: 12px; }
+.dingtalk-setup-card { padding: 18px; border: 1px solid #ece9ed; border-radius: 11px; background: #faf9fa; }
+.dingtalk-setup-kicker { color: #63806e; font-size: 11px; font-weight: 650; letter-spacing: .04em; }
+.dingtalk-setup-card h3,.dingtalk-section-title h3 { margin: 6px 0 7px; font-size: 15px; font-weight: 650; }
+.dingtalk-setup-card p,.dingtalk-section-title p { margin: 0; color: #77737d; font-size: 12px; line-height: 1.6; }
+.dingtalk-setup-primary { min-height: 39px; display: flex; align-items: center; justify-content: center; width: 100%; margin: 15px 0 0; padding: 0 13px; border: 0; border-radius: 8px; background: #c6f0df; color: #2d493c; font: inherit; font-size: 13px; font-weight: 650; text-decoration: none; cursor: pointer; transition: background .16s ease; }
+.dingtalk-setup-primary:hover:not(:disabled) { background: #b4e8d3; }
+.dingtalk-setup-primary:disabled,.dingtalk-search button:disabled,.dingtalk-setup-secondary:disabled { opacity: .55; cursor: not-allowed; }
+.dingtalk-setup-secondary { min-height: 31px; margin: 7px 5px 0 0; padding: 0 10px; border: 0; border-radius: 7px; background: transparent; color: #77737d; font: inherit; font-size: 11px; cursor: pointer; }
+.dingtalk-setup-secondary:hover:not(:disabled) { background: #f1eff2; color: #47434d; }
+.dingtalk-authorization-card { text-align: center; }
+.dingtalk-device-code { display: flex; flex-direction: column; gap: 4px; margin: 15px auto 0; padding: 10px; border: 1px dashed #d9d3dd; border-radius: 9px; background: #fff; }
+.dingtalk-device-code span { color: #85818b; font-size: 11px; }
+.dingtalk-device-code strong { color: #29272e; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 23px; letter-spacing: .14em; }
+.dingtalk-authorization-link { margin-top: 11px; }
+.dingtalk-setup-connected { display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 1px 10px; padding: 12px 14px; border: 1px solid #cfe9d8; border-radius: 10px; background: #f4fbf6; }
+.dingtalk-connected-mark { width: 30px; height: 30px; display: grid; place-items: center; grid-row: span 2; border-radius: 50%; background: #d9f2e2; color: #39814f; font-weight: 700; }
+.dingtalk-setup-connected strong,.dingtalk-setup-connected span { display: block; font-size: 12px; }
+.dingtalk-setup-connected div span { margin-top: 3px; color: #77737d; }
+.dingtalk-setup-connected small { grid-column: 2; margin-top: 3px; color: #85818b; font-size: 10px; }
+.dingtalk-groups-section { margin-top: 20px; }
+.dingtalk-section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.dingtalk-section-title h3 { margin: 0 0 3px; }
+.dingtalk-section-title > span { padding: 4px 7px; border-radius: 999px; background: #f0edf2; color: #77737d; font-size: 10px; }
+.dingtalk-search { display: flex; gap: 8px; }
+.dingtalk-search input { width: 100%; min-width: 0; height: 37px; padding: 0 11px; border: 1px solid #e2dfe4; border-radius: 8px; outline: none; background: #fff; color: #29272e; font: inherit; font-size: 12px; }
+.dingtalk-search input:focus { border-color: #9cc8ae; box-shadow: 0 0 0 3px #d8f0e1; }
+.dingtalk-search button { min-width: 62px; border: 0; border-radius: 8px; background: #29272e; color: #fff; font: inherit; font-size: 12px; cursor: pointer; }
+.dingtalk-group-results { max-height: 190px; overflow: auto; margin-top: 10px; padding: 4px; border: 1px solid #ece9ed; border-radius: 9px; }
+.dingtalk-group-row { min-height: 47px; display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 7px; cursor: pointer; }
+.dingtalk-group-row:hover { background: #f6f4f7; }
+.dingtalk-group-row input { accent-color: #458861; }
+.dingtalk-group-row span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dingtalk-group-row strong { overflow: hidden; color: #39363e; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.dingtalk-group-row small { color: #96919b; font-size: 10px; }
+.dingtalk-empty-results { margin: 10px 0; color: #85818b; font-size: 11px; }
+.dingtalk-selected-groups { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 11px; }
+.dingtalk-selected-groups > strong { width: 100%; color: #77737d; font-size: 11px; font-weight: 550; }
+.dingtalk-selected-groups > span { display: flex; align-items: center; gap: 6px; padding: 4px 7px; border-radius: 6px; background: #f1eff2; color: #4b4850; font-size: 10px; }
+.dingtalk-selected-groups button { padding: 0; border: 0; background: transparent; color: #77737d; font-size: 14px; line-height: 1; cursor: pointer; }
+.dingtalk-setup-footnote { margin: 11px 0 0; color: #85818b; font-size: 10px; line-height: 1.5; }
+.dingtalk-disconnect { margin-top: 13px; color: #ad4c49; }
+.dingtalk-setup-notice-box { display: flex; flex-direction: column; gap: 7px; padding: 15px; border: 1px solid #eee7d5; border-radius: 10px; background: #fffaf0; color: #625236; font-size: 12px; line-height: 1.5; }
+.dingtalk-setup-notice-box span { color: #77737d; }
+.dingtalk-setup-error,.dingtalk-setup-success { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 13px 0 0; font-size: 11px; text-align: center; }
+.dingtalk-setup-error { color: #ad4c49; }
+.dingtalk-setup-error button { border: 0; background: none; color: inherit; text-decoration: underline; cursor: pointer; }
+.dingtalk-setup-success { color: #51845f; }
+.dots-dark .dingtalk-setup-backdrop { background: #0009; }
+.dots-dark .dingtalk-setup-dialog { border-color: #303036; background: #17171a; color: #f0f0f2; box-shadow: 0 20px 70px #0009; }
+.dots-dark .dingtalk-setup-close { color: #aaa5af; }
+.dots-dark .dingtalk-setup-close:hover { background: #303036; color: #f2eff5; }
+.dots-dark .dingtalk-logo { background: #142842; color: #75aeff; }
+.dots-dark .dingtalk-setup-heading p,.dots-dark .dingtalk-setup-status,.dots-dark .dingtalk-setup-card p,.dots-dark .dingtalk-section-title p,.dots-dark .dingtalk-setup-footnote { color: #aaa5af; }
+.dots-dark .dingtalk-setup-card { border-color: #303036; background: #202024; }
+.dots-dark .dingtalk-setup-kicker { color: #a4d8ba; }
+.dots-dark .dingtalk-device-code,.dots-dark .dingtalk-search input { border-color: #39393f; background: #17171a; color: #f0f0f2; }
+.dots-dark .dingtalk-device-code strong { color: #f0f0f2; }
+.dots-dark .dingtalk-device-code span,.dots-dark .dingtalk-group-row small,.dots-dark .dingtalk-setup-connected div span,.dots-dark .dingtalk-setup-connected small { color: #aaa5af; }
+.dots-dark .dingtalk-setup-connected { border-color: #284a33; background: #17241b; }
+.dots-dark .dingtalk-connected-mark { background: #244932; color: #a4d8ba; }
+.dots-dark .dingtalk-section-title > span,.dots-dark .dingtalk-selected-groups > span,.dots-dark .dingtalk-group-row:hover { background: #303036; color: #d5d3d8; }
+.dots-dark .dingtalk-group-results { border-color: #303036; }
+.dots-dark .dingtalk-group-row strong { color: #f0f0f2; }
+.dots-dark .dingtalk-setup-secondary { color: #c4c0c9; }
+.dots-dark .dingtalk-setup-secondary:hover:not(:disabled) { background: #303036; color: #fff; }
+.dots-dark .dingtalk-setup-notice-box { border-color: #55462c; background: #292318; color: #f0dfbd; }
+.dots-dark .dingtalk-setup-notice-box span { color: #c7bda9; }
+.dots-dark .dingtalk-setup-success { color: #9dcca8; }
+@media (max-width: 520px) { .dingtalk-setup-dialog { padding: 18px 15px 16px; } .dingtalk-setup-card { padding: 15px; } }

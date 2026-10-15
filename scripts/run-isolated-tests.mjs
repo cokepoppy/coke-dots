@@ -30,7 +30,7 @@ function createIsolatedEnvironment() {
 }
 
 const testFiles = readdirSync(join(projectRoot, 'tests'))
-  .filter(file => file.endsWith('.test.ts'))
+  .filter(file => file.endsWith('.test.ts') || file.endsWith('.test.mjs'))
   .sort()
   .map(file => join('tests', file));
 

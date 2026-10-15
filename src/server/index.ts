@@ -15,6 +15,7 @@ import { apiErrorResponse } from './computer-errors.ts';
 import { createArtifactPreviewTicket, verifyArtifactPreviewTicket } from './artifact-preview-ticket.ts';
 import { AuthService } from './auth.ts';
 import { SlackService } from './slack.ts';
+import { DingTalkService } from './dingtalk.ts';
 import { negotiateQwenRealtime, VoiceProviderError, voiceProviderInfo } from './voice-provider.ts';
 import { existsSync } from 'node:fs';
 import { createConnection } from 'node:net';
@@ -48,6 +49,7 @@ if (modelSettingsSource) {
 }
 const auth = new AuthService(store, port);
 const slack = new SlackService(store, port);
+const dingtalk = new DingTalkService();
 const computers = new Map<string, ComputerRuntime>();
 const novncStreams = new Map<string, Set<Duplex>>();
 const clients = new Map<ServerResponse, string>();
@@ -164,6 +166,59 @@ const server = createServer(async (req, res) => {
     const body = await readJson(req);
     const result = slack.setContactWorkspace(session, String(body.teamId || ''));
     return result.status === 200 ? reply(res, 200, result.value) : reply(res, result.status, { error: result.error });
+  }
+  if (path === '/api/dingtalk' && req.method === 'GET') {
+    try { return reply(res, 200, await dingtalk.status(session)); }
+    catch (error) { return reply(res, 503, { error: error instanceof Error ? error.message : '钉钉连接服务暂时不可用。' }); }
+  }
+  if (path === '/api/dingtalk/authorization/start' && req.method === 'POST') {
+    try { return reply(res, 201, await dingtalk.startAuthorization(session)); }
+    catch (error) { return reply(res, 503, { error: error instanceof Error ? error.message : '无法开始钉钉授权。' }); }
+  }
+  const dingtalkAuthorizationMatch = path.match(/^\/api\/dingtalk\/authorization\/([a-f0-9-]{36})$/i);
+  if (dingtalkAuthorizationMatch && req.method === 'GET') {
+    try { return reply(res, 200, await dingtalk.authorization(session, dingtalkAuthorizationMatch[1])); }
+    catch (error) { return reply(res, 404, { error: error instanceof Error ? error.message : '钉钉授权流程不存在。' }); }
+  }
+  if (dingtalkAuthorizationMatch && req.method === 'DELETE') {
+    try { return reply(res, 200, await dingtalk.cancelAuthorization(session, dingtalkAuthorizationMatch[1])); }
+    catch (error) { return reply(res, 404, { error: error instanceof Error ? error.message : '钉钉授权流程不存在。' }); }
+  }
+  if (path === '/api/dingtalk/groups/search' && req.method === 'POST') {
+    try {
+      const body = await readJson(req);
+      return reply(res, 200, await dingtalk.searchGroups(session, String(body.query || ''), String(body.cursor || '0')));
+    } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '钉钉群搜索失败。' }); }
+  }
+  if (path === '/api/dingtalk/groups/selected' && req.method === 'GET') {
+    const selected = store.dingtalkGroupSelections(session.tenant.id, session.user.id)
+      .map(item => ({ conversationId: item.conversationId, name: item.groupName }));
+    return reply(res, 200, selected);
+  }
+  if (path === '/api/dingtalk/groups/selected' && req.method === 'PUT') {
+    try {
+      const account = await dingtalk.status(session);
+      if (account.account.state !== 'identity-verified') return reply(res, 409, { error: '请先连接并确认钉钉账号，再选择监控群。' });
+      const body = await readJson(req);
+      if (!Array.isArray(body.groups)) return reply(res, 400, { error: '群聊列表格式无效。' });
+      const groups = body.groups.map((group: { conversationId?: unknown; name?: unknown }) => ({ conversationId: String(group?.conversationId || ''), name: String(group?.name || '') }));
+      const saved = store.replaceDingtalkGroupSelections(session.tenant.id, session.user.id, groups)
+        .map(item => ({ conversationId: item.conversationId, name: item.groupName }));
+      return reply(res, 200, saved);
+    } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '保存钉钉群选择失败。' }); }
+  }
+  if (path === '/api/dingtalk/account' && req.method === 'DELETE') {
+    try {
+      const result = await dingtalk.disconnect(session);
+      store.clearDingtalkGroupSelections(session.tenant.id, session.user.id);
+      return reply(res, 200, result);
+    } catch (error) { return reply(res, 503, { error: error instanceof Error ? error.message : '无法断开钉钉连接。' }); }
+  }
+  if (path === '/api/dingtalk/e2e/complete' && req.method === 'POST' && dingtalk.isE2eMock()) {
+    try {
+      const body = await readJson(req);
+      return reply(res, 200, await dingtalk.saveTestAuthorization(session, String(body.id || '')));
+    } catch (error) { return reply(res, 404, { error: error instanceof Error ? error.message : '模拟授权流程不存在。' }); }
   }
 
   try {

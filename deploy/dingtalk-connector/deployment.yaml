@@ -1,0 +1,139 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: coke-dots-system
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dingtalk-connector-data
+  namespace: coke-dots-system
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coke-dots-dingtalk-connector
+  namespace: coke-dots-system
+  labels:
+    app: coke-dots-dingtalk-connector
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: coke-dots-dingtalk-connector
+  template:
+    metadata:
+      labels:
+        app: coke-dots-dingtalk-connector
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: initialize-profile-storage
+          image: busybox:1.37.0
+          command: ["sh", "-ec", "mkdir -p /var/lib/dws/profiles && chmod 0700 /var/lib/dws/profiles && chown 10001:10001 /var/lib/dws/profiles"]
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER"]
+          volumeMounts:
+            - name: profiles
+              mountPath: /var/lib/dws/profiles
+      containers:
+        - name: gateway
+          image: coke-dots-dingtalk-connector:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DINGTALK_CONNECTOR_PORT
+              value: "8789"
+            - name: DINGTALK_CONNECTOR_STORAGE_ROOT
+              value: /var/lib/dws/profiles
+            - name: DINGTALK_CONNECTOR_TMP_ROOT
+              value: /run/dws
+            - name: DINGTALK_CONNECTOR_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coke-dots-dingtalk-connector
+                  key: serviceToken
+            - name: DINGTALK_CONNECTOR_TICKET_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: coke-dots-dingtalk-connector
+                  key: ticketSecret
+            - name: DINGTALK_CONNECTOR_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: coke-dots-dingtalk-connector
+                  key: encryptionKey
+          ports:
+            - name: http
+              containerPort: 8789
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: profiles
+              mountPath: /var/lib/dws/profiles
+            - name: temporary
+              mountPath: /run/dws
+      volumes:
+        - name: profiles
+          persistentVolumeClaim:
+            claimName: dingtalk-connector-data
+        - name: temporary
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coke-dots-dingtalk-connector
+  namespace: coke-dots-system
+spec:
+  type: ClusterIP
+  selector:
+    app: coke-dots-dingtalk-connector
+  ports:
+    - name: http
+      port: 8789
+      targetPort: http

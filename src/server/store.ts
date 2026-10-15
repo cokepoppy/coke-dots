@@ -15,6 +15,7 @@ export interface AuthSession { tokenHash: string; user: AppUser; tenant: TenantS
 export interface OAuthFlow { stateHash: string; nonce: string; codeVerifier: string; expiresAt: string; handoffHash?: string | null; returnTo?: string | null }
 export interface SlackOAuthFlow { stateHash: string; tenantId: string; userId: string; expiresAt: string; returnTo: string }
 export interface SlackInstallation { tenantId: string; teamId: string; teamName: string; scopes: string[]; installedAt: string; contactEnabled: boolean }
+export interface DingTalkGroupSelection { tenantId: string; userId: string; conversationId: string; groupName: string; selectedAt: string }
 export interface StoredTaskAttachment extends AttachmentSummary { tenantId: string; uploadedBy: string; taskId: string | null; content: Uint8Array; createdAt: string }
 
 export class Store {
@@ -62,6 +63,11 @@ export class Store {
         contact_enabled INTEGER NOT NULL DEFAULT 0 CHECK(contact_enabled IN (0,1)), PRIMARY KEY(tenant_id,team_id)
       );
       CREATE UNIQUE INDEX IF NOT EXISTS slack_one_contact_per_tenant ON slack_installations(tenant_id) WHERE contact_enabled=1;
+      CREATE TABLE IF NOT EXISTS dingtalk_group_selections (
+        tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
+        conversation_id TEXT NOT NULL, group_name TEXT NOT NULL, selected_at TEXT NOT NULL,
+        PRIMARY KEY(tenant_id,user_id,conversation_id)
+      );
       CREATE TABLE IF NOT EXISTS desktop_handoffs (
         handoff_hash TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id), tenant_id TEXT REFERENCES tenants(id), expires_at TEXT NOT NULL
       );
@@ -287,6 +293,35 @@ export class Store {
   clearSlackWorkspace(tenantId: string) {
     this.db.prepare('DELETE FROM slack_oauth_flows WHERE tenant_id=?').run(tenantId);
     this.db.prepare('DELETE FROM slack_installations WHERE tenant_id=?').run(tenantId);
+  }
+
+  dingtalkGroupSelections(tenantId: string, userId: string): DingTalkGroupSelection[] {
+    return this.db.prepare(`SELECT tenant_id AS tenantId,user_id AS userId,conversation_id AS conversationId,
+      group_name AS groupName,selected_at AS selectedAt FROM dingtalk_group_selections
+      WHERE tenant_id=? AND user_id=? ORDER BY group_name COLLATE NOCASE,conversation_id`).all(tenantId, userId) as unknown as DingTalkGroupSelection[];
+  }
+
+  replaceDingtalkGroupSelections(tenantId: string, userId: string, groups: Array<{ conversationId: string; name: string }>) {
+    if (groups.length > 20) throw new Error('最多可以选择 20 个钉钉群');
+    const clean = groups.map(group => ({ conversationId: String(group.conversationId || '').trim(), name: String(group.name || '').trim() }));
+    if (clean.some(group => !group.conversationId || group.conversationId.length > 512 || !group.name || group.name.length > 200)) {
+      throw new Error('钉钉群信息无效');
+    }
+    if (new Set(clean.map(group => group.conversationId)).size !== clean.length) throw new Error('钉钉群不能重复选择');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM dingtalk_group_selections WHERE tenant_id=? AND user_id=?').run(tenantId, userId);
+      const insert = this.db.prepare(`INSERT INTO dingtalk_group_selections(tenant_id,user_id,conversation_id,group_name,selected_at)
+        VALUES (?,?,?,?,?)`);
+      const selectedAt = new Date().toISOString();
+      for (const group of clean) insert.run(tenantId, userId, group.conversationId, group.name, selectedAt);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.dingtalkGroupSelections(tenantId, userId);
+  }
+
+  clearDingtalkGroupSelections(tenantId: string, userId: string) {
+    this.db.prepare('DELETE FROM dingtalk_group_selections WHERE tenant_id=? AND user_id=?').run(tenantId, userId);
   }
 
   createDesktopHandoff(handoffHash: string, expiresAt: string) {

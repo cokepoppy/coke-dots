@@ -1,8 +1,8 @@
 # Coke Dots 钉钉渠道与主动排障方案
 
 日期：2026-10-15
-基线：`origin/main` / `d51dd5aac8f08261d816e687ab766541fd587695`
-研究分支：`feature/dingtalk-channel-integration`
+基线：`origin/main` / `255c26275851a596017e79caa271a3d7b25fd2a7`
+实施分支：`feature/dingtalk-channel-connection`
 
 ## 结论
 
@@ -18,6 +18,13 @@
 第一期演示闭环建议是：**告警消息 → 查日志与 Trace → 云电脑内隔离工作区修复 → 测试 → 草稿 PR → 钉钉文档报告并私信用户**。Agent 内核仍运行在各租户自己的 Debian 云电脑中；钉钉事件网关只负责验签/去重/入队/授权路由，不执行 Agent 工作。
 
 ## 证据与当前实现
+
+### Phase 1 实施状态（2026-10-15）
+
+- 已在 Slack 旁加入钉钉入口和中文连接弹窗：展示 DWS 设备授权码/官方授权链接、账号身份、群名搜索、手动群选择、断开和授权失效状态。
+- 已接入 DWS CLI v1.0.64。官方群搜索输出使用 `result.chats[]`、`openConversationId` 和 `name`；下一页使用 `hasMore` / `nextCursor`。适配器只返回群 ID、名称和分页信息，不传递原始 CLI 输出。
+- DWS 网关独立运行，DWS profile 以 tenant + user 分区，用独立 K8s Secret 提供 AES-256-GCM 包装密钥；明文 profile 和临时归档限定在 memory-backed `/run/dws`。Dot Agent 不读取该目录。
+- 已完成的自动化证据仅包括本地假 DWS CLI、加密持久化/重启恢复、租户隔离测试和模拟授权的 Chrome E2E。真实组织授权、IM 权限、Stream 事件、群消息读取及公网版本尚未验证；弹窗选择群不会启用监听或发送。
 
 ### Dots 渠道体验
 
