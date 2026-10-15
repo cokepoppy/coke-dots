@@ -2,9 +2,10 @@ import type { DingTalkService, DingTalkMonitorPrincipal } from './dingtalk.ts';
 import type { Store, DingTalkGroupSelection } from './store.ts';
 
 type MonitorState = 'starting' | 'listening' | 'reconnecting';
+export type DingTalkMonitorIssue = 'authorization-expired' | 'event-subscription-unavailable' | 'connection-lost';
 type EnabledMonitor = DingTalkGroupSelection & { tenantId: string; userId: string; conversationId: string; enabled: boolean };
 
-interface ActiveMonitor { controller: AbortController; state: MonitorState }
+interface ActiveMonitor { controller: AbortController; state: MonitorState; issue?: DingTalkMonitorIssue }
 
 export class DingTalkMonitorSupervisor {
   private readonly active = new Map<string, ActiveMonitor>();
@@ -35,6 +36,10 @@ export class DingTalkMonitorSupervisor {
 
   status(tenantId: string, userId: string, conversationId: string): MonitorState | 'off' {
     return this.active.get(keyOf({ tenantId, userId, conversationId }))?.state || 'starting';
+  }
+
+  issue(tenantId: string, userId: string, conversationId: string): DingTalkMonitorIssue | undefined {
+    return this.active.get(keyOf({ tenantId, userId, conversationId }))?.issue;
   }
 
   async reconcile() {
@@ -75,6 +80,7 @@ export class DingTalkMonitorSupervisor {
           if (active.controller.signal.aborted || this.stopped) return;
           if (frame.type === 'ready') {
             active.state = 'listening';
+            active.issue = undefined;
             retryMs = 1_000;
             this.onChange();
             continue;
@@ -92,10 +98,12 @@ export class DingTalkMonitorSupervisor {
           });
           if (result.tasks.length) this.onChange();
         }
-      } catch {
+      } catch (error) {
         if (active.controller.signal.aborted || this.stopped) return;
+        active.issue = classifyMonitorIssue(error);
       }
       if (active.controller.signal.aborted || this.stopped) return;
+      if (!active.issue) active.issue = 'connection-lost';
       active.state = 'reconnecting';
       this.onChange();
       await delay(retryMs, active.controller.signal);
@@ -103,6 +111,13 @@ export class DingTalkMonitorSupervisor {
       if (!active.controller.signal.aborted) active.state = 'starting';
     }
   }
+}
+
+function classifyMonitorIssue(error: unknown): DingTalkMonitorIssue {
+  const message = error instanceof Error ? error.message : '';
+  if (/DWS_PROFILE_NOT_AUTHENTICATED|DWS_AUTHORIZATION_EXPIRED|钉钉授权已过期/.test(message)) return 'authorization-expired';
+  if (/DWS_EVENT_LISTENER_FAILED|钉钉群消息实时监听未能启动/.test(message)) return 'event-subscription-unavailable';
+  return 'connection-lost';
 }
 
 function keyOf(value: { tenantId: string; userId: string; conversationId: string }) {

@@ -33,7 +33,7 @@ interface AuthorizationFlow {
 
 interface DingTalkGroup { conversationId: string; name: string }
 interface GroupSearch { groups: DingTalkGroup[]; hasMore: boolean; nextCursor?: string; complete?: boolean; failureCount?: number }
-interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; keywords: string[]; canEnable: boolean; listenerState?: 'off' | 'starting' | 'listening' | 'reconnecting'; reason?: string }
+interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; keywords: string[]; canEnable: boolean; listenerState?: 'off' | 'starting' | 'listening' | 'reconnecting'; listenerIssue?: 'authorization-expired' | 'event-subscription-unavailable' | 'connection-lost'; reason?: string }
 interface DingTalkMonitors { stream: { configured: boolean; connected: boolean; ready: boolean; testOnly?: boolean }; groups: DingTalkMonitorGroup[] }
 
 export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
@@ -314,7 +314,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
             {status?.testOnly && <p className="dingtalk-monitor-note" data-testid="dingtalk-dws-test-mode">当前为浏览器自动化测试模拟的 DWS 个人事件监听，不代表真实群消息已经接入。</p>}
             {monitors.groups.length === 0 ? <p className="dingtalk-empty-results">先搜索并保存至少一个群聊。</p> : monitors.groups.map(group => <div className="dingtalk-monitor-row" key={group.conversationId}>
               <div className="dingtalk-monitor-heading">
-                <span><strong>{group.groupName}</strong><small>{group.enabled ? listenerStatusText(group.listenerState) : group.keywords.length ? '已配置条件 · 监听已关闭' : group.reason || '先设置关注关键词'}</small></span>
+                <span><strong>{group.groupName}</strong><small data-testid={`dingtalk-monitor-status-${group.conversationId}`}>{group.enabled ? listenerStatusText(group.listenerState, group.listenerIssue) : group.keywords.length ? '已配置条件 · 监听已关闭' : group.reason || '先设置关注关键词'}</small></span>
                 <label className="dingtalk-monitor-switch"><input type="checkbox" role="switch" aria-label={`监听群 ${group.groupName}`} data-testid={`dingtalk-monitor-${group.conversationId}`}
                   checked={group.enabled} disabled={working || (!group.enabled && (!group.canEnable || group.keywords.length === 0))} onChange={() => void toggleMonitor(group)} /><span>监听</span></label>
               </div>
@@ -350,7 +350,10 @@ function authorizationError(state: AuthorizationFlow['state']) {
   return '钉钉授权失败，请检查组织是否允许 DWS CLI 登录。';
 }
 
-function listenerStatusText(state: DingTalkMonitorGroup['listenerState']) {
+function listenerStatusText(state: DingTalkMonitorGroup['listenerState'], issue?: DingTalkMonitorGroup['listenerIssue']) {
+  if (issue === 'authorization-expired') return '钉钉授权已过期 · 请重新连接账号';
+  if (issue === 'event-subscription-unavailable') return 'DWS 事件订阅不可用 · 正在重试';
+  if (issue === 'connection-lost') return '事件流连接中断 · 正在自动重连';
   if (state === 'listening') return '监听中 · 收到消息后自动启动 Pi 排查';
   if (state === 'reconnecting') return '连接中断 · 正在自动重连';
   return '正在连接 DWS 实时事件流';

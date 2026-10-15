@@ -172,6 +172,45 @@ test('personal IM monitor forwards a live group event only into the enabled tena
   }
 });
 
+test('personal IM monitor exposes expired authorization safely and clears it after a successful reconnect', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-dingtalk-monitor-status-'));
+  const store = new Store(directory);
+  const account = store.signInGoogle({ subject: 'monitor-status', email: 'monitor-status@example.test', name: 'Monitor status' });
+  store.replaceDingtalkGroupSelections(account.tenant.id, account.user.id, [{ conversationId: 'cid-expiring', name: 'CMS alerts' }], 'corp-one');
+  store.setDingtalkGroupMonitor(account.tenant.id, account.user.id, 'cid-expiring', true, 'corp-one', ['告警']);
+  let attempts = 0;
+  const supervisor = new DingTalkMonitorSupervisor(store, {
+    async *watchGroupMessages(_principal, _conversationId, signal) {
+      attempts += 1;
+      if (attempts === 1) throw new Error('钉钉授权已过期，请重新连接。 private-token-value');
+      yield { type: 'ready' as const };
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  });
+
+  try {
+    await supervisor.reconcile();
+    for (let attempt = 0; attempt < 100 && supervisor.issue(account.tenant.id, account.user.id, 'cid-expiring') !== 'authorization-expired'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(supervisor.status(account.tenant.id, account.user.id, 'cid-expiring'), 'reconnecting');
+    assert.equal(supervisor.issue(account.tenant.id, account.user.id, 'cid-expiring'), 'authorization-expired');
+    assert.equal(JSON.stringify(supervisor.issue(account.tenant.id, account.user.id, 'cid-expiring')).includes('private-token-value'), false,
+      'Only a safe issue category may be exposed, never connector error details');
+
+    for (let attempt = 0; attempt < 400 && (supervisor.status(account.tenant.id, account.user.id, 'cid-expiring') !== 'listening' || supervisor.issue(account.tenant.id, account.user.id, 'cid-expiring')); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(attempts, 2, 'The monitor should reconnect using its bounded retry schedule');
+    assert.equal(supervisor.status(account.tenant.id, account.user.id, 'cid-expiring'), 'listening');
+    assert.equal(supervisor.issue(account.tenant.id, account.user.id, 'cid-expiring'), undefined, 'A ready stream clears the stale failure');
+  } finally {
+    supervisor.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('existing DingTalk group selection databases gain the organization column without losing selections', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-dingtalk-migration-'));
   try {

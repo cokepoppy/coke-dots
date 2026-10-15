@@ -1374,6 +1374,17 @@ try {
     assert.equal(await incidentMonitor.isChecked(), true, 'The monitor should visibly turn on after the user opts in');
     await resumedModal.getByText('监听中 · 收到消息后自动启动 Pi 排查').waitFor({ state: 'visible', timeout: 5000 });
     await screenshot(alphaPage!, 'dingtalk-selected-group');
+    const monitorStatus = resumedModal.getByTestId('dingtalk-monitor-status-e2e-incident-alerts');
+    const monitorStatusRoute = '**/api/dingtalk/monitors';
+    await alphaPage!.route(monitorStatusRoute, route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      stream: { configured: true, connected: true, ready: true, testOnly: true },
+      groups: [{ conversationId: 'e2e-incident-alerts', groupName: '系统监控告警群', enabled: true, keywords: ['告警', 'Trace ID', '500'], canEnable: true,
+        listenerState: 'reconnecting', listenerIssue: 'authorization-expired' }],
+    }) }));
+    try {
+      await monitorStatus.getByText('钉钉授权已过期 · 请重新连接账号', { exact: true }).waitFor({ state: 'visible', timeout: 5000 });
+      await screenshot(alphaPage!, 'dingtalk-monitor-expired-authorization');
+    } finally { await alphaPage!.unroute(monitorStatusRoute); }
     await resumedModal.getByRole('button', { name: '关闭钉钉设置' }).click();
     assert.equal(await alphaPage!.getByTestId('task-composer').inputValue(), '保留的钉钉设置草稿', 'Opening the connector must preserve the chat draft');
     assert.equal(await alphaPage!.evaluate(async () => JSON.stringify(await (await fetch('/api/dingtalk')).json()).includes('token')), false, 'The account status API must not return credentials');

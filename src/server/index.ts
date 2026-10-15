@@ -269,7 +269,9 @@ const server = createServer(async (req, res) => {
       return { conversationId: group.conversationId, groupName: group.groupName, enabled: monitor?.enabled || false,
         keywords: monitor?.keywords || [],
         canEnable: Boolean(group.corpId) && piReady,
-        listenerState: monitor?.enabled ? dingtalkMonitor.status(session.tenant.id, session.user.id, group.conversationId) : 'off', reason };
+        listenerState: monitor?.enabled ? dingtalkMonitor.status(session.tenant.id, session.user.id, group.conversationId) : 'off',
+        listenerIssue: monitor?.enabled ? dingtalkMonitor.issue(session.tenant.id, session.user.id, group.conversationId) : undefined,
+        reason };
     });
     return reply(res, 200, { stream: streamStatus, groups });
   }
