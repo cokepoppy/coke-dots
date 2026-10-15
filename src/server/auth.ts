@@ -87,6 +87,7 @@ export class AuthService {
     }
     try {
       const client = this.oauthClient(redirectUri);
+      disableOAuthCodeExchangeRetries(client);
       const { tokens } = await client.getToken({ code, codeVerifier: flow.codeVerifier, redirect_uri: redirectUri });
       if (!tokens.id_token) return redirect(res, `${returnTo}/?authError=missing_identity`);
       const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: this.clientId });
@@ -129,10 +130,12 @@ export class AuthService {
 
   private oauthClient(redirectUri: string) {
     const testEndpoints = e2eOAuthEndpoints();
+    const proxy = googleOAuthProxyUrl();
     return new OAuth2Client({
       clientId: this.clientId,
       clientSecret: this.clientSecret,
       redirectUri,
+      transporterOptions: { timeout: 15_000, ...(proxy ? { proxy } : {}) },
       ...(testEndpoints ? { endpoints: testEndpoints } : {}),
     });
   }
@@ -154,6 +157,28 @@ export class AuthService {
     authorizationUrl.searchParams.set('nonce', nonce);
     return authorizationUrl.toString();
   }
+}
+
+function googleOAuthProxyUrl() {
+  const configured = process.env.DOTS_GOOGLE_OAUTH_PROXY_URL?.trim();
+  if (!configured) return '';
+  try {
+    const proxy = new URL(configured);
+    if (!['http:', 'https:'].includes(proxy.protocol) || proxy.username || proxy.password || proxy.pathname !== '/' || proxy.search || proxy.hash) throw new Error();
+    return proxy.origin;
+  } catch { throw new Error('DOTS_GOOGLE_OAUTH_PROXY_URL must be an HTTP(S) proxy origin without credentials or a path'); }
+}
+
+function disableOAuthCodeExchangeRetries(client: OAuth2Client) {
+  const originalRequest = client.transporter.request.bind(client.transporter);
+  client.transporter.request = options => {
+    if (!options) return originalRequest(options);
+    const requestUrl = options.url ? new URL(String(options.url)) : null;
+    if (options.method?.toUpperCase() === 'POST' && requestUrl?.pathname.endsWith('/token')) {
+      return originalRequest({ ...options, retry: false, retryConfig: { retry: 0, httpMethodsToRetry: [] } });
+    }
+    return originalRequest(options);
+  };
 }
 
 export function hash(value: string) { return createHash('sha256').update(value).digest('hex'); }

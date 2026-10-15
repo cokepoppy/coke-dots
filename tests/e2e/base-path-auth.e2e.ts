@@ -3,7 +3,7 @@ import { createHash, generateKeyPairSync, sign as signBytes } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http';
-import { connect as createNetConnection, createServer as createNetServer } from 'node:net';
+import { connect as createNetConnection, createServer as createNetServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,7 @@ const browserPath = process.env.DOTS_CHROME_BIN || '/Applications/Google Chrome.
 let backend: ChildProcess | null = null;
 let proxy: Server | null = null;
 let oauthProvider: Server | null = null;
+let oauthEgressProxy: Server | null = null;
 let voiceProvider: WebSocketServer | null = null;
 let browser: Browser | null = null;
 let page: Page | null = null;
@@ -39,6 +40,8 @@ let oauthCallbackCookieSeen = false;
 let oauthCookieScopeCorrect = false;
 let oauthCookieClearScopeCorrect = false;
 let oauthPkceVerified = false;
+let oauthTokenAttempts = 0;
+let oauthProxyTunnels = 0;
 let voiceProviderEvents: string[] = [];
 let voiceProviderPcmBytes = 0;
 let voiceProviderPcmPeak = 0;
@@ -54,6 +57,37 @@ async function reservePort() {
   assert(address && typeof address !== 'string');
   await new Promise<void>((resolvePromise, reject) => server.close(error => error ? reject(error) : resolvePromise()));
   return address.port;
+}
+
+async function startMockOAuthEgressProxy(providerOrigin: string) {
+  const provider = new URL(providerOrigin);
+  const server = createHttpServer((_request, response) => response.writeHead(405).end('CONNECT is required'));
+  server.on('connect', (request, client: Socket, head) => {
+    const [hostname, portText] = (request.url || '').split(':');
+    const port = Number(portText);
+    if (hostname !== provider.hostname || port !== Number(provider.port)) {
+      client.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      return;
+    }
+    oauthProxyTunnels += 1;
+    const upstream = createNetConnection({ host: hostname, port });
+    const closeBoth = () => { client.destroy(); upstream.destroy(); };
+    upstream.once('connect', () => {
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length) upstream.write(head);
+      upstream.pipe(client);
+      client.pipe(upstream);
+    });
+    client.once('error', closeBoth);
+    upstream.once('error', closeBoth);
+    client.once('close', () => upstream.destroy());
+    upstream.once('close', () => client.destroy());
+  });
+  await new Promise<void>((resolvePromise, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolvePromise));
+  oauthEgressProxy = server;
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}`;
 }
 
 async function waitForBackend(url: string) {
@@ -158,6 +192,7 @@ async function main() {
         return;
       }
       if (incoming.method === 'POST' && url.pathname === '/token') {
+        oauthTokenAttempts += 1;
         const chunks: Buffer[] = [];
         for await (const chunk of incoming) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
@@ -206,6 +241,7 @@ async function main() {
     }
   });
   await new Promise<void>((resolvePromise, reject) => oauthProvider!.once('error', reject).listen(oauthPort, '127.0.0.1', resolvePromise));
+  const oauthEgressProxyOrigin = await startMockOAuthEgressProxy(oauthOrigin);
   backend = spawn(process.execPath, ['--import', 'tsx', 'src/server/index.ts'], {
     cwd: projectRoot,
     env: {
@@ -220,6 +256,9 @@ async function main() {
       DOTS_PUBLIC_HOST: publicHost,
       DOTS_TRUSTED_PROXY_TOKEN: proxyToken,
       DOTS_E2E_GOOGLE_OAUTH_ORIGIN: oauthOrigin,
+      DOTS_GOOGLE_OAUTH_PROXY_URL: oauthEgressProxyOrigin,
+      NO_PROXY: '',
+      no_proxy: '',
       DOTS_E2E_AUTH: '1',
       DOTS_VOICE_PROVIDER: 'volcengine',
       DOTS_VOLCENGINE_API_KEY: 'e2e-seedduplex-secret',
@@ -366,6 +405,8 @@ async function main() {
   assert(oauthCookieScopeCorrect, 'The OAuth state cookie must be HttpOnly, SameSite=Lax, and scoped to the exact public callback path');
   assert(oauthCookieClearScopeCorrect, 'The callback must clear the OAuth state cookie on that same prefixed path');
   assert(oauthPkceVerified, 'The mock Google token endpoint must verify the original PKCE challenge');
+  assert.equal(oauthTokenAttempts, 1, 'The authorization code token exchange must run exactly once');
+  assert(oauthProxyTunnels >= 2, `The OAuth token exchange and ID-token certificate lookup must use the configured egress proxy (tunnels=${oauthProxyTunnels})`);
   const sessionCookies = await context.cookies(baseUrl);
   assert(sessionCookies.some(cookie => cookie.name === 'coke_dots_session'), 'A verified Google identity must create a browser session');
   assert(!sessionCookies.some(cookie => cookie.name === 'coke_dots_oauth_state'), 'The OAuth state cookie must be cleared after callback');
@@ -501,7 +542,7 @@ async function main() {
   assert(apiRequests.length >= 5, `Expected authenticated API traffic, received: ${apiRequests.join(', ')}`);
   assert(apiRequests.every(item => item.includes(`${basePath}/api/`)), `A browser API request escaped the base path: ${apiRequests.join(', ')}`);
   assert.deepEqual(pageErrors, [], `Browser errors: ${pageErrors.join('; ')}`);
-  console.log(JSON.stringify({ result: 'passed', baseUrl, apiRequests, oauthCallbackCookieSeen, oauthCookieScopeCorrect, oauthCookieClearScopeCorrect, oauthPkceVerified, oauthTrace, authenticatedEmail: 'mobile.google@example.test', mobileCall: { provider: 'doubao-seedduplex-3.0 (mock)', pcmBytes: voiceProviderPcmBytes, pcmPeak: voiceProviderPcmPeak, spokenTexts: voiceProviderSpokenTexts, outputAudioFrames: await page.evaluate(() => (window as unknown as { __dotsVoiceOutputFrames: { sampleRate: number; peak: number }[] }).__dotsVoiceOutputFrames) }, pageErrors, screenshots: ['base-path-login.png', 'base-path-mobile-first-run.png', 'base-path-mobile-dot-chat.png', 'base-path-mobile-dot-call.png', 'base-path-mobile-dot-call-ended.png'], artifactRoot }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', baseUrl, apiRequests, oauthCallbackCookieSeen, oauthCookieScopeCorrect, oauthCookieClearScopeCorrect, oauthPkceVerified, oauthTokenAttempts, oauthProxyTunnels, oauthTrace, authenticatedEmail: 'mobile.google@example.test', mobileCall: { provider: 'doubao-seedduplex-3.0 (mock)', pcmBytes: voiceProviderPcmBytes, pcmPeak: voiceProviderPcmPeak, spokenTexts: voiceProviderSpokenTexts, outputAudioFrames: await page.evaluate(() => (window as unknown as { __dotsVoiceOutputFrames: { sampleRate: number; peak: number }[] }).__dotsVoiceOutputFrames) }, pageErrors, screenshots: ['base-path-login.png', 'base-path-mobile-first-run.png', 'base-path-mobile-dot-chat.png', 'base-path-mobile-dot-call.png', 'base-path-mobile-dot-call-ended.png'], artifactRoot }, null, 2));
   await context.close();
 }
 
@@ -514,6 +555,8 @@ try {
   if (proxyServer?.listening) await new Promise<void>(resolvePromise => proxyServer.close(() => resolvePromise()));
   const oauthServer = oauthProvider as unknown as Server | undefined;
   if (oauthServer?.listening) await new Promise<void>(resolvePromise => oauthServer.close(() => resolvePromise()));
+  const oauthEgressProxyServer = oauthEgressProxy as unknown as Server | undefined;
+  if (oauthEgressProxyServer?.listening) await new Promise<void>(resolvePromise => oauthEgressProxyServer.close(() => resolvePromise()));
   const voiceServer = voiceProvider as unknown as WebSocketServer | undefined;
   if (voiceServer?.address()) await new Promise<void>(resolvePromise => voiceServer.close(() => resolvePromise()));
   const backendProcess = backend as unknown as ChildProcess | undefined;
