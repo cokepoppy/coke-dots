@@ -4,6 +4,7 @@ import { createServer } from 'node:net';
 import type { ComputerRuntime, ComputerState } from './computer.ts';
 import type { TaskArtifact } from '../shared/types.ts';
 import { ComputerControlOwnedByUserError, LinuxDesktopWorkerError } from './computer-errors.ts';
+import { desktopAgentKernels } from './desktop-agent-kernels.ts';
 
 const workerPort = 8082;
 const vncPort = 6080;
@@ -358,10 +359,8 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
   const pullPolicy = process.env.DOTS_LINUX_DESKTOP_IMAGE_PULL_POLICY || 'IfNotPresent';
   const volumeSize = process.env.DOTS_LINUX_DESKTOP_VOLUME_SIZE || '10Gi';
   const controlNamespace = process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || 'coke-dots';
-  let agentEngines = process.env.DOTS_DESKTOP_AGENT_ADAPTERS || '';
-  try {
-    if (!agentEngines) agentEngines = Object.keys(JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}')).join(',');
-  } catch { agentEngines = ''; }
+  const kernels = desktopAgentKernels();
+  const agentEngines = process.env.DOTS_DESKTOP_AGENT_ADAPTERS?.trim() || Object.keys(kernels).join(',');
   const imageAnnotations = { 'coke-dots.io/desktop-image': image };
   const objects: Record<string, unknown>[] = [
     {
@@ -401,7 +400,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 { name: 'COKE_DESKTOP_VNC_AUTH_MODE', value: 'gateway' },
                 { name: 'COKE_DESKTOP_CHROME_NO_SANDBOX', value: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX === '1' ? '1' : '0' },
                 { name: 'DOTS_DESKTOP_AGENT_ADAPTERS', value: agentEngines },
-                ...(process.env.DOTS_AGENT_KERNELS_JSON ? [{ name: 'DOTS_AGENT_KERNELS_JSON', value: process.env.DOTS_AGENT_KERNELS_JSON }] : []),
+                ...(Object.keys(kernels).length ? [{ name: 'DOTS_AGENT_KERNELS_JSON', value: JSON.stringify(kernels) }] : []),
               ],
               ports: [{ name: 'novnc', containerPort: 6080 }, { name: 'worker', containerPort: 8082 }, { name: 'agent', containerPort: 8083 }, { name: 'cdp', containerPort: 9222 }],
               readinessProbe: { httpGet: { path: '/readyz', port: 'worker' }, initialDelaySeconds: 10, periodSeconds: 5, failureThreshold: 36 },

@@ -23,11 +23,13 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force \
     && install -d -o node -g node "$HOME" "$HOME/.config" "$HOME/.vnc"
+RUN node --input-type=module -e "await import('@mariozechner/pi-coding-agent'); await import('typebox')"
 
 COPY --chmod=0755 deploy/linux-desktop/start-desktop.sh /usr/local/bin/start-dots-desktop
 COPY --chmod=0644 deploy/linux-desktop/computer-worker.mjs /opt/coke-dots/computer-worker.mjs
 COPY --chmod=0644 deploy/linux-desktop/browser-context.mjs /opt/coke-dots/browser-context.mjs
 COPY --chmod=0644 deploy/linux-desktop/agent-runtime.mjs /opt/coke-dots/agent-runtime.mjs
+COPY --chmod=0644 deploy/linux-desktop/cloud-kernel-adapter.mjs /opt/coke-dots/cloud-kernel-adapter.mjs
 
 ARG COKE_DOTS_GIT_REVISION=unknown
 LABEL org.opencontainers.image.revision=$COKE_DOTS_GIT_REVISION

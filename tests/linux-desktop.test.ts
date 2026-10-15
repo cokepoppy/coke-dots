@@ -33,6 +33,31 @@ test('Linux desktop resources isolate tenant namespaces and never publish CDP', 
     { name: 'desktop-runtime', key: 'DOTS_AGENT_RUNTIME_TOKEN' });
 });
 
+test('Linux desktop deployments register the default Pi Agent adapter from the host configuration', () => {
+  const keys = ['NODE_ENV', 'DOTS_COMPUTER_BACKEND', 'DOTS_PI_ENABLED', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_DESKTOP_AGENT_ADAPTERS', 'DOTS_LINUX_DESKTOP_IMAGE'] as const;
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_COMPUTER_BACKEND = 'linux-desktop';
+  process.env.DOTS_PI_ENABLED = '1';
+  process.env.DOTS_LINUX_DESKTOP_IMAGE = 'coke-dots-linux-desktop:dev';
+  delete process.env.DOTS_AGENT_KERNELS_JSON;
+  delete process.env.DOTS_DESKTOP_AGENT_ADAPTERS;
+  try {
+    const list = desktopResources('tenant-pi-default', 'worker-secret', 'agent-secret')[1] as { items: Record<string, any>[] };
+    const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { containers: { env: { name: string; value?: string }[] }[] } } } };
+    const environment = deployment.spec.template.spec.containers[0].env;
+    assert.equal(environment.find(item => item.name === 'DOTS_DESKTOP_AGENT_ADAPTERS')?.value, 'pi');
+    assert.deepEqual(JSON.parse(environment.find(item => item.name === 'DOTS_AGENT_KERNELS_JSON')?.value || '{}'), {
+      pi: { command: 'node', args: ['/opt/coke-dots/cloud-kernel-adapter.mjs'] },
+    });
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('production cloud computers reject mutable worker tags and expose the selected release image', () => {
   const commit = '0123456789abcdef0123456789abcdef01234567';
   const commitImage = `coke-dots-linux-desktop:sha-${commit}`;

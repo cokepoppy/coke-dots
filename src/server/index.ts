@@ -5,6 +5,7 @@ import { Store } from './store.ts';
 import { Worker } from './worker.ts';
 import { WatchRunner, validateWatchUrl } from './watch.ts';
 import { adapters } from './adapters.ts';
+import { desktopAgentKernels } from './desktop-agent-kernels.ts';
 import { isEngine, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
@@ -56,10 +57,7 @@ const clients = new Map<ServerResponse, string>();
 const volcVoiceWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
 const configuredDesktopEngines = () => {
   if (process.env.DOTS_COMPUTER_BACKEND !== 'linux-desktop') return [] as Engine[];
-  try {
-    const configured = JSON.parse(process.env.DOTS_AGENT_KERNELS_JSON || '{}') as Record<string, unknown>;
-    return Object.keys(configured).filter((id): id is Engine => ['pi', 'dsh'].includes(id) && Boolean(configured[id]));
-  } catch { return [] as Engine[]; }
+  return Object.keys(desktopAgentKernels()).filter((id): id is Engine => ['pi', 'dsh'].includes(id));
 };
 const availableFor = (tenantId: string) => [...new Set([...(Object.keys(adapters) as Engine[]).filter(id => adapters[id].available(tenantId)), ...(effectiveModelConfig(tenantId) ? configuredDesktopEngines() : [])])];
 
