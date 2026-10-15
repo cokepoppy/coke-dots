@@ -33,7 +33,7 @@ interface AuthorizationFlow {
 
 interface DingTalkGroup { conversationId: string; name: string }
 interface GroupSearch { groups: DingTalkGroup[]; hasMore: boolean; nextCursor?: string }
-interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; canEnable: boolean; listenerState?: 'off' | 'starting' | 'listening' | 'reconnecting'; reason?: string }
+interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; keywords: string[]; canEnable: boolean; listenerState?: 'off' | 'starting' | 'listening' | 'reconnecting'; reason?: string }
 interface DingTalkMonitors { stream: { configured: boolean; connected: boolean; ready: boolean; testOnly?: boolean }; groups: DingTalkMonitorGroup[] }
 
 export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
@@ -41,6 +41,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
   const [flow, setFlow] = useState<AuthorizationFlow | null>(null);
   const [selected, setSelected] = useState<DingTalkGroup[]>([]);
   const [monitors, setMonitors] = useState<DingTalkMonitors | null>(null);
+  const [keywordDrafts, setKeywordDrafts] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<DingTalkGroup[]>([]);
   const [cursor, setCursor] = useState('0');
@@ -71,6 +72,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
       setStatus(nextStatus);
       setSelected(nextSelected);
       setMonitors(nextMonitors);
+      setKeywordDrafts(Object.fromEntries(nextMonitors.groups.map(group => [group.conversationId, group.keywords.join(', ')])));
       const account = nextStatus.account;
       if (account.id && (account.state === 'starting' || account.state === 'awaiting-user' || account.state === 'verifying')) {
         setFlow({
@@ -191,17 +193,32 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
     finally { setWorking(false); }
   }
 
-  async function toggleMonitor(group: DingTalkMonitorGroup) {
-    if (working || (!group.enabled && !group.canEnable)) return;
+  function keywordsForGroup(group: DingTalkMonitorGroup) {
+    return (keywordDrafts[group.conversationId] ?? group.keywords.join(', '))
+      .split(/[，,\n]+/).map(item => item.trim()).filter(Boolean)
+      .filter((item, index, all) => all.findIndex(other => other.toLocaleLowerCase() === item.toLocaleLowerCase()) === index);
+  }
+
+  async function saveMonitorConfiguration(group: DingTalkMonitorGroup, enabled = group.enabled) {
+    if (working || (enabled && !group.canEnable)) return;
+    const keywords = keywordsForGroup(group);
+    if (enabled && keywords.length === 0) { setError('请至少填写一个告警关键词后再开启监听。'); return; }
+    if (keywords.length > 20 || keywords.some(item => item.length > 80)) { setError('最多可配置 20 个关键词，每个关键词不超过 80 个字符。'); return; }
     setWorking(true); setError(''); setNotice('');
     try {
       const updated = await appFetch('/api/dingtalk/monitors', { method: 'PUT', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ conversationId: group.conversationId, enabled: !group.enabled }) })
-        .then(response => readJson<{ conversationId: string; enabled: boolean }>(response));
-      setMonitors(current => current ? { ...current, groups: current.groups.map(item => item.conversationId === updated.conversationId ? { ...item, enabled: updated.enabled } : item) } : current);
-      setNotice(updated.enabled ? '已开启此群的实时消息监听；普通群消息和告警无需 @机器人。' : '已暂停此群监听。');
+        body: JSON.stringify({ conversationId: group.conversationId, enabled, keywords }) })
+        .then(response => readJson<{ conversationId: string; enabled: boolean; keywords: string[] }>(response));
+      setMonitors(current => current ? { ...current, groups: current.groups.map(item => item.conversationId === updated.conversationId ? { ...item, enabled: updated.enabled, keywords: updated.keywords } : item) } : current);
+      setKeywordDrafts(current => ({ ...current, [updated.conversationId]: updated.keywords.join(', ') }));
+      setNotice(enabled ? '已开启此群监听；只有包含所设关键词的消息才会启动 Pi 只读排查。' : '已暂停此群监听。');
     } catch (reason) { setError(reason instanceof Error ? reason.message : '更新群监听失败。'); }
     finally { setWorking(false); }
+  }
+
+  async function toggleMonitor(group: DingTalkMonitorGroup) {
+    if (!group.enabled && (!group.canEnable || group.keywords.length === 0)) return;
+    await saveMonitorConfiguration(group, !group.enabled);
   }
 
   async function disconnect() {
@@ -262,12 +279,22 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
           {monitors && <div className="dingtalk-monitor-section" data-testid="dingtalk-monitor-section">
             <div className="dingtalk-section-title"><div><h3>实时告警监听</h3><p>通过当前钉钉账号的 DWS 个人 IM 事件流接收指定群消息</p></div><span>{monitors.groups.filter(group => group.enabled).length} 个启用</span></div>
             {monitors.stream.testOnly && <p className="dingtalk-monitor-note">当前为浏览器自动化测试模拟状态，不代表真实钉钉事件流已经连接。</p>}
-            {monitors.groups.length === 0 ? <p className="dingtalk-empty-results">先搜索并保存至少一个群聊。</p> : monitors.groups.map(group => <label className="dingtalk-monitor-row" key={group.conversationId}>
-              <span><strong>{group.groupName}</strong><small>{group.enabled ? listenerStatusText(group.listenerState) : group.reason || '关闭'}</small></span>
-              <input type="checkbox" role="switch" aria-label={`监听群 ${group.groupName}`} data-testid={`dingtalk-monitor-${group.conversationId}`}
-                checked={group.enabled} disabled={working || (!group.enabled && !group.canEnable)} onChange={() => void toggleMonitor(group)} />
-            </label>)}
-            <p className="dingtalk-setup-footnote">开启后，Dots 使用当前钉钉账号订阅这个群的实时消息；普通告警无需 @机器人。收到消息后会在本工作区创建 Pi 云电脑只读排查任务。不同工作区相互隔离；不会自动回复群聊。</p>
+            {monitors.groups.length === 0 ? <p className="dingtalk-empty-results">先搜索并保存至少一个群聊。</p> : monitors.groups.map(group => <div className="dingtalk-monitor-row" key={group.conversationId}>
+              <div className="dingtalk-monitor-heading">
+                <span><strong>{group.groupName}</strong><small>{group.enabled ? listenerStatusText(group.listenerState) : group.keywords.length ? '已配置条件 · 监听已关闭' : group.reason || '先设置关注关键词'}</small></span>
+                <label className="dingtalk-monitor-switch"><input type="checkbox" role="switch" aria-label={`监听群 ${group.groupName}`} data-testid={`dingtalk-monitor-${group.conversationId}`}
+                  checked={group.enabled} disabled={working || (!group.enabled && (!group.canEnable || group.keywords.length === 0))} onChange={() => void toggleMonitor(group)} /><span>监听</span></label>
+              </div>
+              <div className="dingtalk-monitor-filter">
+                <label htmlFor={`dingtalk-keywords-${group.conversationId}`}>消息包含任一关键词时启动任务</label>
+                <input id={`dingtalk-keywords-${group.conversationId}`} data-testid={`dingtalk-keywords-${group.conversationId}`} type="text" maxLength={1800}
+                  value={keywordDrafts[group.conversationId] ?? group.keywords.join(', ')} placeholder="告警, 错误, Trace ID"
+                  onChange={event => setKeywordDrafts(current => ({ ...current, [group.conversationId]: event.target.value }))} />
+                <button className="dingtalk-setup-secondary" type="button" data-testid={`dingtalk-save-keywords-${group.conversationId}`} disabled={working}
+                  onClick={() => void saveMonitorConfiguration(group)}>保存条件</button>
+              </div>
+            </div>)}
+            <p className="dingtalk-setup-footnote">只处理匹配条件的消息；收到后会在当前工作区创建 Pi 云电脑只读排查任务。不同工作区相互隔离；不会自动回复群聊。</p>
           </div>}
           <button className="dingtalk-setup-secondary dingtalk-disconnect" type="button" disabled={working} onClick={() => void disconnect()}>断开钉钉账号</button>
         </div>}

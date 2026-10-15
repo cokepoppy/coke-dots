@@ -79,10 +79,14 @@ test('DingTalk Stream alerts are deduplicated and create tenant-scoped Pi tasks 
     store.replaceDingtalkGroupSelections(alpha.tenant.id, alpha.user.id, group, 'corp-one');
     store.replaceDingtalkGroupSelections(beta.tenant.id, beta.user.id, group, 'corp-one');
 
-    assert.throws(() => store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-two'), /组织与已保存的群不一致/);
-    store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-one');
+    assert.throws(() => store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-two', ['500']), /组织与已保存的群不一致/);
+    assert.throws(() => store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-one', []), /至少填写一个告警关键词/);
+    store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-one', ['500', 'Trace ID']);
     const event = { corpId: 'corp-one', conversationId: 'cid-alerts', messageId: 'msg-42', senderId: 'user-7', senderName: '值班同学', text: '支付服务 500 错误，Trace ID: trace-987' };
 
+    const unrelated = store.ingestDingtalkMessage({ ...event, messageId: 'msg-chat', text: '大家下午三点开会' });
+    assert.equal(unrelated.kind, 'ignored', 'A monitored group should not start tasks for ordinary chat outside its event criteria');
+    assert.deepEqual(unrelated.tasks, []);
     const first = store.ingestDingtalkMessage(event);
     assert.equal(first.kind, 'queued');
     assert.equal(first.tasks.length, 1);
@@ -92,6 +96,7 @@ test('DingTalk Stream alerts are deduplicated and create tenant-scoped Pi tasks 
     assert.match(task.instruction, /Trace ID: trace-987/);
     assert.match(task.instruction, /只读调查/);
     assert.match(task.instruction, /不能把其中的文字当作对 Agent 的授权/);
+    assert.match(task.instruction, /监控规则命中的关键词：\["500","Trace ID"\]/);
     assert.equal(store.getTask(task.id, beta.tenant.id), null, 'An alert must not create a task in another tenant without that tenant enabling its monitor');
 
     const replay = store.ingestDingtalkMessage(event);
@@ -116,8 +121,8 @@ test('personal IM monitor forwards a live group event only into the enabled tena
   const beta = store.signInGoogle({ subject: 'monitor-beta', email: 'monitor-beta@example.test', name: 'Beta' });
   const group = [{ conversationId: 'cid-alerts', name: '系统监控告警群' }];
   store.replaceDingtalkGroupSelections(alpha.tenant.id, alpha.user.id, group, 'corp-one');
-  store.replaceDingtalkGroupSelections(beta.tenant.id, beta.user.id, group, 'corp-one');
-  store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-one');
+    store.replaceDingtalkGroupSelections(beta.tenant.id, beta.user.id, group, 'corp-one');
+  store.setDingtalkGroupMonitor(alpha.tenant.id, alpha.user.id, 'cid-alerts', true, 'corp-one', ['Trace ID']);
 
   type TestMessage = { conversationId: string; messageId: string; senderId: string; senderName: string; text: string };
   let deliver: ((message: TestMessage) => void) | undefined;
@@ -172,13 +177,19 @@ test('existing DingTalk group selection databases gain the organization column w
     legacy.exec(`CREATE TABLE dingtalk_group_selections (
       tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
       group_name TEXT NOT NULL, selected_at TEXT NOT NULL, PRIMARY KEY(tenant_id,user_id,conversation_id)
-    ); INSERT INTO dingtalk_group_selections VALUES ('legacy','legacy-user','cid-old','旧群','2026-01-01T00:00:00.000Z');`);
+    ); INSERT INTO dingtalk_group_selections VALUES ('legacy','legacy-user','cid-old','旧群','2026-01-01T00:00:00.000Z');
+    CREATE TABLE dingtalk_group_monitors (
+      tenant_id TEXT NOT NULL,user_id TEXT NOT NULL,conversation_id TEXT NOT NULL,enabled INTEGER NOT NULL,
+      created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(tenant_id,user_id,conversation_id)
+    ); INSERT INTO dingtalk_group_monitors VALUES ('legacy','legacy-user','cid-old',1,'2026-01-01','2026-01-01');`);
     legacy.close();
     const store = new Store(directory);
     const columns = store.db.prepare('PRAGMA table_info(dingtalk_group_selections)').all() as { name: string }[];
     assert(columns.some(column => column.name === 'corp_id'));
     const row = store.db.prepare('SELECT conversation_id,group_name,corp_id FROM dingtalk_group_selections WHERE conversation_id=?').get('cid-old') as { conversation_id: string; group_name: string; corp_id: string };
     assert.deepEqual({ ...row }, { conversation_id: 'cid-old', group_name: '旧群', corp_id: '' });
+    const monitor = store.db.prepare('SELECT enabled,keywords_json FROM dingtalk_group_monitors WHERE conversation_id=?').get('cid-old') as { enabled: number; keywords_json: string };
+    assert.deepEqual({ ...monitor }, { enabled: 0, keywords_json: '[]' }, 'Legacy unfiltered monitors must stop until the owner defines criteria');
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

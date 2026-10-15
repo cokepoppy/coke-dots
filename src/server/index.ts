@@ -231,6 +231,7 @@ const server = createServer(async (req, res) => {
         : !piReady ? '云电脑 Pi 或实例共享模型尚未就绪。'
           : undefined;
       return { conversationId: group.conversationId, groupName: group.groupName, enabled: monitor?.enabled || false,
+        keywords: monitor?.keywords || [],
         canEnable: Boolean(group.corpId) && piReady,
         listenerState: monitor?.enabled ? dingtalkMonitor.status(session.tenant.id, session.user.id, group.conversationId) : 'off', reason };
     });
@@ -241,6 +242,7 @@ const server = createServer(async (req, res) => {
       const body = await readJson(req);
       const conversationId = String(body.conversationId || '');
       const enabled = body.enabled === true;
+      if (!Array.isArray(body.keywords)) return reply(res, 400, { error: '请配置要关注的告警关键词。' });
       let corpId = '';
       if (enabled) {
         const status = await dingtalk.status(session);
@@ -250,9 +252,9 @@ const server = createServer(async (req, res) => {
         if (!dingtalk.isE2eMock() && !piReady) return reply(res, 409, { error: '云电脑 Pi 或实例共享模型尚未就绪，暂时不能开启自动排障。' });
         if (!corpId) return reply(res, 409, { error: '无法确认钉钉组织，请重新连接钉钉账号。' });
       }
-      const monitor = store.setDingtalkGroupMonitor(session.tenant.id, session.user.id, conversationId, enabled, corpId);
+      const monitor = store.setDingtalkGroupMonitor(session.tenant.id, session.user.id, conversationId, enabled, corpId, body.keywords);
       void dingtalkMonitor.reconcile();
-      return reply(res, 200, { conversationId: monitor.conversationId, enabled: monitor.enabled });
+      return reply(res, 200, { conversationId: monitor.conversationId, enabled: monitor.enabled, keywords: monitor.keywords });
     } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '更新钉钉群监听失败。' }); }
   }
   if (path === '/api/dingtalk/account' && req.method === 'DELETE') {

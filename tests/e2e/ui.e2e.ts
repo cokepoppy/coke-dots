@@ -1294,7 +1294,16 @@ try {
     assert.equal(JSON.stringify(savedGroups).includes('tenantId'), false, 'The UI DTO must not expose internal tenant/user database fields');
     const incidentMonitor = resumedModal.getByTestId('dingtalk-monitor-e2e-incident-alerts');
     await incidentMonitor.waitFor({ state: 'visible' });
-    assert.equal(await incidentMonitor.isEnabled(), true, 'The E2E Stream and test Agent should allow an explicit monitor opt-in');
+    assert.equal(await incidentMonitor.isEnabled(), false, 'A group monitor must stay off until it has an explicit event filter');
+    const keywordEditor = resumedModal.getByTestId('dingtalk-keywords-e2e-incident-alerts');
+    await keywordEditor.fill('告警, Trace ID, 500');
+    const keywordSaveResponse = alphaPage!.waitForResponse(response => response.url().includes('/api/dingtalk/monitors') && response.request().method() === 'PUT');
+    await resumedModal.getByTestId('dingtalk-save-keywords-e2e-incident-alerts').click();
+    const keywordResponse = await keywordSaveResponse;
+    assert.equal(keywordResponse.status(), 200, `Monitor criteria API failed: ${keywordResponse.status()} ${await keywordResponse.text()}`);
+    assert.equal(await incidentMonitor.isEnabled(), true, 'Saving event filters should allow an explicit monitor opt-in');
+    const configuredMonitors = await alphaPage!.evaluate(async () => await (await fetch('/api/dingtalk/monitors')).json()) as { groups: { conversationId: string; keywords: string[] }[] };
+    assert.deepEqual(configuredMonitors.groups[0]?.keywords, ['告警', 'Trace ID', '500']);
     const monitorSaveResponse = alphaPage!.waitForResponse(response => response.url().includes('/api/dingtalk/monitors') && response.request().method() === 'PUT');
     await incidentMonitor.click();
     const monitorResponse = await monitorSaveResponse;
@@ -1486,6 +1495,14 @@ try {
     await monitor.waitFor({ state: 'visible' });
     assert.equal(await monitor.isChecked(), true, 'The user opt-in must survive closing and reopening the connector');
     const requestStart = mockModelRequests.length;
+    const unrelated = { messageId: 'e2e-stream-chat-001', conversationId: 'e2e-incident-alerts', text: '大家下午三点开会' };
+    const ignored = await alphaPage!.evaluate(async (payload) => {
+      const response = await fetch('/api/dingtalk/e2e/stream-message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+      return { status: response.status, body: await response.json() as { kind: string; taskId: string | null } };
+    }, unrelated);
+    assert.equal(ignored.status, 200);
+    assert.equal(ignored.body.kind, 'ignored', 'An ordinary chat message should not start an Agent task when it does not match the saved criteria');
+    assert.equal(ignored.body.taskId, null);
     const event = { messageId: 'e2e-stream-alert-001', conversationId: 'e2e-incident-alerts', text: '支付 API 返回 500，Trace ID: e2e-trace-2026' };
     const accepted = await alphaPage!.evaluate(async (payload) => {
       const response = await fetch('/api/dingtalk/e2e/stream-message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
