@@ -363,6 +363,7 @@ const server = createServer(async (req, res) => {
     }
     if (path === '/api/action-rule' && req.method === 'GET') return reply(res, 200, store.tenantActionRule(session.tenant.id));
     if (path === '/api/memories' && req.method === 'GET') return reply(res, 200, store.tenantMemories(session.tenant.id));
+    if (path === '/api/dot-memories' && req.method === 'GET') return reply(res, 200, store.dotMemories(session.tenant.id, session.user.id));
     if (path === '/api/pages' && req.method === 'GET') return reply(res, 200, store.tenantPages(session.tenant.id));
     const pageMatch = path.match(/^\/api\/pages\/([a-f0-9-]+)$/);
     if (pageMatch && req.method === 'GET') {
@@ -501,6 +502,32 @@ const server = createServer(async (req, res) => {
       if (!note || note.length > 1000) return reply(res, 400, { error: '记忆内容需为 1–1000 个字符' });
       try { return reply(res, 201, store.addTenantMemory(session.tenant.id, session.user.id, note)); }
       catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法保存记忆' }); }
+    }
+    if (path === '/api/dot-memories' && req.method === 'POST') {
+      const note = String(body.note || '').trim();
+      if (!note || note.length > 1000) return reply(res, 400, { error: 'Dot 私人记忆需为 1–1000 个字符' });
+      try {
+        const memory = store.addDotMemory(session.tenant.id, session.user.id, note);
+        if (memory === 'sensitive') return reply(res, 400, { error: 'Dot 私人记忆不会保存密钥、令牌或密码。' });
+        if (memory === 'limit') return reply(res, 409, { error: '每个 Dot 最多保存 20 条私人记忆。' });
+        return reply(res, 201, memory);
+      } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法保存 Dot 私人记忆' }); }
+    }
+    const dotMemoryMatch = path.match(/^\/api\/dot-memories\/([a-f0-9-]+)$/);
+    if (dotMemoryMatch && req.method === 'PATCH') {
+      const note = String(body.note || '').trim();
+      if (!note || note.length > 1000) return reply(res, 400, { error: 'Dot 私人记忆需为 1–1000 个字符' });
+      try {
+        const memory = store.updateDotMemory(session.tenant.id, session.user.id, dotMemoryMatch[1], note);
+        if (memory === 'sensitive') return reply(res, 400, { error: 'Dot 私人记忆不会保存密钥、令牌或密码。' });
+        if (!memory) return reply(res, 404, { error: 'Dot 私人记忆不存在' });
+        return reply(res, 200, memory);
+      } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '无法保存 Dot 私人记忆' }); }
+    }
+    if (dotMemoryMatch && req.method === 'DELETE') {
+      const deleted = store.deleteDotMemory(session.tenant.id, session.user.id, dotMemoryMatch[1]);
+      if (!deleted) return reply(res, 404, { error: 'Dot 私人记忆不存在' });
+      return reply(res, 200, { ok: true });
     }
     const memoryMatch = path.match(/^\/api\/memories\/([a-f0-9-]+)$/);
     if (memoryMatch && req.method === 'PATCH') {

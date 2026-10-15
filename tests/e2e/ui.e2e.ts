@@ -121,6 +121,8 @@ async function startMockModel() {
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
         const isMemoryCheck = prompt.includes('E2E memory prompt — apply the saved workspace preference');
+        const isDotMemoryCapture = prompt.includes('E2E dot memory capture — remember this durable preference');
+        const isDotMemoryUpdate = prompt.includes('E2E dot memory update — use and refine the private preference');
         const isPageRequest = prompt.includes('E2E Scratchpad page — create the team launch notes');
         const isPageUpdate = prompt.includes('E2E Scratchpad page — update the team launch notes');
         const isPauseTask = prompt.includes('E2E pause task — abort work and resume it');
@@ -170,13 +172,15 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isMobileVoiceReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isSecretResilienceTask || isDingTalkAlertTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isDotMemoryCapture || isDotMemoryUpdate || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isMobileVoiceReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isSecretResilienceTask || isDingTalkAlertTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
+        const dotMemoryId = isDotMemoryUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nNote: Alpha prefers concise Mandarin updates\./)?.[1] : undefined;
+        const memoryAction = isDotMemoryCapture ? { action: 'save', note: 'Alpha prefers concise Mandarin updates.' } : isDotMemoryUpdate ? { action: 'update', memoryId: dotMemoryId, note: 'Alpha prefers concise Chinese updates.' } : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isSecretResilienceTask ? 'K3D Secret 暂时不可读，但任务使用进程缓存的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isSecretResilienceTask ? 'K3D Secret 暂时不可读，但任务使用进程缓存的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isDotMemoryCapture ? '我会记住你偏好简洁的中文回复。' : isDotMemoryUpdate ? '我已根据你的偏好更新私人记忆。' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ends.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}), ...(memoryAction ? { memoryAction } : {}) };
         if (isMobileVoiceRequest) {
           decision.status = isMobileVoiceReply ? 'done' : 'waiting';
           decision.message = isMobileVoiceReply
@@ -2448,6 +2452,63 @@ try {
     await alphaPage!.getByTestId('memory-manager').getByTestId('empty-memory-list').waitFor({ state: 'visible' });
   });
 
+  await recordStep('Dot learns private durable notes, updates them on a later task, and isolates shared-workspace members', async () => {
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await openProfile(alphaPage!);
+    const privateMemoryManager = alphaPage!.getByTestId('dot-memory-manager');
+    await privateMemoryManager.getByTestId('empty-dot-memory-list').waitFor({ state: 'visible' });
+    await clickNav(alphaPage!, '你的 dot');
+
+    let promptStart = mockModelPrompts.length;
+    const captureTask = 'E2E dot memory capture — remember this durable preference';
+    await createTask(alphaPage!, captureTask);
+    const captureTaskItem = await taskNavigationItem(alphaPage!, captureTask);
+    await captureTaskItem.waitFor({ state: 'visible' });
+    await captureTaskItem.click();
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => mockModelPrompts.length === promptStart + 1, 10_000);
+    assert.match(mockModelPrompts[promptStart], /Private notes for this Dot and the initiating user: \(none\)/);
+    assert.match(mockModelPrompts[promptStart], /durable preference, decision, or ongoing responsibility/);
+    await openProfile(alphaPage!);
+    const savedPrivateMemory = privateMemoryManager.getByTestId('dot-memory-row').filter({ hasText: 'Alpha prefers concise Mandarin updates.' });
+    await savedPrivateMemory.waitFor({ state: 'visible' });
+    await screenshot(alphaPage!, '18f-dot-private-memory-saved');
+
+    await clickNav(alphaPage!, '你的 dot');
+    promptStart = mockModelPrompts.length;
+    const updateTask = 'E2E dot memory update — use and refine the private preference';
+    await createTask(alphaPage!, updateTask);
+    const updateTaskItem = await taskNavigationItem(alphaPage!, updateTask);
+    await updateTaskItem.waitFor({ state: 'visible' });
+    await updateTaskItem.click();
+    await alphaPage!.locator('.timeline .pill.done').waitFor({ state: 'visible', timeout: 15_000 });
+    await waitFor(() => mockModelPrompts.length === promptStart + 1, 10_000);
+    assert.match(mockModelPrompts[promptStart], /Private notes for this Dot and the initiating user only/);
+    assert.match(mockModelPrompts[promptStart], /Alpha prefers concise Mandarin updates\./);
+    await openProfile(alphaPage!);
+    const updatedPrivateMemory = privateMemoryManager.getByTestId('dot-memory-row').filter({ hasText: 'Alpha prefers concise Chinese updates.' });
+    await updatedPrivateMemory.waitFor({ state: 'visible' });
+
+    await selectTenant(betaPage!, 'Alpha Shared');
+    await openProfile(betaPage!);
+    await betaPage!.getByTestId('dot-memory-manager').getByTestId('empty-dot-memory-list').waitFor({ state: 'visible' });
+    const betaDotMemories = await betaPage!.evaluate(async () => await (await fetch('/api/dot-memories')).json()) as unknown[];
+    assert.deepEqual(betaDotMemories, [], 'A second member of the same shared workspace must not receive Alpha’s private Dot notes');
+    await screenshot(betaPage!, '18g-shared-workspace-private-memory-isolation');
+
+    await selectTenant(alphaPage!, 'Alpha Shared');
+    await openProfile(alphaPage!);
+    const savedRow = privateMemoryManager.getByTestId('dot-memory-row').filter({ hasText: 'Alpha prefers concise Chinese updates.' });
+    await savedRow.getByRole('button', { name: '编辑' }).click();
+    const editingRow = privateMemoryManager.getByTestId('dot-memory-row').first();
+    await editingRow.getByLabel('编辑这条私人记忆').fill('Alpha prefers brief Mandarin replies.');
+    await editingRow.getByRole('button', { name: '保存更改' }).click();
+    const editedRow = privateMemoryManager.getByTestId('dot-memory-row').filter({ hasText: 'Alpha prefers brief Mandarin replies.' });
+    await editedRow.waitFor({ state: 'visible' });
+    await editedRow.getByRole('button', { name: '删除' }).click();
+    await privateMemoryManager.getByTestId('empty-dot-memory-list').waitFor({ state: 'visible' });
+  });
+
   await recordStep('Workspace admins set a tenant rule and members can review its scope', async () => {
     await selectTenant(alphaPage!, 'Alpha Shared');
     await openProfile(alphaPage!);
@@ -2461,6 +2522,7 @@ try {
     await screenshot(alphaPage!, '18d-alpha-shared-scratchpad-rule');
 
     await selectTenant(betaPage!, 'Alpha Shared');
+    await clickNav(betaPage!, '你的 dot');
     await openProfile(betaPage!);
     const memberRuleManager = betaPage!.getByTestId('action-rule-manager');
     await memberRuleManager.getByTestId('custom-action-rule').waitFor({ state: 'visible' });

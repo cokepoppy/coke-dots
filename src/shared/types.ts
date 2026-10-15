@@ -37,6 +37,18 @@ export interface Task {
   updatedAt: string;
 }
 
+export interface DotMemory {
+  id: string;
+  tenantId: string;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DotMemoryAction =
+  | { action: 'save'; note: string }
+  | { action: 'update'; memoryId: string; note: string };
+
 export interface Entry {
   id: number;
   tenantId: string;

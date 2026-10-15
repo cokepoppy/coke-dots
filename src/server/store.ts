@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isEngine, type ActionRuleMode, type AttachmentSummary, type Engine, type Entry, type PageActionApproval, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskEngine, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WorkspacePage } from '../shared/types.ts';
+import { isEngine, type ActionRuleMode, type AttachmentSummary, type DotMemory, type DotMemoryAction, type Engine, type Entry, type PageActionApproval, type ScheduleSpec, type ScratchpadPageAction, type Snapshot, type Task, type TaskEngine, type TaskStatus, type TenantActionRule, type VoiceCallSession, type Watch, type WorkspacePage } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
 
 export interface GoogleIdentity { subject: string; email: string; name: string }
@@ -134,6 +134,11 @@ export class Store {
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS tenant_memories_scope ON tenant_memories(tenant_id,created_at DESC);
+      CREATE TABLE IF NOT EXISTS dot_memories (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), user_id TEXT NOT NULL REFERENCES users(id),
+        note TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS dot_memories_owner ON dot_memories(tenant_id,user_id,updated_at DESC);
       CREATE TABLE IF NOT EXISTS workspace_pages (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
         title TEXT NOT NULL, content TEXT NOT NULL,
@@ -795,6 +800,65 @@ export class Store {
     return true;
   }
 
+  dotMemories(tenantId: string, userId: string): DotMemory[] {
+    return this.db.prepare(`SELECT id,tenant_id AS tenantId,note,created_at AS createdAt,updated_at AS updatedAt
+      FROM dot_memories WHERE tenant_id=? AND user_id=? ORDER BY updated_at DESC,id DESC`)
+      .all(tenantId, userId) as unknown as DotMemory[];
+  }
+
+  applyDotMemoryAction(tenantId: string, userId: string, action: DotMemoryAction): DotMemory | 'not-found' | 'sensitive' | 'limit' {
+    const normalized = normalizeDotMemoryNote(action.note);
+    if (!normalized) throw new Error('Dot memory must contain 1–1000 characters');
+    if (containsSensitiveDotMemoryData(normalized)) return 'sensitive';
+    const now = new Date().toISOString();
+    let savedId = '';
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (action.action === 'update') {
+        const current = this.db.prepare('SELECT id FROM dot_memories WHERE tenant_id=? AND user_id=? AND id=?')
+          .get(tenantId, userId, action.memoryId) as { id: string } | undefined;
+        if (!current) { this.db.exec('ROLLBACK'); return 'not-found'; }
+        const duplicate = this.db.prepare('SELECT id FROM dot_memories WHERE tenant_id=? AND user_id=? AND id<>? AND note=? COLLATE NOCASE')
+          .get(tenantId, userId, current.id, normalized) as { id: string } | undefined;
+        if (duplicate) savedId = duplicate.id;
+        else {
+          this.db.prepare('UPDATE dot_memories SET note=?,updated_at=? WHERE tenant_id=? AND user_id=? AND id=?')
+            .run(normalized, now, tenantId, userId, current.id);
+          savedId = current.id;
+        }
+      } else {
+        const duplicate = this.db.prepare('SELECT id FROM dot_memories WHERE tenant_id=? AND user_id=? AND note=? COLLATE NOCASE')
+          .get(tenantId, userId, normalized) as { id: string } | undefined;
+        if (duplicate) savedId = duplicate.id;
+        else {
+          const count = this.db.prepare('SELECT COUNT(*) AS count FROM dot_memories WHERE tenant_id=? AND user_id=?')
+            .get(tenantId, userId) as { count: number };
+          if (count.count >= 20) { this.db.exec('ROLLBACK'); return 'limit'; }
+          savedId = randomUUID();
+          this.db.prepare('INSERT INTO dot_memories(id,tenant_id,user_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?)')
+            .run(savedId, tenantId, userId, normalized, now, now);
+        }
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.dotMemories(tenantId, userId).find(memory => memory.id === savedId)!;
+  }
+
+  addDotMemory(tenantId: string, userId: string, note: string): DotMemory | 'sensitive' | 'limit' {
+    const result = this.applyDotMemoryAction(tenantId, userId, { action: 'save', note });
+    if (result === 'not-found') throw new Error('A saved Dot memory unexpectedly disappeared');
+    return result;
+  }
+
+  updateDotMemory(tenantId: string, userId: string, id: string, note: string): DotMemory | null | 'sensitive' {
+    const result = this.applyDotMemoryAction(tenantId, userId, { action: 'update', memoryId: id, note });
+    return result === 'not-found' || result === 'limit' ? null : result;
+  }
+
+  deleteDotMemory(tenantId: string, userId: string, id: string): boolean {
+    return Number(this.db.prepare('DELETE FROM dot_memories WHERE tenant_id=? AND user_id=? AND id=?').run(tenantId, userId, id).changes) === 1;
+  }
+
   private canManageTenantMemory(tenantId: string, actorUserId: string, createdBy: string) {
     if (createdBy === actorUserId) return true;
     return Boolean(this.db.prepare("SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=? AND role IN ('owner','admin')").get(tenantId, actorUserId));
@@ -1298,4 +1362,16 @@ function toWatch(r: Record<string, unknown>): Watch {
 
 function assertPageContent(title: string, content: string) {
   if (!title || title.length > 120 || !content || content.length > 24000) throw new Error('页面标题需为 1–120 个字符，正文需为 1–24000 个字符');
+}
+
+function normalizeDotMemoryNote(note: string) {
+  const normalized = note.trim();
+  if (!normalized || normalized.length > 1000) throw new Error('Dot memory must contain 1–1000 characters');
+  return normalized;
+}
+
+function containsSensitiveDotMemoryData(note: string) {
+  return /\b(?:sk-[a-z0-9_-]{20,}|ark-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9_]{20,}|github_pat_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{20,})\b/i.test(note)
+    || /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret)\s*(?:is|=|:)\s*["']?[a-z0-9._~+\/-]{12,}/i.test(note)
+    || /\bbearer\s+[a-z0-9._~+\/-]{24,}/i.test(note);
 }

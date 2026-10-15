@@ -28,6 +28,7 @@ import { DotAvatar } from './DotAvatar.tsx';
 import { DotAvatarEditor } from './DotAvatarEditor.tsx';
 import { DotSetupEditor } from './DotSetupEditor.tsx';
 import { DotComputerChoice } from './DotComputerChoice.tsx';
+import { DotMemoryManager } from './DotMemoryManager.tsx';
 import { VoiceCall } from './VoiceCall.tsx';
 import { DictationButton } from './DictationButton.tsx';
 import './shell-replica.css';
@@ -820,6 +821,7 @@ function Profile({ state, auth, onError, onEditAppearance, onManageComputerAcces
       <label className="notification-toggle"><input aria-label="桌面通知" type="checkbox" checked={desktopNotifications} disabled={notificationBusy} onChange={async event => { const enabled = event.currentTarget.checked; setNotificationBusy(true); setDesktopNotifications(enabled); try { await request('/preferences', 'PATCH', { desktopNotifications: enabled }); } catch (error) { setDesktopNotifications(!enabled); onError(String(error)); } finally { setNotificationBusy(false); } }} /><span><strong>桌面通知</strong><small>{desktopNotifications ? '此工作区已开启任务和网页监控提醒。' : '此工作区的提醒目前关闭。'}</small></span></label>
       <small className="notification-note">通知只显示 Dot 名称和事项状态，不包含任务结果正文。</small>
     </div>
+    <DotMemoryManager key={`${auth.tenant.id}:${auth.user.id}`} tenantId={auth.tenant.id} userId={auth.user.id} />
     <div className="section-heading model-heading"><h2>工作区记忆</h2><p>你明确保存的偏好、决定和背景会提供给此工作区中的 Dot 任务。成员可查看；创建者和管理员可编辑或删除。不会自动从聊天中提取。</p></div>
     <div className="profile-card model-card memory-card" data-testid="memory-manager">
       <div className="memory-list" aria-label="已保存的工作区记忆">

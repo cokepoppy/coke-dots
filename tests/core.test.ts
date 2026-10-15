@@ -297,6 +297,48 @@ test('workspace memories persist, are tenant scoped, and can only be edited by t
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('private Dot memories persist per initiating user, cannot cross a shared workspace, and reject credentials', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-private-memory-'));
+  try {
+    let store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'dot-memory-alpha', email: 'dot-memory-alpha@example.test', name: 'Dot Memory Alpha' });
+    const beta = store.signInGoogle({ subject: 'dot-memory-beta', email: 'dot-memory-beta@example.test', name: 'Dot Memory Beta' });
+    const workspace = store.createWorkspace(alpha.user.id, 'Private memory shared workspace');
+    const invitation = store.addWorkspaceMember(workspace.id, alpha.user.id, beta.user.email, 'member');
+    assert.equal(invitation.ok, true);
+    if (!invitation.ok || invitation.kind !== 'invitation') throw new Error('Expected Beta workspace invitation');
+    const betaSession = 'dot-memory-beta-session';
+    store.createSession(betaSession, beta.user.id, beta.tenant.id, new Date(Date.now() + 60_000).toISOString());
+    assert.ok(store.acceptWorkspaceInvitation(workspace.id, betaSession, beta.user.id, beta.user.email));
+
+    const saved = store.addDotMemory(workspace.id, alpha.user.id, 'Prefer concise Chinese answers.');
+    assert.equal(typeof saved, 'object');
+    if (typeof saved === 'string') throw new Error(`Unexpected memory result: ${saved}`);
+    assert.equal(store.dotMemories(workspace.id, alpha.user.id)[0]?.id, saved.id);
+    assert.deepEqual(store.dotMemories(workspace.id, beta.user.id), [], 'A workspace member must not see another user’s private Dot note');
+    assert.deepEqual(store.dotMemories(beta.tenant.id, beta.user.id), [], 'Private notes must also remain tenant scoped');
+    const duplicate = store.addDotMemory(workspace.id, alpha.user.id, 'prefer concise chinese answers.');
+    assert.equal(typeof duplicate, 'object');
+    if (typeof duplicate === 'string') throw new Error(`Unexpected duplicate result: ${duplicate}`);
+    assert.equal(duplicate.id, saved.id, 'Saving the same note twice must not create duplicates');
+    assert.equal(store.updateDotMemory(workspace.id, beta.user.id, saved.id, 'Attempted cross-user update.'), null);
+    const updated = store.updateDotMemory(workspace.id, alpha.user.id, saved.id, 'Prefer concise Mandarin answers.');
+    assert.equal(typeof updated, 'object');
+    if (!updated || typeof updated === 'string') throw new Error(`Unexpected update result: ${updated}`);
+    assert.equal(updated.note, 'Prefer concise Mandarin answers.');
+    assert.equal(store.addDotMemory(workspace.id, alpha.user.id, 'My API key is sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), 'sensitive');
+    for (let index = 0; index < 19; index++) store.addDotMemory(workspace.id, alpha.user.id, `Durable preference ${index + 1}`);
+    assert.equal(store.dotMemories(workspace.id, alpha.user.id).length, 20);
+    assert.equal(store.addDotMemory(workspace.id, alpha.user.id, 'A twenty-first durable preference.'), 'limit');
+    store.close();
+    store = new Store(directory);
+    assert.equal(store.dotMemories(workspace.id, alpha.user.id).find(memory => memory.id === saved.id)?.note, 'Prefer concise Mandarin answers.');
+    assert.equal(store.deleteDotMemory(workspace.id, beta.user.id, saved.id), false);
+    assert.equal(store.deleteDotMemory(workspace.id, alpha.user.id, saved.id), true);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('Scratchpad pages persist per tenant and an agent task reuses its page on later runs', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-pages-'));
   try {
