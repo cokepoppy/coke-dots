@@ -9,10 +9,10 @@ import { Worker } from '../src/server/worker.ts';
 import type { ComputerRuntime } from '../src/server/computer.ts';
 import { ComputerControlOwnedByUserError } from '../src/server/computer-errors.ts';
 
-async function runCloudConfigPreflight(keyringMode: 'missing' | 'unreadable') {
+async function runCloudConfigPreflight(secretMode: 'missing' | 'unavailable') {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-cloud-model-config-'));
-  const lockFile = join(directory, 'login-keychain-locked');
-  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE'] as const;
+  const unavailableFile = join(directory, 'kubectl-unavailable');
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_MODEL_SECRET_DIR', 'DOTS_TEST_MODEL_SECRET_SCOPE', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE'] as const;
   const previous = new Map(envKeys.map(key => [key, process.env[key]]));
   for (const key of ['DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY'] as const) delete process.env[key];
   process.env.NODE_ENV = 'test';
@@ -20,11 +20,13 @@ async function runCloudConfigPreflight(keyringMode: 'missing' | 'unreadable') {
   process.env.DOTS_COMPUTER_BACKEND = 'linux-desktop';
   process.env.DOTS_AGENT_KERNELS_JSON = JSON.stringify({ pi: { command: '/bin/false', args: [] } });
   process.env.DOTS_KEYCHAIN_SERVICE = `com.cokepoppy.coke-dots.test.${randomUUID()}`;
-  if (keyringMode === 'unreadable') {
-    writeFileSync(lockFile, 'simulated unavailable keychain');
-    process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE = lockFile;
+  process.env.DOTS_TEST_MODEL_SECRET_DIR = join(directory, 'secrets');
+  process.env.DOTS_TEST_MODEL_SECRET_SCOPE = randomUUID();
+  if (secretMode === 'unavailable') {
+    writeFileSync(unavailableFile, 'simulate unavailable K3D API');
+    process.env.DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE = unavailableFile;
   } else {
-    delete process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE;
+    delete process.env.DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE;
   }
 
   const store = new Store(directory);
@@ -61,23 +63,24 @@ test('cloud Agent tasks fail before dispatch when the shared Model API key is mi
   assert.equal(result.remoteDispatches, 0, 'The Agent pod must not receive a request without shared credentials');
 });
 
-test('cloud Agent tasks explain an unreadable system credential store before dispatch', async () => {
-  const result = await runCloudConfigPreflight('unreadable');
+test('cloud Agent tasks explain an unavailable K3D Secret before dispatch', async () => {
+  const result = await runCloudConfigPreflight('unavailable');
   assert.equal(result.task?.status, 'failed');
   assert.match(result.task?.error || '', /无法读取 Coke Dots 实例共享 API 密钥/);
-  assert.equal(result.remoteDispatches, 0, 'The Agent pod must not receive a request when Keychain access fails');
+  assert.match(result.task?.error || '', /K3D 集群连接及 coke-dots-system\/shared-model-api Secret 权限/);
+  assert.equal(result.remoteDispatches, 0, 'The Agent pod must not receive a request when the K3D Secret cannot be read');
 });
 
 test('cloud Agent dispatch grants default writes only in the tenant task directory', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-cloud-write-access-'));
-  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE'] as const;
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_MODEL_SECRET_DIR', 'DOTS_TEST_MODEL_SECRET_SCOPE', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE'] as const;
   const previous = new Map(envKeys.map(key => [key, process.env[key]]));
   Object.assign(process.env, {
     NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_MODEL_BASE_URL: 'https://api.example.test/v1', DOTS_MODEL: 'cloud-write-test-model',
     DOTS_MODEL_API_KEY: 'cloud-write-fixture-key', DOTS_COMPUTER_BACKEND: 'linux-desktop',
     DOTS_AGENT_KERNELS_JSON: JSON.stringify({ pi: { command: '/bin/false', args: [] } }), DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.write.${randomUUID()}`,
   });
-  delete process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE;
+  delete process.env.DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE;
   const store = new Store(directory);
   const account = store.signInGoogle({ subject: `computer-write-${randomUUID()}`, email: 'computer-write@example.test', name: 'Test Dot' });
   store.setAppSetting('modelBaseUrl', 'https://api.example.test/v1');
@@ -114,14 +117,14 @@ test('cloud Agent dispatch grants default writes only in the tenant task directo
 
 test('a cloud Agent task interrupted by computer takeover is persisted as paused and can be resumed', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-computer-takeover-pause-'));
-  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE'] as const;
+  const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_MODEL_SECRET_DIR', 'DOTS_TEST_MODEL_SECRET_SCOPE', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE'] as const;
   const previous = new Map(envKeys.map(key => [key, process.env[key]]));
   Object.assign(process.env, {
     NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_MODEL_BASE_URL: 'https://api.example.test/v1', DOTS_MODEL: 'cloud-pause-test-model',
     DOTS_MODEL_API_KEY: 'cloud-pause-fixture-key', DOTS_COMPUTER_BACKEND: 'linux-desktop',
     DOTS_AGENT_KERNELS_JSON: JSON.stringify({ pi: { command: '/bin/false', args: [] } }), DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.pause.${randomUUID()}`,
   });
-  delete process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE;
+  delete process.env.DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE;
   const store = new Store(directory);
   const account = store.signInGoogle({ subject: `computer-pause-${randomUUID()}`, email: 'computer-pause@example.test', name: 'Test Dot' });
   store.setAppSetting('modelBaseUrl', 'https://api.example.test/v1');

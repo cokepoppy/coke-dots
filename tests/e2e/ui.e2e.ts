@@ -22,7 +22,8 @@ const videoDir = join(artifactRoot, 'video');
 const tempRoot = await mkdtemp(join(tmpdir(), 'coke-dots-e2e-'));
 const emptyEnvFile = join(tempRoot, 'empty.env');
 const testDataDir = join(tempRoot, 'data');
-const sharedModelKeychainLockFile = join(tempRoot, 'simulated-shared-model-keychain-lock');
+const sharedModelSecretUnavailableFile = join(tempRoot, 'simulated-shared-model-secret-unavailable');
+const testModelSecretDirectory = join(tempRoot, 'model-secrets');
 const testKeyringDirectory = join(testDataDir, 'keyring');
 process.env.DOTS_TEST_KEYRING_DIR = testKeyringDirectory;
 const fixtureSource = join(projectRoot, 'tests', 'e2e', 'fixtures', 'computer.html');
@@ -51,8 +52,6 @@ let mockSlackCodeExchanges = 0;
 let e2eSlackTokenAccount = '';
 let mockModelPrompts: string[] = [];
 let mockModelRequests: { prompt: string; authorization: string }[] = [];
-let priorE2ESharedModelKey: string | null = null;
-const e2eSharedModelKeyEntry = new Entry('com.cokepoppy.coke-dots.e2e', 'shared-model-api-key');
 let heldPauseModelRelease: (() => void) | null = null;
 let heldPauseModelAborted = false;
 let pauseModelHeld = false;
@@ -137,7 +136,7 @@ async function startMockModel() {
         const isDelegationPlan = prompt.includes('E2E delegation goal — build a launch packet') && !prompt.includes('Delegated task results:');
         const isDelegationAggregate = prompt.includes('E2E delegation goal — build a launch packet') && prompt.includes('Delegated task results:');
         const isSharedModelTask = prompt.includes('E2E shared model call from Beta account');
-        const isKeychainResilienceTask = prompt.includes('E2E keychain resilience — use the retained shared model credential');
+        const isSecretResilienceTask = prompt.includes('E2E transient K3D outage — use the cached shared model credential');
         const delegatedChild = ['Market scan', 'Competitor scan', 'Launch risks'].find(title => prompt.includes(`E2E delegated child — ${title.toLowerCase()}`));
         if (isPauseTask && !pauseModelHeld) {
           pauseModelHeld = true;
@@ -170,13 +169,13 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isMobileVoiceReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isKeychainResilienceTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isMobileVoiceReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isSecretResilienceTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isKeychainResilienceTask ? '登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
+        ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isSecretResilienceTask ? 'K3D Secret 暂时不可读，但任务使用进程缓存的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ended.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}) };
         if (isMobileVoiceRequest) {
           decision.status = isMobileVoiceReply ? 'done' : 'waiting';
           decision.message = isMobileVoiceReply
@@ -465,7 +464,9 @@ async function startServer(port: number, extraEnv: NodeJS.ProcessEnv = {}) {
       DOTS_PI_ENABLED: '0',
       DOTS_DSH_BIN: '',
       DOTS_KEYCHAIN_SERVICE: 'com.cokepoppy.coke-dots.e2e',
-      DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE: sharedModelKeychainLockFile,
+      DOTS_TEST_MODEL_SECRET_DIR: testModelSecretDirectory,
+      DOTS_TEST_MODEL_SECRET_SCOPE: 'ui-e2e-shared-instance',
+      DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE: sharedModelSecretUnavailableFile,
       DOTS_TEST_KEYRING_DIR: testKeyringDirectory,
       SLACK_CLIENT_ID: 'coke-dots-slack-e2e-client',
       SLACK_CLIENT_SECRET: 'coke-dots-slack-e2e-secret',
@@ -709,8 +710,6 @@ async function restartService() {
 try {
   e2ePort = await reservePort();
   baseUrl = `http://127.0.0.1:${e2ePort}`;
-  try { priorE2ESharedModelKey = e2eSharedModelKeyEntry.getPassword() || null; } catch { priorE2ESharedModelKey = null; }
-  try { e2eSharedModelKeyEntry.deletePassword(); } catch { /* The isolated E2E service may be empty. */ }
   testModelBaseUrl = await startMockModel();
   testModelApiKey = 'e2e-shared-model-key';
   testModelName = 'e2e-shared-model';
@@ -1427,29 +1426,29 @@ try {
     await screenshot(betaPage!, 'shared-model-task-from-beta');
   });
 
-  await recordStep('Chrome completes an Alpha task while the shared Model API Keychain is temporarily unavailable', async () => {
+  await recordStep('Chrome completes an Alpha task during a transient K3D Secret read outage', async () => {
     await clickNav(alphaPage!, '你的 dot');
     await alphaPage!.locator('.composer-bottom select').selectOption('model');
-    const instruction = 'E2E keychain resilience — use the retained shared model credential';
+    const instruction = 'E2E transient K3D outage — use the cached shared model credential';
     const requestStart = mockModelRequests.length;
-    await writeFile(sharedModelKeychainLockFile, 'simulate a temporarily locked Mac login Keychain');
+    await writeFile(sharedModelSecretUnavailableFile, 'simulate a temporary K3D API outage');
     try {
       const lockedState = await alphaPage!.evaluate(async () => await (await fetch('/api/state')).json()) as { modelSettings: { hasKey: boolean }; availableEngines: string[] };
-      assert.equal(lockedState.modelSettings.hasKey, true, 'The page should keep showing the shared model as configured after a transient Keychain read failure');
-      assert(lockedState.availableEngines.includes('model'), 'A temporary Keychain lock must not remove the Model API kernel from this tenant');
+      assert.equal(lockedState.modelSettings.hasKey, true, 'The page should keep showing the shared model as configured after a transient K3D read failure');
+      assert(lockedState.availableEngines.includes('model'), 'A temporary K3D outage must not remove the Model API kernel from this tenant');
       await createTask(alphaPage!, instruction);
       await clickNav(alphaPage!, 'Activity');
       await alphaPage!.waitForFunction(async (taskInstruction: string) => {
         const state = await (await fetch('/api/state')).json() as { tasks: { instruction: string; status: string; result: string | null }[] };
         const task = state.tasks.find(candidate => candidate.instruction === taskInstruction);
-        return task?.status === 'done' && task.result?.includes('登录钥匙串暂时不可读，但任务使用进程保留的共享模型凭据完成。');
+        return task?.status === 'done' && task.result?.includes('K3D Secret 暂时不可读，但任务使用进程缓存的共享模型凭据完成。');
       }, instruction, { timeout: 20_000 });
       await waitFor(() => mockModelRequests.slice(requestStart).some(request => request.prompt.includes(instruction)), 5_000);
       const request = mockModelRequests.slice(requestStart).find(candidate => candidate.prompt.includes(instruction));
       assert.equal(request?.authorization, `Bearer ${testModelApiKey}`, 'The task must make an authenticated model call with the retained instance credential');
-      await screenshot(alphaPage!, 'shared-model-task-during-keychain-lock');
+      await screenshot(alphaPage!, 'shared-model-task-during-k3d-outage');
     } finally {
-      await rm(sharedModelKeychainLockFile, { force: true });
+      await rm(sharedModelSecretUnavailableFile, { force: true });
     }
   });
 
@@ -1590,7 +1589,7 @@ try {
     const betaModelState = await betaPage!.evaluate(async () => await (await fetch('/api/state')).json());
     assert.equal(betaModelState.modelSettings.baseUrl, testModelBaseUrl, 'Shared model endpoint did not survive restart');
     assert.equal(betaModelState.modelSettings.model, testModelName, 'Shared model name did not survive restart');
-    assert.equal(betaModelState.modelSettings.hasKey, true, 'Shared model Keychain credential did not survive restart');
+    assert.equal(betaModelState.modelSettings.hasKey, true, 'Shared model K3D Secret credential did not survive restart');
     assert(betaModelState.availableEngines.includes('model'), 'Beta lost access to the instance model after restart');
     await (await taskNavigationItem(betaPage!, 'E2E shared workspace task')).waitFor({ state: 'detached' });
   });
@@ -3176,10 +3175,6 @@ try {
   await browser?.close().catch(() => undefined);
   await stopServer(server);
   if (mockModelServer) await new Promise<void>(resolvePromise => mockModelServer!.close(() => resolvePromise()));
-  try {
-    if (priorE2ESharedModelKey) e2eSharedModelKeyEntry.setPassword(priorE2ESharedModelKey);
-    else e2eSharedModelKeyEntry.deletePassword();
-  } catch { /* Restore only the isolated E2E Keychain service. */ }
   if (mockSlackServer) await new Promise<void>(resolvePromise => mockSlackServer!.close(() => resolvePromise()));
   if (mockQwenSignalingServer) await new Promise<void>(resolvePromise => mockQwenSignalingServer!.close(() => resolvePromise()));
   if (mockVolcEngineServer) await new Promise<void>(resolvePromise => mockVolcEngineServer!.close(() => resolvePromise()));

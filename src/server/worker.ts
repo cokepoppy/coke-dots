@@ -69,8 +69,8 @@ export class Worker {
     const modelConfig = requiresDesktopRuntime ? effectiveModelConfig(task.tenantId) : null;
     const useDesktopRuntime = requiresDesktopRuntime && Boolean(modelConfig);
     if (requiresDesktopRuntime && !modelConfig) {
-      const reason = sharedModelApiKeyStatus() === 'unreadable'
-        ? '无法读取 Coke Dots 实例共享 API 密钥。请解锁运行服务的 Mac 登录钥匙串后重试。'
+      const reason = sharedModelApiKeyStatus() === 'unavailable'
+        ? '无法读取 Coke Dots 实例共享 API 密钥。请检查 K3D 集群连接及 coke-dots-system/shared-model-api Secret 权限后重试。'
         : 'Coke Dots 实例尚未配置共享模型 API。请由实例模型管理员完成配置后重试。';
       const message = `云电脑内的 ${task.engine} Agent 没有收到模型配置，任务没有执行。${reason}`;
       this.store.updateTask(task.id, { status: 'failed', error: message }, task.tenantId);

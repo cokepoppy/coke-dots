@@ -10,7 +10,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
-import { Entry } from '../../src/server/keyring.ts';
 import { PNG } from 'pngjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -46,7 +45,6 @@ const logs: string[] = [];
 
 await writeFile(envFile, '');
 await mkdir(artifacts, { recursive: true });
-new Entry(process.env.DOTS_KEYCHAIN_SERVICE!, 'shared-model-api-key').setPassword('cloud-e2e-shared-api-key');
 
 function makeScreen() {
   const png = new PNG({ width: 1440, height: 900 });
@@ -202,7 +200,7 @@ async function startApp() {
       DOTS_LINUX_DESKTOP_TEST_AGENT_URL: `http://127.0.0.1:${remotePort}/{tenantHash}/agent/`,
       DOTS_DESKTOP_AGENT_ADAPTERS: 'pi,dsh',
       DOTS_AGENT_KERNELS_JSON: JSON.stringify({ pi: { command: 'node', args: ['/tmp/dots-pi-adapter.mjs'] }, dsh: { command: 'node', args: ['/tmp/dots-dsh-adapter.mjs'] } }),
-      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://api.deepseek.com/v1', DOTS_MODEL_API_KEY: '', DOTS_MODEL: 'cloud-e2e-model', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
+      GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', DOTS_MODEL_BASE_URL: 'https://api.deepseek.com/v1', DOTS_MODEL_API_KEY: 'cloud-e2e-shared-api-key', DOTS_MODEL: 'cloud-e2e-model', DOTS_PI_ENABLED: '0', DOTS_DSH_BIN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

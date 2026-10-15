@@ -8,7 +8,7 @@ import { adapters } from './adapters.ts';
 import { isEngine, type ActionRuleMode, type DotAppearance, type Engine, type ScheduleSpec } from '../shared/types.ts';
 import { isDotAppearance } from '../shared/avatar.ts';
 import { nextScheduleOccurrence, scheduleForTask, validateScheduleSpec } from '../shared/scheduling.ts';
-import { effectiveModelConfig, loadModelSettings, migrateTenantModelKey, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
+import { effectiveModelConfig, loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata } from './model-settings.ts';
 import { ComputerManager, type ComputerRuntime } from './computer.ts';
 import { LinuxDesktopComputer } from './linux-desktop-computer.ts';
 import { apiErrorResponse } from './computer-errors.ts';
@@ -31,19 +31,13 @@ const dataDirectory = resolve(process.env.DOTS_DATA_DIR || './data');
 const store = new Store(dataDirectory);
 const priorModelAdminTenantId = store.getAppSetting('modelSettingsAdminTenantId');
 const modelSettingsCandidates = store.modelSettingsCandidates();
-const migratedModelKeyTenantId = migrateTenantModelKey([
-  ...(priorModelAdminTenantId ? [priorModelAdminTenantId] : []),
-  ...modelSettingsCandidates.map(item => item.tenantId),
-]);
 const modelSettingsSource = modelSettingsCandidates.find(item => item.tenantId === priorModelAdminTenantId)
-  || modelSettingsCandidates.find(item => item.tenantId === migratedModelKeyTenantId)
   || modelSettingsCandidates.find(item => item.tenantId === 'legacy')
   || modelSettingsCandidates.find(item => item.baseUrl || item.model);
 if (modelSettingsSource) {
   if (!store.getAppSetting('modelBaseUrl') && modelSettingsSource.baseUrl) store.setAppSetting('modelBaseUrl', modelSettingsSource.baseUrl);
   if (!store.getAppSetting('modelName') && modelSettingsSource.model) store.setAppSetting('modelName', modelSettingsSource.model);
 }
-if (!priorModelAdminTenantId && migratedModelKeyTenantId) store.setAppSetting('modelSettingsAdminTenantId', migratedModelKeyTenantId);
 const auth = new AuthService(store, port);
 const slack = new SlackService(store, port);
 const computers = new Map<string, ComputerRuntime>();

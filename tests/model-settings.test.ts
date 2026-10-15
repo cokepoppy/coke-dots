@@ -1,18 +1,32 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { test } from 'node:test';
-import { Entry } from '../src/server/keyring.ts';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { test } from 'node:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.ts';
-import { effectiveModelConfig, loadModelSettings, migrateTenantModelKey, publicModelSettings, saveModelKey, setModelMetadata, sharedModelApiKeyStatus } from '../src/server/model-settings.ts';
+import { K3dModelSecretStore } from '../src/server/k3d-model-secret.ts';
+import { clearSharedModelSecretForTests, effectiveModelConfig, loadModelSettings, publicModelSettings, saveModelKey, setModelMetadata, sharedModelApiKeyStatus } from '../src/server/model-settings.ts';
 
-const keychainService = () => process.env.DOTS_KEYCHAIN_SERVICE || 'com.cokepoppy.coke-dots.test';
-const sharedEntry = () => new Entry(keychainService(), 'shared-model-api-key');
-const tenantEntry = (tenantId: string) => new Entry(keychainService(), `tenant-${tenantId}-model-api-key`);
-const localEntry = () => new Entry(keychainService(), 'local-model-api-key');
-function deletePassword(entry: Entry) { try { entry.deletePassword(); } catch { /* Isolated test service may not contain this item. */ } }
+function withIsolatedSecret(run: (directory: string) => void) {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-model-secret-'));
+  const keys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_API_KEY', 'DOTS_MODEL', 'DOTS_MODEL_BASE_URL', 'DOTS_TEST_MODEL_SECRET_DIR', 'DOTS_TEST_MODEL_SECRET_SCOPE', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE'] as const;
+  const previous = new Map(keys.map(key => [key, process.env[key]]));
+  Object.assign(process.env, {
+    NODE_ENV: 'test', DOTS_E2E_AUTH: '0', DOTS_TEST_MODEL_SECRET_DIR: directory,
+    DOTS_TEST_MODEL_SECRET_SCOPE: randomUUID(),
+  });
+  for (const key of ['DOTS_MODEL_API_KEY', 'DOTS_MODEL', 'DOTS_MODEL_BASE_URL', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE']) delete process.env[key];
+  clearSharedModelSecretForTests();
+  try { run(directory); }
+  finally {
+    clearSharedModelSecretForTests();
+    rmSync(directory, { recursive: true, force: true });
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+}
 
 test('shared model metadata persists at instance scope without storing the API key in SQLite', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-settings-'));
@@ -32,151 +46,103 @@ test('shared model metadata persists at instance scope without storing the API k
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('environment model configuration is shared across tenants and secrets stay private', () => {
-  const old = { nodeEnv: process.env.NODE_ENV, e2e: process.env.DOTS_E2E_AUTH, key: process.env.DOTS_MODEL_API_KEY, model: process.env.DOTS_MODEL, baseUrl: process.env.DOTS_MODEL_BASE_URL };
-  process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '1';
-  process.env.DOTS_MODEL_API_KEY = 'test-secret'; process.env.DOTS_MODEL = 'env-model'; process.env.DOTS_MODEL_BASE_URL = 'https://example.com/v1';
-  try {
-    setModelMetadata('', '');
-    assert.deepEqual(effectiveModelConfig('alpha-workspace'), effectiveModelConfig('beta-workspace'));
-    assert.equal(effectiveModelConfig('beta-workspace')?.apiKey, 'test-secret');
-    assert.equal(effectiveModelConfig('beta-workspace')?.model, 'env-model');
-    assert.equal(JSON.stringify(publicModelSettings()).includes('test-secret'), false);
-    process.env.DOTS_E2E_AUTH = '0';
-    assert.equal(effectiveModelConfig('alpha-workspace'), null, 'Test fixture credentials require the E2E gate for every tenant');
-  } finally {
-    for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2e], ['DOTS_MODEL_API_KEY', old.key], ['DOTS_MODEL', old.model], ['DOTS_MODEL_BASE_URL', old.baseUrl]] as const) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
-  }
-});
+test('K3D Secret is the instance-wide API key source for all tenants and is never returned to clients', () => withIsolatedSecret(() => {
+  loadModelSettings('https://api.deepseek.com/v1', 'deepseek-test-model', 'admin-tenant');
+  saveModelKey('temporary-k3d-secret-test-key');
+  setModelMetadata('https://api.deepseek.com/v1', 'deepseek-test-model', 'admin-tenant');
 
-test('the last readable shared Model API key survives a temporary Keychain read failure and clears when the entry is confirmed missing', () => {
-  const shared = sharedEntry();
-  const testDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-keychain-lock-'));
-  const lockFile = join(testDirectory, 'login-keychain-locked');
-  const old = {
-    nodeEnv: process.env.NODE_ENV,
-    e2e: process.env.DOTS_E2E_AUTH,
-    lockFile: process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE,
-    key: process.env.DOTS_MODEL_API_KEY,
-    model: process.env.DOTS_MODEL,
-    baseUrl: process.env.DOTS_MODEL_BASE_URL,
+  const alpha = effectiveModelConfig('alpha-tenant');
+  const beta = effectiveModelConfig('beta-tenant');
+  assert.deepEqual(beta, alpha, 'Every tenant must resolve the same shared K3D credential and model profile');
+  assert.equal(alpha?.apiKey, 'temporary-k3d-secret-test-key');
+  assert.equal(sharedModelApiKeyStatus(), 'available');
+  assert.equal(publicModelSettings('beta-tenant').hasKey, true);
+  assert.equal(JSON.stringify(publicModelSettings('beta-tenant')).includes('temporary-k3d-secret-test-key'), false);
+}));
+
+test('a transient K3D read outage keeps the last in-process credential, while a confirmed missing Secret clears it', () => withIsolatedSecret(directory => {
+  loadModelSettings('https://api.shared.example.test/v1', 'shared-test-model');
+  saveModelKey('temporary-k3d-cache-test-key');
+  const unavailableFile = join(directory, 'kubectl-unavailable');
+  process.env.DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE = unavailableFile;
+  writeFileSync(unavailableFile, 'simulate temporary K3D API outage');
+
+  assert.equal(effectiveModelConfig('second-tenant')?.apiKey, 'temporary-k3d-cache-test-key');
+  assert.equal(publicModelSettings('second-tenant').hasKey, true);
+
+  rmSync(unavailableFile, { force: true });
+  clearSharedModelSecretForTests();
+  assert.equal(sharedModelApiKeyStatus(), 'missing', 'A successful read after the Secret was removed must clear the cached credential');
+  assert.equal(effectiveModelConfig('second-tenant'), null);
+}));
+
+test('an unreachable K3D Secret is reported separately from a missing Secret', () => withIsolatedSecret(directory => {
+  const unavailableFile = join(directory, 'not-a-directory');
+  writeFileSync(unavailableFile, 'force ENOTDIR');
+  process.env.DOTS_TEST_MODEL_SECRET_DIR = unavailableFile;
+  clearSharedModelSecretForTests();
+  assert.equal(sharedModelApiKeyStatus(), 'unavailable');
+  assert.equal(publicModelSettings().hasKey, false);
+}));
+
+test('K3D Secret reads and writes use kubectl stdin and never place the credential in command arguments', () => {
+  const priorNodeEnv = process.env.NODE_ENV;
+  const priorNamespace = process.env.DOTS_MODEL_SECRET_NAMESPACE;
+  const priorName = process.env.DOTS_MODEL_SECRET_NAME;
+  process.env.NODE_ENV = 'production';
+  process.env.DOTS_MODEL_SECRET_NAMESPACE = 'test-system';
+  process.env.DOTS_MODEL_SECRET_NAME = 'shared-model-api';
+  const commandArgs: string[][] = [];
+  const manifests: string[] = [];
+  let readFailure: Error | null = null;
+  const runner = (args: string[], input?: string) => {
+    commandArgs.push(args);
+    if (args.includes('get')) {
+      if (readFailure) throw readFailure;
+      return Buffer.from('runner-only-test-secret').toString('base64');
+    }
+    if (args.includes('apply') && input) manifests.push(input);
+    return '';
   };
-  deletePassword(shared);
-  process.env.NODE_ENV = 'test';
-  process.env.DOTS_E2E_AUTH = '0';
-  process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE = lockFile;
-  delete process.env.DOTS_MODEL_API_KEY; delete process.env.DOTS_MODEL; delete process.env.DOTS_MODEL_BASE_URL;
+
   try {
-    loadModelSettings('https://api.shared.example.test/v1', 'shared-test-model');
-    saveModelKey('temporary-shared-key-for-cache-test');
-    assert.equal(effectiveModelConfig('first-tenant')?.apiKey, 'temporary-shared-key-for-cache-test');
+    const secret = new K3dModelSecretStore(runner);
+    secret.save('runner-only-test-secret');
+    assert.equal(secret.read(true).value, 'runner-only-test-secret');
+    const secretManifest = JSON.parse(manifests.at(-1) || '{}') as { kind?: string; metadata?: { namespace?: string; name?: string }; data?: { apiKey?: string } };
+    assert.equal(secretManifest.kind, 'Secret');
+    assert.equal(secretManifest.metadata?.namespace, 'test-system');
+    assert.equal(secretManifest.metadata?.name, 'shared-model-api');
+    assert.equal(Buffer.from(secretManifest.data?.apiKey || '', 'base64').toString('utf8'), 'runner-only-test-secret');
+    assert(commandArgs.every(args => !args.join(' ').includes('runner-only-test-secret')), 'The raw credential must never be placed in argv');
+    assert.equal(manifests.some(manifest => manifest.includes('runner-only-test-secret')), false, 'The manifest contains only the base64 encoded Secret data');
 
-    writeFileSync(lockFile, 'simulate locked login Keychain');
-    assert.deepEqual(effectiveModelConfig('second-tenant'), {
-      apiKey: 'temporary-shared-key-for-cache-test',
-      model: 'shared-test-model',
-      baseUrl: 'https://api.shared.example.test/v1',
-    });
-    assert.equal(publicModelSettings('second-tenant').hasKey, true);
-
-    rmSync(lockFile, { force: true });
-    deletePassword(shared);
-    assert.equal(publicModelSettings().hasKey, false, 'A successful missing-entry read must clear the process cache');
-    assert.equal(effectiveModelConfig('second-tenant'), null);
+    readFailure = Object.assign(new Error('kubectl unavailable'), { stderr: Buffer.from('connection refused') });
+    assert.equal(secret.read(true).status, 'configured', 'A previously read credential remains usable during a transient K3D outage');
   } finally {
-    deletePassword(shared);
-    rmSync(testDirectory, { recursive: true, force: true });
-    for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2e], ['DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE', old.lockFile], ['DOTS_MODEL_API_KEY', old.key], ['DOTS_MODEL', old.model], ['DOTS_MODEL_BASE_URL', old.baseUrl]] as const) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    if (priorNamespace === undefined) delete process.env.DOTS_MODEL_SECRET_NAMESPACE; else process.env.DOTS_MODEL_SECRET_NAMESPACE = priorNamespace;
+    if (priorName === undefined) delete process.env.DOTS_MODEL_SECRET_NAME; else process.env.DOTS_MODEL_SECRET_NAME = priorName;
   }
 });
 
-test('shared model settings distinguish a missing key from an unreadable Keychain', () => {
-  const testDirectory = mkdtempSync(join(tmpdir(), 'coke-dots-keychain-status-'));
-  const lockFile = join(testDirectory, 'login-keychain-locked');
-  const old = {
-    nodeEnv: process.env.NODE_ENV,
-    e2e: process.env.DOTS_E2E_AUTH,
-    service: process.env.DOTS_KEYCHAIN_SERVICE,
-    lockFile: process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE,
-    key: process.env.DOTS_MODEL_API_KEY,
-    model: process.env.DOTS_MODEL,
-    baseUrl: process.env.DOTS_MODEL_BASE_URL,
-  };
-  process.env.NODE_ENV = 'test';
-  process.env.DOTS_E2E_AUTH = '0';
-  process.env.DOTS_KEYCHAIN_SERVICE = `com.cokepoppy.coke-dots.test.${randomUUID()}`;
-  delete process.env.DOTS_MODEL_API_KEY;
-  delete process.env.DOTS_MODEL;
-  delete process.env.DOTS_MODEL_BASE_URL;
+test('production ignores DOTS_MODEL_API_KEY environment values and requires the K3D Secret', () => {
+  const priorNodeEnv = process.env.NODE_ENV;
+  const priorApiKey = process.env.DOTS_MODEL_API_KEY;
+  const priorModel = process.env.DOTS_MODEL;
+  const priorSecretDir = process.env.DOTS_TEST_MODEL_SECRET_DIR;
+  process.env.NODE_ENV = 'production';
+  process.env.DOTS_MODEL_API_KEY = 'environment-key-must-not-be-used';
+  process.env.DOTS_MODEL = 'environment-model';
+  process.env.DOTS_TEST_MODEL_SECRET_DIR = join(tmpdir(), 'not-used-outside-tests');
   try {
-    writeFileSync(lockFile, 'simulated unavailable keychain');
-    process.env.DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE = lockFile;
-    loadModelSettings('https://api.shared.example.test/v1', 'shared-test-model');
-    assert.equal(sharedModelApiKeyStatus(), 'unreadable');
-    assert.equal(publicModelSettings().hasKey, false);
-
-    rmSync(lockFile, { force: true });
-    assert.equal(sharedModelApiKeyStatus(), 'missing');
-    assert.equal(publicModelSettings().apiKeyStatus, 'missing');
+    const settings = new K3dModelSecretStore(() => { const error = new Error('K3D unavailable') as Error & { stderr?: Buffer }; error.stderr = Buffer.from('connection refused'); throw error; });
+    assert.equal(settings.read(true).value, null);
+    assert.equal(effectiveModelConfig('production-tenant', settings), null);
   } finally {
-    rmSync(testDirectory, { recursive: true, force: true });
-    for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2e], ['DOTS_KEYCHAIN_SERVICE', old.service], ['DOTS_TEST_SHARED_MODEL_KEYCHAIN_LOCK_FILE', old.lockFile], ['DOTS_MODEL_API_KEY', old.key], ['DOTS_MODEL', old.model], ['DOTS_MODEL_BASE_URL', old.baseUrl]] as const) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
-  }
-});
-
-test('tenant-scoped key migrates once to a shared Keychain entry and serves other tenants', () => {
-  const sourceTenant = `migration-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const sourceEntry = tenantEntry(sourceTenant);
-  const missingTenant = `migration-missing-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const globalEntry = sharedEntry();
-  const old = { nodeEnv: process.env.NODE_ENV, e2e: process.env.DOTS_E2E_AUTH, key: process.env.DOTS_MODEL_API_KEY, model: process.env.DOTS_MODEL, baseUrl: process.env.DOTS_MODEL_BASE_URL };
-  deletePassword(globalEntry);
-  deletePassword(sourceEntry);
-  process.env.NODE_ENV = 'test'; process.env.DOTS_E2E_AUTH = '0';
-  delete process.env.DOTS_MODEL_API_KEY; delete process.env.DOTS_MODEL; delete process.env.DOTS_MODEL_BASE_URL;
-  try {
-    sourceEntry.setPassword('temporary-migration-test-key');
-    assert.equal(effectiveModelConfig(sourceTenant), null, 'Legacy tenant keys are not silently consulted as fallbacks');
-    assert.equal(migrateTenantModelKey([missingTenant, sourceTenant]), sourceTenant, 'The migration skips workspaces without a Keychain entry and records the workspace that held the shared key');
-    loadModelSettings('https://example.com/v1', 'migration-model', sourceTenant);
-    const alphaConfig = effectiveModelConfig('alpha-tenant');
-    const betaConfig = effectiveModelConfig('beta-tenant');
-    assert(alphaConfig && betaConfig);
-    assert.deepEqual(betaConfig, alphaConfig, 'A second tenant must receive the same endpoint, model, and credential');
-    assert.equal(alphaConfig.apiKey, 'temporary-migration-test-key');
-    assert.equal(publicModelSettings().adminTenantId, sourceTenant);
-    assert.equal(JSON.stringify(publicModelSettings()).includes('temporary-migration-test-key'), false);
-    assert.equal(migrateTenantModelKey([sourceTenant]), null, 'The migration is idempotent once a shared key exists');
-  } finally {
-    deletePassword(sourceEntry); deletePassword(globalEntry);
-    for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_E2E_AUTH', old.e2e], ['DOTS_MODEL_API_KEY', old.key], ['DOTS_MODEL', old.model], ['DOTS_MODEL_BASE_URL', old.baseUrl]] as const) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
-  }
-});
-
-test('the pre-tenant local Keychain entry migrates to the shared entry', () => {
-  const globalEntry = sharedEntry();
-  const oldEntry = localEntry();
-  const old = { nodeEnv: process.env.NODE_ENV, key: process.env.DOTS_MODEL_API_KEY, model: process.env.DOTS_MODEL, baseUrl: process.env.DOTS_MODEL_BASE_URL };
-  deletePassword(globalEntry); deletePassword(oldEntry);
-  process.env.NODE_ENV = 'test';
-  delete process.env.DOTS_MODEL_API_KEY; delete process.env.DOTS_MODEL; delete process.env.DOTS_MODEL_BASE_URL;
-  try {
-    oldEntry.setPassword('legacy-local-key');
-    assert.equal(migrateTenantModelKey(['legacy']), null, 'Legacy single-user keys have no tenant administrator owner');
-    loadModelSettings('https://example.com/v1', 'legacy-model');
-    assert.equal(effectiveModelConfig('any-tenant')?.apiKey, 'legacy-local-key');
-  } finally {
-    deletePassword(globalEntry); deletePassword(oldEntry);
-    for (const [key, value] of [['NODE_ENV', old.nodeEnv], ['DOTS_MODEL_API_KEY', old.key], ['DOTS_MODEL', old.model], ['DOTS_MODEL_BASE_URL', old.baseUrl]] as const) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    if (priorApiKey === undefined) delete process.env.DOTS_MODEL_API_KEY; else process.env.DOTS_MODEL_API_KEY = priorApiKey;
+    if (priorModel === undefined) delete process.env.DOTS_MODEL; else process.env.DOTS_MODEL = priorModel;
+    if (priorSecretDir === undefined) delete process.env.DOTS_TEST_MODEL_SECRET_DIR; else process.env.DOTS_TEST_MODEL_SECRET_DIR = priorSecretDir;
   }
 });
