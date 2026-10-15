@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { decodeVolcengineFloat32Pcm } from '../src/shared/volcengine-audio.ts';
-import { isVolcengineFloat32Pcm } from '../src/server/volcengine-duplex-voice-gateway.ts';
+import { isVolcengineFloat32Pcm, updateVolcengineTranscriptSnapshot } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
@@ -21,6 +21,19 @@ import {
 } from '../src/server/volcengine-voice.ts';
 
 const env = (): NodeJS.ProcessEnv => ({ DOTS_VOLCENGINE_APP_ID: 'test-app', DOTS_VOLCENGINE_ACCESS_TOKEN: 'server-token' });
+
+test('SeedDuplex cumulative ASR snapshots replace earlier partials without repeating them', () => {
+  const snapshots = [
+    '情',
+    '情之用中文回复。',
+    '情之用中文回复',
+    '情之用中文回复公网火山语音识别测试成功不要调用工具',
+    '情之用中文回复，公网火山语音识别测试成功，不要调用工具。',
+  ];
+  const transcript = snapshots.reduce(updateVolcengineTranscriptSnapshot, '');
+  assert.equal(transcript, '情之用中文回复，公网火山语音识别测试成功，不要调用工具。');
+  assert.equal(updateVolcengineTranscriptSnapshot(transcript, ''), transcript, 'An empty provider event must not erase the latest transcript');
+});
 
 test('SeedDuplex float32 PCM decodes little-endian samples and clamps invalid values', () => {
   const bytes = new ArrayBuffer(16);

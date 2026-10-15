@@ -17,6 +17,12 @@ const VOLCENGINE_FLOAT32_AUDIO_MARKER = 2;
 type LocalVoiceMessage = { type?: unknown; text?: unknown };
 type ProviderEvent = { type?: unknown; [key: string]: unknown };
 
+export function updateVolcengineTranscriptSnapshot(current: string, snapshot: string): string {
+  // SeedDuplex delta events contain the full transcript so far. Later snapshots
+  // may repeat, correct, or shorten earlier words, so appending duplicates text.
+  return snapshot || current;
+}
+
 export function isVolcengineFloat32Pcm(pcm: Uint8Array): boolean {
   if (!pcm.byteLength || pcm.byteLength % 4 !== 0) return false;
   const bytes = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
@@ -195,7 +201,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     }
     if (event.type === 'conversation.item.input_audio_transcription.delta' || event.type === 'conversation.item.input_audio_transcription.result') {
       const piece = typeof event.delta === 'string' ? event.delta : typeof event.transcript === 'string' ? event.transcript : typeof event.result === 'string' ? event.result : '';
-      if (piece) transcript = event.type.endsWith('.delta') ? transcript + piece : piece;
+      if (piece) transcript = updateVolcengineTranscriptSnapshot(transcript, piece);
       sendLocal({ type: 'asr', transcript, interim: true });
       return;
     }

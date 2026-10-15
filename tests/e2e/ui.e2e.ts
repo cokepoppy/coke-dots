@@ -353,8 +353,12 @@ async function startMockVolcEngineDuplexProvider() {
       events: [] as string[], timeline: [] as string[], pcmBytes: 0, pcmPeak: 0, nonSilentPcmSamples: 0, spokenTexts: [] as string[], audioDeltas: 0,
       sendTranscript: (transcript: string, turnId: string) => {
         socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.started', item_id: turnId }));
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.delta', item_id: turnId, delta: transcript.slice(0, Math.max(1, Math.floor(transcript.length / 2))) }));
         socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.delta', item_id: turnId, delta: transcript }));
-        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: turnId, transcript }));
+        // SeedDuplex can repeat the same cumulative snapshot and omit text on
+        // completed. The gateway must retain one final transcript, not append it.
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.delta', item_id: turnId, delta: transcript }));
+        socket.send(JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: turnId }));
       },
     };
     mockVolcEngineDuplexConnections.push(connection);
