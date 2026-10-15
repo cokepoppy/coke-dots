@@ -366,8 +366,18 @@ try {
   await page?.context().close().catch(() => undefined);
   await browser?.close().catch(() => undefined);
   if (appServer && appServer.exitCode === null) {
+    const exited = new Promise<void>(resolvePromise => appServer!.once('exit', () => resolvePromise()));
     appServer.kill('SIGTERM');
-    await new Promise(resolvePromise => appServer!.once('exit', resolvePromise));
+    let exitTimer: ReturnType<typeof setTimeout> | undefined;
+    const exitedGracefully = await Promise.race([
+      exited.then(() => true),
+      new Promise<boolean>(resolvePromise => { exitTimer = setTimeout(() => resolvePromise(false), 5_000); }),
+    ]);
+    if (exitTimer) clearTimeout(exitTimer);
+    if (!exitedGracefully && appServer.exitCode === null && appServer.signalCode === null) {
+      appServer.kill('SIGKILL');
+      await exited;
+    }
   }
   if (namespace && (kubectlNamespaceCreated || process.env.DOTS_K3D_CLEANUP_FAILED === '1')) {
     spawnSync('kubectl', ['delete', 'namespace', namespace, '--wait=true', '--timeout=120s'], { cwd: projectRoot, stdio: 'ignore' });
