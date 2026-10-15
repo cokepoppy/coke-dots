@@ -40,6 +40,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
   const [status, setStatus] = useState<DingTalkStatus | null>(null);
   const [flow, setFlow] = useState<AuthorizationFlow | null>(null);
   const [selected, setSelected] = useState<DingTalkGroup[]>([]);
+  const [savedSelection, setSavedSelection] = useState<DingTalkGroup[]>([]);
   const [monitors, setMonitors] = useState<DingTalkMonitors | null>(null);
   const [keywordDrafts, setKeywordDrafts] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
@@ -56,6 +57,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
   const [notice, setNotice] = useState('');
 
   const selectedIds = useMemo(() => new Set(selected.map(group => group.conversationId)), [selected]);
+  const hasUnsavedSelection = useMemo(() => selectionKey(selected) !== selectionKey(savedSelection), [selected, savedSelection]);
   const hasEnabledMonitor = monitors?.groups.some(group => group.enabled) || false;
 
   async function readJson<T>(response: Response): Promise<T> {
@@ -75,6 +77,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
       ]);
       setStatus(nextStatus);
       setSelected(nextSelected);
+      setSavedSelection(nextSelected);
       setMonitors(nextMonitors);
       setKeywordDrafts(Object.fromEntries(nextMonitors.groups.map(group => [group.conversationId, group.keywords.join(', ')])));
       const account = nextStatus.account;
@@ -200,15 +203,25 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
   }
 
   async function saveGroups() {
-    if (working) return;
+    if (working || !hasUnsavedSelection) return;
     setWorking(true); setError(''); setNotice('');
+    let saved: DingTalkGroup[];
     try {
-      const saved = await appFetch('/api/dingtalk/groups/selected', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ groups: selected }) }).then(response => readJson<DingTalkGroup[]>(response));
+      saved = await appFetch('/api/dingtalk/groups/selected', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ groups: selected }) }).then(response => readJson<DingTalkGroup[]>(response));
       setSelected(saved);
+      setSavedSelection(saved);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '保存群选择失败。');
+      setWorking(false);
+      return;
+    }
+    try {
       const nextMonitors = await appFetch('/api/dingtalk/monitors').then(response => readJson<DingTalkMonitors>(response));
       setMonitors(nextMonitors);
       setNotice('已保存群选择。是否开始监听，需要为每个群单独开启。');
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '保存群选择失败。'); }
+    } catch {
+      setError('群选择已保存，但监听状态刷新失败。保存结果已保留，请重试读取状态。');
+    }
     finally { setWorking(false); }
   }
 
@@ -245,7 +258,7 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
     setWorking(true); setError(''); setNotice('');
     try {
       await appFetch('/api/dingtalk/account', { method: 'DELETE' }).then(response => readJson<{ disconnected: boolean }>(response));
-      setFlow(null); setResults([]); setSelected([]); setStatus(current => current ? { ...current, account: { state: 'not-installed' } } : current);
+      setFlow(null); setResults([]); setSelected([]); setSavedSelection([]); setStatus(current => current ? { ...current, account: { state: 'not-installed' } } : current);
       setNotice('已从此工作区移除钉钉凭据。服务端可能仍保留授权，需要在钉钉账号安全设置中撤销。');
     } catch (reason) { setError(reason instanceof Error ? reason.message : '断开钉钉连接失败。'); }
     finally { setWorking(false); }
@@ -307,8 +320,8 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
                 : results.length === 0 && resultMode === null && <p className="dingtalk-empty-results">可以搜索群名，也可以加载当前账号加入的全部群。</p>}
           {resultMode === 'list' && listComplete === true && results.length > 0 && <p className="dingtalk-empty-results" data-testid="dingtalk-group-list-complete" role="status">已加载当前账号加入的全部群聊，共 {results.length} 个。</p>}
           {resultMode === 'list' && listComplete === false && results.length > 0 && <p className="dingtalk-empty-results" data-testid="dingtalk-group-list-incomplete" role="status">群列表尚未完整加载{listFailureCount > 0 ? `（${listFailureCount} 项失败）` : ''}。请继续加载更多群聊或稍后重试。</p>}
-          {selected.length > 0 && <div className="dingtalk-selected-groups"><strong>待保存群聊</strong>{selected.map(group => <span key={group.conversationId}>{group.name}<button type="button" aria-label={`移除群 ${group.name}`} onClick={() => toggleGroup(group)}>×</button></span>)}</div>}
-          <button className="dingtalk-setup-primary" type="button" data-testid="dingtalk-groups-save" disabled={working || !status?.configured} onClick={() => void saveGroups()}>{working ? '处理中…' : '保存群选择'}</button>
+          {selected.length > 0 && <div className="dingtalk-selected-groups"><strong data-testid="dingtalk-selection-state">{hasUnsavedSelection ? '待保存群聊' : '已保存群聊'}</strong>{selected.map(group => <span key={group.conversationId}>{group.name}<button type="button" aria-label={`移除群 ${group.name}`} onClick={() => toggleGroup(group)}>×</button></span>)}</div>}
+          <button className="dingtalk-setup-primary" type="button" data-testid="dingtalk-groups-save" disabled={working || !status?.configured || !hasUnsavedSelection} onClick={() => void saveGroups()}>{working ? '处理中…' : '保存群选择'}</button>
           {monitors && <div className="dingtalk-monitor-section" data-testid="dingtalk-monitor-section">
             <div className="dingtalk-section-title"><div><h3>实时告警监听</h3><p>通过当前钉钉账号的 DWS 个人 IM 事件流接收指定群消息</p></div><span>{monitors.groups.filter(group => group.enabled).length} 个启用</span></div>
             {status?.testOnly && <p className="dingtalk-monitor-note" data-testid="dingtalk-dws-test-mode">当前为浏览器自动化测试模拟的 DWS 个人事件监听，不代表真实群消息已经接入。</p>}
@@ -342,6 +355,12 @@ function mergeGroups(current: DingTalkGroup[], next: DingTalkGroup[]) {
   const items = new Map(current.map(group => [group.conversationId, group]));
   for (const group of next) items.set(group.conversationId, group);
   return [...items.values()];
+}
+
+function selectionKey(groups: DingTalkGroup[]) {
+  return JSON.stringify(groups
+    .map(group => ({ conversationId: group.conversationId, name: group.name }))
+    .sort((left, right) => left.conversationId.localeCompare(right.conversationId)));
 }
 
 function authorizationError(state: AuthorizationFlow['state']) {
