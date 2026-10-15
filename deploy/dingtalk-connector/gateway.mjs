@@ -1,19 +1,21 @@
-import { randomUUID, createHmac, timingSafeEqual, hkdfSync, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomUUID, createHash, createHmac, timingSafeEqual, hkdfSync, createCipheriv, createDecipheriv } from 'node:crypto';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 import {
-  inspectDwsProfile, isolatedEnvironment, prepareProfileRoot, principalKey,
+  inspectDwsProfile, isolatedEnvironment, parseAuthStatus, prepareProfileRoot, principalKey,
   runDwsProcess, selectCurrentProfile, verifyDwsBinary,
 } from './lib/dws-runtime.mjs';
 import { createDwsAuthorizationManager } from './lib/dws-authorization-manager.mjs';
+import { createDwsDocumentOperations } from './lib/dws-documents.mjs';
 
 const encryptedMagic = Buffer.from('CDWS1');
 const maxArchiveBytes = 32 * 1024 * 1024;
 const maxRequestBytes = 32 * 1024;
+const maxDocumentRequestBytes = 600 * 1024;
 const maxTicketLifetimeSeconds = 120;
 const allowedErrors = new Set([
   'DWS_PLATFORM_UNSUPPORTED', 'DWS_BINARY_UNSAFE', 'DWS_BINARY_CHECKSUM_MISMATCH',
@@ -24,6 +26,14 @@ const allowedErrors = new Set([
   'DWS_OUTPUT_TOO_LARGE', 'DWS_AUTHORIZATION_START_TIMEOUT', 'DWS_AUTHORIZATION_FAILED',
   'DWS_AUTHORIZATION_INVALID_RESULT', 'DWS_AUTHORIZATION_EXPIRED', 'DWS_PROFILE_BUSY',
   'DWS_EVENT_LISTENER_FAILED', 'DWS_MONITOR_ALREADY_ACTIVE',
+  'DWS_DOC_AUTHORIZATION_REQUIRED', 'DWS_DOC_NAME_INVALID', 'DWS_DOC_CONTENT_INVALID',
+  'DWS_DOC_CONTENT_TOO_LARGE', 'DWS_DOC_NODE_INVALID', 'DWS_DOC_LOCATION_INVALID',
+  'DWS_DOC_QUERY_INVALID', 'DWS_DOC_LIMIT_INVALID', 'DWS_DOC_SEARCH_FAILED',
+  'DWS_DOC_READBACK_FAILED', 'DWS_DOC_READBACK_MISMATCH', 'DWS_DOC_OPERATION_UNVERIFIED',
+  'DWS_DOC_OPERATION_FAILED', 'DWS_DOC_OPERATION_MISMATCH', 'DWS_DOC_PARTIAL_SUCCESS',
+  'DWS_DOC_COMMIT_UNKNOWN', 'DWS_DOC_RETRYABLE_FAILURE', 'DWS_DOC_CONFIRMATION_REQUIRED',
+  'DWS_DOC_UPDATE_COMMAND_INVALID', 'DWS_DOC_REQUEST_ID_INVALID', 'DWS_DOC_REQUEST_CONFLICT',
+  'DWS_DOC_OPERATION_STORAGE_FAILED', 'DINGTALK_REQUEST_TOO_LARGE',
   'CONNECTOR_AUTHORIZATION_NOT_FOUND', 'CONNECTOR_IDENTITY_READBACK_FAILED',
 ]);
 
@@ -201,9 +211,88 @@ function sanitizeGroups(payload) {
 function publicError(error) {
   const code = typeof error?.message === 'string' && allowedErrors.has(error.message) ? error.message : 'DINGTALK_CONNECTOR_REQUEST_FAILED';
   const status = code === 'CONNECTOR_AUTHORIZATION_NOT_FOUND' ? 404 :
-    ['DWS_PROFILE_BUSY', 'DWS_MONITOR_ALREADY_ACTIVE'].includes(code) ? 409 :
-      ['DWS_PROCESS_TIMEOUT', 'DWS_PROCESS_FAILED', 'DWS_EVENT_LISTENER_FAILED'].includes(code) ? 502 : 400;
+    code === 'DWS_DOC_AUTHORIZATION_REQUIRED' ? 403 :
+      ['DWS_DOC_CONTENT_TOO_LARGE', 'DINGTALK_REQUEST_TOO_LARGE'].includes(code) ? 413 :
+        ['DWS_PROFILE_BUSY', 'DWS_MONITOR_ALREADY_ACTIVE', 'DWS_DOC_PARTIAL_SUCCESS', 'DWS_DOC_COMMIT_UNKNOWN', 'DWS_DOC_REQUEST_CONFLICT'].includes(code) ? 409 :
+          ['DWS_PROCESS_TIMEOUT', 'DWS_PROCESS_FAILED', 'DWS_EVENT_LISTENER_FAILED'].includes(code) ? 502 : 400;
   return { status, body: { ok: false, error: code } };
+}
+
+async function ensurePrivateDirectory(directory) {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const info = await lstat(directory);
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid()) throw new Error('DWS_DOC_OPERATION_STORAGE_FAILED');
+  await chmodPrivate(directory, 0o700);
+}
+
+async function writeDocumentOperationRecord(file, value) {
+  const pending = `${file}.${randomUUID()}.tmp`;
+  let handle;
+  try {
+    handle = await open(pending, 'wx', 0o600);
+    await handle.writeFile(JSON.stringify(value));
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await rename(pending, file);
+    await chmodPrivate(file, 0o600);
+    await syncDirectory(path.dirname(file));
+  } finally { await handle?.close().catch(() => undefined); await rm(pending, { force: true }); }
+}
+
+async function syncDirectory(directory) {
+  let handle;
+  try { handle = await open(directory, 'r'); await handle.sync(); }
+  catch (error) { if (!['EINVAL', 'ENOTSUP', 'EISDIR', 'EBADF'].includes(error?.code)) throw error; }
+  finally { await handle?.close().catch(() => undefined); }
+}
+
+function createDocumentWriteOnce(storageRoot) {
+  return async ({ ownerKey, requestId, operation, input, work }) => {
+    const ownerDirectory = path.join(storageRoot, '.document-operations', ownerKey);
+    await ensurePrivateDirectory(path.dirname(ownerDirectory));
+    await ensurePrivateDirectory(ownerDirectory);
+    const requestHash = createHash('sha256').update(requestId).digest('hex');
+    const recordPath = path.join(ownerDirectory, `${requestHash}.json`);
+    const fingerprint = createHash('sha256').update(JSON.stringify({ operation, input })).digest('hex');
+    let existing;
+    try { existing = JSON.parse(await readFile(recordPath, 'utf8')); }
+    catch (error) { if (error?.code !== 'ENOENT') throw new Error('DWS_DOC_OPERATION_STORAGE_FAILED'); }
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) throw new Error('DWS_DOC_REQUEST_CONFLICT');
+      if (existing.state === 'complete' && existing.result && typeof existing.result === 'object') return existing.result;
+      throw new Error(existing.error || 'DWS_DOC_COMMIT_UNKNOWN');
+    }
+
+    const started = { state: 'running', fingerprint, createdAt: new Date().toISOString() };
+    try {
+      const handle = await open(recordPath, 'wx', 0o600);
+      try { await handle.writeFile(JSON.stringify(started)); await handle.sync(); }
+      finally { await handle.close(); }
+      await syncDirectory(ownerDirectory);
+    }
+    catch (error) {
+      if (error?.code === 'EEXIST') {
+        let raced;
+        try { raced = JSON.parse(await readFile(recordPath, 'utf8')); } catch { throw new Error('DWS_DOC_COMMIT_UNKNOWN'); }
+        if (raced.fingerprint !== fingerprint) throw new Error('DWS_DOC_REQUEST_CONFLICT');
+        if (raced.state === 'complete' && raced.result && typeof raced.result === 'object') return raced.result;
+        throw new Error(raced.error || 'DWS_DOC_COMMIT_UNKNOWN');
+      }
+      throw new Error('DWS_DOC_OPERATION_STORAGE_FAILED');
+    }
+
+    try {
+      const result = await work();
+      await writeDocumentOperationRecord(recordPath, { ...started, state: 'complete', result });
+      return result;
+    } catch (error) {
+      const rawCode = typeof error?.message === 'string' && allowedErrors.has(error.message) ? error.message : 'DWS_DOC_COMMIT_UNKNOWN';
+      const uncertain = ['DWS_DOC_COMMIT_UNKNOWN', 'DWS_DOC_PARTIAL_SUCCESS'].includes(rawCode);
+      await writeDocumentOperationRecord(recordPath, { ...started, state: uncertain ? 'unknown' : 'failed', error: rawCode }).catch(() => undefined);
+      throw error;
+    }
+  };
 }
 
 export function createDingtalkConnectorGateway({
@@ -228,6 +317,35 @@ export function createDingtalkConnectorGateway({
   const flows = new Map();
   const locks = new Map();
   const activeMonitors = new Map();
+  const documents = createDwsDocumentOperations({
+    withAuthenticatedProfile: async (principal, work) => {
+      if (process.platform !== 'linux' && !(process.platform === 'darwin' && macTestOnly)) throw new Error('DWS_GATEWAY_REQUIRES_LINUX');
+      const ownerKey = principalKey(principal);
+      return withOwnerLock(ownerKey, async () => {
+        const workspace = await createPrincipalProfileWorkspace(principal, 'documents');
+        let restored = false;
+        try {
+          restored = await restoreEncryptedProfile({ storageRoot, ownerKey, masterKey, destinationRoot: workspace.root, tempRoot: managedTmpRoot });
+          if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
+          await verifyBinary(binary);
+          const owner = await prepareProfileRoot(workspace.root, principal);
+          const env = isolatedEnvironment(owner, { proxy, macTestOnly });
+          const call = (args, options = {}) => runDws(binary, [...args, '--format', 'json'], {
+            cwd: owner, env, timeoutMs: 60_000, maxBytes: 1024 * 1024, parseJsonOnFailure: true, ...options,
+          });
+          const profile = selectCurrentProfile(await call(['profile', 'list']));
+          if (!profile) throw new Error('DWS_PROFILE_SELECTION_REQUIRED');
+          const authStatus = parseAuthStatus(await call(['auth', 'status', '--profile', profile.selector]), profile);
+          if (!authStatus.authenticated) throw new Error('DWS_DOC_AUTHORIZATION_REQUIRED');
+          return await work({ call, profile, ownerKey });
+        } finally {
+          if (restored) await writeEncryptedProfile({ storageRoot, ownerKey, masterKey, sourceRoot: workspace.root, tempRoot: managedTmpRoot }).catch(() => undefined);
+          await rm(workspace.root, { recursive: true, force: true });
+        }
+      });
+    },
+    writeOnce: createDocumentWriteOnce(storageRoot),
+  });
 
   async function initialize() {
     await ensurePrivateStorageRoot(storageRoot);
@@ -238,10 +356,14 @@ export function createDingtalkConnectorGateway({
   function ownerPrincipal(ticket) { return { issuer: 'coke-dots', subject: `${ticket.tenantId}:${ticket.userId}` }; }
 
   async function createProfileWorkspace(ticket, suffix) {
-    const ownerKey = principalKey(ownerPrincipal(ticket));
+    return createPrincipalProfileWorkspace(ownerPrincipal(ticket), suffix);
+  }
+
+  async function createPrincipalProfileWorkspace(principal, suffix) {
+    const ownerKey = principalKey(principal);
     const root = await mkdtemp(path.join(managedTmpRoot, `${ownerKey}-${suffix}-`));
     await chmodPrivate(root, 0o700);
-    return { ownerKey, root, principal: ownerPrincipal(ticket) };
+    return { ownerKey, root, principal };
   }
 
   async function withOwnerLock(ownerKey, work) {
@@ -557,12 +679,12 @@ export function createDingtalkConnectorGateway({
     }
   }
 
-  async function readBody(req) {
+  async function readBody(req, maximumBytes = maxRequestBytes) {
     let size = 0;
     const chunks = [];
     for await (const chunk of req) {
       size += chunk.length;
-      if (size > maxRequestBytes) throw new Error('DINGTALK_REQUEST_TOO_LARGE');
+      if (size > maximumBytes) throw new Error('DINGTALK_REQUEST_TOO_LARGE');
       chunks.push(chunk);
     }
     try { return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}; }
@@ -594,6 +716,12 @@ export function createDingtalkConnectorGateway({
       if (authorizationMatch && req.method === 'GET') return send(200, { ok: true, data: await pollAuthorization(ticket, authorizationMatch[1]) });
       if (authorizationMatch && req.method === 'DELETE') return send(200, { ok: true, data: await cancelAuthorization(ticket, authorizationMatch[1]) });
       if (req.method === 'POST' && url.pathname === '/v1/groups/search') return send(200, { ok: true, data: await searchGroups(ticket, await readBody(req)) });
+      const documentRoute = url.pathname.match(/^\/v1\/docs\/(create|fetch|search|update)$/);
+      if (req.method === 'POST' && documentRoute) {
+        const body = await readBody(req, maxDocumentRequestBytes);
+        const operation = { create: 'createDocument', fetch: 'fetchDocument', search: 'searchDocuments', update: 'updateDocument' }[documentRoute[1]];
+        return send(200, { ok: true, data: await documents[operation](ownerPrincipal(ticket), body) });
+      }
       if (req.method === 'POST' && url.pathname === '/v1/monitors/events') return await streamGroupMessages(ticket, await readBody(req), req, res);
       if (req.method === 'DELETE' && url.pathname === '/v1/account') return send(200, { ok: true, data: await disconnect(ticket) });
       return send(404, { ok: false, error: 'NOT_FOUND' });

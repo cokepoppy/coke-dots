@@ -1281,6 +1281,37 @@ try {
     await resumedModal.getByTestId('dingtalk-e2e-authorize').click();
     await resumedModal.getByTestId('dingtalk-connected-state').waitFor({ state: 'visible' });
     assert.match(await resumedModal.getByTestId('dingtalk-connected-state').innerText(), /测试钉钉账号/);
+    const documentFlow = await alphaPage!.evaluate(async () => {
+      const createdResponse = await fetch('/api/dingtalk/docs/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Chrome E2E 故障报告', content: '# Trace chrome-e2e\n已完成模拟排查', confirmed: true,
+      }) });
+      const created = { status: createdResponse.status, data: await createdResponse.json() };
+      const nodeId = created.data.nodeId as string;
+      const fetchedResponse = await fetch('/api/dingtalk/docs/fetch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ node: nodeId }) });
+      const fetched = { status: fetchedResponse.status, data: await fetchedResponse.json() };
+      const searchedResponse = await fetch('/api/dingtalk/docs/search', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'chrome-e2e', limit: 10 }) });
+      const searched = { status: searchedResponse.status, data: await searchedResponse.json() };
+      const updateWithoutConfirmationResponse = await fetch('/api/dingtalk/docs/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', node: nodeId, command: 'append', content: '禁止写入', confirmed: false,
+      }) });
+      const updateWithoutConfirmation = { status: updateWithoutConfirmationResponse.status, data: await updateWithoutConfirmationResponse.json() };
+      const updatedResponse = await fetch('/api/dingtalk/docs/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', node: nodeId, command: 'append', content: '已确认写入', confirmed: true,
+      }) });
+      const updated = { status: updatedResponse.status, data: await updatedResponse.json() };
+      const fetchedAfterUpdateResponse = await fetch('/api/dingtalk/docs/fetch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ node: nodeId }) });
+      const fetchedAfterUpdate = { status: fetchedAfterUpdateResponse.status, data: await fetchedAfterUpdateResponse.json() };
+      return { created, fetched, searched, updateWithoutConfirmation, updated, fetchedAfterUpdate };
+    });
+    assert.equal(documentFlow.created.status, 200, 'Signed-in Chrome could not create a simulated DingTalk document');
+    assert.equal(documentFlow.created.data.verified, true, 'Document creation must return a verified DWS operation receipt');
+    assert.equal(documentFlow.fetched.status, 200);
+    assert.match(JSON.stringify(documentFlow.fetched.data.content), /已完成模拟排查/);
+    assert.equal(documentFlow.searched.data.count, 1);
+    assert.equal(documentFlow.updateWithoutConfirmation.status, 400, 'Document update must stop without explicit confirmation');
+    assert.equal(documentFlow.updated.status, 200);
+    assert.match(JSON.stringify(documentFlow.fetchedAfterUpdate.data.content), /已确认写入/);
+    await resumedModal.getByTestId('dingtalk-group-query').fill('系统告警');
     await resumedModal.getByTestId('dingtalk-group-query').fill('系统告警');
     await resumedModal.getByTestId('dingtalk-group-search').click();
     const result = resumedModal.getByRole('group', { name: '钉钉群搜索结果' }).getByText('系统监控告警群');

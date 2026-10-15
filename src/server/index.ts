@@ -257,6 +257,27 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, { conversationId: monitor.conversationId, enabled: monitor.enabled, keywords: monitor.keywords });
     } catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : '更新钉钉群监听失败。' }); }
   }
+  const dingtalkDocumentRoute = path.match(/^\/api\/dingtalk\/docs\/(create|fetch|search|update)$/);
+  if (dingtalkDocumentRoute && req.method === 'POST') {
+    try {
+      const body = await readJson(req, 600 * 1024);
+      const result = dingtalkDocumentRoute[1] === 'create'
+        ? await dingtalk.createDocument(session, body as { requestId: string; name: string; content: string; confirmed: boolean; folder?: string; workspace?: string })
+        : dingtalkDocumentRoute[1] === 'fetch'
+          ? await dingtalk.fetchDocument(session, body as { node: string })
+          : dingtalkDocumentRoute[1] === 'search'
+            ? await dingtalk.searchDocuments(session, body as { query: string; limit?: number })
+            : await dingtalk.updateDocument(session, body as { requestId: string; node: string; command: 'append' | 'overwrite'; content: string; confirmed: boolean });
+      return reply(res, 200, result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '钉钉文档操作失败。';
+      const status = /写入结果暂时无法确认|只完成了一部分|请求 ID 被用于不同内容/.test(message) ? 409
+        : /没有可用的文档授权/.test(message) ? 403
+          : /超过 512 KiB/.test(message) ? 413
+            : 400;
+      return reply(res, status, { error: message });
+    }
+  }
   if (path === '/api/dingtalk/account' && req.method === 'DELETE') {
     try {
       const result = await dingtalk.disconnect(session);

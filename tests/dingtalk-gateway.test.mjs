@@ -51,6 +51,9 @@ const tokenFile = path.join(config, 'credentials.json');
 await mkdir(config, { recursive: true });
 const readProfiles = async () => { try { return JSON.parse(await readFile(profileFile, 'utf8')); } catch { return []; } };
 const args = process.argv.slice(2);
+const docsPath = path.join(process.env.XDG_DATA_HOME, 'docs.json');
+const readDocs = async () => { try { return JSON.parse(await readFile(docsPath, 'utf8')); } catch { return []; } };
+const readStdin = async () => { const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk); return Buffer.concat(chunks).toString('utf8'); };
 if (group === 'profile' && command === 'list') {
   const profiles = await readProfiles();
   console.log(JSON.stringify({ success: true, profiles }));
@@ -64,6 +67,37 @@ if (group === 'profile' && command === 'list') {
   console.log(JSON.stringify({ success: true, authenticated: true, token_valid: true, corp_id: 'corp-e2e', user_id: 'user-e2e', corp_name: '测试组织', user_name: '测试用户', expires_at: '2099-01-01T00:00:00.000Z' }));
 } else if (group === 'chat' && command === 'search') {
   console.log(JSON.stringify({ success: true, result: { query: '告警', chats: [{ openConversationId: 'cid-alerts', name: '系统监控告警群' }], hasMore: true, nextCursor: 'next-page', complete: false } }));
+} else if (group === 'doc' && command === '+create') {
+  const name = args[args.indexOf('--name') + 1];
+  const body = await readStdin();
+  const docs = await readDocs();
+  const nodeId = 'doc-' + (docs.length + 1);
+  docs.push({ nodeId, name, content: body });
+  await writeFile(docsPath, JSON.stringify(docs));
+  if (name === 'unknown-create') { process.stderr.write('simulated response lost after remote write\\n'); process.exitCode = 2; }
+  else console.log(JSON.stringify({ contractVersion: 'doc.operation.v1', complete: true, status: 'success', data: { nodeId, verified: true, documentUrl: 'https://alidocs.dingtalk.com/document/edit?docId=' + nodeId } }));
+} else if (group === 'doc' && command === '+search') {
+  const query = args[args.indexOf('--query') + 1];
+  const limit = Number(args[args.indexOf('--limit') + 1]);
+  const documents = (await readDocs()).filter(doc => (doc.name + '\\n' + doc.content).toLowerCase().includes(query.toLowerCase())).slice(0, limit);
+  console.log(JSON.stringify({ contractVersion: 'doc.list.v1', complete: true, status: 'success', documents, hasMore: false }));
+} else if (group === 'doc' && command === '+fetch') {
+  const nodeId = args[args.indexOf('--node') + 1];
+  const doc = (await readDocs()).find(item => item.nodeId === nodeId);
+  if (!doc) { console.log(JSON.stringify({ contractVersion: 'doc.content.v1', complete: false, status: 'failed' })); }
+  else console.log(JSON.stringify({ contractVersion: 'doc.content.v1', complete: true, status: 'success', target: { canonicalId: nodeId }, content: { body: doc.content, credentials: { accessToken: 'MUST-NOT-LEAK' } } }));
+} else if (group === 'doc' && command === '+update') {
+  const nodeId = args[args.indexOf('--node') + 1];
+  const action = args[args.indexOf('--command') + 1];
+  const body = await readStdin();
+  const docs = await readDocs();
+  const doc = docs.find(item => item.nodeId === nodeId);
+  if (!doc) { console.log(JSON.stringify({ contractVersion: 'doc.operation.v1', complete: true, status: 'failed' })); }
+  else {
+    doc.content = action === 'append' ? doc.content + '\\n' + body : body;
+    await writeFile(docsPath, JSON.stringify(docs));
+    console.log(JSON.stringify({ contractVersion: 'doc.operation.v1', complete: true, status: 'success', data: { nodeId, verified: true, documentUrl: 'https://alidocs.dingtalk.com/document/edit?docId=' + nodeId } }));
+  }
 } else if (group === 'event' && command === '+listen-im') {
   if (!args.includes('--flatten')) {
     console.error('flatten is required for a normalized event stream');
@@ -139,6 +173,46 @@ if (group === 'profile' && command === 'list') {
     assert.equal(search.data.hasMore, true);
     assert.equal(search.data.nextCursor, 'next-page');
 
+    const unconfirmedCreate = await call('/v1/docs/create', { method: 'POST', body: { requestId: '00000000-0000-4000-8000-000000000000', name: '未确认报告', content: '不可写入' } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(unconfirmedCreate.status, 400);
+    assert.equal(unconfirmedCreate.body.error, 'DWS_DOC_CONFIRMATION_REQUIRED');
+
+    const createInput = { requestId: '11111111-1111-4111-8111-111111111111', name: 'E2E 故障报告', content: '# Trace trace-1\n原因：超时', confirmed: true };
+    const created = await call('/v1/docs/create', { method: 'POST', body: createInput }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(created.status, 200, JSON.stringify(created));
+    assert.equal(created.body.data.verified, true);
+    assert.equal(created.body.data.url, 'https://alidocs.dingtalk.com/document/edit?docId=doc-1');
+    const replayedCreate = await call('/v1/docs/create', { method: 'POST', body: createInput }).then(response => response.json());
+    assert.equal(replayedCreate.data.nodeId, created.body.data.nodeId, 'Repeated delivery with one request ID must return the original result, not create a duplicate');
+    const conflictingCreate = await call('/v1/docs/create', { method: 'POST', body: { ...createInput, content: 'different body' } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(conflictingCreate.status, 409, 'A request ID cannot be reused for different document content');
+
+    const foundDocs = await call('/v1/docs/search', { method: 'POST', body: { query: 'Trace trace-1', limit: 10 } }).then(response => response.json());
+    assert.equal(foundDocs.data.count, 1);
+    assert.equal(foundDocs.data.documents[0].nodeId, created.body.data.nodeId);
+    const readDoc = await call('/v1/docs/fetch', { method: 'POST', body: { node: created.body.data.nodeId } }).then(response => response.json());
+    assert.equal(readDoc.data.content.body, createInput.content);
+    assert.equal(JSON.stringify(readDoc).includes('MUST-NOT-LEAK'), false, 'Document readback must redact credential-like fields');
+
+    const unconfirmedUpdate = await call('/v1/docs/update', { method: 'POST', body: { requestId: '22222222-2222-4222-8222-222222222222', node: created.body.data.nodeId, command: 'append', content: '未确认追加', confirmed: false } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(unconfirmedUpdate.status, 400);
+    assert.equal(unconfirmedUpdate.body.error, 'DWS_DOC_CONFIRMATION_REQUIRED');
+    const updated = await call('/v1/docs/update', { method: 'POST', body: { requestId: '22222222-2222-4222-8222-222222222222', node: created.body.data.nodeId, command: 'append', content: '已确认追加', confirmed: true } }).then(response => response.json());
+    assert.equal(updated.data.operation, 'update');
+    const readUpdated = await call('/v1/docs/fetch', { method: 'POST', body: { node: created.body.data.nodeId } }).then(response => response.json());
+    assert.match(readUpdated.data.content.body, /已确认追加/);
+
+    const unknownInput = { requestId: '33333333-3333-4333-8333-333333333333', name: 'unknown-create', content: '写入后丢失 CLI 回执', confirmed: true };
+    const unknownWrite = await call('/v1/docs/create', { method: 'POST', body: unknownInput }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(unknownWrite.status, 409);
+    assert.equal(unknownWrite.body.error, 'DWS_DOC_COMMIT_UNKNOWN');
+    const unknownReplay = await call('/v1/docs/create', { method: 'POST', body: unknownInput }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(unknownReplay.status, 409);
+    assert.equal(unknownReplay.body.error, 'DWS_DOC_COMMIT_UNKNOWN', 'A lost write acknowledgement must stay non-retryable under the same request ID');
+
+    const otherUserRead = await call('/v1/docs/fetch', { principal: principalBeta, method: 'POST', body: { node: created.body.data.nodeId } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.notEqual(otherUserRead.status, 200, 'Another Dots tenant/user must not access this profile or document');
+
     const controller = new AbortController();
     const liveResponse = await call('/v1/monitors/events', { method: 'POST', body: { conversationId: 'cid-alerts' }, signal: controller.signal });
     assert.equal(liveResponse.status, 200, 'The selected-group DWS event listener should become ready before the stream opens');
@@ -164,16 +238,26 @@ if (group === 'profile' && command === 'list') {
     assert.deepEqual(beta.data, { state: 'not-installed' });
 
     const profileNames = await readdir(baseEnv.DINGTALK_CONNECTOR_STORAGE_ROOT);
-    assert.equal(profileNames.length, 1);
-    const encryptedProfile = await readFile(path.join(baseEnv.DINGTALK_CONNECTOR_STORAGE_ROOT, profileNames[0]));
+    const encryptedProfiles = profileNames.filter(name => name.endsWith('.dws'));
+    assert.equal(encryptedProfiles.length, 1);
+    const encryptedProfile = await readFile(path.join(baseEnv.DINGTALK_CONNECTOR_STORAGE_ROOT, encryptedProfiles[0]));
     assert.equal(encryptedProfile.subarray(0, 5).toString(), 'CDWS1');
     assert.equal(encryptedProfile.includes(Buffer.from('fake-dws-token-that-must-never-be-stored-plaintext')), false);
+    const operationOwners = await readdir(path.join(baseEnv.DINGTALK_CONNECTOR_STORAGE_ROOT, '.document-operations'));
+    const operationFiles = await readdir(path.join(baseEnv.DINGTALK_CONNECTOR_STORAGE_ROOT, '.document-operations', operationOwners[0]));
+    const operationJournal = await Promise.all(operationFiles.map(name => readFile(path.join(baseEnv.DINGTALK_CONNECTOR_STORAGE_ROOT, '.document-operations', operationOwners[0], name), 'utf8')));
+    assert.equal(operationJournal.join('').includes(createInput.content), false, 'The idempotency journal must not persist DingTalk document contents');
 
     await gateway.close();
     gateway = createDingtalkConnectorGateway({ env: baseEnv, binary, verifyBinary: async () => {}, macTestOnly: true });
     await gateway.listen('127.0.0.1');
     const restored = await call('/v1/status').then(response => response.json());
     assert.equal(restored.data.state, 'identity-verified', 'The encrypted profile should survive a gateway process restart');
+    const afterRestartCreateReplay = await call('/v1/docs/create', { method: 'POST', body: createInput }).then(response => response.json());
+    assert.equal(afterRestartCreateReplay.data.nodeId, created.body.data.nodeId, 'The durable request journal must survive a connector restart');
+    const afterRestartUnknownReplay = await call('/v1/docs/create', { method: 'POST', body: unknownInput }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(afterRestartUnknownReplay.status, 409);
+    assert.equal(afterRestartUnknownReplay.body.error, 'DWS_DOC_COMMIT_UNKNOWN', 'A write with lost acknowledgement must remain blocked after a connector restart');
 
     const replayTicket = issuePrincipalTicket(principalAlpha, ticketSecret);
     assert.equal((await call('/v1/status', { ticket: replayTicket })).status, 200);

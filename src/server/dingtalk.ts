@@ -53,6 +53,28 @@ const publicErrors: Record<string, string> = {
   DWS_AUTHORIZATION_EXPIRED: '钉钉授权已过期，请重新开始。',
   DWS_AUTHORIZATION_FAILED: '钉钉授权失败，请检查组织是否允许 DWS CLI 登录。',
   DWS_AUTHORIZATION_START_TIMEOUT: '钉钉授权页面启动超时，请重试。',
+  DWS_DOC_AUTHORIZATION_REQUIRED: '钉钉账号当前没有可用的文档授权，请重新连接或检查文档权限。',
+  DWS_DOC_NAME_INVALID: '钉钉文档标题无效。',
+  DWS_DOC_CONTENT_INVALID: '钉钉文档内容无效。',
+  DWS_DOC_CONTENT_TOO_LARGE: '钉钉文档内容超过 512 KiB 限制。',
+  DWS_DOC_NODE_INVALID: '钉钉文档 ID 或链接无效。',
+  DWS_DOC_LOCATION_INVALID: '创建文档时只能指定一个目标文件夹或知识库。',
+  DWS_DOC_QUERY_INVALID: '请输入有效的钉钉文档搜索词。',
+  DWS_DOC_LIMIT_INVALID: '文档搜索条数必须在 1 到 30 之间。',
+  DWS_DOC_SEARCH_FAILED: '钉钉文档搜索结果不完整或无法验证。',
+  DWS_DOC_READBACK_FAILED: '无法验证钉钉文档的读取结果。',
+  DWS_DOC_READBACK_MISMATCH: '钉钉返回的文档与请求目标不一致。',
+  DWS_DOC_OPERATION_UNVERIFIED: '钉钉未返回可验证的文档写入结果。',
+  DWS_DOC_OPERATION_FAILED: '钉钉文档操作失败。',
+  DWS_DOC_OPERATION_MISMATCH: '钉钉确认的文档与请求目标不一致。',
+  DWS_DOC_PARTIAL_SUCCESS: '钉钉文档操作只完成了一部分。请先检查文档状态，不要直接重试。',
+  DWS_DOC_COMMIT_UNKNOWN: '钉钉文档写入结果暂时无法确认。请先按标题或内容搜索核对，不要直接重试。',
+  DWS_DOC_RETRYABLE_FAILURE: '钉钉文档操作未能完成。请确认当前状态后再发起新的操作。',
+  DWS_DOC_CONFIRMATION_REQUIRED: '修改钉钉文档前需要明确确认。',
+  DWS_DOC_UPDATE_COMMAND_INVALID: '钉钉文档更新方式无效。',
+  DWS_DOC_REQUEST_ID_INVALID: '钉钉文档写入缺少有效的幂等请求 ID。',
+  DWS_DOC_REQUEST_CONFLICT: '同一个请求 ID 被用于不同的文档内容，请先核对操作结果。',
+  DWS_DOC_OPERATION_STORAGE_FAILED: '钉钉文档操作记录无法安全保存，写入已停止。',
 };
 
 export class DingTalkService {
@@ -62,6 +84,8 @@ export class DingTalkService {
   private readonly e2eMock: boolean;
   private readonly mockAccounts = new Map<string, { state: string; accountName?: string; organizationName?: string; corpId?: string; expiresAt?: string }>();
   private readonly mockAuthorizations = new Map<string, DingTalkAuthorization & { owner: string; testOnly: true }>();
+  private readonly mockDocuments = new Map<string, Map<string, { nodeId: string; name: string; content: string; url: string }>>();
+  private readonly mockDocumentOperations = new Map<string, { fingerprint: string; result: Record<string, unknown> }>();
 
   constructor(env: NodeJS.ProcessEnv = process.env) {
     this.serviceToken = env.DINGTALK_CONNECTOR_SERVICE_TOKEN?.trim() || '';
@@ -135,6 +159,91 @@ export class DingTalkService {
     }
     this.requireConfigured();
     try { return await this.call(session, '/v1/groups/search', 'POST', { query: cleanQuery, cursor: cleanCursor }); }
+    catch (error) { throw serviceError(error); }
+  }
+
+  async searchDocuments(session: AuthSession, input: { query: string; limit?: number }) {
+    if (this.e2eMock) {
+      requireMockDingTalkIdentity(this.mockAccounts, session);
+      const query = String(input.query || '').trim();
+      const limit = input.limit ?? 10;
+      if (!query || query.length > 500) throw new Error(publicErrors.DWS_DOC_QUERY_INVALID);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 30) throw new Error(publicErrors.DWS_DOC_LIMIT_INVALID);
+      const documents = [...(this.mockDocuments.get(ownerKey(session))?.values() || [])]
+        .filter(document => `${document.name}\n${document.content}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+        .slice(0, limit).map(({ nodeId, name, url }) => ({ nodeId, name, url }));
+      return { documents, count: documents.length, hasMore: false };
+    }
+    this.requireConfigured();
+    try { return await this.call(session, '/v1/docs/search', 'POST', input); }
+    catch (error) { throw serviceError(error); }
+  }
+
+  async fetchDocument(session: AuthSession, input: { node: string }) {
+    if (this.e2eMock) {
+      requireMockDingTalkIdentity(this.mockAccounts, session);
+      const document = this.mockDocuments.get(ownerKey(session))?.get(String(input.node || ''));
+      if (!document) throw new Error(publicErrors.DWS_DOC_READBACK_FAILED);
+      return { nodeId: document.nodeId, content: document.content };
+    }
+    this.requireConfigured();
+    try { return await this.call(session, '/v1/docs/fetch', 'POST', input); }
+    catch (error) { throw serviceError(error); }
+  }
+
+  async createDocument(session: AuthSession, input: { requestId: string; name: string; content: string; confirmed: boolean; folder?: string; workspace?: string }) {
+    if (this.e2eMock) {
+      requireMockDingTalkIdentity(this.mockAccounts, session);
+      if (input.confirmed !== true) throw new Error(publicErrors.DWS_DOC_CONFIRMATION_REQUIRED);
+      const validationError = validateMockDocumentWrite(input, true);
+      if (validationError) throw new Error(publicErrors[validationError]);
+      if (input.folder !== undefined && input.workspace !== undefined) throw new Error(publicErrors.DWS_DOC_LOCATION_INVALID);
+      const owner = ownerKey(session);
+      const fingerprint = createHmac('sha256', 'dots-e2e-document-test-only').update(JSON.stringify(['create', input.name.trim(), input.content, input.folder || '', input.workspace || ''])).digest('hex');
+      const operationKey = `${owner}\0${input.requestId}`;
+      const existing = this.mockDocumentOperations.get(operationKey);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new Error(publicErrors.DWS_DOC_REQUEST_CONFLICT);
+        return existing.result;
+      }
+      const documents = this.mockDocuments.get(owner) || new Map();
+      this.mockDocuments.set(owner, documents);
+      const nodeId = `e2e-doc-${randomUUID()}`;
+      const document = { nodeId, name: input.name.trim(), content: input.content, url: `https://alidocs.dingtalk.com/document/edit?docId=${nodeId}` };
+      documents.set(nodeId, document);
+      const result = { operation: 'create', nodeId, verified: true, url: document.url };
+      this.mockDocumentOperations.set(operationKey, { fingerprint, result });
+      return result;
+    }
+    this.requireConfigured();
+    try { return await this.call(session, '/v1/docs/create', 'POST', input); }
+    catch (error) { throw serviceError(error); }
+  }
+
+  async updateDocument(session: AuthSession, input: { requestId: string; node: string; command: 'append' | 'overwrite'; content: string; confirmed: boolean }) {
+    if (this.e2eMock) {
+      requireMockDingTalkIdentity(this.mockAccounts, session);
+      if (input.confirmed !== true) throw new Error(publicErrors.DWS_DOC_CONFIRMATION_REQUIRED);
+      const validationError = validateMockDocumentWrite(input);
+      if (validationError) throw new Error(publicErrors[validationError]);
+      if (!['append', 'overwrite'].includes(input.command)) throw new Error(publicErrors.DWS_DOC_UPDATE_COMMAND_INVALID);
+      const owner = ownerKey(session);
+      const document = this.mockDocuments.get(owner)?.get(String(input.node || ''));
+      if (!document) throw new Error(publicErrors.DWS_DOC_READBACK_FAILED);
+      const fingerprint = createHmac('sha256', 'dots-e2e-document-test-only').update(JSON.stringify(['update', input.node, input.command, input.content])).digest('hex');
+      const operationKey = `${owner}\0${input.requestId}`;
+      const existing = this.mockDocumentOperations.get(operationKey);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new Error(publicErrors.DWS_DOC_REQUEST_CONFLICT);
+        return existing.result;
+      }
+      document.content = input.command === 'append' ? `${document.content}\n${input.content}` : input.content;
+      const result = { operation: 'update', nodeId: document.nodeId, verified: true, url: document.url };
+      this.mockDocumentOperations.set(operationKey, { fingerprint, result });
+      return result;
+    }
+    this.requireConfigured();
+    try { return await this.call(session, '/v1/docs/update', 'POST', input); }
     catch (error) { throw serviceError(error); }
   }
 
@@ -281,6 +390,19 @@ function signPrincipalTicket(session: { tenant: { id: string }; user: { id: stri
 }
 
 function ownerKey(session: AuthSession) { return `${session.tenant.id}\0${session.user.id}`; }
+
+function requireMockDingTalkIdentity(accounts: Map<string, { state: string }>, session: AuthSession) {
+  if (accounts.get(ownerKey(session))?.state !== 'identity-verified') throw new Error(publicErrors.DWS_PROFILE_NOT_AUTHENTICATED);
+}
+
+function validateMockDocumentWrite(input: { requestId?: unknown; name?: unknown; content?: unknown }, requireName = false) {
+  if (typeof input.requestId !== 'string' || !/^[a-f0-9-]{36}$/i.test(input.requestId)) return 'DWS_DOC_REQUEST_ID_INVALID';
+  if (requireName && typeof input.name !== 'string') return 'DWS_DOC_NAME_INVALID';
+  if (input.name !== undefined && (typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 200)) return 'DWS_DOC_NAME_INVALID';
+  if (typeof input.content !== 'string' || input.content.includes('\0')) return 'DWS_DOC_CONTENT_INVALID';
+  if (Buffer.byteLength(input.content, 'utf8') > 512 * 1024) return 'DWS_DOC_CONTENT_TOO_LARGE';
+  return null;
+}
 
 function assertAuthorizationId(value: string) {
   if (!/^[a-f0-9-]{36}$/i.test(value)) throw new Error(publicErrors.CONNECTOR_AUTHORIZATION_NOT_FOUND);
