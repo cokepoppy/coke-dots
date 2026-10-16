@@ -507,7 +507,7 @@ function App() {
       try { sessionStorage.setItem('coke-dots:slack-return-state', JSON.stringify({ view, selected })); } catch { /* Restore the home view if session storage is unavailable. */ }
       window.location.assign(appPath('/api/slack/oauth/start'));
     }} />}
-    {dingtalkModalOpen && authContext && <DingTalkSetupModal onClose={() => setDingtalkModalOpen(false)} />}
+    {dingtalkModalOpen && authContext && <DingTalkSetupModal onClose={() => setDingtalkModalOpen(false)} onOpenIncident={taskId => { setDingtalkModalOpen(false); setSelected(taskId); setSelectedPageId(null); setView('chat'); }} />}
   </div>;
 }
 

@@ -19,6 +19,7 @@ export interface DingTalkGroupSelection { tenantId: string; userId: string; conv
 export interface DingTalkGroupMonitor { tenantId: string; userId: string; conversationId: string; enabled: boolean; keywords: string[]; updatedAt: string }
 export interface DingTalkStreamMessage { corpId: string; conversationId: string; messageId: string; senderId: string; senderName: string; text: string }
 export interface DingTalkIngestionResult { kind: 'queued' | 'duplicate' | 'ignored'; tasks: Array<{ tenantId: string; taskId: string }> }
+export interface DingTalkIncidentTask { taskId: string; groupName: string; title: string; status: TaskStatus; createdAt: string }
 export interface StoredTaskAttachment extends AttachmentSummary { tenantId: string; uploadedBy: string; taskId: string | null; content: Uint8Array; createdAt: string }
 
 export class Store {
@@ -210,10 +211,17 @@ export class Store {
       CREATE TABLE IF NOT EXISTS dingtalk_stream_event_receipts (
         tenant_id TEXT NOT NULL REFERENCES tenants(id), provider_message_id TEXT NOT NULL,
         conversation_id TEXT NOT NULL, task_id TEXT NOT NULL, created_at TEXT NOT NULL,
+        user_id TEXT REFERENCES users(id), group_name TEXT NOT NULL DEFAULT '',
         PRIMARY KEY(tenant_id,provider_message_id)
       );
       CREATE INDEX IF NOT EXISTS dingtalk_monitors_enabled ON dingtalk_group_monitors(enabled,tenant_id,conversation_id);
     `);
+    this.addColumnIfMissing('dingtalk_stream_event_receipts', 'user_id', 'TEXT REFERENCES users(id)');
+    this.addColumnIfMissing('dingtalk_stream_event_receipts', 'group_name', "TEXT NOT NULL DEFAULT ''");
+    this.db.exec(`UPDATE dingtalk_stream_event_receipts SET user_id=(SELECT created_by_user_id FROM tasks WHERE tasks.tenant_id=dingtalk_stream_event_receipts.tenant_id AND tasks.id=dingtalk_stream_event_receipts.task_id)
+      WHERE user_id IS NULL;
+      UPDATE dingtalk_stream_event_receipts SET group_name=COALESCE((SELECT group_name FROM dingtalk_group_selections WHERE dingtalk_group_selections.tenant_id=dingtalk_stream_event_receipts.tenant_id AND dingtalk_group_selections.conversation_id=dingtalk_stream_event_receipts.conversation_id AND dingtalk_group_selections.user_id=dingtalk_stream_event_receipts.user_id),'钉钉群')
+      WHERE group_name='';`);
     const now = new Date().toISOString();
     this.db.prepare("UPDATE tasks SET status='queued', next_run_at=?, updated_at=? WHERE status='working'").run(now, now);
     this.db.prepare('DELETE FROM auth_sessions WHERE expires_at <= ?').run(now);
@@ -431,8 +439,8 @@ export class Store {
         const id = randomUUID();
         const instruction = dingtalkAlertInstruction(subscriber.groupName, message, text, subscriber.matchedKeywords);
         const title = `钉钉告警：${text.split(/[.!?。！？\n]/)[0].slice(0, 48) || subscriber.groupName}`.slice(0, 64);
-        const receipt = this.db.prepare(`INSERT OR IGNORE INTO dingtalk_stream_event_receipts(tenant_id,provider_message_id,conversation_id,task_id,created_at)
-          VALUES (?,?,?,?,?)`).run(subscriber.tenantId, providerMessageId, conversationId, id, now);
+        const receipt = this.db.prepare(`INSERT OR IGNORE INTO dingtalk_stream_event_receipts(tenant_id,provider_message_id,conversation_id,task_id,created_at,user_id,group_name)
+          VALUES (?,?,?,?,?,?,?)`).run(subscriber.tenantId, providerMessageId, conversationId, id, now, subscriber.userId, subscriber.groupName);
         if (Number(receipt.changes) !== 1) { sawDuplicate = true; continue; }
         this.db.prepare(`INSERT INTO tasks(id,tenant_id,title,instruction,status,priority,next_run_at,schedule_minutes,result,error,created_at,updated_at,engine,agent_session_id,schedule_json,created_by_user_id)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, subscriber.tenantId, title, instruction, 'queued', 0, now, null, null, null, now, now, engine, null, null, subscriber.userId);
@@ -447,6 +455,15 @@ export class Store {
       this.db.exec('COMMIT');
       return { kind: created.length ? 'queued' : sawDuplicate ? 'duplicate' : 'ignored', tasks: created };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  dingtalkIncidents(tenantId: string, userId: string, limit = 12): DingTalkIncidentTask[] {
+    const boundedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    return this.db.prepare(`SELECT r.task_id AS taskId,r.group_name AS groupName,t.title,t.status,r.created_at AS createdAt
+      FROM dingtalk_stream_event_receipts r JOIN tasks t ON t.tenant_id=r.tenant_id AND t.id=r.task_id
+      WHERE r.tenant_id=? AND r.user_id=? AND t.created_by_user_id=?
+      ORDER BY r.created_at DESC,r.provider_message_id DESC LIMIT ?`)
+      .all(tenantId, userId, userId, boundedLimit) as unknown as DingTalkIncidentTask[];
   }
 
   createDesktopHandoff(handoffHash: string, expiresAt: string) {

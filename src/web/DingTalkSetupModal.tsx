@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { appFetch } from './api.ts';
+import type { TaskStatus } from '../shared/types.ts';
 import './dingtalk-setup.css';
 
 interface DingTalkAccount {
@@ -35,13 +36,15 @@ interface DingTalkGroup { conversationId: string; name: string }
 interface GroupSearch { groups: DingTalkGroup[]; hasMore: boolean; nextCursor?: string; complete?: boolean; failureCount?: number }
 interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; keywords: string[]; canEnable: boolean; listenerState?: 'off' | 'starting' | 'listening' | 'reconnecting'; listenerIssue?: 'authorization-expired' | 'event-subscription-unavailable' | 'connection-lost'; reason?: string }
 interface DingTalkMonitors { stream: { configured: boolean; connected: boolean; ready: boolean; testOnly?: boolean }; groups: DingTalkMonitorGroup[] }
+interface DingTalkIncident { taskId: string; groupName: string; title: string; status: TaskStatus; createdAt: string }
 
-export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
+export function DingTalkSetupModal({ onClose, onOpenIncident }: { onClose: () => void; onOpenIncident: (taskId: string) => void }) {
   const [status, setStatus] = useState<DingTalkStatus | null>(null);
   const [flow, setFlow] = useState<AuthorizationFlow | null>(null);
   const [selected, setSelected] = useState<DingTalkGroup[]>([]);
   const [savedSelection, setSavedSelection] = useState<DingTalkGroup[]>([]);
   const [monitors, setMonitors] = useState<DingTalkMonitors | null>(null);
+  const [incidents, setIncidents] = useState<DingTalkIncident[]>([]);
   const [keywordDrafts, setKeywordDrafts] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<DingTalkGroup[]>([]);
@@ -70,15 +73,17 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
     setLoading(true);
     setError('');
     try {
-      const [nextStatus, nextSelected, nextMonitors] = await Promise.all([
+      const [nextStatus, nextSelected, nextMonitors, nextIncidents] = await Promise.all([
         appFetch('/api/dingtalk').then(response => readJson<DingTalkStatus>(response)),
         appFetch('/api/dingtalk/groups/selected').then(response => readJson<DingTalkGroup[]>(response)),
         appFetch('/api/dingtalk/monitors').then(response => readJson<DingTalkMonitors>(response)),
+        appFetch('/api/dingtalk/incidents').then(response => readJson<DingTalkIncident[]>(response)),
       ]);
       setStatus(nextStatus);
       setSelected(nextSelected);
       setSavedSelection(nextSelected);
       setMonitors(nextMonitors);
+      setIncidents(nextIncidents);
       setKeywordDrafts(Object.fromEntries(nextMonitors.groups.map(group => [group.conversationId, group.keywords.join(', ')])));
       const account = nextStatus.account;
       if (account.id && (account.state === 'starting' || account.state === 'awaiting-user' || account.state === 'verifying')) {
@@ -103,8 +108,11 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
     let disposed = false;
     const refreshMonitorState = async () => {
       try {
-        const next = await appFetch('/api/dingtalk/monitors').then(response => readJson<DingTalkMonitors>(response));
-        if (!disposed) setMonitors(next);
+        const [next, nextIncidents] = await Promise.all([
+          appFetch('/api/dingtalk/monitors').then(response => readJson<DingTalkMonitors>(response)),
+          appFetch('/api/dingtalk/incidents').then(response => readJson<DingTalkIncident[]>(response)),
+        ]);
+        if (!disposed) { setMonitors(next); setIncidents(nextIncidents); }
       } catch { /* Preserve the last known state during a transient status request failure. */ }
     };
     void refreshMonitorState();
@@ -340,6 +348,14 @@ export function DingTalkSetupModal({ onClose }: { onClose: () => void }) {
                   onClick={() => void saveMonitorConfiguration(group)}>保存条件</button>
               </div>
             </div>)}
+            <div className="dingtalk-incidents" data-testid="dingtalk-recent-incidents">
+              <div className="dingtalk-incidents-heading"><strong>最近告警任务</strong><span>最多显示 12 项</span></div>
+              {incidents.length ? <div className="dingtalk-incidents-list">{incidents.map(incident => <button type="button" className="dingtalk-incident-row" data-testid={`dingtalk-incident-${incident.taskId}`} key={incident.taskId} onClick={() => onOpenIncident(incident.taskId)}>
+                <span className={`dingtalk-incident-status ${incident.status}`} aria-hidden="true" />
+                <span className="dingtalk-incident-copy"><strong>{incident.title}</strong><small>{incident.groupName} · {incidentStatusText(incident.status)} · {new Date(incident.createdAt).toLocaleString('zh-CN')}</small></span>
+                <span className="dingtalk-incident-chevron" aria-hidden="true">›</span>
+              </button>)}</div> : <p className="dingtalk-incidents-empty" data-testid="dingtalk-incidents-empty">尚无命中规则的群消息。</p>}
+            </div>
             <p className="dingtalk-setup-footnote">只处理匹配条件的消息；收到后会在当前工作区创建 Pi 云电脑只读排查任务。不同工作区相互隔离；不会自动回复群聊。</p>
           </div>}
           <button className="dingtalk-setup-secondary dingtalk-disconnect" type="button" disabled={working} onClick={() => void disconnect()}>断开钉钉账号</button>
@@ -376,6 +392,11 @@ function listenerStatusText(state: DingTalkMonitorGroup['listenerState'], issue?
   if (state === 'listening') return '监听中 · 收到消息后自动启动 Pi 排查';
   if (state === 'reconnecting') return '连接中断 · 正在自动重连';
   return '正在连接 DWS 实时事件流';
+}
+
+function incidentStatusText(status: TaskStatus) {
+  const labels: Record<TaskStatus, string> = { queued: '排队中', working: '正在排查', delegating: '拆分处理中', waiting: '等待你', scheduled: '已安排', done: '已完成', failed: '失败', paused: '已暂停', stopped: '已停止' };
+  return labels[status];
 }
 
 function streamStatusText(stream: DingTalkMonitors['stream']) {

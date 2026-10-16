@@ -176,11 +176,12 @@ async function startMockModel() {
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const dotMemoryId = isDotMemoryUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nNote: Alpha prefers concise Mandarin updates\./)?.[1] : undefined;
         const memoryAction = isDotMemoryCapture ? { action: 'save', note: 'Alpha prefers concise Mandarin updates.' } : isDotMemoryUpdate ? { action: 'update', memoryId: dotMemoryId, note: 'Alpha prefers concise Chinese updates.' } : undefined;
+        const dingTalkAlertResult = '已收到这条告警并完成当前可用范围内的只读检查。当前尚未接入日志平台、GitHub 仓库或测试环境，因此没有查询 Trace、修改代码或创建 PR；需要配置对应连接后才能继续自动排障。';
         const decision = isDelegationPlan ? { status: 'delegating', message: 'I split the launch packet into three independent research tasks.', delegations: [
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isSecretResilienceTask ? 'K3D Secret 暂时不可读，但任务使用进程缓存的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isDotMemoryCapture ? '我会记住你偏好简洁的中文回复。' : isDotMemoryUpdate ? '我已根据你的偏好更新私人记忆。' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ends.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}), ...(memoryAction ? { memoryAction } : {}) };
+        ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isSecretResilienceTask ? 'K3D Secret 暂时不可读，但任务使用进程缓存的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isDotMemoryCapture ? '我会记住你偏好简洁的中文回复。' : isDotMemoryUpdate ? '我已根据你的偏好更新私人记忆。' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ends.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isDingTalkAlertTask ? dingTalkAlertResult : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}), ...(memoryAction ? { memoryAction } : {}) };
         if (isMobileVoiceRequest) {
           decision.status = isMobileVoiceReply ? 'done' : 'waiting';
           decision.message = isMobileVoiceReply
@@ -1615,14 +1616,17 @@ try {
     assert.equal(accepted.body.engine, 'model', 'The isolated browser harness uses its fake Model API; production Stream tasks default to Pi');
     assert(accepted.body.taskId, 'The accepted alert should create a task in Alpha personal workspace');
     await alphaPage!.waitForFunction(async (taskId: string) => {
-      const state = await (await fetch('/api/state')).json() as { tasks: { id: string; status: string; engine: string; instruction: string }[] };
+      const state = await (await fetch('/api/state')).json() as { tasks: { id: string; status: string; engine: string; instruction: string; result: string | null }[] };
       const task = state.tasks.find(item => item.id === taskId);
-      return task?.status === 'done' && task.engine === 'model' && task.instruction.includes('e2e-trace-2026');
+      return task?.status === 'done' && task.engine === 'model' && task.instruction.includes('e2e-trace-2026') && task.result?.includes('尚未接入日志平台');
     }, accepted.body.taskId!, { timeout: 20_000 });
     await waitFor(() => mockModelRequests.slice(requestStart).some(request => request.prompt.includes('e2e-trace-2026')), 5_000);
     const modelRequest = mockModelRequests.slice(requestStart).find(request => request.prompt.includes('e2e-trace-2026'));
     assert.match(modelRequest?.prompt || '', /外部不可信数据/);
     assert.match(modelRequest?.prompt || '', /不要修改代码、写入业务系统/);
+    const completedTask = await alphaPage!.evaluate(async (taskId: string) => (await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; result: string | null }[] }).tasks.find(task => task.id === taskId), accepted.body.taskId!);
+    assert.match(completedTask?.result || '', /尚未接入日志平台/);
+    assert.match(completedTask?.result || '', /没有查询 Trace、修改代码或创建 PR/);
     const duplicate = await alphaPage!.evaluate(async (payload) => {
       const response = await fetch('/api/dingtalk/e2e/stream-message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
       return { status: response.status, body: await response.json() as { kind: string; taskId: string | null } };
@@ -1634,8 +1638,27 @@ try {
     assert.equal(betaState.tasks.some(task => task.instruction.includes('e2e-trace-2026')), false, 'The external alert must not cross into a different Google tenant');
     const betaMonitors = await betaPage!.evaluate(async () => await (await fetch('/api/dingtalk/monitors')).json()) as { groups: unknown[] };
     assert.deepEqual(betaMonitors.groups, [], 'The second Google tenant must not inherit Alpha group monitor state');
+    const alphaIncidents = await alphaPage!.evaluate(async () => {
+      const response = await fetch('/api/dingtalk/incidents');
+      return { status: response.status, body: await response.json() as { taskId: string; groupName: string; title: string; status: string; createdAt: string }[] };
+    });
+    assert.equal(alphaIncidents.status, 200);
+    assert.equal(alphaIncidents.body.length, 1);
+    assert.deepEqual(Object.keys(alphaIncidents.body[0]!).sort(), ['createdAt', 'groupName', 'status', 'taskId', 'title']);
+    assert.deepEqual(alphaIncidents.body[0], {
+      taskId: accepted.body.taskId!, groupName: '系统监控告警群', title: alphaIncidents.body[0]!.title,
+      status: 'done', createdAt: alphaIncidents.body[0]!.createdAt,
+    }, 'The incident API should expose only the event-to-task summary and current task status');
+    assert.match(alphaIncidents.body[0]!.title, /^钉钉告警：支付 API 返回 500/);
+    assert(Number.isFinite(Date.parse(alphaIncidents.body[0]!.createdAt)), 'The incident timestamp should be a valid ISO date');
+    const betaIncidents = await betaPage!.evaluate(async () => await (await fetch('/api/dingtalk/incidents')).json()) as unknown[];
+    assert.deepEqual(betaIncidents, [], 'Incident history must remain tenant-isolated');
+    const incidentRow = modal.getByTestId(`dingtalk-incident-${accepted.body.taskId}`);
+    await incidentRow.waitFor({ state: 'visible', timeout: 5000 });
+    await incidentRow.click();
+    await modal.waitFor({ state: 'hidden' });
+    await alphaPage!.locator('.timeline').getByText('e2e-trace-2026', { exact: false }).waitFor({ state: 'visible' });
     await screenshot(alphaPage!, 'dingtalk-alert-task-complete');
-    await modal.getByRole('button', { name: '关闭钉钉设置' }).click();
   });
 
   await recordStep('Chrome completes an Alpha task during a transient K3D Secret read outage', async () => {

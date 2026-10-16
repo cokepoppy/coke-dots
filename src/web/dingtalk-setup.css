@@ -75,10 +75,32 @@
 .dingtalk-monitor-filter input { min-width: 0; height: 32px; padding: 0 9px; border: 1px solid #e7e3e8; border-radius: 7px; background: #fff; color: #39363e; font-size: 11px; }
 .dingtalk-monitor-filter button { min-height: 32px; padding: 0 9px; font-size: 10px; }
 .dingtalk-monitor-note { margin: 0 0 8px; }
+.dingtalk-incidents { margin-top: 12px; padding-top: 11px; border-top: 1px solid #f0edf1; }
+.dingtalk-incidents-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; }
+.dingtalk-incidents-heading strong { color: #55515a; font-size: 10px; font-weight: 650; }
+.dingtalk-incidents-heading span,.dingtalk-incidents-empty { color: #96919b; font-size: 9px; }
+.dingtalk-incidents-empty { margin: 7px 0 2px; }
+.dingtalk-incidents-list { display: grid; gap: 2px; }
+.dingtalk-incident-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 8px 5px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.dingtalk-incident-row:hover { background: #f4f2f5; }
+.dingtalk-incident-status { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #aaa; }
+.dingtalk-incident-status.working,.dingtalk-incident-status.queued,.dingtalk-incident-status.delegating { background: #7aa980; }
+.dingtalk-incident-status.waiting { background: #d6a15e; }
+.dingtalk-incident-status.failed { background: #cf7772; }
+.dingtalk-incident-status.done { background: #9279bd; }
+.dingtalk-incident-copy { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.dingtalk-incident-copy strong { overflow: hidden; color: #4b4750; font-size: 10px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.dingtalk-incident-copy small { overflow: hidden; color: #8b8790; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.dingtalk-incident-chevron { flex: none; color: #aaa6ae; font-size: 17px; }
 .dots-dark .dingtalk-monitor-section { border-color: #303036; background: #1b1b1f; }
 .dots-dark .dingtalk-monitor-row { border-color: #303036; }
 .dots-dark .dingtalk-monitor-row strong { color: #f0f0f2; }
 .dots-dark .dingtalk-monitor-row small,.dots-dark .dingtalk-monitor-note { color: #aaa5af; }
+.dots-dark .dingtalk-incidents { border-color: #303036; }
+.dots-dark .dingtalk-incidents-heading strong,.dots-dark .dingtalk-incident-copy strong { color: #ddd9e2; }
+.dots-dark .dingtalk-incidents-heading span,.dots-dark .dingtalk-incidents-empty,.dots-dark .dingtalk-incident-copy small { color: #96919b; }
+.dots-dark .dingtalk-incident-row:hover { background: #252329; }
+.dots-dark .dingtalk-incident-chevron { color: #8e8994; }
 .dots-dark .dingtalk-monitor-filter label,.dots-dark .dingtalk-monitor-switch { color: #aaa5af; }
 .dots-dark .dingtalk-monitor-filter input { border-color: #39393f; background: #17171a; color: #f0f0f2; }
 .dingtalk-disconnect { margin-top: 13px; color: #ad4c49; }

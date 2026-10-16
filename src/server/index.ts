@@ -275,6 +275,12 @@ const server = createServer(async (req, res) => {
     });
     return reply(res, 200, { stream: streamStatus, groups });
   }
+  if (path === '/api/dingtalk/incidents' && req.method === 'GET') {
+    const limitValue = url.searchParams.get('limit');
+    const limit = limitValue === null ? 12 : Number(limitValue);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return reply(res, 400, { error: 'Invalid incident page' });
+    return reply(res, 200, store.dingtalkIncidents(session.tenant.id, session.user.id, limit));
+  }
   if (path === '/api/dingtalk/monitors' && req.method === 'PUT') {
     try {
       const body = await readJson(req);
