@@ -24,6 +24,10 @@ const readAction = /(?:搜索|查找|查询|读取|打开|检索|总结|查看|�
 const writeAction = /(?:创建|新建|写入|写成|写到|保存到|更新|追加|修改|整理成|create|write|append|update)/i;
 const readIntent = new RegExp(`(?:${readAction.source}).{0,64}(?:${documentTarget.source})|(?:${documentTarget.source}).{0,64}(?:${readAction.source})`, 'i');
 const writeIntent = new RegExp(`(?:${writeAction.source}).{0,64}(?:${documentTarget.source})|(?:在|到)\\s*(?:${documentTarget.source}).{0,24}(?:${writeAction.source})`, 'i');
+const documentReadNegation = new RegExp(
+  `(?:不要|不需要|无需|禁止|暂不|don't|do not|no need to)\\s*[^,.!?;，。！？；\\n]{0,32}?(?:${readAction.source})[^,.!?;，。！？；\\n]{0,32}?(?:${documentTarget.source})|(?:不要|不需要|无需|禁止|暂不|don't|do not|no need to)\\s*[^,.!?;，。！？；\\n]{0,32}?(?:${documentTarget.source})[^,.!?;，。！？；\\n]{0,32}?(?:${readAction.source})`,
+  'i',
+);
 const documentWriteNegation = new RegExp(
   `(?:不要|不需要|无需|禁止|暂不|don't|do not|no need to)\\s*(?:再\\s*)?(?:(?:创建|新建|写入|写成|写到|保存到|追加|create|write|append)\\s*(?:(?:一份|一个|任何|新的?|a|an|any|new)\\s*){0,2}(?:${documentTarget.source})|(?:在|到)\\s*(?:${documentTarget.source}).{0,24}(?:创建|新建|写入|写成|写到|保存到|追加|create|write|append))`,
   'i',
@@ -31,9 +35,9 @@ const documentWriteNegation = new RegExp(
 
 export function requestedDingTalkDocumentActions(instruction: string): DingTalkDocumentAction[] {
   if (!documentTarget.test(instruction)) return [];
-  if (writeIntent.test(instruction) && !documentWriteNegation.test(instruction)) return ['search', 'fetch', 'create'];
-  if (!readIntent.test(instruction)) return [];
-  const actions: DingTalkDocumentAction[] = ['search', 'fetch'];
+  const actions: DingTalkDocumentAction[] = [];
+  if (readIntent.test(instruction) && !documentReadNegation.test(instruction)) actions.push('search', 'fetch');
+  if (writeIntent.test(instruction) && !documentWriteNegation.test(instruction)) actions.push('create');
   return actions;
 }
 

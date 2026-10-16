@@ -8,13 +8,16 @@ const now = Date.parse('2026-10-15T12:00:00.000Z');
 
 test('DingTalk agent bridge grants only explicit document intent and binds it to a tenant user and task', () => {
   assert.deepEqual(requestedDingTalkDocumentActions('请搜索钉钉文档：值班手册'), ['search', 'fetch']);
-  assert.deepEqual(requestedDingTalkDocumentActions('请把排障报告写入钉钉文档'), ['search', 'fetch', 'create']);
+  assert.deepEqual(requestedDingTalkDocumentActions('请把排障报告写入钉钉文档'), ['create']);
+  assert.deepEqual(requestedDingTalkDocumentActions('请搜索并读取钉钉文档：值班手册'), ['search', 'fetch']);
+  assert.deepEqual(requestedDingTalkDocumentActions('请搜索钉钉文档，再新建钉钉文档写入排障报告'), ['search', 'fetch', 'create']);
   assert.deepEqual(
     requestedDingTalkDocumentActions('请创建一份新的钉钉在线文档，写入本次 RUN5 合成告警排查报告。不要修改或读取其他钉钉文档，不要修改代码、文件或向群里发送消息。'),
-    ['search', 'fetch', 'create'],
-    'Restrictions on other documents, source files, and group messages must not revoke an explicitly requested new report document',
+    ['create'],
+    'Restrictions on reading other documents, source files, and group messages must not revoke the explicit create-only grant',
   );
-  assert.deepEqual(requestedDingTalkDocumentActions('请新建一份钉钉文档写入报告，不要创建其他钉钉文档。'), ['search', 'fetch', 'create']);
+  assert.deepEqual(requestedDingTalkDocumentActions('请新建一份钉钉文档写入报告，不要创建其他钉钉文档。'), ['create']);
+  assert.deepEqual(requestedDingTalkDocumentActions('请创建一份钉钉文档写入报告，不要读取其他钉钉文档。'), ['create']);
   assert.deepEqual(requestedDingTalkDocumentActions('不要创建钉钉文档，只搜索值班手册'), ['search', 'fetch']);
   assert.deepEqual(requestedDingTalkDocumentActions('不要创建任何钉钉文档，只搜索值班手册'), ['search', 'fetch']);
   assert.deepEqual(requestedDingTalkDocumentActions('请总结钉钉文档里写着“创建一个账号”的内容'), ['search', 'fetch'], 'Quoted document content must not independently authorize a write');
@@ -28,10 +31,10 @@ test('DingTalk agent bridge grants only explicit document intent and binds it to
     instruction: '请把排障报告写入钉钉文档', publicOrigin: 'https://dots.example.test', basePath: '/dots-demo', secret, now,
   });
   assert(bridge);
-  assert.deepEqual(bridge.actions, ['search', 'fetch', 'create']);
+  assert.deepEqual(bridge.actions, ['create']);
   const grant = verifyDingTalkAgentGrant(bridge.token, secret, now);
   assert.deepEqual(grant && { tenantId: grant.tenantId, userId: grant.userId, taskId: grant.taskId, actions: grant.actions }, {
-    tenantId: 'tenant-a', userId: 'user-a', taskId: '11111111-1111-4111-8111-111111111111', actions: ['search', 'fetch', 'create'],
+    tenantId: 'tenant-a', userId: 'user-a', taskId: '11111111-1111-4111-8111-111111111111', actions: ['create'],
   });
 });
 
@@ -83,13 +86,20 @@ test('the scoped DWS bridge reads and creates only for the bound test identity a
   const created = await service.runAgentDocumentOperation(grant, { action: 'create', name: '排障报告', content: 'Trace ID: trace-test' }) as { nodeId: string; url: string };
   const replayed = await service.runAgentDocumentOperation(grant, { action: 'create', name: '排障报告', content: 'Trace ID: trace-test' }) as { nodeId: string };
   assert.equal(replayed.nodeId, created.nodeId, 'The same task cannot duplicate a document after an ambiguous response');
-  const search = await service.runAgentDocumentOperation(grant, { action: 'search', query: '排障报告' }) as { documents: Array<{ nodeId: string }> };
+  await assert.rejects(service.runAgentDocumentOperation(grant, { action: 'search', query: '排障报告' }), /没有此钉钉文档操作权限/);
+
+  const readBridge = service.agentDocumentBridge(session.tenant.id, session.user.id, '22222222-2222-4222-8222-222222222222', 'Search and read the DingTalk document for the on-call guide');
+  assert(readBridge);
+  assert.deepEqual(readBridge.actions, ['search', 'fetch']);
+  const readGrant = service.verifyAgentDocumentGrant(readBridge.token);
+  assert(readGrant);
+  const search = await service.runAgentDocumentOperation(readGrant, { action: 'search', query: '排障报告' }) as { documents: Array<{ nodeId: string }> };
   assert.equal(search.documents[0]?.nodeId, created.nodeId);
-  const fetched = await service.runAgentDocumentOperation(grant, { action: 'fetch', node: created.nodeId }) as { content: string };
+  const fetched = await service.runAgentDocumentOperation(readGrant, { action: 'fetch', node: created.nodeId }) as { content: string };
   assert.equal(fetched.content, 'Trace ID: trace-test');
   await assert.rejects(service.runAgentDocumentOperation(grant, { action: 'create', name: '不同内容', content: 'different' }), /请求 ID 被用于不同的文档内容/);
 
-  const readOnlyBridge = service.agentDocumentBridge(session.tenant.id, session.user.id, '22222222-2222-4222-8222-222222222222', 'Search the DingTalk document for the on-call guide');
+  const readOnlyBridge = service.agentDocumentBridge(session.tenant.id, session.user.id, '33333333-3333-4333-8333-333333333333', 'Search the DingTalk document for the on-call guide');
   assert(readOnlyBridge);
   const readOnlyGrant = service.verifyAgentDocumentGrant(readOnlyBridge.token);
   assert(readOnlyGrant);

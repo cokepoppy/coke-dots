@@ -205,7 +205,7 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     assert.equal(store.taskOwnerUserId(task.id, account.tenant.id), account.user.id);
     assert(receivedBridge);
     assert.equal(receivedBridge.url, 'https://dots.example.test/dots-demo/api/agent/dingtalk/documents');
-    assert.deepEqual(receivedBridge.actions, ['search', 'fetch', 'create']);
+    assert.deepEqual(receivedBridge.actions, ['create']);
     const grant = service.verifyAgentDocumentGrant(receivedBridge.token);
     assert.equal(grant?.tenantId, account.tenant.id);
     assert.equal(grant?.userId, account.user.id);
