@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createServer } from 'node:net';
 import test from 'node:test';
 import {
+  appendBoundedStartupStderr,
   createDingtalkConnectorGateway,
   eventStartupDiagnostic,
   issuePrincipalTicket,
@@ -72,6 +73,29 @@ test('DWS monitor diagnostics classify structured internal errors without exposi
   for (const secret of ['private.example', 'NEVER-LOG', 'token=', 'discover bus']) {
     assert.equal(serialized.includes(secret), false, `diagnostics must not expose ${secret}`);
   }
+});
+
+test('bounded startup stderr retains multiline structured errors across process chunks', () => {
+  const raw = `{
+  "error": {
+    "category": "internal",
+    "code": 5,
+    "message": "consume: discover bus: busctl: start token=NEVER-LOG"
+  }
+}`;
+  const captured = [raw.slice(0, 17), raw.slice(17, 68), raw.slice(68)].reduce(
+    (current, chunk) => appendBoundedStartupStderr(current, chunk),
+  );
+  assert.equal(captured, raw);
+  const diagnostic = eventStartupDiagnostic({ stage: 'child-exit', stderr: captured, exitCode: 5 });
+  assert.equal(diagnostic.cause, 'event-bus-startup');
+  assert.equal(diagnostic.dwsErrorCategory, 'internal');
+  assert.equal(diagnostic.dwsErrorCode, 5);
+  assert.equal(JSON.stringify(diagnostic).includes('NEVER-LOG'), false);
+
+  const bounded = appendBoundedStartupStderr('123456', '7890', 8);
+  assert.equal(bounded, '34567890');
+  assert.equal(Buffer.byteLength(bounded), 8);
 });
 
 test('DingTalk gateway completes isolated device authorization, search and encrypted profile recovery', async () => {

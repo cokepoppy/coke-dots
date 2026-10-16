@@ -71,6 +71,11 @@ function structuredDwsError(stderr) {
   return undefined;
 }
 
+export function appendBoundedStartupStderr(current, chunk, maxBytes = 64 * 1024) {
+  const combined = Buffer.concat([Buffer.from(String(current || '')), Buffer.from(String(chunk || ''))]);
+  return combined.length > maxBytes ? combined.subarray(-maxBytes).toString('utf8') : combined.toString('utf8');
+}
+
 export function parseEncryptionKey(value) {
   const encoded = String(value || '').trim();
   if (!/^[A-Za-z0-9+/]{43}=$/.test(encoded)) throw new Error('DINGTALK_ENCRYPTION_KEY_INVALID');
@@ -727,6 +732,7 @@ export function createDingtalkConnectorGateway({
     let closed = false;
     let output = '';
     let errors = '';
+    let stderrLineBuffer = '';
     let startupFailureCode = 'DWS_EVENT_LISTENER_FAILED';
     let startupFailureStage = 'prepare-workspace';
     let startupFailureCause = 'unclassified';
@@ -776,6 +782,8 @@ export function createDingtalkConnectorGateway({
         osErrorCode: spawnErrorCode,
         elapsedMs: Date.now() - startupStartedAt,
       }))}\n`);
+      errors = '';
+      stderrLineBuffer = '';
     };
     const processOutputLine = line => {
       if (!line.trim()) return;
@@ -838,11 +846,13 @@ export function createDingtalkConnectorGateway({
       });
       child.stderr.on('data', chunk => {
         stderrBytes += chunk.length;
-        errors += stderrDecoder.write(chunk);
+        const decoded = stderrDecoder.write(chunk);
+        if (!ready) errors = appendBoundedStartupStderr(errors, decoded);
+        stderrLineBuffer += decoded;
         let boundary;
-        while ((boundary = errors.indexOf('\n')) >= 0) {
-          const line = errors.slice(0, boundary);
-          errors = errors.slice(boundary + 1);
+        while ((boundary = stderrLineBuffer.indexOf('\n')) >= 0) {
+          const line = stderrLineBuffer.slice(0, boundary);
+          stderrLineBuffer = stderrLineBuffer.slice(boundary + 1);
           if (!ready && line.includes('[event] ready')) resolveReady();
           if (!ready) {
             startupFailureCode = classifyEventStartupFailure(line, startupFailureCode);
@@ -850,7 +860,7 @@ export function createDingtalkConnectorGateway({
             if (cause !== 'no-stderr') startupFailureCause = cause;
           }
         }
-        if (errors.length > 64 * 1024) errors = errors.slice(-1024);
+        if (stderrLineBuffer.length > 64 * 1024) stderrLineBuffer = stderrLineBuffer.slice(-1024);
       });
       child.once('error', error => {
         startupFailureStage = 'spawn-error';
@@ -863,7 +873,9 @@ export function createDingtalkConnectorGateway({
         childExitCode = code;
         childExitSignal = signal;
         if (!ready) {
-          errors += stderrDecoder.end();
+          const tail = stderrDecoder.end();
+          errors = appendBoundedStartupStderr(errors, tail);
+          stderrLineBuffer += tail;
           startupFailureCode = classifyEventStartupFailure(errors, startupFailureCode);
           const cause = classifyEventStartupCause(errors, startupFailureStage);
           if (cause !== 'no-stderr') startupFailureCause = cause;
@@ -885,6 +897,8 @@ export function createDingtalkConnectorGateway({
       }, 30_000);
       await readyPromise;
       ready = true;
+      errors = '';
+      stderrLineBuffer = '';
     });
 
     const stop = () => listener.stop();
