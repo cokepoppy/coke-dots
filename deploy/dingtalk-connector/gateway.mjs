@@ -42,8 +42,31 @@ const allowedErrors = new Set([
 const allowedEventStartupCauses = new Set([
   'ready-timeout-no-stderr', 'no-stderr', 'subscription-retry-protected', 'app-key-configuration',
   'authorization-token', 'authorization-permission', 'subscription-rejected', 'subscription-limit',
-  'network', 'cli-contract', 'unclassified',
+  'network', 'cli-contract', 'event-bus-startup', 'dws-internal-error', 'unclassified',
 ]);
+const allowedDwsErrorCategories = new Set(['api', 'auth', 'validation', 'pat', 'internal', 'discovery']);
+
+function structuredDwsError(stderr) {
+  for (const line of String(stderr || '').split(/\r?\n/)) {
+    const start = line.indexOf('{');
+    if (start < 0) continue;
+    let value;
+    try { value = JSON.parse(line.slice(start)); } catch { continue; }
+    const error = value?.error && typeof value.error === 'object' ? value.error : value;
+    const category = typeof error?.category === 'string' ? error.category.toLowerCase() : '';
+    const code = Number(error?.code);
+    if (!allowedDwsErrorCategories.has(category) || !Number.isInteger(code) || code < 1 || code > 6 || typeof error?.message !== 'string') continue;
+    const message = error.message;
+    const messageClass = /discover.{0,24}bus|busctl/i.test(message) ? 'bus-discovery' :
+      /(?:start|spawn).{0,24}bus|bus.{0,24}(?:start|spawn)/i.test(message) ? 'bus-start' :
+        /registerToEventCenter|subscribeUser|subscription|subscribe/i.test(message) ? 'subscription' :
+          /app.?key|client.?id|event.?mcp/i.test(message) ? 'event-mcp-configuration' :
+            /token|auth(?:entication|orization)?/i.test(message) ? 'authorization' :
+              /websocket|stream|connect|network|timeout/i.test(message) ? 'event-transport' : 'other';
+    return { category, code, messageClass };
+  }
+  return undefined;
+}
 
 export function parseEncryptionKey(value) {
   const encoded = String(value || '').trim();
@@ -299,6 +322,13 @@ function classifyEventStartupFailure(stderr, fallback = 'DWS_EVENT_LISTENER_FAIL
 function classifyEventStartupCause(text, stage) {
   const value = String(text || '');
   if (!value.trim()) return stage === 'ready-timeout' ? 'ready-timeout-no-stderr' : 'no-stderr';
+  const dwsError = structuredDwsError(value);
+  if (dwsError?.messageClass === 'bus-discovery' || dwsError?.messageClass === 'bus-start') return 'event-bus-startup';
+  if (dwsError?.messageClass === 'subscription') return 'subscription-rejected';
+  if (dwsError?.messageClass === 'event-mcp-configuration') return 'app-key-configuration';
+  if (dwsError?.messageClass === 'authorization') return 'authorization-token';
+  if (dwsError?.messageClass === 'event-transport') return 'network';
+  if (dwsError?.category === 'internal') return 'dws-internal-error';
   if (/terminal_hold|retry.{0,24}(budget|limit)|attempt.{0,24}(limit|exhaust)|cooldown/i.test(value)) return 'subscription-retry-protected';
   if (/app.?key|client.?id/i.test(value)) return 'app-key-configuration';
   if (/token.{0,24}(expired|invalid)|invalid.{0,24}token/i.test(value)) return 'authorization-token';
@@ -313,11 +343,13 @@ function classifyEventStartupCause(text, stage) {
 export function eventStartupDiagnostic({ stage, code, cause, exitCode, signal, stderr = '', stderrBytes, osErrorCode, elapsedMs } = {}) {
   const allowedStages = new Set(['prepare-workspace', 'inspect-profile', 'list-profiles', 'spawn-listener', 'await-ready', 'child-exit', 'spawn-error', 'ready-timeout']);
   const raw = String(stderr || '');
+  const dwsError = structuredDwsError(raw);
   return {
     component: 'dws-im-monitor',
     stage: allowedStages.has(stage) ? stage : 'unknown',
     code: allowedErrors.has(code) ? code : 'DWS_EVENT_LISTENER_FAILED',
     cause: allowedEventStartupCauses.has(cause) ? cause : classifyEventStartupCause(raw, stage),
+    ...(dwsError ? { dwsErrorCategory: dwsError.category, dwsErrorCode: dwsError.code, dwsMessageClass: dwsError.messageClass } : {}),
     stderrBytes: Number.isSafeInteger(stderrBytes) && stderrBytes >= 0 ? stderrBytes : Buffer.byteLength(raw),
     ...(Number.isInteger(exitCode) ? { exitCode } : {}),
     ...(typeof signal === 'string' && /^[A-Z0-9]+$/.test(signal) ? { signal } : {}),
