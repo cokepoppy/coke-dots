@@ -931,7 +931,7 @@ export function createDingtalkConnectorGateway({
       startupFailureStage = 'spawn-listener';
       child = spawnProcess(binary, [
         'event', '+listen-im', '--kind', 'group', '--chat-id', conversationId,
-        '--events', 'message', '-f', 'ndjson', '--profile', profile.selector,
+        '--events', 'message', '-f', 'ndjson', '--profile', profile.selector, '--debug',
       ], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
       startupFailureStage = 'await-ready';
       if (cancelled) child.kill('SIGTERM');

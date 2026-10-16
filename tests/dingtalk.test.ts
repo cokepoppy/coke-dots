@@ -218,7 +218,7 @@ test('personal IM monitor forwards a live group event only into the enabled tena
   }
 });
 
-test('personal IM monitor exposes expired authorization safely and clears it after a successful reconnect', async () => {
+test('personal IM monitor stops retrying terminal authorization failures and retains the safe status', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-dingtalk-monitor-status-'));
   const store = new Store(directory);
   const account = store.signInGoogle({ subject: 'monitor-status', email: 'monitor-status@example.test', name: 'Monitor status' });
@@ -226,30 +226,57 @@ test('personal IM monitor exposes expired authorization safely and clears it aft
   store.setDingtalkGroupMonitor(account.tenant.id, account.user.id, 'cid-expiring', true, 'corp-one', ['告警']);
   let attempts = 0;
   const supervisor = new DingTalkMonitorSupervisor(store, {
-    async *watchGroupMessages(_principal, _conversationId, signal) {
+    async *watchGroupMessages(_principal, _conversationId) {
       attempts += 1;
-      if (attempts === 1) throw new Error('钉钉授权已过期，请重新连接。 private-token-value');
-      yield { type: 'ready' as const };
-      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+      throw new Error('钉钉授权已过期，请重新连接。 private-token-value');
     },
-  });
+  }, undefined, 1, 4);
 
   try {
     await supervisor.reconcile();
     for (let attempt = 0; attempt < 100 && supervisor.issue(account.tenant.id, account.user.id, 'cid-expiring') !== 'authorization-expired'; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 5));
     }
-    assert.equal(supervisor.status(account.tenant.id, account.user.id, 'cid-expiring'), 'reconnecting');
+    assert.equal(supervisor.status(account.tenant.id, account.user.id, 'cid-expiring'), 'failed');
     assert.equal(supervisor.issue(account.tenant.id, account.user.id, 'cid-expiring'), 'authorization-expired');
     assert.equal(JSON.stringify(supervisor.issue(account.tenant.id, account.user.id, 'cid-expiring')).includes('private-token-value'), false,
       'Only a safe issue category may be exposed, never connector error details');
 
-    for (let attempt = 0; attempt < 400 && (supervisor.status(account.tenant.id, account.user.id, 'cid-expiring') !== 'listening' || supervisor.issue(account.tenant.id, account.user.id, 'cid-expiring')); attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 5));
+    await supervisor.reconcile();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(attempts, 1, 'An expired authorization is terminal until the account is reconnected');
+    assert.equal(supervisor.status(account.tenant.id, account.user.id, 'cid-expiring'), 'failed');
+  } finally {
+    supervisor.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('personal IM monitor retries a transient network startup failure and clears it after ready', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-dingtalk-monitor-reconnect-'));
+  const store = new Store(directory);
+  const account = store.signInGoogle({ subject: 'monitor-reconnect', email: 'monitor-reconnect@example.test', name: 'Monitor reconnect' });
+  store.replaceDingtalkGroupSelections(account.tenant.id, account.user.id, [{ conversationId: 'cid-reconnect', name: 'CMS alerts' }], 'corp-one');
+  store.setDingtalkGroupMonitor(account.tenant.id, account.user.id, 'cid-reconnect', true, 'corp-one', ['告警']);
+  let attempts = 0;
+  const supervisor = new DingTalkMonitorSupervisor(store, {
+    async *watchGroupMessages(_principal, _conversationId, signal) {
+      attempts += 1;
+      if (attempts === 1) throw new Error('连接钉钉事件服务失败，请检查网络/TLS。');
+      yield { type: 'ready' as const };
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  }, undefined, 1, 4);
+
+  try {
+    await supervisor.reconcile();
+    for (let attempt = 0; attempt < 100 && supervisor.status(account.tenant.id, account.user.id, 'cid-reconnect') !== 'listening'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2));
     }
-    assert.equal(attempts, 2, 'The monitor should reconnect using its bounded retry schedule');
-    assert.equal(supervisor.status(account.tenant.id, account.user.id, 'cid-expiring'), 'listening');
-    assert.equal(supervisor.issue(account.tenant.id, account.user.id, 'cid-expiring'), undefined, 'A ready stream clears the stale failure');
+    assert.equal(attempts, 2, 'A retryable startup error receives a bounded retry');
+    assert.equal(supervisor.status(account.tenant.id, account.user.id, 'cid-reconnect'), 'listening');
+    assert.equal(supervisor.issue(account.tenant.id, account.user.id, 'cid-reconnect'), undefined, 'A ready stream clears the stale failure');
   } finally {
     supervisor.stop();
     store.close();
@@ -266,22 +293,28 @@ test('personal IM monitor exposes only the safe startup failure category', async
     ['cid-permission', '钉钉拒绝了群消息事件权限，请检查当前账号和组织的事件订阅授权。', 'event-permission-denied'],
     ['cid-network', '连接钉钉事件服务失败，请检查 Connector 的网络和 TLS 连通性。', 'event-network-unavailable'],
     ['cid-command', '当前 DWS CLI 不支持群消息监听命令，请检查 Connector 的 CLI 版本。', 'event-command-unsupported'],
+    ['cid-unknown', 'DWS_EVENT_LISTENER_FAILED', 'event-subscription-unavailable'],
   ] as const;
   store.replaceDingtalkGroupSelections(account.tenant.id, account.user.id, cases.map(([conversationId]) => ({ conversationId, name: conversationId })), 'corp-one');
   for (const [conversationId] of cases) store.setDingtalkGroupMonitor(account.tenant.id, account.user.id, conversationId, true, 'corp-one', ['告警']);
   const messages = new Map<string, string>(cases.map(([conversationId, message]) => [conversationId, message]));
+  const attempts = new Map<string, number>();
   const supervisor = new DingTalkMonitorSupervisor(store, {
-    async *watchGroupMessages(_principal, conversationId) { throw new Error(messages.get(conversationId)); },
-  });
+    async *watchGroupMessages(_principal, conversationId) {
+      attempts.set(conversationId, (attempts.get(conversationId) || 0) + 1);
+      throw new Error(messages.get(conversationId));
+    },
+  }, undefined, 1, 4);
 
   try {
     await supervisor.reconcile();
-    for (let attempt = 0; attempt < 100 && cases.some(([conversationId]) => !supervisor.issue(account.tenant.id, account.user.id, conversationId)); attempt++) {
+    for (let attempt = 0; attempt < 100 && cases.some(([conversationId]) => supervisor.status(account.tenant.id, account.user.id, conversationId) !== 'failed'); attempt++) {
       await new Promise(resolve => setTimeout(resolve, 2));
     }
     for (const [conversationId, , expected] of cases) {
       assert.equal(supervisor.issue(account.tenant.id, account.user.id, conversationId), expected);
-      assert.equal(supervisor.status(account.tenant.id, account.user.id, conversationId), 'reconnecting');
+      assert.equal(supervisor.status(account.tenant.id, account.user.id, conversationId), 'failed');
+      assert.equal(attempts.get(conversationId), expected === 'event-network-unavailable' ? 3 : expected === 'event-subscription-unavailable' ? 2 : 1);
     }
   } finally {
     supervisor.stop();

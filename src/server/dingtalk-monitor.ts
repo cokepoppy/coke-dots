@@ -1,7 +1,7 @@
 import type { DingTalkService, DingTalkMonitorPrincipal } from './dingtalk.ts';
 import type { Store, DingTalkGroupSelection } from './store.ts';
 
-type MonitorState = 'starting' | 'listening' | 'reconnecting';
+type MonitorState = 'starting' | 'listening' | 'reconnecting' | 'failed';
 export type DingTalkMonitorIssue = 'authorization-expired' | 'event-subscription-unavailable' | 'event-subscription-rejected' |
   'event-permission-denied' | 'event-network-unavailable' | 'event-command-unsupported' | 'connection-lost';
 type EnabledMonitor = DingTalkGroupSelection & { tenantId: string; userId: string; conversationId: string; enabled: boolean };
@@ -18,6 +18,8 @@ export class DingTalkMonitorSupervisor {
     private readonly store: Store,
     private readonly dingtalk: Pick<DingTalkService, 'watchGroupMessages'>,
     private readonly onChange: () => void = () => undefined,
+    private readonly retryBaseMs = 1_000,
+    private readonly retryMaxMs = 60_000,
   ) {}
 
   start() {
@@ -67,22 +69,26 @@ export class DingTalkMonitorSupervisor {
     const key = keyOf(row);
     this.active.set(key, monitor);
     void this.run(row, monitor).finally(() => {
-      if (this.active.get(key) === monitor) this.active.delete(key);
+      if ((monitor.controller.signal.aborted || this.stopped) && this.active.get(key) === monitor) this.active.delete(key);
       this.onChange();
     });
   }
 
   private async run(row: EnabledMonitor, active: ActiveMonitor) {
     const principal: DingTalkMonitorPrincipal = { tenantId: row.tenantId, userId: row.userId };
-    let retryMs = 1_000;
+    let retryMs = this.retryBaseMs;
+    let startupRetries = 0;
     while (!active.controller.signal.aborted && !this.stopped) {
+      let connectionReachedReady = false;
       try {
         for await (const frame of this.dingtalk.watchGroupMessages(principal, row.conversationId, active.controller.signal)) {
           if (active.controller.signal.aborted || this.stopped) return;
           if (frame.type === 'ready') {
+            connectionReachedReady = true;
             active.state = 'listening';
             active.issue = undefined;
-            retryMs = 1_000;
+            startupRetries = 0;
+            retryMs = this.retryBaseMs;
             this.onChange();
             continue;
           }
@@ -105,13 +111,29 @@ export class DingTalkMonitorSupervisor {
       }
       if (active.controller.signal.aborted || this.stopped) return;
       if (!active.issue) active.issue = 'connection-lost';
+      if (!connectionReachedReady) {
+        const retryBudget = startupRetryBudget(active.issue);
+        if (startupRetries >= retryBudget) {
+          active.state = 'failed';
+          this.onChange();
+          return;
+        }
+        startupRetries += 1;
+      }
       active.state = 'reconnecting';
       this.onChange();
       await delay(retryMs, active.controller.signal);
-      retryMs = Math.min(retryMs * 2, 60_000);
+      retryMs = Math.min(retryMs * 2, this.retryMaxMs);
       if (!active.controller.signal.aborted) active.state = 'starting';
     }
   }
+}
+
+function startupRetryBudget(issue: DingTalkMonitorIssue) {
+  if (issue === 'authorization-expired' || issue === 'event-subscription-rejected' ||
+      issue === 'event-permission-denied' || issue === 'event-command-unsupported') return 0;
+  if (issue === 'event-network-unavailable') return 2;
+  return 1;
 }
 
 function classifyMonitorIssue(error: unknown): DingTalkMonitorIssue {

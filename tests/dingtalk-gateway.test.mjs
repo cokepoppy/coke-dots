@@ -234,6 +234,11 @@ if (group === 'profile' && command === 'list') {
   console.log(JSON.stringify({ success: true, result: { events: [{ eventId: 'event-1', title: '排障复盘', description: '讨论 trace-live-1', accessToken: 'MUST-NOT-LEAK' }], hasMore: false } }));
 } else if (group === 'event' && command === '+listen-im') {
   const conversationId = args[args.indexOf('--chat-id') + 1];
+  if (!args.includes('--debug')) {
+    process.stderr.write('monitor listener must enable private startup diagnostics\\n');
+    process.exitCode = 2;
+    process.exit();
+  }
   if (conversationId === 'cid-rejected') {
     process.stderr.write('registerToEventCenter failed: group subscription denied; token=DO-NOT-LEAK\\n');
     process.exitCode = 2;

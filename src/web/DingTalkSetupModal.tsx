@@ -34,7 +34,7 @@ interface AuthorizationFlow {
 
 interface DingTalkGroup { conversationId: string; name: string }
 interface GroupSearch { groups: DingTalkGroup[]; hasMore: boolean; nextCursor?: string; complete?: boolean; failureCount?: number }
-interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; keywords: string[]; canEnable: boolean; listenerState?: 'off' | 'starting' | 'listening' | 'reconnecting'; listenerIssue?: 'authorization-expired' | 'event-subscription-unavailable' | 'event-subscription-rejected' | 'event-permission-denied' | 'event-network-unavailable' | 'event-command-unsupported' | 'connection-lost'; reason?: string }
+interface DingTalkMonitorGroup { conversationId: string; groupName: string; enabled: boolean; keywords: string[]; canEnable: boolean; listenerState?: 'off' | 'starting' | 'listening' | 'reconnecting' | 'failed'; listenerIssue?: 'authorization-expired' | 'event-subscription-unavailable' | 'event-subscription-rejected' | 'event-permission-denied' | 'event-network-unavailable' | 'event-command-unsupported' | 'connection-lost'; reason?: string }
 interface DingTalkMonitors { stream: { configured: boolean; connected: boolean; ready: boolean; testOnly?: boolean }; groups: DingTalkMonitorGroup[] }
 interface DingTalkIncident { taskId: string; groupName: string; title: string; status: TaskStatus; createdAt: string }
 
@@ -391,8 +391,9 @@ function listenerStatusText(state: DingTalkMonitorGroup['listenerState'], issue?
   if (issue === 'event-permission-denied') return '钉钉事件权限不足 · 检查账号和组织授权';
   if (issue === 'event-network-unavailable') return '连接钉钉事件服务失败 · 检查网络/TLS';
   if (issue === 'event-command-unsupported') return 'DWS CLI 不支持此监听命令 · 检查 Connector 版本';
-  if (issue === 'event-subscription-unavailable') return 'DWS 事件订阅不可用 · 正在重试';
-  if (issue === 'connection-lost') return '事件流连接中断 · 正在自动重连';
+  if (issue === 'event-subscription-unavailable') return state === 'failed' ? 'DWS 事件订阅未能启动 · 自动重试已停止' : 'DWS 事件订阅不可用 · 正在重试';
+  if (issue === 'connection-lost') return state === 'failed' ? '事件流未能连接 · 自动重试已停止' : '事件流连接中断 · 正在自动重连';
+  if (state === 'failed') return '监听未能启动 · 自动重试已停止';
   if (state === 'listening') return '监听中 · 收到消息后自动启动 Pi 排查';
   if (state === 'reconnecting') return '连接中断 · 正在自动重连';
   return '正在连接 DWS 实时事件流';
