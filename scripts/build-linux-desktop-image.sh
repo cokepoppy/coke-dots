@@ -43,10 +43,16 @@ if docker image inspect "$image" >/dev/null 2>&1; then
     echo "Refusing to overwrite $image: its recorded source revision is $existing_revision" >&2
     exit 1
   fi
+  existing_platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
+  if [[ "$existing_platform" != "$platform" ]]; then
+    echo "Refusing to import $image: it is $existing_platform but cluster $context requires $platform" >&2
+    exit 1
+  fi
 else
   if [[ -n "${COKE_DOTS_DOCKER_BUILD_PROXY:-}" ]]; then
     docker build \
       --platform "$platform" \
+      --pull \
       --build-arg "http_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}" \
       --build-arg "https_proxy=${COKE_DOTS_DOCKER_BUILD_PROXY}" \
       --build-arg "COKE_DOTS_GIT_REVISION=$revision" \
@@ -54,8 +60,14 @@ else
   else
     docker build \
       --platform "$platform" \
+      --pull \
       --build-arg "COKE_DOTS_GIT_REVISION=$revision" \
       --file deploy/linux-desktop/Dockerfile --tag "$image" .
+  fi
+  built_platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
+  if [[ "$built_platform" != "$platform" ]]; then
+    echo "Refusing to import $image: build produced $built_platform but cluster $context requires $platform" >&2
+    exit 1
   fi
 fi
 
