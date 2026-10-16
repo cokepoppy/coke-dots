@@ -2,7 +2,8 @@ import type { DingTalkService, DingTalkMonitorPrincipal } from './dingtalk.ts';
 import type { Store, DingTalkGroupSelection } from './store.ts';
 
 type MonitorState = 'starting' | 'listening' | 'reconnecting';
-export type DingTalkMonitorIssue = 'authorization-expired' | 'event-subscription-unavailable' | 'connection-lost';
+export type DingTalkMonitorIssue = 'authorization-expired' | 'event-subscription-unavailable' | 'event-subscription-rejected' |
+  'event-permission-denied' | 'event-network-unavailable' | 'event-command-unsupported' | 'connection-lost';
 type EnabledMonitor = DingTalkGroupSelection & { tenantId: string; userId: string; conversationId: string; enabled: boolean };
 
 interface ActiveMonitor { controller: AbortController; state: MonitorState; issue?: DingTalkMonitorIssue }
@@ -116,6 +117,10 @@ export class DingTalkMonitorSupervisor {
 function classifyMonitorIssue(error: unknown): DingTalkMonitorIssue {
   const message = error instanceof Error ? error.message : '';
   if (/DWS_PROFILE_NOT_AUTHENTICATED|DWS_AUTHORIZATION_EXPIRED|钉钉授权已过期/.test(message)) return 'authorization-expired';
+  if (/DWS_EVENT_SUBSCRIPTION_REJECTED|事件中心拒绝了群消息订阅/.test(message)) return 'event-subscription-rejected';
+  if (/DWS_EVENT_PERMISSION_DENIED|拒绝了群消息事件权限/.test(message)) return 'event-permission-denied';
+  if (/DWS_EVENT_NETWORK_UNAVAILABLE|连接钉钉事件服务失败/.test(message)) return 'event-network-unavailable';
+  if (/DWS_EVENT_COMMAND_UNSUPPORTED|DWS CLI 不支持群消息监听命令/.test(message)) return 'event-command-unsupported';
   if (/DWS_EVENT_LISTENER_FAILED|钉钉群消息实时监听未能启动/.test(message)) return 'event-subscription-unavailable';
   return 'connection-lost';
 }

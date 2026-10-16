@@ -257,6 +257,39 @@ test('personal IM monitor exposes expired authorization safely and clears it aft
   }
 });
 
+test('personal IM monitor exposes only the safe startup failure category', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-dingtalk-monitor-categories-'));
+  const store = new Store(directory);
+  const account = store.signInGoogle({ subject: 'monitor-categories', email: 'monitor-categories@example.test', name: 'Monitor categories' });
+  const cases = [
+    ['cid-rejected', '钉钉事件中心拒绝了群消息订阅，请检查组织策略及该群是否支持个人 IM 监听。', 'event-subscription-rejected'],
+    ['cid-permission', '钉钉拒绝了群消息事件权限，请检查当前账号和组织的事件订阅授权。', 'event-permission-denied'],
+    ['cid-network', '连接钉钉事件服务失败，请检查 Connector 的网络和 TLS 连通性。', 'event-network-unavailable'],
+    ['cid-command', '当前 DWS CLI 不支持群消息监听命令，请检查 Connector 的 CLI 版本。', 'event-command-unsupported'],
+  ] as const;
+  store.replaceDingtalkGroupSelections(account.tenant.id, account.user.id, cases.map(([conversationId]) => ({ conversationId, name: conversationId })), 'corp-one');
+  for (const [conversationId] of cases) store.setDingtalkGroupMonitor(account.tenant.id, account.user.id, conversationId, true, 'corp-one', ['告警']);
+  const messages = new Map<string, string>(cases.map(([conversationId, message]) => [conversationId, message]));
+  const supervisor = new DingTalkMonitorSupervisor(store, {
+    async *watchGroupMessages(_principal, conversationId) { throw new Error(messages.get(conversationId)); },
+  });
+
+  try {
+    await supervisor.reconcile();
+    for (let attempt = 0; attempt < 100 && cases.some(([conversationId]) => !supervisor.issue(account.tenant.id, account.user.id, conversationId)); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    for (const [conversationId, , expected] of cases) {
+      assert.equal(supervisor.issue(account.tenant.id, account.user.id, conversationId), expected);
+      assert.equal(supervisor.status(account.tenant.id, account.user.id, conversationId), 'reconnecting');
+    }
+  } finally {
+    supervisor.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('existing DingTalk group selection databases gain the organization column without losing selections', () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-dingtalk-migration-'));
   try {

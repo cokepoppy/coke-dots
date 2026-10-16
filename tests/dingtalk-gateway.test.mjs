@@ -119,6 +119,11 @@ if (group === 'profile' && command === 'list') {
 } else if (group === 'calendar' && command === 'event' && args[2] === 'list') {
   console.log(JSON.stringify({ success: true, result: { events: [{ eventId: 'event-1', title: '排障复盘', description: '讨论 trace-live-1', accessToken: 'MUST-NOT-LEAK' }], hasMore: false } }));
 } else if (group === 'event' && command === '+listen-im') {
+  if (args[args.indexOf('--chat-id') + 1] === 'cid-rejected') {
+    process.stderr.write('registerToEventCenter failed: group subscription denied; token=DO-NOT-LEAK\\n');
+    process.exitCode = 2;
+    process.exit();
+  }
   if (!args.includes('--flatten')) {
     console.error('flatten is required for a normalized event stream');
     process.exitCode = 2;
@@ -266,6 +271,11 @@ if (group === 'profile' && command === 'list') {
 
     const otherUserRead = await call('/v1/docs/fetch', { principal: principalBeta, method: 'POST', body: { node: created.body.data.nodeId } }).then(async response => ({ status: response.status, body: await response.json() }));
     assert.notEqual(otherUserRead.status, 200, 'Another Dots tenant/user must not access this profile or document');
+
+    const rejectedSubscription = await call('/v1/monitors/events', { method: 'POST', body: { conversationId: 'cid-rejected' } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(rejectedSubscription.status, 502);
+    assert.equal(rejectedSubscription.body.error, 'DWS_EVENT_SUBSCRIPTION_REJECTED', 'A DingTalk event-center rejection should be classified without returning provider stderr');
+    assert.equal(JSON.stringify(rejectedSubscription).includes('DO-NOT-LEAK'), false, 'Raw DWS stderr must never cross the connector API');
 
     const controller = new AbortController();
     const liveResponse = await call('/v1/monitors/events', { method: 'POST', body: { conversationId: 'cid-alerts' }, signal: controller.signal });

@@ -26,7 +26,8 @@ const allowedErrors = new Set([
   'DWS_PROCESS_TIMEOUT', 'DWS_PROCESS_START_FAILED', 'DWS_PROCESS_FAILED', 'DWS_INVALID_JSON',
   'DWS_OUTPUT_TOO_LARGE', 'DWS_AUTHORIZATION_START_TIMEOUT', 'DWS_AUTHORIZATION_FAILED',
   'DWS_AUTHORIZATION_INVALID_RESULT', 'DWS_AUTHORIZATION_EXPIRED', 'DWS_PROFILE_BUSY',
-  'DWS_EVENT_LISTENER_FAILED', 'DWS_MONITOR_ALREADY_ACTIVE',
+  'DWS_EVENT_LISTENER_FAILED', 'DWS_EVENT_SUBSCRIPTION_REJECTED', 'DWS_EVENT_PERMISSION_DENIED',
+  'DWS_EVENT_NETWORK_UNAVAILABLE', 'DWS_EVENT_COMMAND_UNSUPPORTED', 'DWS_MONITOR_ALREADY_ACTIVE',
   'DWS_DOC_AUTHORIZATION_REQUIRED', 'DWS_DOC_NAME_INVALID', 'DWS_DOC_CONTENT_INVALID',
   'DWS_DOC_CONTENT_TOO_LARGE', 'DWS_DOC_NODE_INVALID', 'DWS_DOC_LOCATION_INVALID',
   'DWS_DOC_QUERY_INVALID', 'DWS_DOC_LIMIT_INVALID', 'DWS_DOC_SEARCH_FAILED',
@@ -268,8 +269,26 @@ function publicError(error) {
     code === 'DWS_DOC_AUTHORIZATION_REQUIRED' ? 403 :
       ['DWS_DOC_CONTENT_TOO_LARGE', 'DINGTALK_REQUEST_TOO_LARGE'].includes(code) ? 413 :
         ['DWS_PROFILE_BUSY', 'DWS_MONITOR_ALREADY_ACTIVE', 'DWS_DOC_PARTIAL_SUCCESS', 'DWS_DOC_COMMIT_UNKNOWN', 'DWS_DOC_REQUEST_CONFLICT'].includes(code) ? 409 :
-          ['DWS_PROCESS_TIMEOUT', 'DWS_PROCESS_FAILED', 'DWS_EVENT_LISTENER_FAILED'].includes(code) ? 502 : 400;
+          ['DWS_PROCESS_TIMEOUT', 'DWS_PROCESS_FAILED', 'DWS_EVENT_LISTENER_FAILED', 'DWS_EVENT_SUBSCRIPTION_REJECTED',
+            'DWS_EVENT_PERMISSION_DENIED', 'DWS_EVENT_NETWORK_UNAVAILABLE', 'DWS_EVENT_COMMAND_UNSUPPORTED'].includes(code) ? 502 : 400;
   return { status, body: { ok: false, error: code } };
+}
+
+function classifyEventStartupFailure(stderr, fallback = 'DWS_EVENT_LISTENER_FAILED') {
+  const text = String(stderr || '');
+  if (/registerToEventCenter\s+failed|event.?center.{0,40}(reject|denied|fail)|subscription.{0,40}(reject|denied|fail)/i.test(text)) {
+    return 'DWS_EVENT_SUBSCRIPTION_REJECTED';
+  }
+  if (/permission denied|forbidden|not authorized|unauthorized|missing.{0,24}(scope|permission)|insufficient.{0,24}(scope|permission)/i.test(text)) {
+    return 'DWS_EVENT_PERMISSION_DENIED';
+  }
+  if (/x509|tls|certificate|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|network is unreachable|connection timed out|i\/o timeout/i.test(text)) {
+    return 'DWS_EVENT_NETWORK_UNAVAILABLE';
+  }
+  if (/unknown command|unknown flag|unknown shorthand|flag provided but not defined|usage:/i.test(text)) {
+    return 'DWS_EVENT_COMMAND_UNSUPPORTED';
+  }
+  return fallback;
 }
 
 async function ensurePrivateDirectory(directory) {
@@ -638,6 +657,7 @@ export function createDingtalkConnectorGateway({
     let closed = false;
     let output = '';
     let errors = '';
+    let startupFailureCode = 'DWS_EVENT_LISTENER_FAILED';
     let outputBytes = 0;
     let readyTimer;
     let heartbeat;
@@ -724,17 +744,25 @@ export function createDingtalkConnectorGateway({
           const line = errors.slice(0, boundary);
           errors = errors.slice(boundary + 1);
           if (!ready && line.includes('[event] ready')) resolveReady();
+          if (!ready) startupFailureCode = classifyEventStartupFailure(line, startupFailureCode);
         }
         if (errors.length > 64 * 1024) errors = errors.slice(-1024);
       });
       child.once('error', () => rejectReady(new Error('DWS_EVENT_LISTENER_FAILED')));
       child.once('close', () => {
-        if (!ready) rejectReady(new Error('DWS_EVENT_LISTENER_FAILED'));
+        if (!ready) {
+          errors += stderrDecoder.end();
+          startupFailureCode = classifyEventStartupFailure(errors, startupFailureCode);
+          rejectReady(new Error(startupFailureCode));
+        }
         closed = true;
         resolveClosed();
       });
       activeMonitors.set(monitorKey, listener);
-      readyTimer = setTimeout(() => rejectReady(new Error('DWS_EVENT_LISTENER_FAILED')), 30_000);
+      readyTimer = setTimeout(() => {
+        startupFailureCode = classifyEventStartupFailure(errors, startupFailureCode);
+        rejectReady(new Error(startupFailureCode));
+      }, 30_000);
       await readyPromise;
       ready = true;
     });
