@@ -47,7 +47,7 @@ test('DWS monitor startup diagnostics expose only bounded categories and process
   });
   assert.deepEqual(diagnostic, {
     component: 'dws-im-monitor', stage: 'child-exit', code: 'DWS_EVENT_SUBSCRIPTION_REJECTED',
-    cause: 'subscription-rejected', stderrBytes: Buffer.byteLength(raw), exitCode: 2, elapsedMs: 41,
+    cause: 'subscription-rejected', stderrBytes: Buffer.byteLength(raw), diagnosticChannels: ['stderr'], exitCode: 2, elapsedMs: 41,
   });
   const serialized = JSON.stringify(diagnostic);
   for (const secret of ['DO-NOT-LEAK', 'SECRET', 'example.invalid', 'group subscription denied']) {
@@ -68,7 +68,7 @@ test('DWS monitor diagnostics classify structured internal errors without exposi
     component: 'dws-im-monitor', stage: 'child-exit', code: 'DWS_EVENT_LISTENER_FAILED',
     cause: 'event-bus-startup', dwsErrorCategory: 'internal', dwsErrorCode: 5,
     dwsMessageClass: 'bus-discovery', dwsErrorFields: ['category', 'code', 'message'],
-    stderrBytes: Buffer.byteLength(raw), exitCode: 5, elapsedMs: 6100,
+    stderrBytes: Buffer.byteLength(raw), diagnosticChannels: ['stderr'], exitCode: 5, elapsedMs: 6100,
   });
   const serialized = JSON.stringify(diagnostic);
   for (const secret of ['private.example', 'NEVER-LOG', 'token=', 'discover bus']) {
@@ -83,7 +83,7 @@ test('DWS monitor diagnostics classify provider errorCode/errorMsg envelopes and
     component: 'dws-im-monitor', stage: 'child-exit', code: 'DWS_EVENT_SUBSCRIPTION_REJECTED',
     cause: 'subscription-rejected', dwsErrorCode: 'SYSTEM_ERROR', dwsMessageClass: 'subscription',
     dwsErrorFields: ['errorcode', 'errormsg', 'success'],
-    stderrBytes: Buffer.byteLength(raw), exitCode: 5, elapsedMs: 6200,
+    stderrBytes: Buffer.byteLength(raw), diagnosticChannels: ['stderr'], exitCode: 5, elapsedMs: 6200,
   });
   const serialized = JSON.stringify(diagnostic);
   for (const secret of ['DO-NOT-LEAK', 'PRIVATE', 'registerToEventCenter', 'provider output', 'trailing provider']) {
@@ -98,6 +98,34 @@ test('DWS monitor diagnostics omit unknown provider codes rather than logging ar
   assert.deepEqual(diagnostic.dwsErrorFields, ['errorcode', 'errormsg']);
   assert.equal(JSON.stringify(diagnostic).includes('PRIVATE-CREDENTIAL'), false);
   assert.equal(JSON.stringify(diagnostic).includes('DO-NOT-LEAK'), false);
+});
+
+test('DWS monitor startup failures classify structured stdout errors without exposing event content', () => {
+  const providerError = `\u001b[31m{"success":false,"errorCode":"SYSTEM_ERROR","errorMsg":"subscribeUser failed: registerToEventCenter failed; token=DO-NOT-LEAK"}\u001b[0m`;
+  const diagnostic = eventStartupDiagnostic({
+    stage: 'child-exit', code: 'DWS_EVENT_LISTENER_FAILED', cause: 'unclassified',
+    stderr: 'command terminated', stderrBytes: Buffer.byteLength('command terminated'),
+    stdout: providerError, stdoutBytes: Buffer.byteLength(providerError), exitCode: 5,
+  });
+  assert.deepEqual(diagnostic, {
+    component: 'dws-im-monitor', stage: 'child-exit', code: 'DWS_EVENT_SUBSCRIPTION_REJECTED',
+    cause: 'subscription-rejected', dwsErrorCode: 'SYSTEM_ERROR', dwsMessageClass: 'subscription',
+    dwsErrorFields: ['errorcode', 'errormsg', 'success'],
+    stderrBytes: Buffer.byteLength('command terminated'), stdoutBytes: Buffer.byteLength(providerError), diagnosticChannels: ['stderr', 'stdout'], exitCode: 5,
+  });
+  for (const secret of ['DO-NOT-LEAK', 'registerToEventCenter', 'command terminated']) {
+    assert.equal(JSON.stringify(diagnostic).includes(secret), false);
+  }
+
+  const eventContent = '{"type":"message","message":{"text":"SYSTEM_ERROR subscribeUser failed token=PRIVATE"}}';
+  const ignored = eventStartupDiagnostic({
+    stage: 'child-exit', code: 'DWS_EVENT_LISTENER_FAILED', cause: 'unclassified', stdout: eventContent,
+  });
+  assert.equal(ignored.dwsErrorCode, undefined);
+  assert.equal(ignored.code, 'DWS_EVENT_LISTENER_FAILED');
+  assert.equal(ignored.cause, 'no-stderr');
+  assert.equal(JSON.stringify(ignored).includes('PRIVATE'), false);
+  assert.equal(JSON.stringify(ignored).includes('SYSTEM_ERROR'), false);
 });
 
 test('bounded startup stderr retains multiline structured errors across process chunks', () => {

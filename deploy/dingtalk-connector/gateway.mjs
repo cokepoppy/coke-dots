@@ -90,7 +90,12 @@ function findDwsErrorRecords(value, depth = 0, records = []) {
   }
   const entries = Object.entries(value);
   const fields = entries.map(([key]) => key.toLowerCase()).filter(key => dwsErrorFieldNames.has(key)).sort();
-  if (fields.some(key => ['message', 'msg', 'error_msg', 'errormsg', 'code', 'error_code', 'errorcode'].includes(key))) {
+  const hasErrorText = entries.some(([key, item]) =>
+    ['message', 'msg', 'error_msg', 'errormsg', 'reason'].includes(key.toLowerCase()) && typeof item === 'string');
+  const hasErrorCode = entries.some(([key, item]) =>
+    ['code', 'error_code', 'errorcode', 'server_error_code'].includes(key.toLowerCase()) &&
+    (typeof item === 'string' || Number.isInteger(item)));
+  if (hasErrorText || hasErrorCode) {
     records.push({ value, fields });
   }
   for (const [key, item] of entries) {
@@ -102,7 +107,7 @@ function findDwsErrorRecords(value, depth = 0, records = []) {
 }
 
 function structuredDwsError(stderr) {
-  const text = String(stderr || '').trim();
+  const text = stripTerminalControl(stderr).trim();
   for (const candidate of jsonObjectsIn(text)) {
     let value;
     try { value = JSON.parse(candidate); } catch { continue; }
@@ -128,6 +133,32 @@ function structuredDwsError(stderr) {
     }
   }
   return undefined;
+}
+
+function stripTerminalControl(value) {
+  return String(value || '')
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ');
+}
+
+function startupErrorTextFromStdout(stdout) {
+  const text = stripTerminalControl(stdout).slice(-64 * 1024);
+  const diagnosticLines = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+      const fields = findDwsErrorRecords(parsed);
+      if (fields.length || parsed.success === false || parsed.type === 'error') diagnosticLines.push(trimmed);
+    } catch {
+      // Event output is NDJSON. Keep only non-JSON pre-ready lines for the
+      // allowlisted classifier; never log the text itself.
+      diagnosticLines.push(trimmed);
+    }
+  }
+  return diagnosticLines.join('\n');
 }
 
 export function appendBoundedStartupStderr(current, chunk, maxBytes = 64 * 1024) {
@@ -370,7 +401,7 @@ function publicError(error) {
 }
 
 function classifyEventStartupFailure(stderr, fallback = 'DWS_EVENT_LISTENER_FAILED') {
-  const text = String(stderr || '');
+  const text = stripTerminalControl(stderr);
   if (/registerToEventCenter\s+failed|subscribeUser\s+failed|event.?center.{0,40}(reject|denied|fail)|subscription.{0,40}(reject|denied|fail)/i.test(text)) {
     return 'DWS_EVENT_SUBSCRIPTION_REJECTED';
   }
@@ -407,15 +438,19 @@ function classifyEventStartupCause(text, stage) {
   return 'unclassified';
 }
 
-export function eventStartupDiagnostic({ stage, code, cause, exitCode, signal, stderr = '', stderrBytes, osErrorCode, elapsedMs } = {}) {
+export function eventStartupDiagnostic({ stage, code, cause, exitCode, signal, stderr = '', stderrBytes, stdout = '', stdoutBytes, osErrorCode, elapsedMs } = {}) {
   const allowedStages = new Set(['prepare-workspace', 'inspect-profile', 'list-profiles', 'spawn-listener', 'await-ready', 'child-exit', 'spawn-error', 'ready-timeout']);
   const raw = String(stderr || '');
-  const dwsError = structuredDwsError(raw);
+  const stdoutError = startupErrorTextFromStdout(stdout);
+  const diagnosticText = [raw, stdoutError].filter(Boolean).join('\n');
+  const dwsError = structuredDwsError(diagnosticText);
+  const classifiedCode = classifyEventStartupFailure(diagnosticText);
+  const classifiedCause = classifyEventStartupCause(diagnosticText, stage);
   return {
     component: 'dws-im-monitor',
     stage: allowedStages.has(stage) ? stage : 'unknown',
-    code: allowedErrors.has(code) ? code : classifyEventStartupFailure(raw),
-    cause: allowedEventStartupCauses.has(cause) ? cause : classifyEventStartupCause(raw, stage),
+    code: code === 'DWS_EVENT_LISTENER_FAILED' || !allowedErrors.has(code) ? classifiedCode : code,
+    cause: cause === 'unclassified' || !allowedEventStartupCauses.has(cause) ? classifiedCause : cause,
     ...(dwsError ? {
       ...(dwsError.category ? { dwsErrorCategory: dwsError.category } : {}),
       ...(dwsError.code !== undefined ? { dwsErrorCode: dwsError.code } : {}),
@@ -423,6 +458,10 @@ export function eventStartupDiagnostic({ stage, code, cause, exitCode, signal, s
       ...(dwsError.fields?.length ? { dwsErrorFields: dwsError.fields } : {}),
     } : {}),
     stderrBytes: Number.isSafeInteger(stderrBytes) && stderrBytes >= 0 ? stderrBytes : Buffer.byteLength(raw),
+    ...(Number.isSafeInteger(stdoutBytes) && stdoutBytes >= 0 ? { stdoutBytes } : {}),
+    ...(raw.trim() && stdoutError ? { diagnosticChannels: ['stderr', 'stdout'] } :
+      raw.trim() ? { diagnosticChannels: ['stderr'] } :
+        stdoutError ? { diagnosticChannels: ['stdout'] } : {}),
     ...(Number.isInteger(exitCode) ? { exitCode } : {}),
     ...(typeof signal === 'string' && /^[A-Z0-9]+$/.test(signal) ? { signal } : {}),
     ...(typeof osErrorCode === 'string' && /^[A-Z0-9_]{1,32}$/.test(osErrorCode) ? { osErrorCode } : {}),
@@ -803,6 +842,8 @@ export function createDingtalkConnectorGateway({
     let startupDiagnosticWritten = false;
     const startupStartedAt = Date.now();
     let stderrBytes = 0;
+    let startupOutput = '';
+    let startupOutputBytes = 0;
     let childExitCode;
     let childExitSignal;
     let spawnErrorCode;
@@ -843,6 +884,8 @@ export function createDingtalkConnectorGateway({
         signal: childExitSignal,
         stderr: errors,
         stderrBytes,
+        stdout: startupOutput,
+        stdoutBytes: startupOutputBytes,
         osErrorCode: spawnErrorCode,
         elapsedMs: Date.now() - startupStartedAt,
       }))}\n`);
@@ -899,7 +942,12 @@ export function createDingtalkConnectorGateway({
       child.stdout.on('data', chunk => {
         outputBytes += chunk.length;
         if (outputBytes > 8 * 1024 * 1024) { child.kill('SIGTERM'); return; }
-        output += stdoutDecoder.write(chunk);
+        const decoded = stdoutDecoder.write(chunk);
+        if (!ready) {
+          startupOutputBytes += chunk.length;
+          startupOutput = appendBoundedStartupStderr(startupOutput, decoded);
+        }
+        output += decoded;
         let boundary;
         while ((boundary = output.indexOf('\n')) >= 0) {
           const line = output.slice(0, boundary);
@@ -939,6 +987,8 @@ export function createDingtalkConnectorGateway({
         if (!ready) {
           const tail = stderrDecoder.end();
           errors = appendBoundedStartupStderr(errors, tail);
+          const outputTail = stdoutDecoder.end();
+          startupOutput = appendBoundedStartupStderr(startupOutput, outputTail);
           stderrLineBuffer += tail;
           startupFailureCode = classifyEventStartupFailure(errors, startupFailureCode);
           const cause = classifyEventStartupCause(errors, startupFailureStage);
