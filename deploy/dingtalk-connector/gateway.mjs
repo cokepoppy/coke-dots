@@ -126,13 +126,22 @@ function structuredDwsError(stderr) {
       const messageClass = /discover.{0,24}bus|busctl/i.test(message) ? 'bus-discovery' :
         /(?:start|spawn).{0,24}bus|bus.{0,24}(?:start|spawn)/i.test(message) ? 'bus-start' :
           /registerToEventCenter|subscribeUser|subscription|subscribe/i.test(message) ? 'subscription' :
-            /app.?key|client.?id|event.?mcp/i.test(message) ? 'event-mcp-configuration' :
-              /token|auth(?:entication|orization)?/i.test(message) ? 'authorization' :
-                /websocket|stream|connect|network|timeout/i.test(message) ? 'event-transport' : 'other';
+            /token.{0,24}(expired|invalid)|invalid.{0,24}token|unauthorized|forbidden/i.test(message) ? 'authorization' :
+              /x509|tls|certificate|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|network|timeout|timed out|i\/o timeout|websocket|stream|connect/i.test(message) ? 'event-transport' :
+                isExplicitAppKeyFailure(message, code) ? 'event-mcp-configuration' :
+                  /token|auth(?:entication|orization)?/i.test(message) ? 'authorization' : 'other';
       return { category, code, messageClass, fields: record.fields };
     }
   }
   return undefined;
+}
+
+function isExplicitAppKeyFailure(text, code) {
+  if (code === 'UNIFIED_APP_ID_NOT_FOUND') return true;
+  const value = String(text || '');
+  const credential = '(?:app\\s*key|app.?key|client.?id|app.?id)';
+  const failure = '(?:missing|required|not\\s+configured|unconfigured|invalid|unknown|not\\s+found|unavailable|rejected)';
+  return new RegExp(`(?:${credential}.{0,32}${failure}|${failure}.{0,32}${credential})`, 'i').test(value);
 }
 
 function stripTerminalControl(value) {
@@ -423,18 +432,18 @@ function classifyEventStartupCause(text, stage) {
   const dwsError = structuredDwsError(value);
   if (dwsError?.messageClass === 'bus-discovery' || dwsError?.messageClass === 'bus-start') return 'event-bus-startup';
   if (dwsError?.messageClass === 'subscription') return 'subscription-rejected';
-  if (dwsError?.messageClass === 'event-mcp-configuration') return 'app-key-configuration';
   if (dwsError?.messageClass === 'authorization') return 'authorization-token';
   if (dwsError?.messageClass === 'event-transport') return 'network';
+  if (dwsError?.messageClass === 'event-mcp-configuration') return 'app-key-configuration';
   if (dwsError?.category === 'internal') return 'dws-internal-error';
   if (/terminal_hold|retry.{0,24}(budget|limit)|attempt.{0,24}(limit|exhaust)|cooldown/i.test(value)) return 'subscription-retry-protected';
-  if (/app.?key|client.?id/i.test(value)) return 'app-key-configuration';
-  if (/token.{0,24}(expired|invalid)|invalid.{0,24}token/i.test(value)) return 'authorization-token';
+  if (/x509|tls|certificate|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|network is unreachable|connection timed out|i\/o timeout|timed out/i.test(value)) return 'network';
+  if (/token.{0,24}(expired|invalid)|invalid.{0,24}token|unauthorized/i.test(value)) return 'authorization-token';
   if (/registerToEventCenter\s+failed|subscribeUser\s+failed|event.?center.{0,40}(reject|denied|fail)|subscription.{0,40}(reject|denied|fail)/i.test(value)) return 'subscription-rejected';
   if (/permission denied|forbidden|not authorized|unauthorized|scope|permission/i.test(value)) return 'authorization-permission';
   if (/too many subscriptions|subscription.{0,24}(limit|quota)|rate.?limit/i.test(value)) return 'subscription-limit';
-  if (/x509|tls|certificate|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|network is unreachable|connection timed out|i\/o timeout/i.test(value)) return 'network';
   if (/unknown command|unknown flag|unknown option|unknown shorthand|unrecognized (?:option|flag)|flag provided but not defined|invalid choice/i.test(value)) return 'cli-contract';
+  if (isExplicitAppKeyFailure(value, dwsError?.code)) return 'app-key-configuration';
   return 'unclassified';
 }
 

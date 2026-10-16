@@ -100,6 +100,31 @@ test('DWS monitor diagnostics omit unknown provider codes rather than logging ar
   assert.equal(JSON.stringify(diagnostic).includes('DO-NOT-LEAK'), false);
 });
 
+test('DWS monitor does not infer AppKey misconfiguration from a bare clientId mention', () => {
+  const diagnostic = eventStartupDiagnostic({ stage: 'child-exit', stderr: 'failed to fetch clientId metadata', exitCode: 5 });
+  assert.equal(diagnostic.cause, 'unclassified');
+  assert.equal(diagnostic.code, 'DWS_EVENT_LISTENER_FAILED');
+});
+
+test('DWS monitor classifies clientId transport timeouts as network failures', () => {
+  const raw = '{"errorCode":"SYSTEM_ERROR","errorMsg":"fetch clientId metadata: dial tcp i/o timeout"}';
+  const diagnostic = eventStartupDiagnostic({ stage: 'child-exit', stderr: raw, exitCode: 5 });
+  assert.equal(diagnostic.cause, 'network');
+  assert.equal(diagnostic.code, 'DWS_EVENT_NETWORK_UNAVAILABLE');
+  assert.equal(JSON.stringify(diagnostic).includes('dial tcp'), false);
+});
+
+test('DWS monitor reserves AppKey configuration for explicit missing-key errors', () => {
+  const missingKey = eventStartupDiagnostic({ stage: 'child-exit', stderr: 'missing clientId configuration', exitCode: 5 });
+  assert.equal(missingKey.cause, 'app-key-configuration');
+
+  const providerCode = eventStartupDiagnostic({
+    stage: 'child-exit', stderr: '{"errorCode":"UNIFIED_APP_ID_NOT_FOUND","errorMsg":"application mapping missing"}', exitCode: 5,
+  });
+  assert.equal(providerCode.cause, 'app-key-configuration');
+  assert.equal(providerCode.dwsErrorCode, 'UNIFIED_APP_ID_NOT_FOUND');
+});
+
 test('DWS monitor startup failures classify structured stdout errors without exposing event content', () => {
   const providerError = `\u001b[31m{"success":false,"errorCode":"SYSTEM_ERROR","errorMsg":"subscribeUser failed: registerToEventCenter failed; token=DO-NOT-LEAK"}\u001b[0m`;
   const diagnostic = eventStartupDiagnostic({
