@@ -7,6 +7,7 @@ import { createServer } from 'node:net';
 import test from 'node:test';
 import {
   createDingtalkConnectorGateway,
+  eventStartupDiagnostic,
   issuePrincipalTicket,
   openProfileBytes,
   parseEncryptionKey,
@@ -35,6 +36,22 @@ test('DWS profile archives are authenticated and bound to one tenant/user identi
   assert.throws(() => openProfileBytes(encrypted, 'principal-alpha', randomBytes(32)));
   assert.deepEqual(parseEncryptionKey(key.toString('base64')), key);
   assert.throws(() => parseEncryptionKey('not-a-secret'));
+});
+
+test('DWS monitor startup diagnostics expose only bounded categories and process metadata', () => {
+  const raw = 'registerToEventCenter failed: group subscription denied; token=DO-NOT-LEAK https://example.invalid/callback?code=SECRET';
+  const diagnostic = eventStartupDiagnostic({
+    stage: 'child-exit', code: 'DWS_EVENT_SUBSCRIPTION_REJECTED', exitCode: 2,
+    stderr: raw, stderrBytes: Buffer.byteLength(raw), elapsedMs: 41,
+  });
+  assert.deepEqual(diagnostic, {
+    component: 'dws-im-monitor', stage: 'child-exit', code: 'DWS_EVENT_SUBSCRIPTION_REJECTED',
+    cause: 'subscription-rejected', stderrBytes: Buffer.byteLength(raw), exitCode: 2, elapsedMs: 41,
+  });
+  const serialized = JSON.stringify(diagnostic);
+  for (const secret of ['DO-NOT-LEAK', 'SECRET', 'example.invalid', 'group subscription denied']) {
+    assert.equal(serialized.includes(secret), false, `diagnostics must not expose ${secret}`);
+  }
 });
 
 test('DingTalk gateway completes isolated device authorization, search and encrypted profile recovery', async () => {

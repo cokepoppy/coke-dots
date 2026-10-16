@@ -39,6 +39,11 @@ const allowedErrors = new Set([
   'DWS_CALENDAR_RANGE_INVALID', 'DWS_CALENDAR_CURSOR_INVALID', 'DWS_CALENDAR_LIST_FAILED',
   'CONNECTOR_AUTHORIZATION_NOT_FOUND', 'CONNECTOR_IDENTITY_READBACK_FAILED',
 ]);
+const allowedEventStartupCauses = new Set([
+  'ready-timeout-no-stderr', 'no-stderr', 'subscription-retry-protected', 'app-key-configuration',
+  'authorization-token', 'authorization-permission', 'subscription-rejected', 'subscription-limit',
+  'network', 'cli-contract', 'unclassified',
+]);
 
 export function parseEncryptionKey(value) {
   const encoded = String(value || '').trim();
@@ -289,6 +294,36 @@ function classifyEventStartupFailure(stderr, fallback = 'DWS_EVENT_LISTENER_FAIL
     return 'DWS_EVENT_COMMAND_UNSUPPORTED';
   }
   return fallback;
+}
+
+function classifyEventStartupCause(text, stage) {
+  const value = String(text || '');
+  if (!value.trim()) return stage === 'ready-timeout' ? 'ready-timeout-no-stderr' : 'no-stderr';
+  if (/terminal_hold|retry.{0,24}(budget|limit)|attempt.{0,24}(limit|exhaust)|cooldown/i.test(value)) return 'subscription-retry-protected';
+  if (/app.?key|client.?id/i.test(value)) return 'app-key-configuration';
+  if (/token.{0,24}(expired|invalid)|invalid.{0,24}token/i.test(value)) return 'authorization-token';
+  if (/registerToEventCenter\s+failed|event.?center.{0,40}(reject|denied|fail)|subscription.{0,40}(reject|denied|fail)/i.test(value)) return 'subscription-rejected';
+  if (/permission denied|forbidden|not authorized|unauthorized|scope|permission/i.test(value)) return 'authorization-permission';
+  if (/too many subscriptions|subscription.{0,24}(limit|quota)|rate.?limit/i.test(value)) return 'subscription-limit';
+  if (/x509|tls|certificate|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|network is unreachable|connection timed out|i\/o timeout/i.test(value)) return 'network';
+  if (/unknown command|unknown flag|unknown option|unknown shorthand|unrecognized (?:option|flag)|flag provided but not defined|invalid choice/i.test(value)) return 'cli-contract';
+  return 'unclassified';
+}
+
+export function eventStartupDiagnostic({ stage, code, cause, exitCode, signal, stderr = '', stderrBytes, osErrorCode, elapsedMs } = {}) {
+  const allowedStages = new Set(['prepare-workspace', 'inspect-profile', 'list-profiles', 'spawn-listener', 'await-ready', 'child-exit', 'spawn-error', 'ready-timeout']);
+  const raw = String(stderr || '');
+  return {
+    component: 'dws-im-monitor',
+    stage: allowedStages.has(stage) ? stage : 'unknown',
+    code: allowedErrors.has(code) ? code : 'DWS_EVENT_LISTENER_FAILED',
+    cause: allowedEventStartupCauses.has(cause) ? cause : classifyEventStartupCause(raw, stage),
+    stderrBytes: Number.isSafeInteger(stderrBytes) && stderrBytes >= 0 ? stderrBytes : Buffer.byteLength(raw),
+    ...(Number.isInteger(exitCode) ? { exitCode } : {}),
+    ...(typeof signal === 'string' && /^[A-Z0-9]+$/.test(signal) ? { signal } : {}),
+    ...(typeof osErrorCode === 'string' && /^[A-Z0-9_]{1,32}$/.test(osErrorCode) ? { osErrorCode } : {}),
+    ...(Number.isFinite(elapsedMs) && elapsedMs >= 0 ? { elapsedMs: Math.round(elapsedMs) } : {}),
+  };
 }
 
 async function ensurePrivateDirectory(directory) {
@@ -658,6 +693,14 @@ export function createDingtalkConnectorGateway({
     let output = '';
     let errors = '';
     let startupFailureCode = 'DWS_EVENT_LISTENER_FAILED';
+    let startupFailureStage = 'prepare-workspace';
+    let startupFailureCause = 'unclassified';
+    let startupDiagnosticWritten = false;
+    const startupStartedAt = Date.now();
+    let stderrBytes = 0;
+    let childExitCode;
+    let childExitSignal;
+    let spawnErrorCode;
     let outputBytes = 0;
     let readyTimer;
     let heartbeat;
@@ -681,6 +724,23 @@ export function createDingtalkConnectorGateway({
 
     const sendFrame = value => {
       if (!res.destroyed && res.headersSent) res.write(`${JSON.stringify(value)}\n`);
+    };
+    const writeStartupDiagnostic = () => {
+      if (startupDiagnosticWritten) return;
+      startupDiagnosticWritten = true;
+      process.stderr.write(`[dingtalk-monitor] ${JSON.stringify(eventStartupDiagnostic({
+        stage: startupFailureStage,
+        code: startupFailureCode,
+        cause: startupFailureCause === 'unclassified' && stderrBytes === 0
+          ? classifyEventStartupCause(errors, startupFailureStage)
+          : startupFailureCause,
+        exitCode: childExitCode,
+        signal: childExitSignal,
+        stderr: errors,
+        stderrBytes,
+        osErrorCode: spawnErrorCode,
+        elapsedMs: Date.now() - startupStartedAt,
+      }))}\n`);
     };
     const processOutputLine = line => {
       if (!line.trim()) return;
@@ -710,16 +770,20 @@ export function createDingtalkConnectorGateway({
       workspace = await createProfileWorkspace(ticket, 'monitor');
       const restored = await restoreEncryptedProfile({ storageRoot, ownerKey, masterKey, destinationRoot: workspace.root, tempRoot: managedTmpRoot });
       if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
+      startupFailureStage = 'inspect-profile';
       const profileState = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, macTestOnly, verifyBinary });
       if (profileState.state !== 'identity-verified') throw new Error('DWS_PROFILE_NOT_AUTHENTICATED');
       const owner = await prepareProfileRoot(workspace.root, workspace.principal);
+      startupFailureStage = 'list-profiles';
       const profilePayload = await runDws(binary, ['profile', 'list', '--format', 'json'], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }) });
       const profile = selectCurrentProfile(profilePayload);
       if (!profile) throw new Error('DWS_PROFILE_SELECTION_REQUIRED');
+      startupFailureStage = 'spawn-listener';
       child = spawnProcess(binary, [
         'event', '+listen-im', '--kind', 'group', '--chat-id', conversationId,
         '--events', 'message', '-f', 'ndjson', '--profile', profile.selector,
       ], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      startupFailureStage = 'await-ready';
       if (cancelled) child.kill('SIGTERM');
       const versionInfo = await stat(path.join(storageRoot, `${ownerKey}.dws`));
       listener.child = child;
@@ -738,21 +802,38 @@ export function createDingtalkConnectorGateway({
         if (output.length > 256 * 1024) { output = ''; child.kill('SIGTERM'); }
       });
       child.stderr.on('data', chunk => {
+        stderrBytes += chunk.length;
         errors += stderrDecoder.write(chunk);
         let boundary;
         while ((boundary = errors.indexOf('\n')) >= 0) {
           const line = errors.slice(0, boundary);
           errors = errors.slice(boundary + 1);
           if (!ready && line.includes('[event] ready')) resolveReady();
-          if (!ready) startupFailureCode = classifyEventStartupFailure(line, startupFailureCode);
+          if (!ready) {
+            startupFailureCode = classifyEventStartupFailure(line, startupFailureCode);
+            const cause = classifyEventStartupCause(line, startupFailureStage);
+            if (cause !== 'no-stderr') startupFailureCause = cause;
+          }
         }
         if (errors.length > 64 * 1024) errors = errors.slice(-1024);
       });
-      child.once('error', () => rejectReady(new Error('DWS_EVENT_LISTENER_FAILED')));
-      child.once('close', () => {
+      child.once('error', error => {
+        startupFailureStage = 'spawn-error';
+        startupFailureCode = 'DWS_EVENT_LISTENER_FAILED';
+        spawnErrorCode = error?.code;
+        writeStartupDiagnostic();
+        rejectReady(new Error('DWS_EVENT_LISTENER_FAILED'));
+      });
+      child.once('close', (code, signal) => {
+        childExitCode = code;
+        childExitSignal = signal;
         if (!ready) {
           errors += stderrDecoder.end();
           startupFailureCode = classifyEventStartupFailure(errors, startupFailureCode);
+          const cause = classifyEventStartupCause(errors, startupFailureStage);
+          if (cause !== 'no-stderr') startupFailureCause = cause;
+          startupFailureStage = 'child-exit';
+          if (!cancelled) writeStartupDiagnostic();
           rejectReady(new Error(startupFailureCode));
         }
         closed = true;
@@ -760,7 +841,11 @@ export function createDingtalkConnectorGateway({
       });
       activeMonitors.set(monitorKey, listener);
       readyTimer = setTimeout(() => {
+        startupFailureStage = 'ready-timeout';
         startupFailureCode = classifyEventStartupFailure(errors, startupFailureCode);
+        const cause = classifyEventStartupCause(errors, startupFailureStage);
+        if (cause !== 'no-stderr') startupFailureCause = cause;
+        writeStartupDiagnostic();
         rejectReady(new Error(startupFailureCode));
       }, 30_000);
       await readyPromise;
@@ -785,6 +870,11 @@ export function createDingtalkConnectorGateway({
       if (!res.destroyed) res.end();
     } catch (error) {
       clearTimeout(readyTimer);
+      if (!ready && !cancelled) {
+        const code = typeof error?.message === 'string' && allowedErrors.has(error.message) ? error.message : startupFailureCode;
+        if (code !== startupFailureCode) startupFailureCode = code;
+        writeStartupDiagnostic();
+      }
       const failure = publicError(error);
       if (!res.headersSent) {
         const payload = Buffer.from(JSON.stringify({ ok: false, error: failure.body.error }));
