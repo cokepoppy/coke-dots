@@ -285,7 +285,7 @@ function classifyEventStartupFailure(stderr, fallback = 'DWS_EVENT_LISTENER_FAIL
   if (/x509|tls|certificate|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|network is unreachable|connection timed out|i\/o timeout/i.test(text)) {
     return 'DWS_EVENT_NETWORK_UNAVAILABLE';
   }
-  if (/unknown command|unknown flag|unknown shorthand|flag provided but not defined|usage:/i.test(text)) {
+  if (/unknown command|unknown flag|unknown option|unknown shorthand|unrecognized (?:option|flag)|flag provided but not defined|invalid choice/i.test(text)) {
     return 'DWS_EVENT_COMMAND_UNSUPPORTED';
   }
   return fallback;
@@ -718,7 +718,7 @@ export function createDingtalkConnectorGateway({
       if (!profile) throw new Error('DWS_PROFILE_SELECTION_REQUIRED');
       child = spawnProcess(binary, [
         'event', '+listen-im', '--kind', 'group', '--chat-id', conversationId,
-        '--events', 'message', '--flatten', '-f', 'ndjson', '--profile', profile.selector,
+        '--events', 'message', '-f', 'ndjson', '--profile', profile.selector,
       ], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
       if (cancelled) child.kill('SIGTERM');
       const versionInfo = await stat(path.join(storageRoot, `${ownerKey}.dws`));

@@ -119,16 +119,27 @@ if (group === 'profile' && command === 'list') {
 } else if (group === 'calendar' && command === 'event' && args[2] === 'list') {
   console.log(JSON.stringify({ success: true, result: { events: [{ eventId: 'event-1', title: '排障复盘', description: '讨论 trace-live-1', accessToken: 'MUST-NOT-LEAK' }], hasMore: false } }));
 } else if (group === 'event' && command === '+listen-im') {
-  if (args[args.indexOf('--chat-id') + 1] === 'cid-rejected') {
+  const conversationId = args[args.indexOf('--chat-id') + 1];
+  if (conversationId === 'cid-rejected') {
     process.stderr.write('registerToEventCenter failed: group subscription denied; token=DO-NOT-LEAK\\n');
     process.exitCode = 2;
     process.exit();
   }
-  if (!args.includes('--flatten')) {
-    console.error('flatten is required for a normalized event stream');
+  if (conversationId === 'cid-cli-usage') {
+    process.stderr.write('Usage: dws event +listen-im --kind group --chat-id <id>\\ninvalid chat selector\\n');
     process.exitCode = 2;
+    process.exit();
   }
-  if (process.exitCode) process.exit();
+  if (conversationId === 'cid-unsupported-flag') {
+    process.stderr.write('unknown flag: --flatten\\n');
+    process.exitCode = 2;
+    process.exit();
+  }
+  if (args.includes('--flatten')) {
+    process.stderr.write('unknown flag: --flatten\\n');
+    process.exitCode = 2;
+    process.exit();
+  }
   process.stderr.write('[event] ready event_count=1 bus_pid=7 subscribe_id=sub-test\\n');
   console.log(JSON.stringify({ conversation_id: 'cid-alerts', message_id: 'msg-live-1', sender: '监控机器人', sender_open_dingtalk_id: 'sender-1', content: '支付服务 500 错误，Trace ID: trace-live-1' }));
   setInterval(() => {}, 1000);
@@ -276,6 +287,12 @@ if (group === 'profile' && command === 'list') {
     assert.equal(rejectedSubscription.status, 502);
     assert.equal(rejectedSubscription.body.error, 'DWS_EVENT_SUBSCRIPTION_REJECTED', 'A DingTalk event-center rejection should be classified without returning provider stderr');
     assert.equal(JSON.stringify(rejectedSubscription).includes('DO-NOT-LEAK'), false, 'Raw DWS stderr must never cross the connector API');
+
+    const usageFailure = await call('/v1/monitors/events', { method: 'POST', body: { conversationId: 'cid-cli-usage' } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(usageFailure.body.error, 'DWS_EVENT_LISTENER_FAILED', 'Generic Usage output must not be misclassified as an unsupported DWS command');
+
+    const unsupportedFlag = await call('/v1/monitors/events', { method: 'POST', body: { conversationId: 'cid-unsupported-flag' } }).then(async response => ({ status: response.status, body: await response.json() }));
+    assert.equal(unsupportedFlag.body.error, 'DWS_EVENT_COMMAND_UNSUPPORTED', 'An explicit unknown flag must be surfaced as a CLI contract mismatch');
 
     const controller = new AbortController();
     const liveResponse = await call('/v1/monitors/events', { method: 'POST', body: { conversationId: 'cid-alerts' }, signal: controller.signal });
