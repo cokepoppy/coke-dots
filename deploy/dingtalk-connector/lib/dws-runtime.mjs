@@ -7,6 +7,8 @@ import { StringDecoder } from 'node:string_decoder';
 export const dwsVersion = '1.0.64';
 export const dwsRelease = `https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v${dwsVersion}`;
 export const dwsBinaryDigests = Object.freeze({
+  'darwin-amd64': '0bfcedcd8fcab7a3d266708162a3bdb8fb6be4b3228d30b9ada56cac7309619c',
+  'darwin-arm64': '32ad5c69302c2a586e86f988a1bb6cf1c101f8245266f9fd1b32c8893e3dc56b',
   'linux-amd64': 'd30e4778219e9cf7f1f503da7f0c77ed049b39516d4949dd5ae2c4577db12522',
   'linux-arm64': '341af37528c5f13b256006e0696dedf2629a1a01f7b081fb759ba5f59bfdf391',
 });
@@ -49,7 +51,7 @@ export async function prepareProfileRoot(storageRoot, principal) {
   return owner;
 }
 
-export function isolatedEnvironment(owner, { proxy, macTestOnly = false } = {}) {
+export function isolatedEnvironment(owner, { proxy, macTestOnly = false, allowMacRuntime = false } = {}) {
   const env = {
     PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', TERM: 'dumb', NO_COLOR: '1',
     HOME: path.join(owner, 'home'), DWS_CONFIG_DIR: path.join(owner, 'config'),
@@ -57,7 +59,7 @@ export function isolatedEnvironment(owner, { proxy, macTestOnly = false } = {}) 
     XDG_DATA_HOME: path.join(owner, 'data'), TMPDIR: path.join(owner, 'temp'),
   };
   // This opt-in is for isolated Mac probes only, never change the host's Keychain mode.
-  if (macTestOnly) env.DWS_DISABLE_KEYCHAIN = '1';
+  if (macTestOnly || allowMacRuntime) env.DWS_DISABLE_KEYCHAIN = '1';
   if (proxy) {
     const url = new URL(proxy);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
@@ -164,13 +166,13 @@ export function parseAuthStatus(payload, profile, now = Date.now()) {
   };
 }
 
-export async function inspectDwsProfile({ binary, storageRoot, principal, proxy, macTestOnly = false, verifyBinary: verify = verifyDwsBinary }) {
-  if (process.platform !== 'linux' && !(process.platform === 'darwin' && macTestOnly)) {
+export async function inspectDwsProfile({ binary, storageRoot, principal, proxy, macTestOnly = false, allowMacRuntime = false, verifyBinary: verify = verifyDwsBinary }) {
+  if (process.platform !== 'linux' && !(process.platform === 'darwin' && (macTestOnly || allowMacRuntime))) {
     throw new Error('DWS_GATEWAY_REQUIRES_LINUX');
   }
   await verify(binary);
   const owner = await prepareProfileRoot(storageRoot, principal);
-  const env = isolatedEnvironment(owner, { proxy, macTestOnly });
+  const env = isolatedEnvironment(owner, { proxy, macTestOnly, allowMacRuntime });
   return withProfileLock(owner, async () => {
     const run = (args) => runDwsProcess(binary, [...args, '--format', 'json'], { cwd: owner, env });
     const profile = selectCurrentProfile(await run(['profile', 'list']));

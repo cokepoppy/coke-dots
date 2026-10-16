@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:net';
 import test from 'node:test';
@@ -14,7 +14,54 @@ import {
   parseEncryptionKey,
   sealProfileBytes,
 } from '../deploy/dingtalk-connector/gateway.mjs';
-import { parseAuthStatus } from '../deploy/dingtalk-connector/lib/dws-runtime.mjs';
+import { dwsBinaryDigests, isolatedEnvironment, parseAuthStatus, platformKey, verifyDwsBinary } from '../deploy/dingtalk-connector/lib/dws-runtime.mjs';
+
+test('DWS 1.0.64 pins include the official macOS binaries and remain platform explicit', () => {
+  assert.equal(platformKey('darwin', 'arm64'), 'darwin-arm64');
+  assert.equal(platformKey('darwin', 'x64'), 'darwin-amd64');
+  assert.equal(platformKey('linux', 'arm64'), 'linux-arm64');
+  assert.equal(dwsBinaryDigests['darwin-arm64'], '32ad5c69302c2a586e86f988a1bb6cf1c101f8245266f9fd1b32c8893e3dc56b');
+  assert.throws(() => platformKey('win32', 'x64'), /DWS_PLATFORM_UNSUPPORTED/);
+});
+
+test('opted-in macOS profiles disable shared Keychain state', () => {
+  const env = isolatedEnvironment('/tmp/dws-owner-fixture', { allowMacRuntime: true });
+  assert.equal(env.DWS_DISABLE_KEYCHAIN, '1');
+  assert.equal(env.HOME, '/tmp/dws-owner-fixture/home');
+  assert.equal(env.DWS_CONFIG_DIR, '/tmp/dws-owner-fixture/config');
+});
+
+test('official app-scoped DWS binary matches the pinned release digest on macOS', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('Requires macOS local runtime');
+  const binary = path.join(homedir(), 'Library', 'Application Support', 'Coke Dots Demo', 'tools', 'dws', 'bin', 'dws');
+  try { await verifyDwsBinary(binary); } catch (error) {
+    if (error.code === 'ENOENT') return t.skip('Official local DWS binary is not installed');
+    throw error;
+  }
+});
+
+test('opted-in macOS gateway listens only on loopback by default', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('Requires macOS local runtime');
+  const root = await mkdtemp(path.join(tmpdir(), 'dws-local-listener-test-'));
+  const env = {
+    DINGTALK_CONNECTOR_PORT: String(await reservePort()),
+    DINGTALK_CONNECTOR_SERVICE_TOKEN: randomBytes(32).toString('base64url'),
+    DINGTALK_CONNECTOR_TICKET_SECRET: randomBytes(32).toString('base64url'),
+    DINGTALK_CONNECTOR_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
+    DINGTALK_CONNECTOR_STORAGE_ROOT: path.join(root, 'profiles'),
+    DINGTALK_CONNECTOR_TMP_ROOT: path.join(root, 'run'),
+    DINGTALK_CONNECTOR_ALLOW_MACOS_RUNTIME: '1',
+  };
+  const gateway = createDingtalkConnectorGateway({ env, verifyBinary: async () => {} });
+  try {
+    await assert.rejects(gateway.listen('0.0.0.0'), /DWS_LOCAL_RUNTIME_LOOPBACK_ONLY/);
+    const address = await gateway.listen();
+    assert.equal(address.address, '127.0.0.1');
+  } finally {
+    await gateway.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('verified DWS identity carries only the organization identifier needed for Stream matching', () => {
   const profile = { corpId: 'corp-one', userId: 'user-one' };

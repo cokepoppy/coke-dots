@@ -1,10 +1,14 @@
 {
   "version": "1.0.64",
   "archive": {
+    "darwin-amd64": "c3c7cde614012ef217debaeb80b42857b0f49e2227bfd8d88718c7aff8718e26",
+    "darwin-arm64": "6a33ac7573343ba1cfb26ef126cfa1bdd17e126ddfdff49e450bae336107da23",
     "linux-amd64": "68fd68effdb05c4f7af5771dfc7bf6c10d97d219b3fb992dc99165b198fddb32",
     "linux-arm64": "351504a475b60c51a7b4abeb1a79f4e8de8b2ce1f06f97e0a5791a996bfe29a9"
   },
   "binary": {
+    "darwin-amd64": "0bfcedcd8fcab7a3d266708162a3bdb8fb6be4b3228d30b9ada56cac7309619c",
+    "darwin-arm64": "32ad5c69302c2a586e86f988a1bb6cf1c101f8245266f9fd1b32c8893e3dc56b",
     "linux-amd64": "d30e4778219e9cf7f1f503da7f0c77ed049b39516d4949dd5ae2c4577db12522",
     "linux-arm64": "341af37528c5f13b256006e0696dedf2629a1a01f7b081fb759ba5f59bfdf391"
   }

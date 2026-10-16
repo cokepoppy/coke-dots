@@ -2,6 +2,7 @@ import { randomUUID, createHash, createHmac, timingSafeEqual, hkdfSync, createCi
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
@@ -557,16 +558,21 @@ function createDocumentWriteOnce(storageRoot) {
 
 export function createDingtalkConnectorGateway({
   env = process.env,
-  binary = env.DINGTALK_CONNECTOR_DWS_BINARY || '/usr/local/bin/dws',
+  binary: configuredBinary,
   verifyBinary = verifyDwsBinary,
   runDws = runDwsProcess,
   spawnProcess = spawn,
   inspectProfile = inspectDwsProfile,
   macTestOnly = false,
 } = {}) {
+  const allowMacRuntime = macTestOnly || env.DINGTALK_CONNECTOR_ALLOW_MACOS_RUNTIME === '1';
+  const localMacRuntime = process.platform === 'darwin' && allowMacRuntime;
   const port = Number(env.DINGTALK_CONNECTOR_PORT || 8789);
-  const storageRoot = path.resolve(env.DINGTALK_CONNECTOR_STORAGE_ROOT || '/var/lib/dws/profiles');
-  const tmpRoot = path.resolve(env.DINGTALK_CONNECTOR_TMP_ROOT || '/run/dws');
+  const localDataRoot = path.join(homedir(), 'Library', 'Application Support', 'Coke Dots DWS Local Demo');
+  const localDwsBinary = path.join(homedir(), 'Library', 'Application Support', 'Coke Dots Demo', 'tools', 'dws', 'bin', 'dws');
+  const binary = configuredBinary || env.DINGTALK_CONNECTOR_DWS_BINARY || (localMacRuntime ? localDwsBinary : '/usr/local/bin/dws');
+  const storageRoot = path.resolve(env.DINGTALK_CONNECTOR_STORAGE_ROOT || (localMacRuntime ? path.join(localDataRoot, 'profiles') : '/var/lib/dws/profiles'));
+  const tmpRoot = path.resolve(env.DINGTALK_CONNECTOR_TMP_ROOT || (localMacRuntime ? path.join(tmpdir(), 'coke-dots-dws-local-demo') : '/run/dws'));
   const managedTmpRoot = path.join(tmpRoot, 'coke-dots-dingtalk-connector');
   const serviceToken = String(env.DINGTALK_CONNECTOR_SERVICE_TOKEN || '');
   const ticketSecret = String(env.DINGTALK_CONNECTOR_TICKET_SECRET || '');
@@ -579,7 +585,7 @@ export function createDingtalkConnectorGateway({
   const activeMonitors = new Map();
   const documents = createDwsDocumentOperations({
     withAuthenticatedProfile: async (principal, work) => {
-      if (process.platform !== 'linux' && !(process.platform === 'darwin' && macTestOnly)) throw new Error('DWS_GATEWAY_REQUIRES_LINUX');
+      if (process.platform !== 'linux' && !(process.platform === 'darwin' && allowMacRuntime)) throw new Error('DWS_GATEWAY_REQUIRES_LINUX');
       const ownerKey = principalKey(principal);
       return withOwnerLock(ownerKey, async () => {
         const workspace = await createPrincipalProfileWorkspace(principal, 'documents');
@@ -589,7 +595,7 @@ export function createDingtalkConnectorGateway({
           if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
           await verifyBinary(binary);
           const owner = await prepareProfileRoot(workspace.root, principal);
-          const env = isolatedEnvironment(owner, { proxy, macTestOnly });
+          const env = isolatedEnvironment(owner, { proxy, allowMacRuntime });
           const call = (args, options = {}) => runDws(binary, [...args, '--format', 'json'], {
             cwd: owner, env, timeoutMs: 60_000, maxBytes: 1024 * 1024, parseJsonOnFailure: true, ...options,
           });
@@ -608,7 +614,7 @@ export function createDingtalkConnectorGateway({
   });
   const calendar = createDwsCalendarOperations({
     withAuthenticatedProfile: async (principal, work) => {
-      if (process.platform !== 'linux' && !(process.platform === 'darwin' && macTestOnly)) throw new Error('DWS_GATEWAY_REQUIRES_LINUX');
+      if (process.platform !== 'linux' && !(process.platform === 'darwin' && allowMacRuntime)) throw new Error('DWS_GATEWAY_REQUIRES_LINUX');
       const ownerKey = principalKey(principal);
       return withOwnerLock(ownerKey, async () => {
         const workspace = await createPrincipalProfileWorkspace(principal, 'calendar');
@@ -618,7 +624,7 @@ export function createDingtalkConnectorGateway({
           if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
           await verifyBinary(binary);
           const owner = await prepareProfileRoot(workspace.root, principal);
-          const env = isolatedEnvironment(owner, { proxy, macTestOnly });
+          const env = isolatedEnvironment(owner, { proxy, allowMacRuntime });
           const call = (args, options = {}) => runDws(binary, [...args, '--format', 'json'], {
             cwd: owner, env, timeoutMs: 60_000, maxBytes: 1024 * 1024, parseJsonOnFailure: true, ...options,
           });
@@ -678,7 +684,7 @@ export function createDingtalkConnectorGateway({
       try {
         const restored = await restoreEncryptedProfile({ storageRoot, ownerKey, masterKey, destinationRoot: workspace.root, tempRoot: managedTmpRoot });
         if (!restored) return { state: 'not-installed' };
-        const result = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, macTestOnly, verifyBinary });
+        const result = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, allowMacRuntime, verifyBinary });
         if (result.state === 'identity-verified') await writeEncryptedProfile({ storageRoot, ownerKey, masterKey, sourceRoot: workspace.root, tempRoot: managedTmpRoot });
         return result;
       } finally { await rm(workspace.root, { recursive: true, force: true }); }
@@ -696,10 +702,10 @@ export function createDingtalkConnectorGateway({
       const restored = await restoreEncryptedProfile({ storageRoot, ownerKey, masterKey, destinationRoot: workspace.root, tempRoot: managedTmpRoot });
       if (restored) {
         if (existing.state !== 'expired') throw new Error('DWS_PROFILE_ALREADY_CONNECTED');
-        const oldManager = createDwsAuthorizationManager({ binary, storageRoot: workspace.root, proxy, macTestOnly, verifyBinary });
+        const oldManager = createDwsAuthorizationManager({ binary, storageRoot: workspace.root, proxy, allowMacRuntime, verifyBinary });
         await oldManager.disconnect(workspace.principal);
       }
-      const manager = createDwsAuthorizationManager({ binary, storageRoot: workspace.root, proxy, macTestOnly, verifyBinary, inspect: inspectProfile });
+      const manager = createDwsAuthorizationManager({ binary, storageRoot: workspace.root, proxy, allowMacRuntime, verifyBinary, inspect: inspectProfile });
       const authorization = await manager.start(workspace.principal);
       if (authorization.state !== 'awaiting-user' || !safeVerificationUrl(authorization.authorizationUrl)) {
         await rm(workspace.root, { recursive: true, force: true });
@@ -771,14 +777,14 @@ export function createDingtalkConnectorGateway({
       try {
         restored = await restoreEncryptedProfile({ storageRoot, ownerKey, masterKey, destinationRoot: workspace.root, tempRoot: managedTmpRoot });
         if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
-        const statusValue = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, macTestOnly, verifyBinary });
+        const statusValue = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, allowMacRuntime, verifyBinary });
         if (statusValue.state !== 'identity-verified') throw new Error('DWS_PROFILE_NOT_AUTHENTICATED');
         const owner = await prepareProfileRoot(workspace.root, workspace.principal);
-        const profilePayload = await runDws(binary, ['profile', 'list', '--format', 'json'], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }) });
+        const profilePayload = await runDws(binary, ['profile', 'list', '--format', 'json'], { cwd: owner, env: isolatedEnvironment(owner, { proxy, allowMacRuntime }) });
         const profile = selectCurrentProfile(profilePayload);
         if (!profile) throw new Error('DWS_PROFILE_SELECTION_REQUIRED');
         const result = await runDws(binary, ['chat', 'search', '--query', query, '--limit', '20', '--cursor', cursor, '--format', 'json', '--profile', profile.selector], {
-          cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }), timeoutMs: 30_000,
+          cwd: owner, env: isolatedEnvironment(owner, { proxy, allowMacRuntime }), timeoutMs: 30_000,
         });
         return sanitizeGroups(result);
       } finally {
@@ -799,16 +805,16 @@ export function createDingtalkConnectorGateway({
       try {
         restored = await restoreEncryptedProfile({ storageRoot, ownerKey, masterKey, destinationRoot: workspace.root, tempRoot: managedTmpRoot });
         if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
-        const statusValue = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, macTestOnly, verifyBinary });
+        const statusValue = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, allowMacRuntime, verifyBinary });
         if (statusValue.state !== 'identity-verified') throw new Error('DWS_PROFILE_NOT_AUTHENTICATED');
         const owner = await prepareProfileRoot(workspace.root, workspace.principal);
-        const profilePayload = await runDws(binary, ['profile', 'list', '--format', 'json'], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }) });
+        const profilePayload = await runDws(binary, ['profile', 'list', '--format', 'json'], { cwd: owner, env: isolatedEnvironment(owner, { proxy, allowMacRuntime }) });
         const profile = selectCurrentProfile(profilePayload);
         if (!profile) throw new Error('DWS_PROFILE_SELECTION_REQUIRED');
         const args = ['chat', '+my-groups', '--page-all', '--page-limit', String(pageLimit), '--format', 'json', '--profile', profile.selector];
         if (cursor !== '0') args.splice(5, 0, '--cursor', cursor);
         const result = await runDws(binary, args, {
-          cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }), timeoutMs: 60_000, maxBytes: 2 * 1024 * 1024,
+          cwd: owner, env: isolatedEnvironment(owner, { proxy, allowMacRuntime }), timeoutMs: 60_000, maxBytes: 2 * 1024 * 1024,
         });
         return sanitizeGroupList(result);
       } finally {
@@ -930,18 +936,18 @@ export function createDingtalkConnectorGateway({
       const restored = await restoreEncryptedProfile({ storageRoot, ownerKey, masterKey, destinationRoot: workspace.root, tempRoot: managedTmpRoot });
       if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
       startupFailureStage = 'inspect-profile';
-      const profileState = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, macTestOnly, verifyBinary });
+      const profileState = await inspectProfile({ binary, storageRoot: workspace.root, principal: workspace.principal, proxy, allowMacRuntime, verifyBinary });
       if (profileState.state !== 'identity-verified') throw new Error('DWS_PROFILE_NOT_AUTHENTICATED');
       const owner = await prepareProfileRoot(workspace.root, workspace.principal);
       startupFailureStage = 'list-profiles';
-      const profilePayload = await runDws(binary, ['profile', 'list', '--format', 'json'], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }) });
+      const profilePayload = await runDws(binary, ['profile', 'list', '--format', 'json'], { cwd: owner, env: isolatedEnvironment(owner, { proxy, allowMacRuntime }) });
       const profile = selectCurrentProfile(profilePayload);
       if (!profile) throw new Error('DWS_PROFILE_SELECTION_REQUIRED');
       startupFailureStage = 'spawn-listener';
       child = spawnProcess(binary, [
         'event', '+listen-im', '--kind', 'group', '--chat-id', conversationId,
         '--events', 'message', '-f', 'ndjson', '--profile', profile.selector, '--debug',
-      ], { cwd: owner, env: isolatedEnvironment(owner, { proxy, macTestOnly }), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      ], { cwd: owner, env: isolatedEnvironment(owner, { proxy, allowMacRuntime }), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
       startupFailureStage = 'await-ready';
       if (cancelled) child.kill('SIGTERM');
       const versionInfo = await stat(path.join(storageRoot, `${ownerKey}.dws`));
@@ -1141,7 +1147,8 @@ export function createDingtalkConnectorGateway({
   const server = createServer((req, res) => { void handle(req, res); });
   return {
     server,
-    async listen(host = '0.0.0.0') {
+    async listen(host = env.DINGTALK_CONNECTOR_HOST || (localMacRuntime ? '127.0.0.1' : '0.0.0.0')) {
+      if (localMacRuntime && !['127.0.0.1', '::1', 'localhost'].includes(host)) throw new Error('DWS_LOCAL_RUNTIME_LOOPBACK_ONLY');
       await initialize();
       await verifyBinary(binary);
       await new Promise((resolve, reject) => server.once('error', reject).listen(port, host, resolve));
@@ -1161,8 +1168,8 @@ export function createDingtalkConnectorGateway({
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const gateway = createDingtalkConnectorGateway();
-    await gateway.listen();
-    process.stdout.write(`DingTalk connector gateway listening on ${process.env.DINGTALK_CONNECTOR_PORT || 8789}\n`);
+    const address = await gateway.listen();
+    process.stdout.write(`DingTalk connector gateway listening on ${address.address}:${address.port}\n`);
     const shutdown = () => { void gateway.close().finally(() => process.exit(0)); };
     process.once('SIGTERM', shutdown);
     process.once('SIGINT', shutdown);

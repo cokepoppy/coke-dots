@@ -23,7 +23,8 @@
     "build:electron": "esbuild electron/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=electron-dist/main.cjs",
     "dev:desktop": "concurrently -k \"npm run dev:web\" \"npm run build:electron && wait-on http://127.0.0.1:5173 && DOTS_DEV_URL=http://127.0.0.1:5173 electron electron-dist/main.cjs\"",
     "desktop": "npm run build && npm run build:server && npm run build:electron && electron electron-dist/main.cjs",
-    "test:e2e:base-path": "npm run build:demo && node scripts/run-isolated-tests.mjs demo-path"
+    "test:e2e:base-path": "npm run build:demo && node scripts/run-isolated-tests.mjs demo-path",
+    "dws:local": "node scripts/run-local-dws-demo.mjs"
   },
   "dependencies": {
     "@napi-rs/keyring": "^2.1.0",
