@@ -55,10 +55,13 @@ test('DWS monitor startup diagnostics expose only bounded categories and process
 });
 
 test('DWS monitor diagnostics classify structured internal errors without exposing their messages', () => {
-  const raw = JSON.stringify({ error: {
-    category: 'internal', code: 5,
-    message: 'consume: discover bus: busctl: start https://private.example/path?token=NEVER-LOG token=NEVER-LOG',
-  } });
+  const raw = `{
+  "error": {
+    "category": "internal",
+    "code": 5,
+    "message": "consume: discover bus: busctl: start https://private.example/path?token=NEVER-LOG token=NEVER-LOG"
+  }
+}`;
   const diagnostic = eventStartupDiagnostic({ stage: 'child-exit', stderr: raw, exitCode: 5, elapsedMs: 6100 });
   assert.deepEqual(diagnostic, {
     component: 'dws-im-monitor', stage: 'child-exit', code: 'DWS_EVENT_LISTENER_FAILED',

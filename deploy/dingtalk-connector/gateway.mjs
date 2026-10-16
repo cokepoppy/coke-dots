@@ -47,11 +47,14 @@ const allowedEventStartupCauses = new Set([
 const allowedDwsErrorCategories = new Set(['api', 'auth', 'validation', 'pat', 'internal', 'discovery']);
 
 function structuredDwsError(stderr) {
-  for (const line of String(stderr || '').split(/\r?\n/)) {
-    const start = line.indexOf('{');
-    if (start < 0) continue;
+  const text = String(stderr || '').trim();
+  const candidates = [text];
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start >= 0 && end > start && (start !== 0 || end !== text.length - 1)) candidates.push(text.slice(start, end + 1));
+  for (const candidate of candidates) {
     let value;
-    try { value = JSON.parse(line.slice(start)); } catch { continue; }
+    try { value = JSON.parse(candidate); } catch { continue; }
     const error = value?.error && typeof value.error === 'object' ? value.error : value;
     const category = typeof error?.category === 'string' ? error.category.toLowerCase() : '';
     const code = Number(error?.code);
