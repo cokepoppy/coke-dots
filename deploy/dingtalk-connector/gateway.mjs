@@ -45,28 +45,87 @@ const allowedEventStartupCauses = new Set([
   'network', 'cli-contract', 'event-bus-startup', 'dws-internal-error', 'unclassified',
 ]);
 const allowedDwsErrorCategories = new Set(['api', 'auth', 'validation', 'pat', 'internal', 'discovery']);
+const safeDwsErrorCodes = new Set([
+  'SYSTEM_ERROR', 'UNIFIED_APP_ID_NOT_FOUND', 'INVALID_ARGUMENT', 'INVALID_PARAMETER',
+  'PERMISSION_DENIED', 'UNAUTHORIZED', 'FORBIDDEN', 'TOO_MANY_REQUESTS', 'RATE_LIMITED',
+]);
+const dwsErrorFieldNames = new Set([
+  'category', 'code', 'error', 'error_code', 'errorcode', 'error_msg', 'errormsg',
+  'message', 'msg', 'reason', 'success', 'status', 'details', 'data', 'result',
+  'arguments', 'subid', 'http_status', 'server_error_code', 'trace_id',
+]);
+
+function jsonObjectsIn(stderr) {
+  const text = String(stderr || '').slice(-64 * 1024);
+  const candidates = [text.trim()];
+  let start = -1;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === '"') { quoted = true; continue; }
+    if (char === '{') {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (char === '}' && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) candidates.push(text.slice(start, index + 1));
+    }
+  }
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function findDwsErrorRecords(value, depth = 0, records = []) {
+  if (!value || typeof value !== 'object' || depth > 5 || records.length >= 12) return records;
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 8)) findDwsErrorRecords(item, depth + 1, records);
+    return records;
+  }
+  const entries = Object.entries(value);
+  const fields = entries.map(([key]) => key.toLowerCase()).filter(key => dwsErrorFieldNames.has(key)).sort();
+  if (fields.some(key => ['message', 'msg', 'error_msg', 'errormsg', 'code', 'error_code', 'errorcode'].includes(key))) {
+    records.push({ value, fields });
+  }
+  for (const [key, item] of entries) {
+    if (['error', 'data', 'result', 'details', 'arguments'].includes(key.toLowerCase())) {
+      findDwsErrorRecords(item, depth + 1, records);
+    }
+  }
+  return records;
+}
 
 function structuredDwsError(stderr) {
   const text = String(stderr || '').trim();
-  const candidates = [text];
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start >= 0 && end > start && (start !== 0 || end !== text.length - 1)) candidates.push(text.slice(start, end + 1));
-  for (const candidate of candidates) {
+  for (const candidate of jsonObjectsIn(text)) {
     let value;
     try { value = JSON.parse(candidate); } catch { continue; }
-    const error = value?.error && typeof value.error === 'object' ? value.error : value;
-    const category = typeof error?.category === 'string' ? error.category.toLowerCase() : '';
-    const code = Number(error?.code);
-    if (!allowedDwsErrorCategories.has(category) || !Number.isInteger(code) || code < 1 || code > 6 || typeof error?.message !== 'string') continue;
-    const message = error.message;
-    const messageClass = /discover.{0,24}bus|busctl/i.test(message) ? 'bus-discovery' :
-      /(?:start|spawn).{0,24}bus|bus.{0,24}(?:start|spawn)/i.test(message) ? 'bus-start' :
-        /registerToEventCenter|subscribeUser|subscription|subscribe/i.test(message) ? 'subscription' :
-          /app.?key|client.?id|event.?mcp/i.test(message) ? 'event-mcp-configuration' :
-            /token|auth(?:entication|orization)?/i.test(message) ? 'authorization' :
-              /websocket|stream|connect|network|timeout/i.test(message) ? 'event-transport' : 'other';
-    return { category, code, messageClass };
+    for (const record of findDwsErrorRecords(value)) {
+      const error = record.value;
+      const categoryValue = String(error.category || '').toLowerCase();
+      const category = allowedDwsErrorCategories.has(categoryValue) ? categoryValue : undefined;
+      const rawCode = error.code ?? error.errorCode ?? error.error_code ?? error.server_error_code;
+      const numericCode = Number(rawCode);
+      const code = Number.isInteger(numericCode) && numericCode >= 1 && numericCode <= 6
+        ? numericCode
+        : (typeof rawCode === 'string' && safeDwsErrorCodes.has(rawCode.toUpperCase()) ? rawCode.toUpperCase() : undefined);
+      const message = [error.message, error.msg, error.errorMsg, error.error_msg, error.reason]
+        .find(item => typeof item === 'string') || '';
+      if (!category && code === undefined && !message) continue;
+      const messageClass = /discover.{0,24}bus|busctl/i.test(message) ? 'bus-discovery' :
+        /(?:start|spawn).{0,24}bus|bus.{0,24}(?:start|spawn)/i.test(message) ? 'bus-start' :
+          /registerToEventCenter|subscribeUser|subscription|subscribe/i.test(message) ? 'subscription' :
+            /app.?key|client.?id|event.?mcp/i.test(message) ? 'event-mcp-configuration' :
+              /token|auth(?:entication|orization)?/i.test(message) ? 'authorization' :
+                /websocket|stream|connect|network|timeout/i.test(message) ? 'event-transport' : 'other';
+      return { category, code, messageClass, fields: record.fields };
+    }
   }
   return undefined;
 }
@@ -312,7 +371,7 @@ function publicError(error) {
 
 function classifyEventStartupFailure(stderr, fallback = 'DWS_EVENT_LISTENER_FAILED') {
   const text = String(stderr || '');
-  if (/registerToEventCenter\s+failed|event.?center.{0,40}(reject|denied|fail)|subscription.{0,40}(reject|denied|fail)/i.test(text)) {
+  if (/registerToEventCenter\s+failed|subscribeUser\s+failed|event.?center.{0,40}(reject|denied|fail)|subscription.{0,40}(reject|denied|fail)/i.test(text)) {
     return 'DWS_EVENT_SUBSCRIPTION_REJECTED';
   }
   if (/permission denied|forbidden|not authorized|unauthorized|missing.{0,24}(scope|permission)|insufficient.{0,24}(scope|permission)/i.test(text)) {
@@ -340,7 +399,7 @@ function classifyEventStartupCause(text, stage) {
   if (/terminal_hold|retry.{0,24}(budget|limit)|attempt.{0,24}(limit|exhaust)|cooldown/i.test(value)) return 'subscription-retry-protected';
   if (/app.?key|client.?id/i.test(value)) return 'app-key-configuration';
   if (/token.{0,24}(expired|invalid)|invalid.{0,24}token/i.test(value)) return 'authorization-token';
-  if (/registerToEventCenter\s+failed|event.?center.{0,40}(reject|denied|fail)|subscription.{0,40}(reject|denied|fail)/i.test(value)) return 'subscription-rejected';
+  if (/registerToEventCenter\s+failed|subscribeUser\s+failed|event.?center.{0,40}(reject|denied|fail)|subscription.{0,40}(reject|denied|fail)/i.test(value)) return 'subscription-rejected';
   if (/permission denied|forbidden|not authorized|unauthorized|scope|permission/i.test(value)) return 'authorization-permission';
   if (/too many subscriptions|subscription.{0,24}(limit|quota)|rate.?limit/i.test(value)) return 'subscription-limit';
   if (/x509|tls|certificate|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|network is unreachable|connection timed out|i\/o timeout/i.test(value)) return 'network';
@@ -355,9 +414,14 @@ export function eventStartupDiagnostic({ stage, code, cause, exitCode, signal, s
   return {
     component: 'dws-im-monitor',
     stage: allowedStages.has(stage) ? stage : 'unknown',
-    code: allowedErrors.has(code) ? code : 'DWS_EVENT_LISTENER_FAILED',
+    code: allowedErrors.has(code) ? code : classifyEventStartupFailure(raw),
     cause: allowedEventStartupCauses.has(cause) ? cause : classifyEventStartupCause(raw, stage),
-    ...(dwsError ? { dwsErrorCategory: dwsError.category, dwsErrorCode: dwsError.code, dwsMessageClass: dwsError.messageClass } : {}),
+    ...(dwsError ? {
+      ...(dwsError.category ? { dwsErrorCategory: dwsError.category } : {}),
+      ...(dwsError.code !== undefined ? { dwsErrorCode: dwsError.code } : {}),
+      ...(dwsError.messageClass ? { dwsMessageClass: dwsError.messageClass } : {}),
+      ...(dwsError.fields?.length ? { dwsErrorFields: dwsError.fields } : {}),
+    } : {}),
     stderrBytes: Number.isSafeInteger(stderrBytes) && stderrBytes >= 0 ? stderrBytes : Buffer.byteLength(raw),
     ...(Number.isInteger(exitCode) ? { exitCode } : {}),
     ...(typeof signal === 'string' && /^[A-Z0-9]+$/.test(signal) ? { signal } : {}),

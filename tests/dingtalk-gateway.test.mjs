@@ -67,12 +67,37 @@ test('DWS monitor diagnostics classify structured internal errors without exposi
   assert.deepEqual(diagnostic, {
     component: 'dws-im-monitor', stage: 'child-exit', code: 'DWS_EVENT_LISTENER_FAILED',
     cause: 'event-bus-startup', dwsErrorCategory: 'internal', dwsErrorCode: 5,
-    dwsMessageClass: 'bus-discovery', stderrBytes: Buffer.byteLength(raw), exitCode: 5, elapsedMs: 6100,
+    dwsMessageClass: 'bus-discovery', dwsErrorFields: ['category', 'code', 'message'],
+    stderrBytes: Buffer.byteLength(raw), exitCode: 5, elapsedMs: 6100,
   });
   const serialized = JSON.stringify(diagnostic);
   for (const secret of ['private.example', 'NEVER-LOG', 'token=', 'discover bus']) {
     assert.equal(serialized.includes(secret), false, `diagnostics must not expose ${secret}`);
   }
+});
+
+test('DWS monitor diagnostics classify provider errorCode/errorMsg envelopes and expose only safe field names', () => {
+  const raw = `provider output before JSON\n{"success":false,"errorCode":"SYSTEM_ERROR","errorMsg":"subscribeUser failed: registerToEventCenter failed; token=DO-NOT-LEAK; trace_id=PRIVATE"}\ntrailing provider text`;
+  const diagnostic = eventStartupDiagnostic({ stage: 'child-exit', stderr: raw, exitCode: 5, elapsedMs: 6200 });
+  assert.deepEqual(diagnostic, {
+    component: 'dws-im-monitor', stage: 'child-exit', code: 'DWS_EVENT_SUBSCRIPTION_REJECTED',
+    cause: 'subscription-rejected', dwsErrorCode: 'SYSTEM_ERROR', dwsMessageClass: 'subscription',
+    dwsErrorFields: ['errorcode', 'errormsg', 'success'],
+    stderrBytes: Buffer.byteLength(raw), exitCode: 5, elapsedMs: 6200,
+  });
+  const serialized = JSON.stringify(diagnostic);
+  for (const secret of ['DO-NOT-LEAK', 'PRIVATE', 'registerToEventCenter', 'provider output', 'trailing provider']) {
+    assert.equal(serialized.includes(secret), false, `diagnostics must not expose ${secret}`);
+  }
+});
+
+test('DWS monitor diagnostics omit unknown provider codes rather than logging arbitrary values', () => {
+  const raw = '{"errorCode":"PRIVATE-CREDENTIAL","errorMsg":"unknown provider failure token=DO-NOT-LEAK"}';
+  const diagnostic = eventStartupDiagnostic({ stage: 'child-exit', stderr: raw, exitCode: 5 });
+  assert.equal(diagnostic.dwsErrorCode, undefined);
+  assert.deepEqual(diagnostic.dwsErrorFields, ['errorcode', 'errormsg']);
+  assert.equal(JSON.stringify(diagnostic).includes('PRIVATE-CREDENTIAL'), false);
+  assert.equal(JSON.stringify(diagnostic).includes('DO-NOT-LEAK'), false);
 });
 
 test('bounded startup stderr retains multiline structured errors across process chunks', () => {
