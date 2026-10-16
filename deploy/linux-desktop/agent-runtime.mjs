@@ -176,7 +176,6 @@ async function executeKernel(input, requestSignal, slot) {
     engine, prompt, cwd, workspace, taskId,
     sessionId: typeof input.sessionId === 'string' ? input.sessionId : null,
     modelConfig,
-    allowWorkspaceFileWrites: engine === 'pi' && input.allowWorkspaceFileWrites === true,
     computer: {
       baseUrl: `http://127.0.0.1:${workerPort}`,
       workerToken: process.env.LINUX_DESKTOP_WORKER_TOKEN,

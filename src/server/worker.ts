@@ -105,7 +105,7 @@ export class Worker {
       const dotMemories = taskOwnerUserId ? this.store.dotMemories(task.tenantId, taskOwnerUserId) : [];
       const allowDotMemoryUpdates = Boolean(taskOwnerUserId && !task.parentTaskId && !task.instruction.startsWith('这是一条由已授权的钉钉监控群事件自动触发'));
       const input: AgentRequest = {
-        tenantId: task.tenantId, prompt: `${task.instruction}${attachmentContext}`, memories: this.store.tenantMemories(task.tenantId).map(memory => memory.note),
+        tenantId: task.tenantId, engine: task.engine, prompt: `${task.instruction}${attachmentContext}`, memories: this.store.tenantMemories(task.tenantId).map(memory => memory.note),
         dotMemories: dotMemories.map(({ id, note }) => ({ id, note })), allowDotMemoryUpdates,
         pages: this.store.tenantPages(task.tenantId).slice(0, 10).map(({ id, title, content }) => ({ id, title, content })),
         actionRule: this.store.tenantActionRule(task.tenantId),
@@ -125,7 +125,7 @@ export class Worker {
         ? this.dingtalk?.agentCalendarBridge(task.tenantId, taskOwnerUserId, task.id, task.instruction) || undefined
         : undefined;
       const decision = useDesktopRuntime
-        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, allowWorkspaceFileWrites: task.engine === 'pi', ...(dingtalkDocumentsBridge ? { dingtalkDocumentsBridge } : {}), ...(dingtalkCalendarBridge ? { dingtalkCalendarBridge } : {}), signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines, allowDotMemoryUpdates, dotMemoryIds: dotMemories.map(memory => memory.id) })
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, ...(dingtalkDocumentsBridge ? { dingtalkDocumentsBridge } : {}), ...(dingtalkCalendarBridge ? { dingtalkCalendarBridge } : {}), signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines, allowDotMemoryUpdates, dotMemoryIds: dotMemories.map(memory => memory.id) })
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;

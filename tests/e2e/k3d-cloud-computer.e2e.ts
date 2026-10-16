@@ -20,7 +20,7 @@ const artifacts = resolve(projectRoot, 'artifacts', 'e2e', `k3d-cloud-computer-$
 const envFile = join(tempRoot, 'empty.env');
 const dataDirectory = join(tempRoot, 'data');
 const tokenSecret = randomBytes(32).toString('base64url');
-const tetrisHtml = '<!doctype html><html lang="zh"><meta charset="utf-8"><body><main id="demo-artifact">俄罗斯方块预览</main></body></html>';
+const tetrisHtml = '<!doctype html><html lang="zh"><meta charset="utf-8"><title>俄罗斯方块</title><body><main id="demo-artifact">俄罗斯方块预览</main><button id="start-game">开始游戏</button><output id="game-state">等待开始</output><script>document.querySelector("#start-game").addEventListener("click",()=>document.querySelector("#game-state").textContent="游戏已开始")</script></body></html>';
 const agentAdapterSource = `const fs=require('node:fs');let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const task=JSON.parse(input);const key='k3d-e2e-shared-model-key';const keyInEnv=Object.values(process.env).includes(key)||Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN)||Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN);fs.writeFileSync('runtime-persistence.txt',task.taskId);fs.writeFileSync('tetris.html',${JSON.stringify(tetrisHtml)});console.log(JSON.stringify({status:'done',message:'Adapter completed: '+task.prompt+'; shared model config received: '+Boolean(task.modelConfig?.apiKey===key&&task.modelConfig?.baseUrl==='https://api.example.test/v1'&&task.modelConfig?.model==='k3d-e2e-model')+'; model key in child environment: '+keyInEnv}))})`;
 const k3dModelConfig = { apiKey: 'k3d-e2e-shared-model-key', baseUrl: 'https://api.example.test/v1', model: 'k3d-e2e-model' };
 let appServer: ChildProcess | null = null;
@@ -300,6 +300,23 @@ try {
   assert.equal(await artifactResponse.text(), tetrisHtml);
   console.log('The real tenant Worker authenticated and served the task-scoped HTML game artifact');
 
+  const browserAction = async (input: Record<string, unknown>) => {
+    const response = await fetch(`${workerBaseUrl}/v1/browser`, { method: 'POST', headers: { authorization: `Bearer ${workerToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ ...input, taskId: cloudTaskId }) });
+    return { status: response.status, body: await response.json() as { ready?: boolean; action?: string; url?: string; title?: string; text?: string; error?: string } };
+  };
+  const unauthorizedBrowser = await fetch(`${workerBaseUrl}/v1/browser`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'inspect', taskId: cloudTaskId }) });
+  assert.equal(unauthorizedBrowser.status, 401, 'The real tenant Chromium bridge must reject requests without the worker token');
+  const openedForAgent = await browserAction({ action: 'open_artifact', path: 'tetris.html' });
+  assert.equal(openedForAgent.status, 200);
+  assert.equal(openedForAgent.body.ready, true);
+  assert.equal(openedForAgent.body.url, `file:///workspace/tasks/${cloudTaskId}/tetris.html`);
+  const clickedByAgent = await browserAction({ action: 'click', by: 'role', role: 'button', target: '开始游戏' });
+  assert.equal(clickedByAgent.status, 200);
+  const observedByAgent = await browserAction({ action: 'inspect' });
+  assert.equal(observedByAgent.status, 200);
+  assert.match(observedByAgent.body.text || '', /游戏已开始/, 'Pi Browser Use can inspect a page and click a real control in the tenant Chromium');
+  console.log('Agent Browser Use opened the task artifact, clicked its game button, and verified the rendered state in real tenant Chromium');
+
   const artifactCard = page.locator('[data-testid="task-artifact"][data-artifact-path="tetris.html"]');
   await artifactCard.waitFor({ state: 'visible', timeout: 30_000 });
   const preview = page.frameLocator('[data-testid="task-artifact-preview"]').locator('#demo-artifact');
@@ -407,7 +424,7 @@ try {
   assert.notEqual(restartedPod, desktopPod, 'Kubernetes must replace the deleted tenant desktop Pod');
   assert.equal(command(['kubectl', '-n', namespace, 'exec', restartedPod, '--', 'cat', workspacePath]), runtimeTaskId, 'The tenant workspace artifact must survive a desktop Pod restart');
   console.log('Tenant Agent artifact survived recreation of the Debian 13 desktop Pod');
-  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'Chrome-created task routed through the host service to the tenant Agent runtime', 'shared Model API profile delivered to the adapter via stdin and excluded from its environment and task result', 'authenticated task artifact listing and read through the live Worker API', 'Chrome chat HTML preview, download, cloud-browser open, and return control', 'browser navigate/click/type', 'takeover and return', 'renderer hang triggered Chromium-only recovery', 'Agent runtime and tenant workspace remained available during renderer recovery', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
+  console.log(JSON.stringify({ result: 'passed', cluster, namespace, evidence: ['real Debian 13 Trixie desktop Pod with Node.js 22', '1440x900 nonblank screenshot', 'live noVNC canvas and WebSocket', 'Chrome-created task routed through the host service to the tenant Agent runtime', 'shared Model API profile delivered by stdin and excluded from environment and task result', 'authenticated task artifact listing and read through the live Worker API', 'Agent Browser Use opened task HTML, clicked a real Chromium button, and verified resulting text', 'Chrome chat HTML preview, download, cloud-browser open, and return control', 'browser navigate/click/type', 'takeover and return', 'renderer hang triggered Chromium-only recovery', 'Agent runtime and tenant workspace remained available during renderer recovery', 'workspace artifact survives Pod recreation'], artifacts }, null, 2));
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => undefined);
   throw new Error(`${error instanceof Error ? error.message : String(error)}\n${logs.join('')}`);

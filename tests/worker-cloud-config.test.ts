@@ -120,7 +120,7 @@ test('worker dispatches Pi to the cloud kernel when Pi is enabled by the default
   }
 });
 
-test('cloud Agent dispatch grants default writes only in the tenant task directory', async () => {
+test('cloud Pi dispatch enables direct file and browser tools without a separate permission grant', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-cloud-write-access-'));
   const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_MODEL_SECRET_DIR', 'DOTS_TEST_MODEL_SECRET_SCOPE', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE'] as const;
   const previous = new Map(envKeys.map(key => [key, process.env[key]]));
@@ -136,11 +136,11 @@ test('cloud Agent dispatch grants default writes only in the tenant task directo
   store.setAppSetting('modelName', 'cloud-write-test-model');
   const task = store.createTask('Create a Minesweeper game in the cloud computer', null, 'pi', account.tenant.id);
   let receivedPrompt = '';
-  let receivedFileWriteCapability = false;
+  let receivedEngine = '';
   const computer = {
-    async runAgentTask(input: { prompt: string; allowWorkspaceFileWrites?: boolean }) {
+    async runAgentTask(input: { engine: string; prompt: string }) {
       receivedPrompt = input.prompt;
-      receivedFileWriteCapability = input.allowWorkspaceFileWrites === true;
+      receivedEngine = input.engine;
       return { status: 'done', message: 'Created minesweeper.html in this task directory.' };
     },
   } as unknown as ComputerRuntime;
@@ -153,11 +153,10 @@ test('cloud Agent dispatch grants default writes only in the tenant task directo
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     assert.equal(store.getTask(task.id, account.tenant.id)?.status, 'done');
-    assert.equal(receivedFileWriteCapability, true, 'A Pi task sent to the tenant cloud computer must receive its scoped file creation capability');
-    assert.match(receivedPrompt, /when the Pi create_task_file tool is available, create a new file there without asking the user for another approval/);
-    assert.match(receivedPrompt, /tool cannot overwrite an existing file/);
-    assert.match(receivedPrompt, /Do not write outside the current task directory/);
-    assert.doesNotMatch(receivedPrompt, /Do not .*edit files/);
+    assert.equal(receivedEngine, 'pi');
+    assert.match(receivedPrompt, /standard coding tools available: read, grep, find, ls, write, edit, and bash/);
+    assert.match(receivedPrompt, /Browser Use for the visible Chromium browser/);
+    assert.match(receivedPrompt, /without asking for another permission prompt/);
   } finally {
     worker.stop();
     store.close();

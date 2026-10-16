@@ -10,12 +10,20 @@ const baseRequest: AgentRequest = {
   onEvent: () => {},
 };
 
-test('cloud-computer Pi tasks can create deliverables in their task directory without repeated approval', () => {
-  const prompt = formatAgentPrompt({ ...baseRequest, cloudComputerTask: true });
-  assert.match(prompt, /when the Pi create_task_file tool is available, create a new file there without asking the user for another approval/);
-  assert.match(prompt, /The tool cannot overwrite an existing file/);
-  assert.match(prompt, /Save requested deliverables in the current task directory and report their relative paths/);
-  assert.match(prompt, /Do not write outside the current task directory/);
+test('cloud-computer Pi prompt allows coding and interactive Browser Use inside the tenant Debian computer', () => {
+  const prompt = formatAgentPrompt({ ...baseRequest, engine: 'pi', cloudComputerTask: true });
+  assert.match(prompt, /read, grep, find, ls, write, edit, and bash/);
+  assert.match(prompt, /Browser Use for the visible Chromium browser/);
+  assert.match(prompt, /without asking for another permission prompt/);
+  assert.match(prompt, /clone repositories, install project dependencies, run tests, and use the browser/);
+  assert.match(prompt, /do not attempt to access the Mac host, VPS, Kubernetes control plane, or another tenant/);
+  assert.match(prompt, /send, publish, authorize, pay, delete, or change account data only when the task explicitly asks/);
+});
+
+test('non-Pi cloud kernels are not told they have Pi shell, write, or Browser Use tools', () => {
+  const prompt = formatAgentPrompt({ ...baseRequest, engine: 'dsh', cloudComputerTask: true });
+  assert.match(prompt, /does not have Pi’s shell, file-write, or interactive Browser Use tools/);
+  assert.doesNotMatch(prompt, /standard coding tools available/);
 });
 
 test('non-cloud tasks are not told they can write files', () => {

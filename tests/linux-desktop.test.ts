@@ -290,10 +290,11 @@ test('Linux desktop runtime scopes browser control and task dispatch to its conn
     assert.equal(agentInput[0].cwd, 'tasks/task-1');
     assert.equal('signal' in agentInput[0], false, 'AbortSignal must control the HTTP request, not leak into the runtime payload');
     assert.equal((agentInput[0].computer as { workerToken: string }).workerToken, 'scoped-worker-token');
-    await computer.runAgentTask({ engine: 'pi', taskId: 'task-file-write', prompt: 'Create the requested file', sessionId: null, allowWorkspaceFileWrites: true });
-    assert.equal(agentInput[1].allowWorkspaceFileWrites, true, 'The scoped Pi file capability must reach the tenant Agent runtime');
-    await computer.runAgentTask({ engine: 'dsh', taskId: 'task-no-write', prompt: 'Read only', sessionId: null, allowWorkspaceFileWrites: true });
-    assert.equal(agentInput[2].allowWorkspaceFileWrites, undefined, 'A caller cannot grant the Pi-only file tool to another kernel');
+    await computer.runAgentTask({ engine: 'pi', taskId: 'task-full-tools', prompt: 'Use cloud tools', sessionId: null });
+    assert.equal(agentInput[1].allowWorkspaceFileWrites, undefined, 'Pi tools are selected by the tenant Agent image, not an optional UI grant flag');
+    assert.deepEqual((agentInput[1].computer as { actions: string[] }).actions, ['inspect', 'navigate', 'click', 'fill', 'select', 'check', 'uncheck', 'press', 'open_artifact']);
+    await computer.runAgentTask({ engine: 'dsh', taskId: 'task-no-write', prompt: 'Read only', sessionId: null });
+    assert.equal(agentInput[2].allowWorkspaceFileWrites, undefined, 'The legacy file-write grant flag is no longer used');
     pauseNextAgentTask = true;
     await assert.rejects(
       computer.runAgentTask({ engine: 'dsh', taskId: 'task-2', prompt: 'continue', sessionId: null }),

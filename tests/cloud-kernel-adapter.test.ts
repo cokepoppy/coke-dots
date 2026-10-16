@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, readdir, realpath, rm, stat, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -17,11 +17,13 @@ async function makeWorkspace() {
   return { root, task };
 }
 
-test('Pi cloud kernel keeps the shared key in memory and the native session inside its task workspace', async () => {
+test('Pi cloud kernel enables the full coding toolset and keeps runtime secrets out of Bash children', async () => {
   const { root, task } = await makeWorkspace();
   let runtimeKey = '';
   const capturedOptions: { value: Record<string, any> | null } = { value: null };
   let sessionDirectory = '';
+  let bashSpawnHook: ((context: Record<string, any>) => Record<string, any>) | undefined;
+  const expectedCwd = await realpath(task);
   const sdk = {
     AuthStorage: { inMemory: () => ({ setRuntimeApiKey: (_provider: string, key: string) => { runtimeKey = key; } }) },
     ModelRegistry: { inMemory: () => ({ registerProvider: (_provider: string, config: unknown) => { assert.equal((config as { baseUrl: string }).baseUrl, modelConfig.baseUrl); }, find: () => ({ id: modelConfig.model }) }) },
@@ -29,6 +31,11 @@ test('Pi cloud kernel keeps the shared key in memory and the native session insi
       list: async (_cwd: string, directory: string) => { sessionDirectory = directory; return []; },
       create: (_cwd: string, directory: string) => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-cloud-session' }),
       open: () => { throw new Error('unexpected resume'); },
+    },
+    createBashTool: (cwd: string, options: Record<string, any>) => {
+      assert.equal(cwd, expectedCwd);
+      bashSpawnHook = options.spawnHook;
+      return { name: 'bash', label: 'Run command', description: 'Run a command', parameters: {}, execute: async () => ({ content: [{ type: 'text', text: 'ok' }] }) };
     },
     createAgentSession: async (options: Record<string, any>) => {
       capturedOptions.value = options;
@@ -41,7 +48,14 @@ test('Pi cloud kernel keeps the shared key in memory and the native session insi
     assert.equal(output.sessionId, 'pi-cloud-session');
     assert.equal(runtimeKey, modelConfig.apiKey, 'Pi receives the shared credential through in-memory AuthStorage');
     assert.equal(Boolean(process.env.DEEPSEEK_API_KEY?.includes(modelConfig.apiKey)), false, 'The API key is not added to the cloud adapter process environment');
-    assert.equal(capturedOptions.value?.tools.includes('create_task_file'), false, 'File creation is not available unless the control plane explicitly authorizes a standard Pi task');
+    assert.deepEqual(capturedOptions.value?.tools, ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']);
+    assert.equal(capturedOptions.value?.customTools.some((tool: { name: string }) => tool.name === 'bash'), true, 'Pi Bash is enabled in the cloud computer');
+    assert(bashSpawnHook);
+    const childEnvironment = bashSpawnHook({ command: '/bin/true', args: [], cwd: task, env: {
+      PATH: '/usr/bin:/bin', SAFE_TEST_VALUE: 'preserved', DEEPSEEK_API_KEY: 'model-secret',
+      LINUX_DESKTOP_WORKER_TOKEN: 'worker-secret', DOTS_AGENT_RUNTIME_TOKEN: 'runtime-secret',
+    } }).env;
+    assert.deepEqual(childEnvironment, { PATH: '/usr/bin:/bin', SAFE_TEST_VALUE: 'preserved' }, 'Bash can run commands without inheriting model or service credentials');
     assert(sessionDirectory.startsWith(await realpath(task)), 'The Pi session directory belongs to the task workspace');
     assert(capturedOptions.value?.agentDir.includes('/.coke-dots-agent-runtime/pi'));
     await stat(sessionDirectory);
@@ -91,59 +105,47 @@ test('Pi exposes one task-scoped read-only DingTalk calendar tool and sends only
   }
 });
 
-test('Pi file output is create-only, bounded, and confined to its authorized task directory', async () => {
+test('Pi cloud tasks expose standard read, write, edit, and Bash tools without a legacy approval flag', async () => {
   const { root, task } = await makeWorkspace();
-  const captured: { tool: any } = { tool: null };
+  const captured: { tools: string[]; customTools: Array<{ name: string }> } = { tools: [], customTools: [] };
   const sdk = {
     AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
     ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
     SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-file-session' }), open: () => { throw new Error('unexpected'); } },
+    createBashTool: () => ({ name: 'bash', label: 'Run command', description: 'Run a command', parameters: {}, execute: async () => ({ content: [{ type: 'text', text: 'ok' }] }) }),
     createAgentSession: async (options: Record<string, any>) => {
-      assert(options.tools.includes('create_task_file'));
-      captured.tool = options.customTools.find((tool: { name: string }) => tool.name === 'create_task_file');
+      captured.tools = options.tools;
+      captured.customTools = options.customTools;
       return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
     },
   };
   try {
-    await runCloudKernel({ engine: 'pi', prompt: 'Create a local HTML file.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig, allowWorkspaceFileWrites: true }, { piSdk: sdk });
-    const content = '<!doctype html><title>云电脑文件</title>';
-    const result = await captured.tool.execute('write-1', { path: 'games/tetris.html', content });
-    assert.equal(result.details.path, 'games/tetris.html');
-    assert.equal(await readFile(join(task, 'games/tetris.html'), 'utf8'), content);
-    assert.equal((await captured.tool.execute('write-same', { path: 'games/tetris.html', content })).details.alreadyExisted, true);
-    await assert.rejects(captured.tool.execute('write-2', { path: 'games/tetris.html', content: '<h1>replacement</h1>' }), /拒绝覆盖/);
-    await assert.rejects(captured.tool.execute('write-3', { path: '../outside.txt', content }), /安全相对路径/);
-    await assert.rejects(captured.tool.execute('write-4', { path: join(root, 'outside.txt'), content }), /安全相对路径/);
-    await assert.rejects(captured.tool.execute('write-5', { path: '.coke-dots-agent-runtime/secret.txt', content }), /安全相对路径/);
-    await symlink(root, join(task, 'linked-out'));
-    await assert.rejects(captured.tool.execute('write-6', { path: 'linked-out/escape.txt', content }), /符号链接/);
-    await assert.rejects(captured.tool.execute('write-7', { path: 'too-large.txt', content: 'x'.repeat(512 * 1024 + 1) }), /512 KiB/);
+    await runCloudKernel({ engine: 'pi', prompt: 'Create and update a local HTML file.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig }, { piSdk: sdk });
+    for (const name of ['read', 'write', 'edit', 'bash']) assert(captured.tools.includes(name), `${name} is enabled`);
+    assert.equal(captured.tools.includes('create_task_file'), false, 'The legacy create-only tool is removed');
+    assert(captured.customTools.some(tool => tool.name === 'bash'), 'The secret-scrubbing Bash wrapper overrides Pi’s default Bash tool');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('Pi output-limit turns return a clear diagnostic, or a persisted file result when creation already succeeded', async () => {
+test('Pi output-limit turns return a clear diagnostic without retrying the task', async () => {
   const { root, task } = await makeWorkspace();
-  const makeSdk = (writeFileFirst: boolean) => ({
+  const makeSdk = () => ({
     AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
     ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
     SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-limited-session' }), open: () => { throw new Error('unexpected'); } },
-    createAgentSession: async (options: Record<string, any>) => ({ session: {
+    createBashTool: () => ({ name: 'bash', label: 'Run command', description: 'Run a command', parameters: {}, execute: async () => ({ content: [{ type: 'text', text: 'ok' }] }) }),
+    createAgentSession: async (_options: Record<string, any>) => ({ session: {
       messages: [{ role: 'assistant', stopReason: 'length', content: [{ type: 'thinking', thinking: 'truncated' }] }],
-      prompt: async () => { if (writeFileFirst) await options.customTools.find((tool: { name: string }) => tool.name === 'create_task_file').execute('write-1', { path: 'tetris.html', content: '<h1>blocks</h1>' }); },
+      prompt: async () => undefined,
       dispose: () => undefined,
     } }),
   });
   try {
-    await assert.rejects(runCloudKernel({ engine: 'pi', prompt: 'Analyze only.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig }, { piSdk: makeSdk(false) }), /达到 8192 token 输出上限/);
-    const output = await runCloudKernel({ engine: 'pi', prompt: 'Create a local HTML file.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig, allowWorkspaceFileWrites: true }, { piSdk: makeSdk(true) });
-    assert.equal(output.status, 'done');
-    assert.match(output.message, /tetris\.html/);
-    assert.match(output.message, /自动校验未完成/);
-    assert.equal(await readFile(join(task, 'tetris.html'), 'utf8'), '<h1>blocks</h1>');
+    await assert.rejects(runCloudKernel({ engine: 'pi', prompt: 'Analyze only.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig }, { piSdk: makeSdk() }), /达到 8192 token 输出上限/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('Pi cloud browser tool uses only its scoped read-only bridge capability', async () => {
+test('Pi public-page lookup remains available alongside the full tenant-computer browser tools', async () => {
   const { root, task } = await makeWorkspace();
   const requests: { url: string; token: string }[] = [];
   const server = createServer(async (request, response) => {
@@ -163,8 +165,8 @@ test('Pi cloud browser tool uses only its scoped read-only bridge capability', a
     ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
     SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-session' }), open: () => { throw new Error('unexpected'); } },
     createAgentSession: async (options: Record<string, any>) => {
-      assert.deepEqual(options.tools, ['read', 'grep', 'find', 'ls', 'open_public_page']);
-      toolResult = await options.customTools[0].execute('call-1', { url: 'https://example.test/' });
+      assert.deepEqual(options.tools, ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'open_public_page']);
+      toolResult = await options.customTools.find((tool: { name: string }) => tool.name === 'open_public_page').execute('call-1', { url: 'https://example.test/' });
       return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
     },
   };
@@ -173,6 +175,48 @@ test('Pi cloud browser tool uses only its scoped read-only bridge capability', a
     assert.equal(requests.length, 1);
     assert.deepEqual(requests[0], { url: 'https://example.test/', token: `Bearer ${scopedToken}` });
     assert.match(JSON.stringify(toolResult), /untrusted webpage content/);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Pi Browser Use bridges interactive actions to tenant Chromium and redacts the worker token', async () => {
+  const { root, task } = await makeWorkspace();
+  const requests: Array<{ authorization: string; body: Record<string, unknown> }> = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+    requests.push({ authorization: String(request.headers.authorization || ''), body });
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ ready: true, action: body.action, url: 'https://example.test/page', title: 'Cloud browser', diagnostic: 'worker-token-must-not-return' }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const token = 'worker-token-must-not-return';
+  const sdk = {
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+    ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+    SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-browser-session' }), open: () => { throw new Error('unexpected'); } },
+    createBashTool: () => ({ name: 'bash', label: 'Run command', description: 'Run a command', parameters: {}, execute: async () => ({ content: [{ type: 'text', text: 'ok' }] }) }),
+    createAgentSession: async (options: Record<string, any>) => {
+      assert(options.tools.includes('computer_browser'));
+      const tool = options.customTools.find((item: { name: string }) => item.name === 'computer_browser');
+      const inspect = await tool.execute('inspect-1', { action: 'inspect' });
+      const click = await tool.execute('click-1', { action: 'click', by: 'role', role: 'button', target: 'Search' });
+      assert.doesNotMatch(JSON.stringify([inspect, click]), new RegExp(token));
+      return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
+    },
+  };
+  try {
+    await runCloudKernel({ engine: 'pi', prompt: 'Search with the cloud browser', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig, computer: { baseUrl: `http://127.0.0.1:${address.port}/`, workerToken: token } }, { piSdk: sdk });
+    assert.deepEqual(requests.map(request => request.authorization), [`Bearer ${token}`, `Bearer ${token}`]);
+    assert.deepEqual(requests.map(request => request.body), [
+      { action: 'inspect', taskId: '11111111-1111-4111-8111-111111111111' },
+      { action: 'click', by: 'role', role: 'button', target: 'Search', taskId: '11111111-1111-4111-8111-111111111111' },
+    ]);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
@@ -200,7 +244,7 @@ test('Pi exposes only the task-scoped DingTalk document tools and keeps their gr
     ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
     SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-dingtalk-session' }), open: () => { throw new Error('unexpected'); } },
     createAgentSession: async (options: Record<string, any>) => {
-      assert.deepEqual(options.tools, ['read', 'grep', 'find', 'ls', 'search_dingtalk_documents', 'fetch_dingtalk_document', 'create_dingtalk_document']);
+      assert.deepEqual(options.tools, ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'search_dingtalk_documents', 'fetch_dingtalk_document', 'create_dingtalk_document']);
       const byName = new Map(options.customTools.map((tool: { name: string }) => [tool.name, tool]));
       toolOutputs = [
         await (byName.get('search_dingtalk_documents') as any).execute('search-1', { query: '值班手册' }),

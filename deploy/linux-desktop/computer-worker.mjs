@@ -264,6 +264,110 @@ async function command(input) {
   };
 }
 
+function safePageUrl(value) {
+  try {
+    const url = new URL(value);
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  } catch { return ''; }
+}
+
+function browserLocator(browserPage, input) {
+  const target = typeof input.target === 'string' ? input.target.trim() : '';
+  const by = String(input.by || '');
+  if (!target || target.length > 500) throw new Error('A visible browser control target is required');
+  if (by === 'role') {
+    const role = String(input.role || '');
+    const roles = new Set(['alert', 'button', 'checkbox', 'combobox', 'dialog', 'heading', 'link', 'listbox', 'menuitem', 'option', 'radio', 'searchbox', 'slider', 'spinbutton', 'tab', 'textbox']);
+    if (!roles.has(role)) throw new Error('Unsupported accessible role');
+    return browserPage.getByRole(role, { name: target, exact: true });
+  }
+  if (by === 'text') return browserPage.getByText(target, { exact: true });
+  if (by === 'label') return browserPage.getByLabel(target, { exact: true });
+  if (by === 'placeholder') return browserPage.getByPlaceholder(target, { exact: true });
+  if (by === 'css') return browserPage.locator(target);
+  throw new Error('A supported browser locator type is required');
+}
+
+async function agentBrowserAction(input) {
+  if (owner !== 'agent') throw new Error('The user currently controls this computer');
+  const action = String(input.action || '');
+  const browserPage = await page();
+  return rendererHealth.run(async () => {
+    if (owner !== 'agent') throw new Error('The user currently controls this computer');
+    if (action === 'inspect') {
+      const snapshot = await browserPage.evaluate(() => {
+        const visible = element => {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+        };
+        const controls = Array.from(document.querySelectorAll('button,a,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="checkbox"],[role="combobox"]'))
+          .filter(visible)
+          .slice(0, 120)
+          .map(element => {
+            const labels = Array.from(element.labels || []).map(label => label.innerText).filter(Boolean);
+            const name = element.getAttribute('aria-label') || labels.join(' ').trim() || element.innerText?.trim() || element.getAttribute('title') || element.getAttribute('placeholder') || element.getAttribute('name') || '';
+            const tag = element.tagName.toLowerCase();
+            return {
+              role: element.getAttribute('role') || ({ button: 'button', a: 'link', input: element.getAttribute('type') === 'checkbox' ? 'checkbox' : element.getAttribute('type') === 'radio' ? 'radio' : 'textbox', textarea: 'textbox', select: 'combobox' }[tag] || tag),
+              name: String(name).replace(/\s+/g, ' ').slice(0, 160),
+              type: tag === 'input' ? element.getAttribute('type') || 'text' : tag,
+              placeholder: element.getAttribute('placeholder') || undefined,
+              disabled: Boolean(element.disabled),
+            };
+          });
+        return {
+          title: document.title.slice(0, 300),
+          text: (document.body?.innerText || '').slice(0, 12_000),
+          controls,
+        };
+      });
+      return { ready: true, action, url: safePageUrl(browserPage.url()), title: snapshot.title, text: snapshot.text, controls: snapshot.controls };
+    }
+
+    if (action === 'navigate') {
+      const url = new URL(String(input.url || ''));
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.href.length > 2048) throw new Error('Only credential-free HTTP and HTTPS URLs are allowed');
+      if (owner !== 'agent') throw new Error('The user currently controls this computer');
+      await browserPage.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    } else if (action === 'open_artifact') {
+      const taskId = String(input.taskId || '');
+      if (!/^[a-f0-9-]{36}$/i.test(taskId)) throw new Error('Task id is invalid');
+      const resolved = await resolveArtifact(taskId, String(input.path || ''));
+      if (!resolved.mediaType.startsWith('text/html')) throw new Error('Only HTML task files can open in the cloud browser');
+      if (owner !== 'agent') throw new Error('The user currently controls this computer');
+      await browserPage.goto(pathToFileURL(resolved.real).href, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    } else if (['click', 'fill', 'select', 'check', 'uncheck', 'press'].includes(action)) {
+      const locator = browserLocator(browserPage, input);
+      const count = await locator.count();
+      if (count !== 1) throw new Error(`Browser target matched ${count} controls; inspect the page and choose a unique label or selector`);
+      if (owner !== 'agent') throw new Error('The user currently controls this computer');
+      if (action === 'click') await locator.click({ timeout: 10_000 });
+      else if (action === 'fill') {
+        const value = String(input.value ?? '');
+        if (value.length > 10_000) throw new Error('Browser input is too long');
+        await locator.fill(value, { timeout: 10_000 });
+      } else if (action === 'select') {
+        const value = String(input.value ?? '');
+        if (!value || value.length > 256) throw new Error('Select value is invalid');
+        await locator.selectOption(value, { timeout: 10_000 });
+      } else if (action === 'check') await locator.check({ timeout: 10_000 });
+      else if (action === 'uncheck') await locator.uncheck({ timeout: 10_000 });
+      else {
+        const key = String(input.key || '');
+        const allowedKeys = new Set(['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', 'Space', 'Control+A', 'Meta+A']);
+        if (!allowedKeys.has(key)) throw new Error('Unsupported browser key');
+        await locator.press(key, { timeout: 10_000 });
+      }
+    } else throw new Error('Unsupported Agent browser action');
+
+    const title = await browserPage.title();
+    return { ready: true, action, url: safePageUrl(browserPage.url()), title: title.slice(0, 300) };
+  });
+}
+
 http.createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url || '/', 'http://127.0.0.1').pathname;
@@ -317,6 +421,7 @@ http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/v1/screenshot') return send(res, 200, await screenshot(), 'image/png');
     if (req.method === 'POST' && pathname === '/v1/commands') return send(res, 200, await command(await body(req)));
+    if (req.method === 'POST' && pathname === '/v1/browser') return send(res, 200, await agentBrowserAction(await body(req)));
     return send(res, 404, { error: 'not found' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'computer command failed';
