@@ -42,6 +42,7 @@ test('cloud computer exposes task files safely through its authenticated worker'
   // under /opt/coke-dots, rather than resolving modules from the project root.
   await copyFile(join(projectRoot, 'deploy/linux-desktop/computer-worker.mjs'), join(runtimeDirectory, 'computer-worker.mjs'));
   await copyFile(join(projectRoot, 'deploy/linux-desktop/browser-context.mjs'), join(runtimeDirectory, 'browser-context.mjs'));
+  await copyFile(join(projectRoot, 'deploy/linux-desktop/renderer-health.mjs'), join(runtimeDirectory, 'renderer-health.mjs'));
   await symlink(join(projectRoot, 'node_modules'), join(runtimeDirectory, 'node_modules'), 'dir');
 
   const port = await freePort();

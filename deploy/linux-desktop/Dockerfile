@@ -11,7 +11,7 @@ ENV LANG=en_US.UTF-8 \
 
 RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       ca-certificates chromium curl dbus-x11 fonts-dejavu-core fonts-noto-cjk locales \
-      novnc scrot tini websockify x11-utils x11vnc xdotool xfce4 xfce4-terminal xvfb \
+      novnc scrot tini util-linux websockify x11-utils x11vnc xdotool xfce4 xfce4-terminal xvfb \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -28,6 +28,7 @@ RUN node --input-type=module -e "await import('@mariozechner/pi-coding-agent'); 
 COPY --chmod=0755 deploy/linux-desktop/start-desktop.sh /usr/local/bin/start-dots-desktop
 COPY --chmod=0644 deploy/linux-desktop/computer-worker.mjs /opt/coke-dots/computer-worker.mjs
 COPY --chmod=0644 deploy/linux-desktop/browser-context.mjs /opt/coke-dots/browser-context.mjs
+COPY --chmod=0644 deploy/linux-desktop/renderer-health.mjs /opt/coke-dots/renderer-health.mjs
 COPY --chmod=0644 deploy/linux-desktop/agent-runtime.mjs /opt/coke-dots/agent-runtime.mjs
 COPY --chmod=0644 deploy/linux-desktop/cloud-kernel-adapter.mjs /opt/coke-dots/cloud-kernel-adapter.mjs
 

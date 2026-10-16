@@ -20,7 +20,9 @@ xvfb_pid=$!
 xfce_pid=""; vnc_pid=""; websockify_pid=""; chrome_pid=""; worker_pid=""; agent_pid=""
 cleanup() {
   trap - EXIT INT TERM
-  kill "$xvfb_pid" "$xfce_pid" "$vnc_pid" "$websockify_pid" "$chrome_pid" "$worker_pid" "$agent_pid" 2>/dev/null || true
+  kill "$xvfb_pid" "$xfce_pid" "$vnc_pid" "$websockify_pid" "$worker_pid" "$agent_pid" 2>/dev/null || true
+  if [[ -n "$chrome_pid" ]]; then kill -TERM -- "-$chrome_pid" 2>/dev/null || true; fi
+  rm -f /tmp/dots-chrome.pid
   wait 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -48,13 +50,33 @@ websockify --web=/usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 >/tmp/dots-websock
 websockify_pid=$!
 
 chrome_flags=(
-  --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check
+  --disable-dev-shm-usage --disable-gpu --disable-session-crashed-bubble --no-first-run --no-default-browser-check
   --password-store=basic --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
   --user-data-dir="$HOME/.config/chromium" --start-maximized
 )
 if [[ "${COKE_DESKTOP_CHROME_NO_SANDBOX:-0}" == "1" ]]; then chrome_flags+=(--no-sandbox); fi
-"$chrome_bin" "${chrome_flags[@]}" "$start_url" >/tmp/dots-chrome.log 2>&1 &
-chrome_pid=$!
+start_chromium() {
+  setsid "$chrome_bin" "${chrome_flags[@]}" "$start_url" >>/tmp/dots-chrome.log 2>&1 &
+  chrome_pid=$!
+  printf '%s\n' "$chrome_pid" >/tmp/dots-chrome.pid
+}
+stop_chromium() {
+  local pid="$1"
+  kill -TERM -- "-$pid" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    kill -0 -- "-$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL -- "-$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+restart_chromium() {
+  stop_chromium "$chrome_pid"
+  start_chromium
+  echo "Chromium restarted after renderer health failure (pid $chrome_pid)"
+}
+trap restart_chromium USR1
+start_chromium
 node /opt/coke-dots/computer-worker.mjs >/tmp/dots-worker.log 2>&1 &
 worker_pid=$!
 node /opt/coke-dots/agent-runtime.mjs >/tmp/dots-agent-runtime.log 2>&1 &
@@ -65,8 +87,8 @@ while true; do
     kill -0 "$pid" 2>/dev/null || { echo "desktop component exited" >&2; exit 1; }
   done
   if ! kill -0 "$chrome_pid" 2>/dev/null; then
-    "$chrome_bin" "${chrome_flags[@]}" "$start_url" >>/tmp/dots-chrome.log 2>&1 &
-    chrome_pid=$!
+    stop_chromium "$chrome_pid"
+    start_chromium
   fi
   sleep 5
 done
