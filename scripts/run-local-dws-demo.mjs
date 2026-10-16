@@ -63,7 +63,10 @@ const secrets = await loadOrCreateSecrets();
 const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'coke-dots-dws-local-'));
 const port = process.env.DINGTALK_CONNECTOR_PORT || '8789';
 const gatewayPath = path.join(appRoot, 'deploy', 'dingtalk-connector', 'gateway.mjs');
-const binary = path.join(homedir(), 'Library', 'Application Support', 'Coke Dots Demo', 'tools', 'dws', 'bin', 'dws');
+const appScopedBinary = path.join(homedir(), 'Library', 'Application Support', 'Coke Dots Demo', 'tools', 'dws', 'bin', 'dws');
+const hostProfileBinary = path.join(homedir(), '.local', 'bin', 'dws');
+const binary = process.env.DINGTALK_CONNECTOR_DWS_BINARY ||
+  (process.env.DINGTALK_CONNECTOR_USE_HOST_PROFILE === '1' ? hostProfileBinary : appScopedBinary);
 const child = spawn(process.execPath, [gatewayPath], {
   cwd: appRoot,
   stdio: 'inherit',

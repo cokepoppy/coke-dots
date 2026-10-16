@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:net';
@@ -9,12 +9,13 @@ import {
   appendBoundedStartupStderr,
   createDingtalkConnectorGateway,
   eventStartupDiagnostic,
+  hostProfileUserHash,
   issuePrincipalTicket,
   openProfileBytes,
   parseEncryptionKey,
   sealProfileBytes,
 } from '../deploy/dingtalk-connector/gateway.mjs';
-import { dwsBinaryDigests, isolatedEnvironment, parseAuthStatus, platformKey, verifyDwsBinary } from '../deploy/dingtalk-connector/lib/dws-runtime.mjs';
+import { dwsBinaryDigests, hostProfileEnvironment, isolatedEnvironment, parseAuthStatus, platformKey, resolveDwsClientCredentials, verifyDwsBinary } from '../deploy/dingtalk-connector/lib/dws-runtime.mjs';
 
 test('DWS 1.0.64 pins include the official macOS binaries and remain platform explicit', () => {
   assert.equal(platformKey('darwin', 'arm64'), 'darwin-arm64');
@@ -31,11 +32,122 @@ test('opted-in macOS profiles disable shared Keychain state', () => {
   assert.equal(env.DWS_CONFIG_DIR, '/tmp/dws-owner-fixture/config');
 });
 
+test('host-profile DWS environment reuses the existing private CLI config without disabling Keychain', () => {
+  const env = hostProfileEnvironment({ configDir: path.join(homedir(), '.dws') });
+  assert.equal(env.HOME, homedir());
+  assert.equal(env.DWS_CONFIG_DIR, path.join(homedir(), '.dws'));
+  assert.equal(env.DWS_DISABLE_KEYCHAIN, undefined);
+  assert.equal(env.PATH.startsWith(path.join(homedir(), '.local', 'bin')), true);
+  assert.equal(Object.hasOwn(env, 'DINGTALK_CONNECTOR_SERVICE_TOKEN'), false);
+});
+
+test('DWS AppKey credentials are forwarded only as a complete explicit pair', () => {
+  assert.deepEqual(resolveDwsClientCredentials({ DINGTALK_CONNECTOR_DWS_CLIENT_ID: 'app-id', DINGTALK_CONNECTOR_DWS_CLIENT_SECRET: 'app-secret' }), {
+    clientId: 'app-id', clientSecret: 'app-secret',
+  });
+  assert.deepEqual(resolveDwsClientCredentials({}), { clientId: undefined, clientSecret: undefined });
+  assert.throws(() => resolveDwsClientCredentials({ DINGTALK_CONNECTOR_DWS_CLIENT_ID: 'app-id' }), /DINGTALK_CONNECTOR_DWS_CREDENTIALS_INVALID/);
+});
+
+test('local host-profile gateway binds the existing DWS identity to one Dots user and never archives it', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('Requires the explicit macOS host-profile runtime');
+  const root = await mkdtemp(path.join(tmpdir(), 'dws-host-profile-test-'));
+  const hostConfigDir = path.join(root, 'host-profile');
+  await mkdir(hostConfigDir, { mode: 0o700 });
+  await chmod(hostConfigDir, 0o700);
+  const port = await reservePort();
+  const serviceToken = randomBytes(32).toString('base64url');
+  const ticketSecret = randomBytes(32).toString('base64url');
+  const calls = [];
+  const inspectCalls = [];
+  const env = {
+    DINGTALK_CONNECTOR_PORT: String(port),
+    DINGTALK_CONNECTOR_SERVICE_TOKEN: serviceToken,
+    DINGTALK_CONNECTOR_TICKET_SECRET: ticketSecret,
+    DINGTALK_CONNECTOR_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
+    DINGTALK_CONNECTOR_STORAGE_ROOT: path.join(root, 'profiles'),
+    DINGTALK_CONNECTOR_TMP_ROOT: path.join(root, 'run'),
+    DINGTALK_CONNECTOR_ALLOW_MACOS_RUNTIME: '1',
+    DINGTALK_CONNECTOR_USE_HOST_PROFILE: '1',
+    DINGTALK_CONNECTOR_DWS_HOST_CONFIG_DIR: hostConfigDir,
+    DINGTALK_CONNECTOR_ALLOWED_USER_HASH: hostProfileUserHash('user-alpha'),
+  };
+  const gateway = createDingtalkConnectorGateway({
+    env,
+    binary: '/private/test/dws',
+    verifyBinary: async () => {},
+    inspectProfile: async options => {
+      inspectCalls.push(options);
+      return { state: 'identity-verified', authenticated: true, corpId: 'corp-test', expiresAt: '2030-01-01T00:00:00.000Z' };
+    },
+    runDws: async (_binary, args, options) => {
+      calls.push({ args, env: options.env });
+      if (args[0] === 'profile' && args[1] === 'list') return {
+        success: true,
+        profiles: [{ corpId: 'corp-test', userId: 'dws-user', isCurrent: true, isOrgCurrent: true }],
+      };
+      if (args[0] === 'chat' && args[1] === '+my-groups') return {
+        groups: [{ conversationId: 'cid-test', name: 'Test group' }], count: 1, pagesFetched: 1,
+        paginationKnown: true, complete: true, hasMore: false, failures: [], failedCount: 0,
+      };
+      throw new Error('unexpected fake DWS command');
+    },
+  });
+  try {
+    await gateway.listen('127.0.0.1');
+    const origin = `http://127.0.0.1:${port}`;
+    const call = async (route, { userId = 'user-alpha', method = 'GET', body } = {}) => fetch(`${origin}${route}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${serviceToken}`,
+        'x-dots-principal-ticket': issuePrincipalTicket({ tenantId: 'tenant-alpha', userId }, ticketSecret),
+        ...(body ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+
+    const status = await call('/v1/status').then(response => response.json());
+    assert.equal(status.data.state, 'identity-verified');
+    assert.equal(inspectCalls[0].hostProfile, true);
+    assert.equal(inspectCalls[0].hostConfigDir, hostConfigDir);
+    assert.equal(inspectCalls.length, 1);
+
+    const groups = await call('/v1/groups/list', { method: 'POST', body: { cursor: '0', pageLimit: 50 } });
+    assert.equal(groups.status, 200);
+    assert.deepEqual((await groups.json()).data.groups, [{ conversationId: 'cid-test', name: 'Test group' }]);
+    assert.equal(calls.length, 2);
+    assert.equal(calls.every(item => item.env.HOME === homedir()), true);
+    assert.equal(calls.every(item => item.env.DWS_CONFIG_DIR === hostConfigDir), true);
+    assert.equal(calls.every(item => item.env.DWS_DISABLE_KEYCHAIN === undefined), true);
+    assert.equal(inspectCalls.length, 2);
+
+    const denied = await call('/v1/status', { userId: 'user-beta' });
+    assert.equal(denied.status, 403);
+    assert.equal((await denied.json()).error, 'DWS_HOST_PROFILE_USER_NOT_ALLOWED');
+    assert.equal(inspectCalls.length, 2, 'A different Dots user must be rejected before calling DWS');
+    assert.equal(calls.length, 2);
+    const files = await readdir(env.DINGTALK_CONNECTOR_STORAGE_ROOT);
+    assert.equal(files.some(file => file.endsWith('.dws')), false, 'The Keychain-backed host profile must not be exported or archived');
+  } finally {
+    await gateway.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('official app-scoped DWS binary matches the pinned release digest on macOS', async (t) => {
   if (process.platform !== 'darwin') return t.skip('Requires macOS local runtime');
   const binary = path.join(homedir(), 'Library', 'Application Support', 'Coke Dots Demo', 'tools', 'dws', 'bin', 'dws');
   try { await verifyDwsBinary(binary); } catch (error) {
     if (error.code === 'ENOENT') return t.skip('Official local DWS binary is not installed');
+    throw error;
+  }
+});
+
+test('user-installed DWS CLI path is the pinned v1.0.64 binary on macOS', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('Requires macOS local DWS CLI');
+  const binary = path.join(homedir(), '.local', 'bin', 'dws');
+  try { await verifyDwsBinary(binary); } catch (error) {
+    if (error.code === 'ENOENT') return t.skip('User-installed DWS CLI is not installed');
     throw error;
   }
 });

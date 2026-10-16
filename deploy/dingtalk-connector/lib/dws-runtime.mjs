@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -30,6 +31,15 @@ export function principalKey(principal) {
   return digest(JSON.stringify([principal.issuer, principal.subject]));
 }
 
+export function resolveDwsClientCredentials(env = process.env) {
+  const clientId = typeof env.DINGTALK_CONNECTOR_DWS_CLIENT_ID === 'string'
+    ? env.DINGTALK_CONNECTOR_DWS_CLIENT_ID : '';
+  const clientSecret = typeof env.DINGTALK_CONNECTOR_DWS_CLIENT_SECRET === 'string'
+    ? env.DINGTALK_CONNECTOR_DWS_CLIENT_SECRET : '';
+  if (Boolean(clientId) !== Boolean(clientSecret)) throw new Error('DINGTALK_CONNECTOR_DWS_CREDENTIALS_INVALID');
+  return { clientId: clientId || undefined, clientSecret: clientSecret || undefined };
+}
+
 async function privateDirectory(directory) {
   try { await fs.mkdir(directory, { mode: 0o700 }); } catch (error) {
     if (error.code !== 'EEXIST') throw error;
@@ -51,15 +61,52 @@ export async function prepareProfileRoot(storageRoot, principal) {
   return owner;
 }
 
-export function isolatedEnvironment(owner, { proxy, macTestOnly = false, allowMacRuntime = false } = {}) {
+export function isolatedEnvironment(owner, {
+  proxy, macTestOnly = false, allowMacRuntime = false, clientId, clientSecret,
+} = {}) {
   const env = {
     PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', TERM: 'dumb', NO_COLOR: '1',
     HOME: path.join(owner, 'home'), DWS_CONFIG_DIR: path.join(owner, 'config'),
     XDG_CONFIG_HOME: path.join(owner, 'config'), XDG_CACHE_HOME: path.join(owner, 'cache'),
     XDG_DATA_HOME: path.join(owner, 'data'), TMPDIR: path.join(owner, 'temp'),
   };
+  if (Boolean(clientId) !== Boolean(clientSecret)) throw new Error('DINGTALK_CONNECTOR_DWS_CREDENTIALS_INVALID');
+  if (clientId && clientSecret) {
+    env.DWS_CLIENT_ID = clientId;
+    env.DWS_CLIENT_SECRET = clientSecret;
+  }
   // This opt-in is for isolated Mac probes only, never change the host's Keychain mode.
   if (macTestOnly || allowMacRuntime) env.DWS_DISABLE_KEYCHAIN = '1';
+  if (proxy) {
+    const url = new URL(proxy);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+      throw new Error('CONNECTOR_PROXY_INVALID');
+    }
+    env.HTTPS_PROXY = env.HTTP_PROXY = url.origin;
+    env.NO_PROXY = 'localhost,127.0.0.1,::1';
+  }
+  return env;
+}
+
+export function hostProfileEnvironment({ proxy, clientId, clientSecret, configDir } = {}) {
+  const home = homedir();
+  if (configDir && !path.isAbsolute(configDir)) throw new Error('DWS_HOST_CONFIG_PATH_INVALID');
+  const resolvedConfigDir = configDir ? path.resolve(configDir) : path.join(home, '.dws');
+  const env = {
+    PATH: path.join(home, '.local', 'bin') + ':/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+    LANG: process.env.LANG || 'C.UTF-8', TERM: 'dumb', NO_COLOR: '1',
+    HOME: home,
+    DWS_CONFIG_DIR: resolvedConfigDir,
+    XDG_CONFIG_HOME: path.join(home, '.config'),
+    XDG_CACHE_HOME: path.join(home, 'Library', 'Caches'),
+    XDG_DATA_HOME: path.join(home, '.local', 'share'),
+    TMPDIR: tmpdir(),
+  };
+  if (Boolean(clientId) !== Boolean(clientSecret)) throw new Error('DINGTALK_CONNECTOR_DWS_CREDENTIALS_INVALID');
+  if (clientId && clientSecret) {
+    env.DWS_CLIENT_ID = clientId;
+    env.DWS_CLIENT_SECRET = clientSecret;
+  }
   if (proxy) {
     const url = new URL(proxy);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
@@ -166,13 +213,18 @@ export function parseAuthStatus(payload, profile, now = Date.now()) {
   };
 }
 
-export async function inspectDwsProfile({ binary, storageRoot, principal, proxy, macTestOnly = false, allowMacRuntime = false, verifyBinary: verify = verifyDwsBinary }) {
+export async function inspectDwsProfile({
+  binary, storageRoot, principal, proxy, macTestOnly = false, allowMacRuntime = false,
+  clientId, clientSecret, hostProfile = false, hostConfigDir, verifyBinary: verify = verifyDwsBinary,
+}) {
   if (process.platform !== 'linux' && !(process.platform === 'darwin' && (macTestOnly || allowMacRuntime))) {
     throw new Error('DWS_GATEWAY_REQUIRES_LINUX');
   }
   await verify(binary);
   const owner = await prepareProfileRoot(storageRoot, principal);
-  const env = isolatedEnvironment(owner, { proxy, macTestOnly, allowMacRuntime });
+  const env = hostProfile
+    ? hostProfileEnvironment({ proxy, clientId, clientSecret, configDir: hostConfigDir })
+    : isolatedEnvironment(owner, { proxy, macTestOnly, allowMacRuntime, clientId, clientSecret });
   return withProfileLock(owner, async () => {
     const run = (args) => runDwsProcess(binary, [...args, '--format', 'json'], { cwd: owner, env });
     const profile = selectCurrentProfile(await run(['profile', 'list']));

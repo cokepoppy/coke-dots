@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
-  inspectDwsProfile, isolatedEnvironment, prepareProfileRoot, principalKey,
+  hostProfileEnvironment, inspectDwsProfile, isolatedEnvironment, prepareProfileRoot, principalKey,
   runDwsProcess, selectCurrentProfile, verifyDwsBinary, withProfileLock,
 } from './dws-runtime.mjs';
 
@@ -85,7 +85,9 @@ function startAuthorizationProcess(binary, owner, env, {
 }
 
 export function createDwsAuthorizationManager({
-  binary, storageRoot, proxy, macTestOnly = false, allowMacRuntime = false, now = () => Date.now(), uuid = randomUUID,
+  binary, storageRoot, proxy, macTestOnly = false, allowMacRuntime = false, clientId, clientSecret,
+  hostProfile = false, hostConfigDir,
+  now = () => Date.now(), uuid = randomUUID,
   verifyBinary = verifyDwsBinary, launch = startAuthorizationProcess,
   inspect = inspectDwsProfile, run = runDwsProcess,
   startTimeoutMs = 20_000, authorizationTtlMs = 10 * 60_000,
@@ -103,7 +105,7 @@ export function createDwsAuthorizationManager({
     const ownerKey = principalKey(principal);
     const active = activeByOwner.get(ownerKey);
     if (active && !terminalStates.has(active.state)) return { state: 'pending', authorization: publicJob(active) };
-    return inspect({ binary, storageRoot, principal, proxy, macTestOnly, allowMacRuntime, verifyBinary });
+    return inspect({ binary, storageRoot, principal, proxy, macTestOnly, allowMacRuntime, clientId, clientSecret, hostProfile, hostConfigDir, verifyBinary });
   }
 
   async function start(principal) {
@@ -123,7 +125,9 @@ export function createDwsAuthorizationManager({
     const ready = new Promise((resolve, reject) => { settleReady = { resolve, reject }; });
     let processResult;
     const complete = withProfileLock(owner, () => new Promise((resolve) => {
-      const env = isolatedEnvironment(owner, { proxy, macTestOnly, allowMacRuntime });
+      const env = hostProfile
+        ? hostProfileEnvironment({ proxy, clientId, clientSecret, configDir: hostConfigDir })
+        : isolatedEnvironment(owner, { proxy, macTestOnly, allowMacRuntime, clientId, clientSecret });
       job.process = launch(binary, owner, env, {
         onVerificationUrl: (authorizationUrl) => {
           if (terminalStates.has(job.state) || job.authorizationUrl) return;
@@ -152,7 +156,7 @@ export function createDwsAuthorizationManager({
     job.completion = complete.then(async () => {
       if (processResult !== 'complete') return;
       try {
-        const result = await inspect({ binary, storageRoot, principal, proxy, macTestOnly, allowMacRuntime, verifyBinary });
+        const result = await inspect({ binary, storageRoot, principal, proxy, macTestOnly, allowMacRuntime, clientId, clientSecret, hostProfile, hostConfigDir, verifyBinary });
         if (result.state !== 'identity-verified') throw new Error('not verified');
         job.installation = result;
         job.state = 'authorized';
@@ -223,9 +227,12 @@ export function createDwsAuthorizationManager({
     const ownerKey = principalKey(principal);
     const active = activeByOwner.get(ownerKey);
     if (active && !terminalStates.has(active.state)) await cancel(principal, active.id);
+    if (hostProfile) return { disconnected: false, managedLocally: true };
     const owner = await ownerFor(principal);
     return withProfileLock(owner, async () => {
-      const env = isolatedEnvironment(owner, { proxy, macTestOnly, allowMacRuntime });
+      const env = hostProfile
+        ? hostProfileEnvironment({ proxy, clientId, clientSecret, configDir: hostConfigDir })
+        : isolatedEnvironment(owner, { proxy, macTestOnly, allowMacRuntime, clientId, clientSecret });
       const profile = selectCurrentProfile(await run(binary, ['profile', 'list', '--format', 'json'], { cwd: owner, env }));
       if (!profile) return { disconnected: true };
       await run(binary, ['auth', 'logout', '--profile', profile.selector, '--format', 'json'], { cwd: owner, env, parseJson: false });
