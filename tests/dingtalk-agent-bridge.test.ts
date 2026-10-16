@@ -9,7 +9,14 @@ const now = Date.parse('2026-10-15T12:00:00.000Z');
 test('DingTalk agent bridge grants only explicit document intent and binds it to a tenant user and task', () => {
   assert.deepEqual(requestedDingTalkDocumentActions('请搜索钉钉文档：值班手册'), ['search', 'fetch']);
   assert.deepEqual(requestedDingTalkDocumentActions('请把排障报告写入钉钉文档'), ['search', 'fetch', 'create']);
+  assert.deepEqual(
+    requestedDingTalkDocumentActions('请创建一份新的钉钉在线文档，写入本次 RUN5 合成告警排查报告。不要修改或读取其他钉钉文档，不要修改代码、文件或向群里发送消息。'),
+    ['search', 'fetch', 'create'],
+    'Restrictions on other documents, source files, and group messages must not revoke an explicitly requested new report document',
+  );
+  assert.deepEqual(requestedDingTalkDocumentActions('请新建一份钉钉文档写入报告，不要创建其他钉钉文档。'), ['search', 'fetch', 'create']);
   assert.deepEqual(requestedDingTalkDocumentActions('不要创建钉钉文档，只搜索值班手册'), ['search', 'fetch']);
+  assert.deepEqual(requestedDingTalkDocumentActions('不要创建任何钉钉文档，只搜索值班手册'), ['search', 'fetch']);
   assert.deepEqual(requestedDingTalkDocumentActions('请总结钉钉文档里写着“创建一个账号”的内容'), ['search', 'fetch'], 'Quoted document content must not independently authorize a write');
   assert.deepEqual(requestedDingTalkDocumentActions('请搜索公开网页并总结'), []);
   assert.equal(createDingTalkAgentBridge({
