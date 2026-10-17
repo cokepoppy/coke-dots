@@ -54,6 +54,11 @@ chrome_flags=(
   --password-store=basic --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
   --user-data-dir="$HOME/.config/chromium" --start-maximized
 )
+if [[ -n "${COKE_DESKTOP_PROXY_SERVER:-}" ]]; then
+  [[ "$COKE_DESKTOP_PROXY_SERVER" == "http://host.docker.internal:17891" ]] || { echo "Unsupported cloud-computer proxy endpoint" >&2; exit 1; }
+  chrome_flags+=("--proxy-server=$COKE_DESKTOP_PROXY_SERVER")
+  chrome_flags+=("--proxy-bypass-list=localhost;127.0.0.1;[::1];*.svc;*.cluster.local")
+fi
 if [[ "${COKE_DESKTOP_CHROME_NO_SANDBOX:-0}" == "1" ]]; then chrome_flags+=(--no-sandbox); fi
 start_chromium() {
   setsid "$chrome_bin" "${chrome_flags[@]}" "$start_url" >>/tmp/dots-chrome.log 2>&1 &

@@ -58,6 +58,38 @@ test('Linux desktop deployments register the default Pi Agent adapter from the h
   }
 });
 
+test('Linux desktop egress only adds the loopback Mac proxy bridge when explicitly enabled', () => {
+  const keys = [
+    'DOTS_LINUX_DESKTOP_PROXY_BRIDGE', 'DOTS_LINUX_DESKTOP_PROXY_UPSTREAM_HOST',
+    'DOTS_LINUX_DESKTOP_PROXY_UPSTREAM_PORT', 'COKE_DESKTOP_PROXY_SERVER',
+  ] as const;
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  process.env.DOTS_LINUX_DESKTOP_PROXY_BRIDGE = '1';
+  process.env.DOTS_LINUX_DESKTOP_PROXY_UPSTREAM_HOST = '127.0.0.1';
+  process.env.DOTS_LINUX_DESKTOP_PROXY_UPSTREAM_PORT = '7890';
+  process.env.COKE_DESKTOP_PROXY_SERVER = 'http://host.docker.internal:17891';
+  try {
+    const list = desktopResources('tenant-proxy-egress', 'worker-secret', 'agent-secret')[1] as { items: Record<string, any>[] };
+    const policy = list.items.find(item => item.kind === 'NetworkPolicy') as { spec: { egress: any[] } };
+    assert.deepEqual(policy.spec.egress[2], {
+      to: [{ ipBlock: { cidr: '192.168.65.254/32' } }],
+      ports: [{ protocol: 'TCP', port: 17891 }],
+    }, 'The desktop may reach only the Docker Desktop host alias on the loopback proxy port');
+    const deployment = list.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { containers: { env: { name: string; value?: string }[] }[] } } } };
+    const environment = Object.fromEntries(deployment.spec.template.spec.containers[0].env.map(item => [item.name, item.value]));
+    for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) {
+      assert.equal(environment[name], 'http://host.docker.internal:17891');
+    }
+    assert.equal(environment.NO_PROXY, 'localhost,127.0.0.1,::1,.svc,.cluster.local');
+    assert.equal(environment.COKE_DESKTOP_PROXY_SERVER, 'http://host.docker.internal:17891');
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('production cloud computers reject mutable worker tags and expose the selected release image', () => {
   const commit = '0123456789abcdef0123456789abcdef01234567';
   const commitImage = `coke-dots-linux-desktop:sha-${commit}`;

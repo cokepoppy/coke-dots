@@ -5,6 +5,7 @@ import type { ComputerRuntime, ComputerState } from './computer.ts';
 import type { TaskArtifact } from '../shared/types.ts';
 import { ComputerControlOwnedByUserError, LinuxDesktopWorkerError } from './computer-errors.ts';
 import { desktopAgentKernels } from './desktop-agent-kernels.ts';
+import { LocalDesktopProxyBridge, resolveDesktopProxyConfig } from './local-desktop-proxy-bridge.ts';
 
 const workerPort = 8082;
 const vncPort = 6080;
@@ -318,8 +319,10 @@ function defaultDesktopConnector(): DesktopConnector {
       },
     };
   }
-  return new KubectlDesktopConnector();
+  return new KubectlDesktopConnector(kubectl, defaultMacDesktopProxyBridge);
 }
+
+const defaultMacDesktopProxyBridge = new LocalDesktopProxyBridge();
 
 export function desktopResourceIdentity(tenantId: string) {
   const suffix = createHash('sha256').update(tenantId).digest('hex').slice(0, 10);
@@ -361,6 +364,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
   const controlNamespace = process.env.DOTS_LINUX_DESKTOP_CONTROL_NAMESPACE || 'coke-dots';
   const kernels = desktopAgentKernels();
   const agentEngines = process.env.DOTS_DESKTOP_AGENT_ADAPTERS?.trim() || Object.keys(kernels).join(',');
+  const proxyConfig = resolveDesktopProxyConfig();
   const imageAnnotations = { 'coke-dots.io/desktop-image': image };
   const objects: Record<string, unknown>[] = [
     {
@@ -379,6 +383,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
         egress: [
           { to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } } }], ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] },
           { ports: [{ protocol: 'TCP', port: 80 }, { protocol: 'TCP', port: 443 }] },
+          ...(proxyConfig ? [{ to: [{ ipBlock: { cidr: '192.168.65.254/32' } }], ports: [{ protocol: 'TCP', port: 17891 }] }] : []),
         ],
       },
     },
@@ -401,6 +406,17 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 { name: 'COKE_DESKTOP_CHROME_NO_SANDBOX', value: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX === '1' ? '1' : '0' },
                 { name: 'DOTS_DESKTOP_AGENT_ADAPTERS', value: agentEngines },
                 ...(Object.keys(kernels).length ? [{ name: 'DOTS_AGENT_KERNELS_JSON', value: JSON.stringify(kernels) }] : []),
+                ...(proxyConfig ? [
+                  { name: 'COKE_DESKTOP_PROXY_SERVER', value: proxyConfig.serverUrl },
+                  { name: 'HTTP_PROXY', value: proxyConfig.serverUrl },
+                  { name: 'HTTPS_PROXY', value: proxyConfig.serverUrl },
+                  { name: 'ALL_PROXY', value: proxyConfig.serverUrl },
+                  { name: 'http_proxy', value: proxyConfig.serverUrl },
+                  { name: 'https_proxy', value: proxyConfig.serverUrl },
+                  { name: 'all_proxy', value: proxyConfig.serverUrl },
+                  { name: 'NO_PROXY', value: 'localhost,127.0.0.1,::1,.svc,.cluster.local' },
+                  { name: 'no_proxy', value: 'localhost,127.0.0.1,::1,.svc,.cluster.local' },
+                ] : []),
               ],
               ports: [{ name: 'novnc', containerPort: 6080 }, { name: 'worker', containerPort: 8082 }, { name: 'agent', containerPort: 8083 }, { name: 'cdp', containerPort: 9222 }],
               startupProbe: { httpGet: { path: '/healthz', port: 'worker' }, periodSeconds: 5, timeoutSeconds: 5, failureThreshold: 36 },
@@ -432,12 +448,16 @@ export class KubectlDesktopConnector implements DesktopConnector {
   private portForward: ChildProcess | null = null;
   private current: DesktopConnection | null = null;
 
-  constructor(private readonly runKubectl: KubectlRunner = kubectl) {}
+  constructor(
+    private readonly runKubectl: KubectlRunner = kubectl,
+    private readonly desktopProxyBridge: Pick<LocalDesktopProxyBridge, 'start'> = new LocalDesktopProxyBridge(),
+  ) {}
 
   async connect(tenantId: string): Promise<DesktopConnection> {
     if (this.current) return this.current;
     const identity = desktopResourceIdentity(tenantId);
     const resources = this.resourcesFor(tenantId);
+    if (resolveDesktopProxyConfig()) await this.desktopProxyBridge.start();
     await this.runKubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[0]));
     await this.runKubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[1]));
     await this.runKubectl(['-n', identity.namespace, 'rollout', 'status', 'deployment/desktop', '--timeout=180s']);
@@ -450,6 +470,7 @@ export class KubectlDesktopConnector implements DesktopConnector {
     const resources = this.resourcesFor(tenantId);
     const identity = desktopResourceIdentity(tenantId);
     const previousGeneration = await this.deploymentGeneration(identity.namespace);
+    if (resolveDesktopProxyConfig()) await this.desktopProxyBridge.start();
     await this.runKubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[0]));
     await this.runKubectl(['apply', '-f', '-'], JSON.stringify(resources.resources[1]));
     const currentGeneration = await this.deploymentGeneration(identity.namespace);
