@@ -23,6 +23,20 @@ export function updateVolcengineTranscriptSnapshot(current: string, snapshot: st
   return snapshot || current;
 }
 
+export function safeVolcengineProviderErrorCode(event: unknown): string | null {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
+  const record = event as Record<string, unknown>;
+  const error = record.error && typeof record.error === 'object' && !Array.isArray(record.error)
+    ? record.error as Record<string, unknown>
+    : null;
+  const candidate = error?.code ?? record.error_code ?? record.code;
+  if (typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= 0 && candidate <= 0xffffffff) {
+    return String(candidate);
+  }
+  if (typeof candidate === 'string' && /^\d{1,12}$/.test(candidate)) return candidate;
+  return null;
+}
+
 export function isVolcengineFloat32Pcm(pcm: Uint8Array): boolean {
   if (!pcm.byteLength || pcm.byteLength % 4 !== 0) return false;
   const bytes = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
@@ -63,6 +77,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
   let asrCompletedEmpty = 0;
   let asrFailed = 0;
   let providerErrors = 0;
+  let providerErrorCode: string | null = null;
   let diagnosticsLogged = false;
   let startupTimer: NodeJS.Timeout | null = setTimeout(() => fail('火山实时语音初始化超时，请检查服务配置后重试。'), 20_000);
   let finishTimer: NodeJS.Timeout | null = null;
@@ -94,6 +109,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
       asrCompletedEmpty,
       asrFailed,
       providerErrors,
+      providerErrorCode,
     })}`);
   };
   const finalize = (code = 1000, reason = 'call ended') => {
@@ -217,7 +233,9 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     if (event.type === 'error') {
       providerErrors += 1;
       // Provider messages may include request details. Keep them server-side and
-      // return only a stable Chinese error to the browser.
+      // return only a stable Chinese error to the browser. The diagnostic summary
+      // retains only a bounded numeric code, never the provider message.
+      providerErrorCode = safeVolcengineProviderErrorCode(event);
       fail('火山实时语音服务暂不可用，请检查控制台配置后重试。');
       return;
     }

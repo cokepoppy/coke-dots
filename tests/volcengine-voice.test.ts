@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { decodeVolcengineFloat32Pcm } from '../src/shared/volcengine-audio.ts';
-import { isVolcengineFloat32Pcm, updateVolcengineTranscriptSnapshot } from '../src/server/volcengine-duplex-voice-gateway.ts';
+import { isVolcengineFloat32Pcm, safeVolcengineProviderErrorCode, updateVolcengineTranscriptSnapshot } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
@@ -33,6 +33,14 @@ test('SeedDuplex cumulative ASR snapshots replace earlier partials without repea
   const transcript = snapshots.reduce(updateVolcengineTranscriptSnapshot, '');
   assert.equal(transcript, '情之用中文回复，公网火山语音识别测试成功，不要调用工具。');
   assert.equal(updateVolcengineTranscriptSnapshot(transcript, ''), transcript, 'An empty provider event must not erase the latest transcript');
+});
+
+test('SeedDuplex diagnostics retain only bounded numeric provider error codes', () => {
+  assert.equal(safeVolcengineProviderErrorCode({ type: 'error', error: { code: 45000030, message: 'private text and api_key=secret' } }), '45000030');
+  assert.equal(safeVolcengineProviderErrorCode({ type: 'error', code: '401' }), '401');
+  assert.equal(safeVolcengineProviderErrorCode({ type: 'error', error: { code: 'secret-token', message: 'private' } }), null);
+  assert.equal(safeVolcengineProviderErrorCode({ type: 'error', error: { message: 'private' } }), null);
+  assert.equal(safeVolcengineProviderErrorCode(null), null);
 });
 
 test('SeedDuplex float32 PCM decodes little-endian samples and clamps invalid values', () => {
@@ -169,7 +177,8 @@ test('SeedDuplex session.create uses the fixed 3.0 model, 16 kHz input, 24 kHz P
     input: { format: { type: 'pcm', rate: 16000 } },
     output: { format: { type: 'pcm', rate: 24000 }, voice: 'zh_female_vv_jupiter_bigtts' },
   });
-  assert.equal(event.session.extension.tts.audio_config.format, 'pcm_s16le');
+  assert.equal(event.session.extension.tts.audio_config.format, event.session.audio.output.format.type);
+  assert.equal(event.session.extension.tts.audio_config.format, 'pcm');
   assert.match(event.session.instructions, /简体中文/);
   assert.match(event.session.instructions, /Dots Agent/);
 });

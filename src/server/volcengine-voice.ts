@@ -208,7 +208,7 @@ export function volcengineStartSessionPayload(dotName: string) {
 }
 
 export function volcengineDuplexSessionPayload(dotName: string, eventId: string = randomUUID()) {
-  const { systemRole, extension } = volcengineDialogConfiguration(dotName);
+  const { systemRole, extension } = volcengineDialogConfiguration(dotName, 'pcm');
   return {
     type: 'session.create',
     event_id: eventId,
@@ -224,7 +224,7 @@ export function volcengineDuplexSessionPayload(dotName: string, eventId: string 
   };
 }
 
-function volcengineDialogConfiguration(dotName: string) {
+function volcengineDialogConfiguration(dotName: string, outputPcmFormat: 'pcm' | 'pcm_s16le' = 'pcm_s16le') {
   const safeName = dotName.replace(/[\r\n]/g, ' ').slice(0, 20) || 'Dot';
   const systemRole = `你是 ${safeName}，是 Coke Dots 的语音界面。始终使用简体中文。用户在布置工作时，只用一句简短的话确认收到，不要自行回答任务或假称完成。Dots Agent 会在用户所属的独立云电脑中执行工作。收到客户端通过语音合成文本提供的“Dots Agent 状态更新”后，只按原文简洁播报。`;
   return {
@@ -232,7 +232,9 @@ function volcengineDialogConfiguration(dotName: string) {
     systemRole,
     extension: {
       asr: { extra: { end_smooth_window_ms: 700 } },
-      tts: { speaker: 'zh_female_vv_jupiter_bigtts', audio_config: { channel: 1, format: 'pcm_s16le', sample_rate: 24000 } },
+      // SeedDuplex's float32 PCM output must match its legacy TTS extension;
+      // the separate O2.0 session continues to use 16-bit PCM.
+      tts: { speaker: 'zh_female_vv_jupiter_bigtts', audio_config: { channel: 1, format: outputPcmFormat, sample_rate: 24000 } },
       dialog: { bot_name: safeName, system_role: systemRole, speaking_style: '自然、简洁、清楚', extra: { enable_loudness_norm: true } },
     },
   };
