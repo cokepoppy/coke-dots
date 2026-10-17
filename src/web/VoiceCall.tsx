@@ -41,7 +41,7 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
   const [taskStatus, setTaskStatus] = useState('');
   const [callError, setCallError] = useState('');
   const [playbackNeedsGesture, setPlaybackNeedsGesture] = useState(false);
-  const [micCaptureState, setMicCaptureState] = useState<'waiting' | 'sent' | 'muted' | 'no-frames' | 'context-suspended'>('waiting');
+  const [micCaptureState, setMicCaptureState] = useState<'waiting' | 'sent' | 'muted' | 'no-frames' | 'context-suspended' | 'failed'>('waiting');
   const [micLevelPercent, setMicLevelPercent] = useState(0);
   const [voiceProvider, setVoiceProvider] = useState<'browser' | 'qwen' | 'volcengine'>('browser');
   const [voiceModel, setVoiceModel] = useState('');
@@ -281,6 +281,35 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
       for (const stop of [...taskFollowStopsRef.current]) stop();
     };
 
+    const failActiveRealtimeCall = (message: string) => {
+      if (!activeRef.current || startupFailedRef.current) return;
+      startupFailedRef.current = true;
+      activeRef.current = false;
+      window.clearInterval(timer);
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000)));
+      setCallError(message);
+      setStatus('通话遇到问题');
+      setMicCaptureState('failed');
+      setMicLevelPercent(0);
+      stopTaskFollowers();
+      recognitionRef.current?.abort();
+      recognitionRef.current = null;
+      stopRealtimeTransport();
+
+      const call = sessionRef.current;
+      if (!call) return;
+      const durationSeconds = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
+      void appFetch('/api/voice-calls/' + call.id, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'end', durationSeconds }),
+      }).then(response => {
+        if (!response.ok) throw new Error('通话记录未能保存');
+        if (sessionRef.current?.id === call.id) sessionRef.current = null;
+      }).catch(() => {
+        setCallError(message + '；结束通话记录失败，请点击挂断重试。');
+      });
+    };
+
     const processTranscript = (rawText: string, sourceTurnId?: string) => {
       const text = rawText.trim().slice(0, 5000);
       if (!text || !activeRef.current) return;
@@ -344,7 +373,7 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
         return;
       }
       if (event.type === 'conversation.item.input_audio_transcription.failed' || event.type === 'error') {
-        setCallError(event.error?.message || 'Qwen 语音识别失败，请重试。');
+        failActiveRealtimeCall(event.error?.message || 'Qwen 语音识别失败，请重试。');
         return;
       }
       if (event.type === 'input_audio_buffer.speech_started') {
@@ -379,7 +408,7 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
       peer.ondatachannel = event => {
         realtimeEventChannelRef.current = event.channel;
         event.channel.onmessage = message => handleQwenEvent(String(message.data));
-        event.channel.onerror = () => setCallError('Qwen 实时语音事件通道中断');
+        event.channel.onerror = () => failActiveRealtimeCall('Qwen 实时语音事件通道中断');
       };
       peer.ontrack = event => {
         const audio = new Audio();
@@ -394,7 +423,7 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
         });
       };
       peer.onconnectionstatechange = () => {
-        if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') setCallError('Qwen 实时语音网络连接中断');
+        if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') failActiveRealtimeCall('Qwen 实时语音网络连接中断');
       };
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
@@ -583,12 +612,20 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
             if (activeRef.current) setStatus(mutedRef.current ? '麦克风已静音' : volcInputFramesRef.current > 0 ? '正在聆听' : '正在检查麦克风…');
           } else if (message.type === 'error') {
             const error = message.error || '火山实时语音连接失败';
-            setCallError(error);
+            failActiveRealtimeCall(error);
             finish(new Error(error));
           }
         };
-        socket.onerror = () => finish(new Error('无法连接火山实时语音，请检查服务配置和网络。'));
-        socket.onclose = () => finish(new Error('火山实时语音连接已关闭。'));
+        socket.onerror = () => {
+          const error = '无法连接火山实时语音，请检查服务配置和网络。';
+          failActiveRealtimeCall(error);
+          finish(new Error(error));
+        };
+        socket.onclose = () => {
+          const error = '火山实时语音连接已关闭。';
+          failActiveRealtimeCall(error);
+          finish(new Error(error));
+        };
       });
     };
 
@@ -694,24 +731,11 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
       } catch (error) {
         if (activeRef.current) {
           const message = error instanceof Error ? error.message : '无法启动语音通话';
-          setCallError(message);
-          setStatus('通话无法启动');
           if (providerRef.current === 'qwen' || providerRef.current === 'volcengine') {
-            startupFailedRef.current = true;
-            stopRealtimeTransport();
-            const call = sessionRef.current;
-            if (call) {
-              const durationSeconds = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
-              void appFetch('/api/voice-calls/' + call.id, {
-                method: 'PATCH', headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ action: 'end', durationSeconds }),
-              }).then(response => {
-                if (!response.ok) throw new Error('通话记录未能保存');
-                if (sessionRef.current?.id === call.id) sessionRef.current = null;
-              }).catch(() => {
-                if (activeRef.current) setCallError(message + '；结束通话记录失败，请关闭通话后重试。');
-              });
-            }
+            failActiveRealtimeCall(message);
+          } else {
+            setCallError(message);
+            setStatus('通话无法启动');
           }
         }
       }
@@ -842,6 +866,7 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
     ? micLevelPercent > 0 ? '检测到音量输入' : '已连接，等待你说话'
     : micCaptureState === 'muted' ? '已静音'
       : micCaptureState === 'no-frames' ? '未收到音频帧'
+        : micCaptureState === 'failed' ? '通话已停止'
         : micCaptureState === 'context-suspended' ? '浏览器音频未启动'
           : '等待麦克风';
   const micMeter = voiceProvider === 'volcengine' && <div className="voice-call-card-mic" data-testid="voice-call-mic-meter" data-mic-state={micCaptureState} aria-label={`麦克风输入音量 ${micLevelPercent}%`}>
