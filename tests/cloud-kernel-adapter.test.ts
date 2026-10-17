@@ -158,10 +158,10 @@ test('Pi exposes one task-scoped read-only DingTalk calendar tool and sends only
   }
 });
 
-test('Pi exposes only the task-granted calendar creation, self-todo, and fixed cokeclaw report tools', async () => {
+test('Pi exposes only the task-granted DingTalk calendar, todo, and fixed cokeclaw report tools', async () => {
   const { root, task } = await makeWorkspace();
   const requests: Array<Record<string, unknown>> = [];
-  const captured: { names: string[]; calendarCreate: any; todo: any; report: any } = { names: [], calendarCreate: null, todo: null, report: null };
+  const captured: { names: string[]; calendarCreate: any; todoList: any; todo: any; report: any } = { names: [], calendarCreate: null, todoList: null, todo: null, report: null };
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -179,6 +179,7 @@ test('Pi exposes only the task-granted calendar creation, self-todo, and fixed c
     createAgentSession: async (options: Record<string, any>) => {
       captured.names = options.tools;
       captured.calendarCreate = options.customTools.find((tool: { name: string }) => tool.name === 'create_dingtalk_calendar_event');
+      captured.todoList = options.customTools.find((tool: { name: string }) => tool.name === 'list_dingtalk_personal_todos');
       captured.todo = options.customTools.find((tool: { name: string }) => tool.name === 'create_dingtalk_personal_todo');
       captured.report = options.customTools.find((tool: { name: string }) => tool.name === 'send_cokeclaw_group_report');
       return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
@@ -191,20 +192,23 @@ test('Pi exposes only the task-granted calendar creation, self-todo, and fixed c
       engine: 'pi', prompt: '创建会议和个人待办，把最终报告发到 cokeclaw', cwd: task, workspace: root,
       taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
       dingtalkCalendarBridge: { url: `http://127.0.0.1:${address.port}/api/agent/dingtalk/calendar`, token, actions: ['create'] },
-      dingtalkSecretaryBridge: { url: bridgeUrl, token, actions: ['todo-create', 'cokeclaw-send'] },
+      dingtalkSecretaryBridge: { url: bridgeUrl, token, actions: ['todo-list', 'todo-create', 'cokeclaw-send'] },
     }, { piSdk: sdk });
     assert.equal(captured.names.includes('create_dingtalk_calendar_event'), true);
     assert.equal(captured.names.includes('list_dingtalk_calendar_events'), false, 'A create-only grant must not expose calendar reads');
     assert.equal(captured.names.includes('create_dingtalk_personal_todo'), true);
+    assert.equal(captured.names.includes('list_dingtalk_personal_todos'), true);
     assert.equal(captured.names.includes('send_cokeclaw_group_report'), true);
     assert.equal(captured.report.parameters.properties.group, undefined, 'The Agent cannot choose a group');
     const meeting = await captured.calendarCreate.execute('meeting-1', { title: '北交所准备会', start: '2026-10-19T10:00:00+08:00', end: '2026-10-19T10:45:00+08:00' });
+    const todos = await captured.todoList.execute('todo-list-1', { scope: 'due-today' });
     const todo = await captured.todo.execute('todo-1', { title: '核验规则', due: '2026-10-20T17:00:00+08:00', priority: 30 });
     const report = await captured.report.execute('report-1', { content: '报告已完成' });
     assert.match(meeting.content[0].text, /verified/);
+    assert.match(todos.content[0].text, /verified/);
     assert.match(todo.content[0].text, /verified/);
     assert.match(report.content[0].text, /verified/);
-    assert.deepEqual(requests.map(item => item.action), ['create', 'todo-create', 'cokeclaw-send']);
+    assert.deepEqual(requests.map(item => item.action), ['create', 'todo-list', 'todo-create', 'cokeclaw-send']);
     assert.equal(requests[2].group, undefined, 'Group routing remains fixed in the server');
     assert(requests.every(item => !JSON.stringify(item).includes(token)));
   } finally {

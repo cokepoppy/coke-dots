@@ -1,6 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
-export type DingTalkSecretaryAction = 'todo-create' | 'cokeclaw-send';
+export type DingTalkSecretaryAction = 'todo-list' | 'todo-create' | 'cokeclaw-send';
 
 export interface DingTalkSecretaryAgentGrant {
   tenantId: string;
@@ -22,11 +22,14 @@ const grantLifetimeSeconds = 15 * 60;
 const writeVerb = /(?:创建|安排|新增|设置|提醒|create|schedule|add|remind)/i;
 const destructiveTodoVerb = /(?:删除|取消|完成|标记完成|delete|cancel|complete|finish)/i;
 const todoObject = /(?:待办|任务提醒|个人任务|\btodo\b|\btasks?\b)/i;
+const todoReadVerb = /(?:查|查看|看看|列出|读取|获取|告诉我|有哪些|有什么|有没有|未完成|还没完成|read|list|show|what|which|overdue|upcoming)/i;
+const todoDateScope = /(?:今天|明天|本周|逾期|due\s+today|today['’]?s|this\s+week)/i;
 const cokeclawTarget = /(?:cokeclaw|coke\s*claw)/i;
 const messageVerb = /(?:发送|发到|发给|推送|通知|post|send|share)/i;
 
 function requestedActions(instruction: string): DingTalkSecretaryAction[] {
   const actions: DingTalkSecretaryAction[] = [];
+  if (todoObject.test(instruction) && (todoReadVerb.test(instruction) || (!writeVerb.test(instruction) && todoDateScope.test(instruction)))) actions.push('todo-list');
   if (todoObject.test(instruction) && writeVerb.test(instruction) && !destructiveTodoVerb.test(instruction)) actions.push('todo-create');
   if (cokeclawTarget.test(instruction) && messageVerb.test(instruction)) actions.push('cokeclaw-send');
   return actions;
@@ -65,7 +68,7 @@ export function verifyDingTalkSecretaryAgentGrant(token: string, secret: string,
   if (row.aud !== audience || !validIdentity(row.tenantId) || !validIdentity(row.userId) || !validTaskId(row.taskId)
       || !Number.isInteger(row.expiresAt) || Number(row.expiresAt) < nowSeconds || Number(row.expiresAt) > nowSeconds + grantLifetimeSeconds
       || typeof row.nonce !== 'string' || !/^[a-f0-9-]{36}$/i.test(row.nonce) || !Array.isArray(row.actions)
-      || !row.actions.length || row.actions.length > 2 || row.actions.some(action => action !== 'todo-create' && action !== 'cokeclaw-send')) return null;
+      || !row.actions.length || row.actions.length > 3 || row.actions.some(action => action !== 'todo-list' && action !== 'todo-create' && action !== 'cokeclaw-send')) return null;
   return { tenantId: row.tenantId, userId: row.userId, taskId: row.taskId, actions: [...new Set(row.actions as DingTalkSecretaryAction[])], expiresAt: Number(row.expiresAt), nonce: row.nonce };
 }
 

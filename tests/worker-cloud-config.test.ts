@@ -237,7 +237,7 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
   const task = store.createTask('请把这次排障报告写入钉钉文档', null, 'pi', account.tenant.id, null, null, [], account.user.id);
   let receivedBridge: { url: string; token: string; actions: Array<'search' | 'fetch' | 'create'> } | undefined;
   let receivedCalendarBridge: { url: string; token: string; actions: Array<'list' | 'create'> } | undefined;
-  let receivedSecretaryBridge: { url: string; token: string; actions: Array<'todo-create' | 'cokeclaw-send'> } | undefined;
+  let receivedSecretaryBridge: { url: string; token: string; actions: Array<'todo-list' | 'todo-create' | 'cokeclaw-send'> } | undefined;
   const computer = {
     async runAgentTask(input: { dingtalkDocumentsBridge?: typeof receivedBridge; dingtalkCalendarBridge?: typeof receivedCalendarBridge; dingtalkSecretaryBridge?: typeof receivedSecretaryBridge }) {
       receivedBridge = input.dingtalkDocumentsBridge;
@@ -280,7 +280,7 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     assert.equal(calendarGrant?.userId, account.user.id);
     assert.equal(calendarGrant?.taskId, calendarTask.id);
 
-    const secretaryTask = store.createTask('读取日程、安排准备会、创建个人待办，并把最终排障报告发送到 cokeclaw 群', null, 'pi', account.tenant.id, null, null, [], account.user.id);
+    const secretaryTask = store.createTask('读取日程与个人待办、安排准备会、创建个人待办，并把最终排障报告发送到 cokeclaw 群', null, 'pi', account.tenant.id, null, null, [], account.user.id);
     await worker.tick();
     const secretaryDeadline = Date.now() + 2_000;
     while (Date.now() < secretaryDeadline && store.getTask(secretaryTask.id, account.tenant.id)?.status === 'working') await new Promise(resolve => setTimeout(resolve, 10));
@@ -289,7 +289,7 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     assert.deepEqual(receivedCalendarBridge.actions, ['list', 'create']);
     assert(receivedSecretaryBridge);
     assert.equal(receivedSecretaryBridge.url, 'https://dots.example.test/dots-demo/api/agent/dingtalk/secretary');
-    assert.deepEqual(receivedSecretaryBridge.actions, ['todo-create', 'cokeclaw-send']);
+    assert.deepEqual(receivedSecretaryBridge.actions, ['todo-list', 'todo-create', 'cokeclaw-send']);
     const secretaryGrant = service.verifyAgentSecretaryGrant(receivedSecretaryBridge.token);
     assert.equal(secretaryGrant?.tenantId, account.tenant.id);
     assert.equal(secretaryGrant?.userId, account.user.id);

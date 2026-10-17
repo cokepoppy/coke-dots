@@ -86,9 +86,19 @@ test('local host-profile gateway binds the existing DWS identity to one Dots use
         success: true,
         profiles: [{ corpId: 'corp-test', userId: 'dws-user', isCurrent: true, isOrgCurrent: true }],
       };
+      if (args[0] === 'auth' && args[1] === 'status') return {
+        success: true, authenticated: true, corp_id: 'corp-test', user_id: 'dws-user', token_valid: true,
+        expires_at: '2030-01-01T00:00:00.000Z',
+      };
       if (args[0] === 'chat' && args[1] === '+my-groups') return {
         groups: [{ conversationId: 'cid-test', name: 'Test group' }], count: 1, pagesFetched: 1,
         paginationKnown: true, complete: true, hasMore: false, failures: [], failedCount: 0,
+      };
+      if (args[0] === 'todo' && args[1] === '+due-today') return {
+        ok: true, outcome: 'success', data: {
+          count: 1, hasMore: false, complete: true,
+          tasks: [{ taskId: 'todo-test', title: '核对实施安排', accessToken: 'must-not-leak' }],
+        },
       };
       throw new Error('unexpected fake DWS command');
     },
@@ -121,11 +131,28 @@ test('local host-profile gateway binds the existing DWS identity to one Dots use
     assert.equal(calls.every(item => item.env.DWS_DISABLE_KEYCHAIN === undefined), true);
     assert.equal(inspectCalls.length, 2);
 
+    const todos = await call('/v1/secretary/todo-list', { method: 'POST', body: { scope: 'due-today' } });
+    assert.equal(todos.status, 200);
+    const todoResult = (await todos.json()).data;
+    assert.deepEqual(todoResult, {
+      scope: 'due-today', count: 1, tasks: [{ taskId: 'todo-test', title: '核对实施安排' }], complete: true, hasMore: false,
+    });
+    const todoCommand = calls.find(item => item.args[0] === 'todo' && item.args[1] === '+due-today');
+    assert(todoCommand, 'The authenticated Dots principal must reach the bounded DWS due-today command');
+    assert(todoCommand.args.includes('--profile') && todoCommand.args.includes('corp-test:dws-user'));
+    assert.equal(inspectCalls.length, 2, 'Read-only secretary operations do not re-inspect or mutate profile identity');
+    assert.equal(JSON.stringify(todoResult).includes('must-not-leak'), false);
+
+    const invalidTodoScope = await call('/v1/secretary/todo-list', { method: 'POST', body: { scope: 'all-organization-tasks' } });
+    assert.equal(invalidTodoScope.status, 400);
+    assert.equal((await invalidTodoScope.json()).error, 'DWS_TODO_LIST_FAILED');
+    assert.equal(calls.some(item => item.args[0] === 'todo' && item.args[1] === '+get-all-tasks'), false);
+
     const denied = await call('/v1/status', { userId: 'user-beta' });
     assert.equal(denied.status, 403);
     assert.equal((await denied.json()).error, 'DWS_HOST_PROFILE_USER_NOT_ALLOWED');
     assert.equal(inspectCalls.length, 2, 'A different Dots user must be rejected before calling DWS');
-    assert.equal(calls.length, 2);
+    assert.equal(calls.filter(item => item.args[0] === 'chat' && item.args[1] === '+my-groups').length, 1);
     const files = await readdir(env.DINGTALK_CONNECTOR_STORAGE_ROOT);
     assert.equal(files.some(file => file.endsWith('.dws')), false, 'The Keychain-backed host profile must not be exported or archived');
   } finally {

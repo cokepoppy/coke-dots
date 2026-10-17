@@ -15,6 +15,9 @@ test('secretary grants only explicit self-todo and fixed cokeclaw delivery actio
   assert.equal(bridge.url, 'https://dots.example.test/dots-demo/api/agent/dingtalk/secretary');
   assert.deepEqual(bridge.actions, ['todo-create', 'cokeclaw-send']);
   assert.deepEqual(verifyDingTalkSecretaryAgentGrant(bridge.token, secret, baseInput.now)?.actions, bridge.actions);
+  const read = createDingTalkSecretaryAgentBridge({ ...baseInput, instruction: '告诉我今天有哪些未完成的钉钉待办' });
+  assert.deepEqual(read?.actions, ['todo-list']);
+  assert.deepEqual(createDingTalkSecretaryAgentBridge({ ...baseInput, instruction: '创建一个个人钉钉待办' })?.actions, ['todo-create']);
   assert.equal(createDingTalkSecretaryAgentBridge({ ...baseInput, instruction: '删除 cokeclaw 群里的待办' }), null);
   assert.equal(createDingTalkSecretaryAgentBridge({ ...baseInput, instruction: '更新监控群里的内容' }), null);
   assert.equal(verifyDingTalkSecretaryAgentGrant(bridge.token, secret, baseInput.now + 16 * 60_000), null);
@@ -44,4 +47,12 @@ test('secretary write requests are task-bound, self-only, fixed-group, and idemp
   assert.equal(send.testOnly, true);
   await assert.rejects(service.runAgentSecretaryOperation(grant, { action: 'cokeclaw-send', group: 'other-group', content: 'wrong target' }), /无效/);
   await assert.rejects(service.runAgentSecretaryOperation(grant, { action: 'cokeclaw-send', content: 'x'.repeat(4001) }), /无效/);
+
+  const readBridge = service.agentSecretaryBridge('tenant-a', baseInput.userId, taskId, '告诉我今天有哪些钉钉待办');
+  assert(readBridge);
+  const readGrant = service.verifyAgentSecretaryGrant(readBridge.token);
+  assert(readGrant);
+  const listed = await service.runAgentSecretaryOperation(readGrant, { action: 'todo-list', scope: 'due-today' }) as { scope: string; count: number; tasks: unknown[]; complete: boolean; testOnly: boolean };
+  assert.deepEqual(listed, { scope: 'due-today', count: 0, tasks: [], complete: true, testOnly: true });
+  await assert.rejects(service.runAgentSecretaryOperation(readGrant, { action: 'todo-create', title: '没有写权限', due: '2026-10-20T17:00:00+08:00' }), /没有此钉钉个人助理操作权限/);
 });

@@ -116,7 +116,7 @@ function validateDingTalkSecretaryBridge(value) {
   try { url = new URL(value.url); } catch { throw new Error('DingTalk secretary bridge URL is invalid'); }
   const localHttp = url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname);
   if ((!localHttp && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash || !url.pathname.endsWith('/api/agent/dingtalk/secretary')) throw new Error('DingTalk secretary bridge URL is invalid');
-  if (!Array.isArray(value.actions) || !value.actions.length || value.actions.length > 2 || value.actions.some(action => !['todo-create', 'cokeclaw-send'].includes(action))) throw new Error('DingTalk secretary bridge scope is invalid');
+  if (!Array.isArray(value.actions) || !value.actions.length || value.actions.length > 3 || value.actions.some(action => !['todo-list', 'todo-create', 'cokeclaw-send'].includes(action))) throw new Error('DingTalk secretary bridge scope is invalid');
   return { url: url.toString(), token: value.token, actions: [...new Set(value.actions)] };
 }
 

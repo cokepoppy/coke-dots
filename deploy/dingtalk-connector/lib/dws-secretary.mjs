@@ -1,6 +1,8 @@
 const rfc3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
 const uuid = /^[a-f0-9-]{36}$/i;
 const stableId = /^[A-Za-z0-9._~-]{1,512}$/;
+const sensitiveKey = /(access.?token|refresh.?token|authorization|credential|client.?secret|password|cookie)/i;
+const maximumReturnedTodos = 100;
 
 function fail(code) { throw new Error(code); }
 
@@ -36,6 +38,43 @@ function writeResultId(data, keys, code) {
     }
   }
   fail(code);
+}
+
+function safeValue(value, depth = 0) {
+  if (depth > 8) return '[truncated]';
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'string') return value.slice(0, 4000);
+  if (Array.isArray(value)) return value.slice(0, maximumReturnedTodos).map(item => safeValue(item, depth + 1)).filter(item => item !== undefined);
+  if (!value || typeof value !== 'object') return undefined;
+  const result = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (sensitiveKey.test(key)) continue;
+    const safe = safeValue(child, depth + 1);
+    if (safe !== undefined) result[key.slice(0, 100)] = safe;
+  }
+  return result;
+}
+
+function todoListResult(payload) {
+  if (payload?.ok !== true || payload?.outcome !== 'success' || !payload.data || typeof payload.data !== 'object' || Array.isArray(payload.data)) fail('DWS_TODO_LIST_FAILED');
+  const tasks = payload.data.tasks;
+  if (!Array.isArray(tasks) || tasks.some(task => !task || typeof task !== 'object' || Array.isArray(task))
+      || (payload.data.count !== undefined && (!Number.isSafeInteger(payload.data.count) || payload.data.count < 0))) fail('DWS_TODO_LIST_FAILED');
+  const safeTasks = tasks.slice(0, maximumReturnedTodos).map(task => safeValue(task)).filter(task => task && typeof task === 'object' && !Array.isArray(task));
+  if (safeTasks.length !== Math.min(tasks.length, maximumReturnedTodos)) fail('DWS_TODO_LIST_FAILED');
+  const count = Number.isSafeInteger(payload.data.count) ? payload.data.count : tasks.length;
+  const hasMore = payload.data.hasMore === true;
+  const truncated = tasks.length > maximumReturnedTodos || hasMore || count > tasks.length || payload.data.complete === false;
+  return {
+    count,
+    tasks: safeTasks,
+    complete: !truncated && payload.data.complete !== false,
+    ...(typeof payload.data.hasMore === 'boolean' ? { hasMore: payload.data.hasMore } : {}),
+    ...(typeof payload.data.stopReason === 'string' ? { stopReason: payload.data.stopReason.slice(0, 200) } : {}),
+    ...(Array.isArray(payload.data.failures) ? { failures: payload.data.failures.slice(0, 20).map(item => safeValue(item)) } : {}),
+    ...(truncated ? { truncated: true } : {}),
+  };
 }
 
 function parseTimestamp(value) {
@@ -76,6 +115,18 @@ export function createDwsSecretaryOperations({ withAuthenticatedProfile, writeOn
     } }));
   }
 
+  async function listPersonalTodos(principal, input = {}) {
+    const scope = input.scope === undefined ? 'related' : input.scope;
+    if (!['related', 'due-today', 'overdue'].includes(scope)) fail('DWS_TODO_LIST_FAILED');
+    return withAuthenticatedProfile(principal, async ({ call, profile }) => {
+      const args = scope === 'related' ? ['todo', '+get-related-tasks', '--status', 'false']
+        : scope === 'due-today' ? ['todo', '+due-today'] : ['todo', '+overdue'];
+      args.push('--profile', profile.selector);
+      const payload = await call(args, { timeoutMs: 60_000, maxBytes: 1024 * 1024 });
+      return { scope, ...todoListResult(payload) };
+    });
+  }
+
   async function sendCokeclawReport(principal, input = {}) {
     const content = requiredText(input.content, 'DWS_CHAT_CONTENT_INVALID', 4000);
     const requestId = assertRequest(input, 'DWS_CHAT_CONFIRMATION_REQUIRED', 'DWS_CHAT_REQUEST_ID_INVALID');
@@ -86,5 +137,5 @@ export function createDwsSecretaryOperations({ withAuthenticatedProfile, writeOn
     } }));
   }
 
-  return { createCalendarEvent, createPersonalTodo, sendCokeclawReport };
+  return { createCalendarEvent, createPersonalTodo, listPersonalTodos, sendCokeclawReport };
 }

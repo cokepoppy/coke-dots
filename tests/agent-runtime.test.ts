@@ -173,7 +173,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
 
     const secretaryTaskId = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
     const secretaryGrant = 'task-scoped-dingtalk-secretary-grant-never-return';
-    const secretaryTask = await submit(secretaryTaskId, 'Create a personal todo and send the report to cokeclaw', modelConfig, `tasks/${secretaryTaskId}`, 'pi', undefined, undefined, false, { url: 'https://dots.example.test/dots-demo/api/agent/dingtalk/secretary', token: secretaryGrant, actions: ['todo-create', 'cokeclaw-send'] });
+    const secretaryTask = await submit(secretaryTaskId, 'Create a personal todo and send the report to cokeclaw', modelConfig, `tasks/${secretaryTaskId}`, 'pi', undefined, undefined, false, { url: 'https://dots.example.test/dots-demo/api/agent/dingtalk/secretary', token: secretaryGrant, actions: ['todo-list', 'todo-create', 'cokeclaw-send'] });
     assert.equal(secretaryTask.status, 200);
     assert.equal(secretaryTask.body.diagnosticGrant, '[redacted]');
     assert.doesNotMatch(JSON.stringify(secretaryTask.body), new RegExp(secretaryGrant));

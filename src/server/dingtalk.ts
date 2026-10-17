@@ -97,6 +97,7 @@ const publicErrors: Record<string, string> = {
   DWS_CALENDAR_CREATE_FAILED: '钉钉日程创建未能完成。',
   DWS_CALENDAR_CREATE_UNVERIFIED: '钉钉日程创建结果无法验证；请先检查日历，不要直接重试。',
   DWS_TODO_TITLE_INVALID: '钉钉待办标题无效。',
+  DWS_TODO_LIST_FAILED: '钉钉待办列表未能完整读取。',
   DWS_TODO_EXECUTOR_INVALID: '钉钉待办执行人无效。',
   DWS_TODO_PRIORITY_INVALID: '钉钉待办优先级无效。',
   DWS_TODO_CONFIRMATION_REQUIRED: '创建钉钉待办需要在当前任务中明确请求。',
@@ -209,7 +210,7 @@ export class DingTalkService {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('钉钉个人助理请求无效');
     const body = input as Record<string, unknown>;
     const action = String(body.action || '');
-    if (!grant.actions.includes(action as 'todo-create' | 'cokeclaw-send')) throw new Error('当前任务没有此钉钉个人助理操作权限');
+    if (!grant.actions.includes(action as 'todo-list' | 'todo-create' | 'cokeclaw-send')) throw new Error('当前任务没有此钉钉个人助理操作权限');
     const session: AuthSession = {
       tokenHash: '', user: { id: grant.userId, email: '', name: '' },
       tenant: { id: grant.tenantId, name: '', role: 'member', kind: 'workspace' },
@@ -217,6 +218,11 @@ export class DingTalkService {
     };
     if (this.e2eMock) {
       requireMockDingTalkIdentity(this.mockAccounts, session);
+      if (action === 'todo-list') {
+        const scope = body.scope === undefined ? 'related' : String(body.scope);
+        if (!['related', 'due-today', 'overdue'].includes(scope)) throw new Error(publicErrors.DWS_TODO_LIST_FAILED);
+        return { scope, count: 0, tasks: [], complete: true, testOnly: true };
+      }
       if (action === 'todo-create') {
         const todo = validateTodoCreate(body, grant, this.ticketSecret || 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes');
         return { taskId: `e2e-todo-${todo.requestId}`, title: todo.title, due: todo.due, verified: true, testOnly: true };
@@ -226,6 +232,11 @@ export class DingTalkService {
     }
     this.requireConfigured();
     try {
+      if (action === 'todo-list') {
+        const scope = body.scope === undefined ? 'related' : String(body.scope);
+        if (!['related', 'due-today', 'overdue'].includes(scope)) throw new Error(publicErrors.DWS_TODO_LIST_FAILED);
+        return await this.call(session, '/v1/secretary/todo-list', 'POST', { scope });
+      }
       if (action === 'todo-create') {
         const todo = validateTodoCreate(body, grant, this.ticketSecret);
         return await this.call(session, '/v1/secretary/todo-create', 'POST', { ...todo, confirmed: true });

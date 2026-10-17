@@ -148,7 +148,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     return this.connection?.novncUrl ?? null;
   }
 
-  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; dingtalkDocumentsBridge?: { url: string; token: string; actions: Array<'search' | 'fetch' | 'create'> }; dingtalkCalendarBridge?: { url: string; token: string; actions: Array<'list' | 'create'> }; dingtalkSecretaryBridge?: { url: string; token: string; actions: Array<'todo-create' | 'cokeclaw-send'> }; incidentRemediation?: boolean; signal?: AbortSignal }) {
+  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; dingtalkDocumentsBridge?: { url: string; token: string; actions: Array<'search' | 'fetch' | 'create'> }; dingtalkCalendarBridge?: { url: string; token: string; actions: Array<'list' | 'create'> }; dingtalkSecretaryBridge?: { url: string; token: string; actions: Array<'todo-list' | 'todo-create' | 'cokeclaw-send'> }; incidentRemediation?: boolean; signal?: AbortSignal }) {
     await this.ensureConnection();
     const owner = await this.request('/v1/control');
     if (!owner.ok) await this.throwWorkerError(owner, `Linux 云电脑控制权读取失败（HTTP ${owner.status}）`);

@@ -42,6 +42,7 @@ const allowedErrors = new Set([
   'DWS_CALENDAR_TITLE_INVALID', 'DWS_CALENDAR_CONFIRMATION_REQUIRED', 'DWS_CALENDAR_REQUEST_ID_INVALID',
   'DWS_CALENDAR_CREATE_FAILED', 'DWS_CALENDAR_CREATE_UNVERIFIED',
   'DWS_TODO_TITLE_INVALID', 'DWS_TODO_EXECUTOR_INVALID', 'DWS_TODO_PRIORITY_INVALID',
+  'DWS_TODO_LIST_FAILED',
   'DWS_TODO_CONFIRMATION_REQUIRED', 'DWS_TODO_REQUEST_ID_INVALID', 'DWS_TODO_CREATE_FAILED', 'DWS_TODO_CREATE_UNVERIFIED',
   'DWS_CHAT_CONTENT_INVALID', 'DWS_CHAT_CONFIRMATION_REQUIRED', 'DWS_CHAT_REQUEST_ID_INVALID',
   'DWS_CHAT_SEND_FAILED', 'DWS_CHAT_SEND_UNVERIFIED', 'DWS_SECRETARY_RUNTIME_REQUIRED',
@@ -1176,12 +1177,13 @@ export function createDingtalkConnectorGateway({
         const body = await readBody(req, 16 * 1024);
         return send(200, { ok: true, data: await calendar.listEvents(ownerPrincipal(ticket), body) });
       }
-      const secretaryRoute = url.pathname.match(/^\/v1\/secretary\/(calendar-create|todo-create|cokeclaw-send)$/);
+      const secretaryRoute = url.pathname.match(/^\/v1\/secretary\/(calendar-create|todo-list|todo-create|cokeclaw-send)$/);
       if (req.method === 'POST' && secretaryRoute) {
         const body = await readBody(req, 16 * 1024);
         const principal = ownerPrincipal(ticket);
         const operation = {
           'calendar-create': secretary.createCalendarEvent,
+          'todo-list': secretary.listPersonalTodos,
           'todo-create': secretary.createPersonalTodo,
           'cokeclaw-send': secretary.sendCokeclawReport,
         }[secretaryRoute[1]];
