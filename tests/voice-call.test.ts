@@ -104,13 +104,41 @@ test('voice follow-ups retain bounded context within one call and across an expl
     const first = store.submitVoiceTurn({ tenantId: alpha.tenant.id, userId: alpha.user.id, callId: firstCall.id, turnId: 'context-turn-1', transcript: '请准备北交所规则会议资料', engine: 'pi' });
     store.updateTask(first.task.id, { status: 'done', result: '会议资料文档已创建，日程待确认。' }, alpha.tenant.id);
     const second = store.submitVoiceTurn({ tenantId: alpha.tenant.id, userId: alpha.user.id, callId: firstCall.id, turnId: 'context-turn-2', transcript: '把日程也安排上', engine: 'pi' });
-    assert.match(second.task.instruction, /Recent voice-task context/);
+    assert.match(second.task.instruction, /Earlier turns from this voice call/);
+    assert.match(second.task.instruction, /User said: 请准备北交所规则会议资料/);
     assert.match(second.task.instruction, /会议资料文档已创建/);
+
+    let previousTask = second.task;
+    for (const [index, utterance] of [
+      '把会议纪要写成钉钉文档',
+      '把文档发到 cokeclaw 群',
+      '再查一下交易规则的生效日期',
+      '根据这条规则调整移动交易页面',
+      '跑完测试并准备 PR',
+    ].entries()) {
+      store.updateTask(previousTask.id, { status: 'done', result: `第 ${index + 2} 项已处理。` }, alpha.tenant.id);
+      previousTask = store.submitVoiceTurn({
+        tenantId: alpha.tenant.id, userId: alpha.user.id, callId: firstCall.id,
+        turnId: `context-turn-${index + 3}`, transcript: utterance, engine: 'pi',
+      }).task;
+    }
+    assert.match(previousTask.instruction, /User said: 请准备北交所规则会议资料/,
+      'A later voice turn in the same active call must retain the first user request');
+    assert.match(previousTask.instruction, /User said: 再查一下交易规则的生效日期/,
+      'Intermediate spoken turns must remain available throughout the same call');
+    assert.match(previousTask.instruction, /第 6 项已处理/,
+      'Context must include the most recent completed work outcome');
+    const transcriptRows = store.db.prepare('SELECT transcript FROM voice_call_turns WHERE call_id=? ORDER BY created_at ASC')
+      .all(firstCall.id) as { transcript: string }[];
+    assert.deepEqual(transcriptRows.map(row => row.transcript), [
+      '请准备北交所规则会议资料', '把日程也安排上', '把会议纪要写成钉钉文档', '把文档发到 cokeclaw 群',
+      '再查一下交易规则的生效日期', '根据这条规则调整移动交易页面', '跑完测试并准备 PR',
+    ], 'The database must preserve every utterance, not only the last few summarized tasks');
 
     store.endVoiceCall(alpha.tenant.id, alpha.user.id, firstCall.id, 30, '2026-10-17T00:01:00.000Z');
     const followUpCall = store.createVoiceCall(alpha.tenant.id, alpha.user.id, '2026-10-17T00:10:00.000Z');
     const followUp = store.submitVoiceTurn({ tenantId: alpha.tenant.id, userId: alpha.user.id, callId: followUpCall.id, turnId: 'context-turn-3', transcript: '那个会议准备资料处理好了吗？', engine: 'pi' });
-    assert.match(followUp.task.instruction, /Recent voice-task context/);
+    assert.match(followUp.task.instruction, /Earlier turns from this voice call/);
     assert.match(followUp.task.instruction, /会议资料文档已创建/);
 
     store.endVoiceCall(alpha.tenant.id, alpha.user.id, followUpCall.id, 20, '2026-10-17T00:11:00.000Z');
