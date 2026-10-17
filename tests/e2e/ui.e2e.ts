@@ -117,6 +117,7 @@ async function startMockModel() {
         const prompt = payload.messages?.find(message => message.role === 'user')?.content || '';
         mockModelPrompts.push(prompt);
         mockModelRequests.push({ prompt, authorization: String(request.headers.authorization || '') });
+        const currentVoicePrompt = prompt.split('\n\nEarlier turns from this voice call')[0] || prompt;
         const hasReply = prompt.includes('User reply: Use Friday.');
         const isRecurringCheck = prompt.includes('E2E recurring run — verify due work reruns automatically');
         const isAutomationIdeas = prompt.includes('E2E automation ideas — ten ideas only');
@@ -130,8 +131,11 @@ async function startMockModel() {
         const isVoiceResponse = prompt.includes('E2E voice response — speak actual task result');
         const isMobileVoiceRequest = prompt.includes('帮我准备明天的会议资料');
         const isMobileVoiceReply = isMobileVoiceRequest && prompt.includes('User reply:');
-        const isVolcVoiceResponse = prompt.includes('请用中文整理本周人工智能产品更新的三个要点');
-        const isVolcVoiceFollowUp = prompt.includes('那刚才的三项产品更新都整理完成了吗？');
+        const isVolcVoiceResponse = currentVoicePrompt.includes('请用中文整理本周人工智能产品更新的三个要点');
+        const isVolcVoiceFollowUp = currentVoicePrompt.includes('那刚才的三项产品更新都整理完成了吗？');
+        const isSecretaryScheduleQuery = currentVoicePrompt.includes('我下周一有哪些北交所规则评审相关的日程和待办？');
+        const isSecretaryWorkRequest = currentVoicePrompt.includes('请根据刚才的日程和待办继续完成北交所规则调研，更新移动交易页并跑测试。');
+        const isSecretaryProgressQuestion = currentVoicePrompt.includes('刚才的交易页面调整和测试完成了吗？');
         const isSeedDuplexClarification = prompt.includes('请用云电脑打开网页并告诉我标题。') && !prompt.includes('User reply:');
         const isSeedDuplexClarificationReply = prompt.includes('User reply: 请打开 https://example.com/。');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
@@ -173,7 +177,7 @@ async function startMockModel() {
           delegatedModelReleases.delete(delegatedChild);
         }
         const isAskBeforeScratchpad = prompt.includes('the app will wait for approval');
-        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isDotMemoryCapture || isDotMemoryUpdate || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isSeedDuplexClarificationReply || isMobileVoiceReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isSecretResilienceTask || isDingTalkAlertTask;
+        const isComplete = hasReply || isRecurringCheck || isAutomationIdeas || isMemoryCheck || isDotMemoryCapture || isDotMemoryUpdate || isPageRequest || isPageUpdate || isPauseTask || isStopTask || isVoiceTask || isVoiceResponse || isVolcVoiceResponse || isVolcVoiceFollowUp || isSecretaryScheduleQuery || isSecretaryWorkRequest || isSecretaryProgressQuestion || isSeedDuplexClarificationReply || isMobileVoiceReply || isParallelTask || Boolean(delegatedChild) || isDelegationAggregate || isSharedModelTask || isSecretResilienceTask || isDingTalkAlertTask;
         const pageId = isPageUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nTitle: Team launch notes\n/)?.[1] : undefined;
         const dotMemoryId = isDotMemoryUpdate ? prompt.match(/ID: ([a-f0-9-]{36})\nNote: Alpha prefers concise Mandarin updates\./)?.[1] : undefined;
         const memoryAction = isDotMemoryCapture ? { action: 'save', note: 'Alpha prefers concise Mandarin updates.' } : isDotMemoryUpdate ? { action: 'update', memoryId: dotMemoryId, note: 'Alpha prefers concise Chinese updates.' } : undefined;
@@ -182,12 +186,24 @@ async function startMockModel() {
           { title: 'Market scan', instruction: 'E2E delegated child — market scan', engine: 'model' },
           { title: 'Competitor scan', instruction: 'E2E delegated child — competitor scan' },
           { title: 'Launch risks', instruction: 'E2E delegated child — launch risks', engine: 'model' },
-        ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isSecretResilienceTask ? 'K3D Secret 暂时不可读，但任务使用进程缓存的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isDotMemoryCapture ? '我会记住你偏好简洁的中文回复。' : isDotMemoryUpdate ? '我已根据你的偏好更新私人记忆。' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ends.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isParallelTask ? 'Parallel task complete.' : isDingTalkAlertTask ? dingTalkAlertResult : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}), ...(memoryAction ? { memoryAction } : {}) };
+        ] } : { status: isSeedDuplexClarification ? 'waiting' : isComplete ? 'done' : 'waiting', message: isSharedModelTask ? '共享模型 API 已在第二个 Google 账号中成功调用。' : isSecretResilienceTask ? 'K3D Secret 暂时不可读，但任务使用进程缓存的共享模型凭据完成。' : isDelegationAggregate ? 'Completed launch packet from the delegated research.' : delegatedChild ? `${delegatedChild} completed with verified findings.` : isSeedDuplexClarificationReply ? '网页标题是「Example Domain」。' : isSeedDuplexClarification ? '请告诉我你要打开的网址。' : hasReply ? 'The launch plan now uses Friday.' : isRecurringCheck ? 'The recurring check completed.' : isAutomationIdeas ? '1. Morning operator brief\n2. Open-loop roundup\n3. Meeting prep on autopilot\n4. Meeting-to-action cleanup\n5. Cohort session readiness\n6. Content repurposing queue\n7. Practical AI news filter\n8. Creative quality checks\n9. Weekly business pulse\n10. Admin and renewal radar\n\nThese are ideas, not activated routines. We would choose sources, timing, and review requirements before setting them up.' : isMemoryCheck ? 'The saved workspace preference was applied.' : isDotMemoryCapture ? '我会记住你偏好简洁的中文回复。' : isDotMemoryUpdate ? '我已根据你的偏好更新私人记忆。' : isStopTask ? 'This stopped task returned a late result.' : isPauseTask ? 'The paused task completed after resume.' : isVoiceTask ? 'Voice request finished after the call ends.' : isVoiceResponse ? 'Voice response returned from the model.' : isVolcVoiceResponse ? '已完成：本周公开资料中有三项值得关注的人工智能产品更新，分别涉及模型能力、Agent 工作流和语音交互。' : isVolcVoiceFollowUp ? '是的，刚才提到的三项产品更新已经整理完成。' : isSecretaryScheduleQuery ? '下周一 10 月 19 日 10:00–10:45 有北交所交易规则变更评审；待办是 10 月 20 日复核规则影响，以及 10 月 21 日验证生效日期和移动交易页提示。' : isSecretaryWorkRequest ? '已核对北交所规则，并将价格区间与最低申报门槛纳入移动交易页校验；自动化测试通过，变更已准备 PR。' : isSecretaryProgressQuestion ? '已完成：移动交易页的规则校验和回归测试均通过，变更已准备 PR；页面没有提交真实委托。' : isParallelTask ? 'Parallel task complete.' : isDingTalkAlertTask ? dingTalkAlertResult : isPageRequest ? isAskBeforeScratchpad ? 'The page draft is ready for review.' : 'I created the team launch notes.' : isPageUpdate ? isAskBeforeScratchpad ? 'The proposed page update is ready for review.' : 'I updated the team launch notes.' : 'What launch date should I use?', ...(isPageRequest ? { pageAction: { action: 'create', title: 'Team launch notes', content: '# Launch outline\n- Review the short intro\n- Confirm the release date' } } : isPageUpdate ? { pageAction: { action: 'update', pageId, title: 'Team launch notes', content: '## Revised outline\n- Approve the short intro\n- Confirm the release date' } } : {}), ...(memoryAction ? { memoryAction } : {}) };
         if (isMobileVoiceRequest) {
           decision.status = isMobileVoiceReply ? 'done' : 'waiting';
           decision.message = isMobileVoiceReply
             ? '好的，我会把产品进展、风险和待决策事项整理成会前资料。'
             : '你希望会前资料重点覆盖哪些主题？';
+        }
+        if (isSecretaryScheduleQuery) {
+          decision.status = 'done';
+          decision.message = '下周一 10 月 19 日 10:00–10:45 有北交所交易规则变更评审；待办是 10 月 20 日复核规则影响，以及 10 月 21 日验证生效日期和移动交易页提示。';
+        }
+        if (isSecretaryWorkRequest) {
+          decision.status = 'done';
+          decision.message = '已核对北交所规则，并将价格区间与最低申报门槛纳入移动交易页校验；自动化测试通过，变更已准备 PR。';
+        }
+        if (isSecretaryProgressQuestion) {
+          decision.status = 'done';
+          decision.message = '已完成：移动交易页的规则校验和回归测试均通过，变更已准备 PR；页面没有提交真实委托。';
         }
         if (isVolcVoiceFollowUp) {
           decision.status = 'done';
@@ -3277,7 +3293,9 @@ try {
     }
   });
 
-  await recordStep('Mobile Chrome SeedDuplex call captures microphone audio, speaks the Agent result, and dispatches Chinese speech', async () => {
+  await recordStep('Mobile Chrome SeedDuplex voice secretary reads DingTalk schedule/todos and retains the full multi-turn task context', async () => {
+    const scheduleTranscript = '我下周一有哪些北交所规则评审相关的日程和待办？';
+    mockVolcEngineDuplexNextInitialTranscript = scheduleTranscript;
     mockVolcEngineDuplexUrl = await startMockVolcEngineDuplexProvider();
     await stopServer(server);
     server = await startServer(e2ePort, {
@@ -3358,20 +3376,21 @@ try {
     assert(providerConnection.pcmBytes >= 640, 'The browser must stream 16 kHz PCM audio in realtime-sized packets');
     assert(providerConnection.pcmPeak > 0 && providerConnection.nonSilentPcmSamples > 0, 'SeedDuplex must receive non-silent PCM from the selected microphone, not merely zero-filled frames');
     assert(providerConnection.events.includes('session.create') && providerConnection.events.includes('input_audio_buffer.append'), 'SeedDuplex must use JSON session and audio events');
-    assert(providerConnection.spokenTexts.some(text => text.includes('已完成：本周公开资料中有三项值得关注')), 'The Chinese Agent result must be submitted to SeedDuplex direct text-to-speech events');
+    const scheduleResult = '下周一 10 月 19 日 10:00–10:45 有北交所交易规则变更评审；待办是 10 月 20 日复核规则影响，以及 10 月 21 日验证生效日期和移动交易页提示。';
+    assert(providerConnection.spokenTexts.includes(scheduleResult), 'The mobile call must speak the current user schedule and related todo result in Chinese');
     assert(providerConnection.events.includes('speech_text_buffer.commit'), 'Agent status speech must use the provider direct-synthesis event');
-    assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Final Chinese speech transcript from the mobile call must start the normal tenant Agent task');
+    assert(mockModelPrompts.some(prompt => prompt.includes(scheduleTranscript)), 'The mobile Chinese speech transcript must start the normal tenant Agent task');
 
-    const followUpTranscript = '那刚才的三项产品更新都整理完成了吗？';
+    const followUpTranscript = '请根据刚才的日程和待办继续完成北交所规则调研，更新移动交易页并跑测试。';
     providerConnection.sendTranscript(followUpTranscript, 'duplex-e2e-followup-0002');
     await call.locator('.voice-call-card-transcript').filter({ hasText: followUpTranscript }).waitFor({ state: 'visible', timeout: 15_000 });
-    const followUpResult = '是的，刚才提到的三项产品更新已经整理完成。';
+    const followUpResult = '已核对北交所规则，并将价格区间与最低申报门槛纳入移动交易页校验；自动化测试通过，变更已准备 PR。';
     await waitFor(() => providerConnection.spokenTexts.includes(followUpResult), 20_000);
     const followUpPrompt = [...mockModelPrompts].reverse().find(prompt => prompt.includes(followUpTranscript));
     assert(followUpPrompt?.includes('Earlier turns from this voice call'), 'A later question in the still-active call must reach the Agent with earlier turn context');
-    assert(followUpPrompt?.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。'), 'The call context must retain the first spoken request');
-    assert(followUpPrompt?.includes('已完成：本周公开资料中有三项值得关注的人工智能产品更新'), 'The call context must include the completed task result, not just its request');
-    assert(providerConnection.spokenTexts.includes(followUpResult), 'The Agent must speak the context-aware follow-up answer through the active call');
+    assert(followUpPrompt?.includes('User said: 我下周一有哪些北交所规则评审相关的日程和待办？'), 'The call context must retain the first spoken schedule-and-todo question');
+    assert(followUpPrompt?.includes(scheduleResult), 'The follow-up task must receive the actual earlier schedule/todo outcome');
+    assert(providerConnection.spokenTexts.includes(followUpResult), 'The Agent must speak the context-aware work result through the active call');
     const followUpTasks = await mobilePage!.evaluate(async (text: string) => {
       const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string; result: string | null }[] };
       return state.tasks.filter(task => task.instruction.includes(text));
@@ -3379,6 +3398,29 @@ try {
     assert.equal(followUpTasks.length, 1, 'The follow-up question should create exactly one Agent task in the same call');
     assert.equal(followUpTasks[0]?.status, 'done');
     assert.equal(followUpTasks[0]?.result, followUpResult);
+
+    const progressTranscript = '刚才的交易页面调整和测试完成了吗？';
+    providerConnection.sendTranscript(progressTranscript, 'duplex-e2e-followup-0003');
+    await call.locator('.voice-call-card-transcript').filter({ hasText: progressTranscript }).waitFor({ state: 'visible', timeout: 15_000 });
+    const progressResult = '已完成：移动交易页的规则校验和回归测试均通过，变更已准备 PR；页面没有提交真实委托。';
+    await waitFor(() => providerConnection.spokenTexts.includes(progressResult), 20_000);
+    const progressPrompt = [...mockModelPrompts].reverse().find(prompt => prompt.includes(progressTranscript));
+    assert(progressPrompt?.includes('Earlier turns from this voice call'), 'The third phone turn must still use the same call context');
+    assert(progressPrompt?.includes(followUpTranscript), 'The third phone turn must retain the spoken request to update the page and run tests');
+    assert(progressPrompt?.includes(followUpResult), 'The third phone turn must include the completed task result for an accurate progress answer');
+    const secretaryTasks = await mobilePage!.evaluate(async ({ scheduleText, workText, progressText }) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { id: string; instruction: string; status: string; result: string | null }[] };
+      return [scheduleText, workText, progressText].map(text => state.tasks.filter(task => task.instruction.includes(text)));
+    }, { scheduleText: scheduleTranscript, workText: followUpTranscript, progressText: progressTranscript });
+    assert.equal(secretaryTasks[0]?.length, 3, 'All three tenant tasks must retain the first schedule question in their call context');
+    assert.equal(secretaryTasks[1]?.length, 2, 'The work and progress tasks must retain the second spoken request');
+    assert.equal(secretaryTasks[2]?.length, 1, 'The progress question must create exactly one tenant Agent task');
+    const allSecretaryTasks = secretaryTasks[0] || [];
+    assert.equal(new Set(allSecretaryTasks.map(task => task.id)).size, 3, 'Each spoken turn must create one distinct task record');
+    assert.equal(allSecretaryTasks.filter(task => task.result === scheduleResult).length, 1, 'The schedule answer must be recorded once');
+    assert.equal(allSecretaryTasks.filter(task => task.result === followUpResult).length, 1, 'The page-update result must be recorded once');
+    assert.equal(allSecretaryTasks.filter(task => task.result === progressResult).length, 1, 'The progress answer must be recorded once');
+    assert(providerConnection.spokenTexts.includes(progressResult), 'The Agent must speak the accurate final progress answer in the same call');
 
     const activeCall = await mobilePage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
     assert(activeCall, 'The SeedDuplex voice session must use the authenticated user-owned call record');
@@ -3406,7 +3448,7 @@ try {
     assert(diagnostic.inputAudioFrames > 0 && diagnostic.inputAudioBytes > 0, 'The diagnostic must report forwarded mic frames');
     assert(diagnostic.inputSamplesAboveNoiseFloor > 0, 'The diagnostic must distinguish non-silent PCM from zero-filled packets');
     assert(diagnostic.asrStarted > 0 && diagnostic.asrCompleted > 0 && diagnostic.asrCompletedEmpty === 0, 'The diagnostic must distinguish provider ASR completion from transport-only success');
-    assert.equal(diagnosticLine.includes('请用中文整理本周人工智能产品更新'), false, 'The diagnostic must not retain transcript content');
+    assert.equal(diagnosticLine.includes(scheduleTranscript), false, 'The diagnostic must not retain the phone transcript');
   });
 
   await recordStep('SeedDuplex keeps a spoken clarification in the same task and speaks the resumed result', async () => {

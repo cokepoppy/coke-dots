@@ -270,7 +270,7 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     const calendarCall = store.createVoiceCall(account.tenant.id, account.user.id);
     const calendarTask = store.submitVoiceTurn({
       tenantId: account.tenant.id, userId: account.user.id, callId: calendarCall.id,
-      turnId: 'voice-read-schedule-todos-0001', transcript: '我明天有哪些日程和待办？', engine: 'pi',
+      turnId: 'voice-read-schedule-todos-0001', transcript: '我下周一有哪些北交所规则评审相关的日程和待办？', engine: 'pi',
     }).task;
     await worker.tick();
     const calendarDeadline = Date.now() + 2_000;
