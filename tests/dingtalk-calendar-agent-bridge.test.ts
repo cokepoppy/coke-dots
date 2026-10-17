@@ -13,6 +13,8 @@ const baseInput = {
 test('calendar capability is read-only, explicit-intent, short-lived, and bound to one tenant/user/task', () => {
   assert.equal(requestsDingTalkCalendarRead('读取我本周的钉钉日程'), true);
   assert.equal(requestsDingTalkCalendarRead('帮我准备今天的会议'), true);
+  assert.equal(requestsDingTalkCalendarRead('我明天有哪些日程和待办？'), true, 'The mobile secretary request for upcoming calendar events must receive a list-only grant');
+  assert.equal(requestsDingTalkCalendarRead('告诉我接下来有什么会议安排'), true, 'Natural spoken questions about upcoming meetings must grant calendar read access');
   assert.equal(requestsDingTalkCalendarRead('读取明天的会议日程并写一份钉钉会议准备文档'), true, 'Calendar reads must remain available when the requested output is a document');
   assert.equal(requestsDingTalkCalendarRead("What's on my schedule?"), true);
   assert.equal(requestsDingTalkCalendarRead('请在钉钉日历创建一个会议'), false, 'A write-only meeting request does not need a read grant');

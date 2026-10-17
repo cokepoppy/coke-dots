@@ -17,6 +17,7 @@ test('secretary grants only explicit self-todo and fixed cokeclaw delivery actio
   assert.deepEqual(verifyDingTalkSecretaryAgentGrant(bridge.token, secret, baseInput.now)?.actions, bridge.actions);
   const read = createDingTalkSecretaryAgentBridge({ ...baseInput, instruction: '告诉我今天有哪些未完成的钉钉待办' });
   assert.deepEqual(read?.actions, ['todo-list']);
+  assert.deepEqual(createDingTalkSecretaryAgentBridge({ ...baseInput, instruction: '我明天有哪些日程和待办？' })?.actions, ['todo-list'], 'The same spoken request must also grant list-only todo access');
   assert.deepEqual(createDingTalkSecretaryAgentBridge({ ...baseInput, instruction: '创建一个个人钉钉待办' })?.actions, ['todo-create']);
   assert.equal(createDingTalkSecretaryAgentBridge({ ...baseInput, instruction: '删除 cokeclaw 群里的待办' }), null);
   assert.equal(createDingTalkSecretaryAgentBridge({ ...baseInput, instruction: '更新监控群里的内容' }), null);

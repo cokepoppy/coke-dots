@@ -267,7 +267,11 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     assert(readOnly);
     assert.deepEqual(readOnly.actions, ['search', 'fetch']);
 
-    const calendarTask = store.createTask('读取本周钉钉日程并准备会议', null, 'pi', account.tenant.id, null, null, [], account.user.id);
+    const calendarCall = store.createVoiceCall(account.tenant.id, account.user.id);
+    const calendarTask = store.submitVoiceTurn({
+      tenantId: account.tenant.id, userId: account.user.id, callId: calendarCall.id,
+      turnId: 'voice-read-schedule-todos-0001', transcript: '我明天有哪些日程和待办？', engine: 'pi',
+    }).task;
     await worker.tick();
     const calendarDeadline = Date.now() + 2_000;
     while (Date.now() < calendarDeadline && store.getTask(calendarTask.id, account.tenant.id)?.status === 'working') await new Promise(resolve => setTimeout(resolve, 10));
@@ -279,6 +283,12 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     assert.equal(calendarGrant?.tenantId, account.tenant.id);
     assert.equal(calendarGrant?.userId, account.user.id);
     assert.equal(calendarGrant?.taskId, calendarTask.id);
+    assert(receivedSecretaryBridge, 'A spoken request for both events and todos must receive its scoped todo read capability');
+    assert.deepEqual(receivedSecretaryBridge.actions, ['todo-list']);
+    const todoReadGrant = service.verifyAgentSecretaryGrant(receivedSecretaryBridge.token);
+    assert.equal(todoReadGrant?.tenantId, account.tenant.id);
+    assert.equal(todoReadGrant?.userId, account.user.id);
+    assert.equal(todoReadGrant?.taskId, calendarTask.id);
 
     const secretaryTask = store.createTask('读取日程与个人待办、安排准备会、创建个人待办，并把最终排障报告发送到 cokeclaw 群', null, 'pi', account.tenant.id, null, null, [], account.user.id);
     await worker.tick();

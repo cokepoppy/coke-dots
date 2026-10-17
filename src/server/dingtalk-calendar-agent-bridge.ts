@@ -20,7 +20,7 @@ export interface DingTalkCalendarAgentBridge {
 const audience = 'coke-dots-dingtalk-calendar-v1';
 const grantLifetimeSeconds = 15 * 60;
 const calendarIntent = /(?:日程|日历|会议|calendar|agenda|my\s+schedule)/i;
-const readIntent = /(?:查|查看|看看|列出|读取|获取|总结|准备|梳理|read|list|what(?:'s| is)|upcoming|prepare|prep(?:are)?|agenda)/i;
+const readIntent = /(?:查|查看|看看|列出|读取|获取|告诉我|有哪些|有什么|有没有|总结|准备|梳理|read|list|what(?:'s| is)|upcoming|prepare|prep(?:are)?|agenda)/i;
 const createIntent = /(?:创建|安排|新增|预约|订一个|添加|create|schedule|book|set\s+up)/i;
 const destructiveIntent = /(?:取消|删除|修改|更新|移除|cancel|delete|update|change|remove)/i;
 const documentCalendarInstructionsIntent = /(?:文档|知识库|钉盘|document|knowledge\s?base|drive).{0,20}(?:里|中|about|containing).{0,20}(?:日程|日历|会议|calendar|agenda)/i;
