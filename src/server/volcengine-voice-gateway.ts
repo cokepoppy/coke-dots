@@ -18,9 +18,9 @@ const MAX_SPEAK_TEXT = 1200;
 
 type LocalVoiceMessage = { type?: unknown; text?: unknown };
 
-export function bridgeVolcengineVoiceCall(client: WebSocket, dotName: string, env: NodeJS.ProcessEnv = process.env) {
+export function bridgeVolcengineVoiceCall(client: WebSocket, dotName: string, env: NodeJS.ProcessEnv = process.env, callId?: string) {
   const config = volcengineVoiceConfig(env);
-  if (config.mode === 'seedduplex') return bridgeVolcengineDuplexVoiceCall(client, dotName, env);
+  if (config.mode === 'seedduplex') return bridgeVolcengineDuplexVoiceCall(client, dotName, env, callId);
   const connectionId = randomUUID();
   const sessionId = volcengineSessionId();
   const upstream = new WebSocket(volcengineRealtimeUrl(env), {

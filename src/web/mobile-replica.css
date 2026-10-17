@@ -385,6 +385,27 @@
     background: #d7645e;
   }
 
+  .voice-call-mobile-screen > .voice-call-card-mic {
+    width: min(100%, 360px);
+    justify-content: center;
+    gap: 9px;
+    margin-top: 20px;
+    color: #77737e;
+    font-size: 12px;
+    line-height: 16px;
+  }
+
+  .voice-call-mobile-screen > .voice-call-card-mic > div {
+    width: 72px;
+    height: 4px;
+  }
+
+  .voice-call-mobile-screen > .voice-call-card-mic > small {
+    min-width: 88px;
+    color: #77737e;
+    font-size: 11px;
+  }
+
   .voice-call-mobile-timer {
     margin-top: auto;
     margin-bottom: 20px;
@@ -507,7 +528,9 @@
 
   .dots-dark .voice-call-mobile-status,
   .dots-dark .voice-call-mobile-timer,
-  .dots-dark .voice-call-mobile-control {
+  .dots-dark .voice-call-mobile-control,
+  .dots-dark .voice-call-mobile-screen > .voice-call-card-mic,
+  .dots-dark .voice-call-mobile-screen > .voice-call-card-mic > small {
     color: #b5b0bb;
   }
 

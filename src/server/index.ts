@@ -1013,7 +1013,7 @@ server.on('upgrade', (req, client, head) => {
         if (provider.provider !== 'volcengine') return rejectUpgrade(client, 409, 'Realtime voice provider unavailable');
         if (!provider.configured) return rejectUpgrade(client, 503, 'Volcengine voice is not configured');
         volcVoiceWss.handleUpgrade(req, client, head, ws => {
-          const close = bridgeVolcengineVoiceCall(ws, snapshot(session.tenant.id).profile.name);
+          const close = bridgeVolcengineVoiceCall(ws, snapshot(session.tenant.id).profile.name, process.env, call.id);
           ws.once('close', () => close());
         });
         return;

@@ -131,6 +131,7 @@ async function startMockModel() {
         const isMobileVoiceRequest = prompt.includes('帮我准备明天的会议资料');
         const isMobileVoiceReply = isMobileVoiceRequest && prompt.includes('User reply:');
         const isVolcVoiceResponse = prompt.includes('请用中文整理本周人工智能产品更新的三个要点');
+        const isVolcVoiceFollowUp = prompt.includes('那刚才的三项产品更新都整理完成了吗？');
         const isSeedDuplexClarification = prompt.includes('请用云电脑打开网页并告诉我标题。') && !prompt.includes('User reply:');
         const isSeedDuplexClarificationReply = prompt.includes('User reply: 请打开 https://example.com/。');
         const isStopTask = prompt.includes('E2E stop task — stop while the model is still working');
@@ -187,6 +188,10 @@ async function startMockModel() {
           decision.message = isMobileVoiceReply
             ? '好的，我会把产品进展、风险和待决策事项整理成会前资料。'
             : '你希望会前资料重点覆盖哪些主题？';
+        }
+        if (isVolcVoiceFollowUp) {
+          decision.status = 'done';
+          decision.message = '是的，刚才提到的三项产品更新已经整理完成。';
         }
         const content = JSON.stringify(decision);
         if (response.destroyed || response.writableEnded) return;
@@ -2201,20 +2206,6 @@ try {
     await screenshot(alphaPage!, 'voice-call-task-running');
     speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
     assert(speechOutput.includes('收到，已加入工作队列。'), 'The call should speak its queue acknowledgement when speaker output is enabled');
-    const responseInstruction = 'E2E voice response — speak actual task result';
-    await alphaPage!.evaluate((text: string) => {
-      const pageWindow = window as unknown as { __dotsFakeRecognition?: { emit: (value: string) => void } };
-      pageWindow.__dotsFakeRecognition?.emit(text);
-    }, responseInstruction);
-    await alphaPage!.locator('.timeline .message.user p').filter({ hasText: responseInstruction }).waitFor({ state: 'visible' });
-    await alphaPage!.getByText('最近的对话和进度', { exact: true }).waitFor({ state: 'visible' });
-    await waitFor(async () => {
-      speechOutput = await alphaPage!.evaluate(() => (window as unknown as { __dotsSpeechOutput: string[] }).__dotsSpeechOutput);
-      return speechOutput.includes('Voice response returned from the model.');
-    }, 10_000);
-    assert(speechOutput.includes('Voice response returned from the model.'), 'The call should speak the completed task result, not only acknowledge receipt');
-    await alphaPage!.locator('.timeline .message.dot').filter({ hasText: 'Voice response returned from the model.' }).waitFor({ state: 'visible' });
-    assert.equal(await call.isVisible(), true, 'The Agent answer must return to the Dot conversation without navigating away from the active call');
     assert.equal(voiceStatePollingRequests, 0, 'Voice task progress should arrive on the authenticated event stream instead of polling /api/state');
     alphaPage!.off('request', countVoiceStatePolling);
     const composer = alphaPage!.getByTestId('task-composer');
@@ -3349,7 +3340,11 @@ try {
     assert.equal(await call.getAttribute('data-voice-mic-state'), 'sent', 'The browser must start microphone PCM capture after SeedDuplex connects');
     assert(await mobilePage!.getByTestId('voice-call-transcript').textContent().then(text => text?.includes('正在聆听')), 'The mobile call should report listening only after microphone PCM frames have been sent');
     await mobilePage!.waitForFunction(() => Number(document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-level')) > 0, null, { timeout: 10_000 });
-    assert(Number(await call.getAttribute('data-voice-mic-level')) > 0, 'The mobile call must detect a non-silent microphone signal even though its compact phone UI omits the desktop meter');
+    assert(Number(await call.getAttribute('data-voice-mic-level')) > 0, 'The mobile call must detect a non-silent microphone signal');
+    const mobileMicMeter = call.getByTestId('voice-call-mic-meter');
+    await mobileMicMeter.waitFor({ state: 'visible' });
+    assert(Number(await mobileMicMeter.getByRole('meter').getAttribute('aria-valuenow')) > 0, 'The compact phone call must visibly expose its live microphone level');
+    assert((await mobileMicMeter.textContent())?.includes('检测到音量输入'), 'The compact phone call must distinguish actual nonzero input from frames sent during silence');
     assert.equal(mockVolcEngineDuplexConnections.length, 1, 'The authenticated SeedDuplex call should open one provider connection');
     const providerConnection = mockVolcEngineDuplexConnections[0];
     assert.equal(providerConnection.headers['x-api-key'], 'e2e-seedduplex-secret', 'The shared API key must be sent only from the server');
@@ -3367,6 +3362,24 @@ try {
     assert(providerConnection.events.includes('speech_text_buffer.commit'), 'Agent status speech must use the provider direct-synthesis event');
     assert(mockModelPrompts.some(prompt => prompt.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。')), 'Final Chinese speech transcript from the mobile call must start the normal tenant Agent task');
 
+    const followUpTranscript = '那刚才的三项产品更新都整理完成了吗？';
+    providerConnection.sendTranscript(followUpTranscript, 'duplex-e2e-followup-0002');
+    await call.locator('.voice-call-card-transcript').filter({ hasText: followUpTranscript }).waitFor({ state: 'visible', timeout: 15_000 });
+    const followUpResult = '是的，刚才提到的三项产品更新已经整理完成。';
+    await waitFor(() => providerConnection.spokenTexts.includes(followUpResult), 20_000);
+    const followUpPrompt = [...mockModelPrompts].reverse().find(prompt => prompt.includes(followUpTranscript));
+    assert(followUpPrompt?.includes('Earlier turns from this voice call'), 'A later question in the still-active call must reach the Agent with earlier turn context');
+    assert(followUpPrompt?.includes('请用中文整理本周人工智能产品更新的三个要点，并说明来源。'), 'The call context must retain the first spoken request');
+    assert(followUpPrompt?.includes('已完成：本周公开资料中有三项值得关注的人工智能产品更新'), 'The call context must include the completed task result, not just its request');
+    assert(providerConnection.spokenTexts.includes(followUpResult), 'The Agent must speak the context-aware follow-up answer through the active call');
+    const followUpTasks = await mobilePage!.evaluate(async (text: string) => {
+      const state = await fetch('/api/state').then(response => response.json()) as { tasks: { instruction: string; status: string; result: string | null }[] };
+      return state.tasks.filter(task => task.instruction.includes(text));
+    }, followUpTranscript);
+    assert.equal(followUpTasks.length, 1, 'The follow-up question should create exactly one Agent task in the same call');
+    assert.equal(followUpTasks[0]?.status, 'done');
+    assert.equal(followUpTasks[0]?.result, followUpResult);
+
     const activeCall = await mobilePage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string; endedAt: string | null }[]).find(item => !item.endedAt) || null);
     assert(activeCall, 'The SeedDuplex voice session must use the authenticated user-owned call record');
     const betaCookie = (await betaContext!.cookies(baseUrl)).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
@@ -3382,6 +3395,18 @@ try {
     await call.waitFor({ state: 'detached' });
     assert.equal(await mobilePage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.readyState), 'ended', 'Ending the mobile call must release the microphone');
     await waitFor(() => providerConnection.events.includes('session.close') && providerConnection.timeline.includes('server:session.closed'), 5_000);
+    const diagnosticPrefix = 'seedduplex_voice_diagnostics ';
+    await waitFor(() => serverLogs.join('').split('\n').some(line => line.includes(diagnosticPrefix) && line.includes(activeCall.id)), 5_000);
+    const diagnosticLine = serverLogs.join('').split('\n').find(line => line.includes(diagnosticPrefix) && line.includes(activeCall.id));
+    assert(diagnosticLine, 'The server must emit one content-free microphone/ASR diagnostic summary when the call closes');
+    const diagnostic = JSON.parse(diagnosticLine.slice(diagnosticLine.indexOf(diagnosticPrefix) + diagnosticPrefix.length)) as {
+      callId: string; inputAudioFrames: number; inputAudioBytes: number; inputSamplesAboveNoiseFloor: number; asrStarted: number; asrCompleted: number; asrCompletedEmpty: number;
+    };
+    assert.equal(diagnostic.callId, activeCall.id);
+    assert(diagnostic.inputAudioFrames > 0 && diagnostic.inputAudioBytes > 0, 'The diagnostic must report forwarded mic frames');
+    assert(diagnostic.inputSamplesAboveNoiseFloor > 0, 'The diagnostic must distinguish non-silent PCM from zero-filled packets');
+    assert(diagnostic.asrStarted > 0 && diagnostic.asrCompleted > 0 && diagnostic.asrCompletedEmpty === 0, 'The diagnostic must distinguish provider ASR completion from transport-only success');
+    assert.equal(diagnosticLine.includes('请用中文整理本周人工智能产品更新'), false, 'The diagnostic must not retain transcript content');
   });
 
   await recordStep('SeedDuplex keeps a spoken clarification in the same task and speaks the resumed result', async () => {

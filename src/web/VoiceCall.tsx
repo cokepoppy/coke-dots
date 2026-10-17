@@ -838,6 +838,15 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
   const accessibleCallText = <div className="voice-call-a11y" aria-live="polite" aria-atomic="true" data-testid="voice-call-transcript" data-task-status={taskStatus}>
     <span>{status}</span>{transcript && <span>你说：{transcript}</span>}{taskStatus && <span>{taskStatus}</span>}
   </div>;
+  const micStatusText = micCaptureState === 'sent'
+    ? micLevelPercent > 0 ? '检测到音量输入' : '已连接，等待你说话'
+    : micCaptureState === 'muted' ? '已静音'
+      : micCaptureState === 'no-frames' ? '未收到音频帧'
+        : micCaptureState === 'context-suspended' ? '浏览器音频未启动'
+          : '等待麦克风';
+  const micMeter = voiceProvider === 'volcengine' && <div className="voice-call-card-mic" data-testid="voice-call-mic-meter" data-mic-state={micCaptureState} aria-label={`麦克风输入音量 ${micLevelPercent}%`}>
+    <span>麦克风</span><div role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={micLevelPercent}><i style={{ width: `${micLevelPercent}%` }} /></div><small>{micStatusText}</small>
+  </div>;
   return <section className={`voice-call-card${showMobileScreen ? ' voice-call-card-mobile' : ''}${callVariant === 'mobile-minimized' ? ' voice-call-card-mobile-minimized' : ''}`} role="dialog" aria-modal={showMobileScreen} aria-label="语音通话" data-testid="voice-call" data-variant={callVariant} data-voice-provider={voiceProvider} data-voice-model={voiceModel} data-voice-mic-state={micCaptureState} data-voice-mic-level={micLevelPercent}>
     {showMobileScreen ? <div className="voice-call-mobile-screen" data-testid="voice-call-mobile-screen">
       <button type="button" className="voice-call-mobile-return" data-testid="voice-call-minimize" aria-label="返回聊天" title="返回聊天并保持通话" onClick={() => setMobileMinimized(true)}>
@@ -849,6 +858,7 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
         <strong>{dotName}</strong>
         <span className="voice-call-mobile-status"><i className={callError ? 'has-error' : ''} />{callError ? '通话遇到问题' : status}</span>
       </div>
+      {micMeter}
       <time className="voice-call-mobile-timer" data-testid="voice-call-timer">{Number(minutes)}:{seconds}</time>
       {liveCallText}
       {playbackNeedsGesture && <button type="button" className="voice-call-audio-enable" onClick={() => void enableAudioPlayback()}>点击启用语音播放</button>}
@@ -866,9 +876,7 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
       <time className="voice-call-card-timer" data-testid="voice-call-timer">{Number(minutes)}:{seconds}</time>
       {callVariant === 'mobile-minimized' && <button type="button" className="voice-call-card-expand" data-testid="voice-call-restore" aria-label="返回通话" title="返回通话" onClick={() => setMobileMinimized(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m0-4 6 6m6-6h4v4m0-4-6 6M4 16v4h4m-4 0 6-6m10 2v4h-4m4 0-6-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg></button>}
     </div>
-    {voiceProvider === 'volcengine' && <div className="voice-call-card-mic" data-testid="voice-call-mic-meter" data-mic-state={micCaptureState} aria-label={`麦克风输入音量 ${micLevelPercent}%`}>
-      <span>麦克风</span><div role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={micLevelPercent}><i style={{ width: `${micLevelPercent}%` }} /></div><small>{micCaptureState === 'sent' ? '音频帧已发送' : micCaptureState === 'muted' ? '已静音' : micCaptureState === 'no-frames' ? '未收到音频帧' : micCaptureState === 'context-suspended' ? '浏览器音频未启动' : '等待音频帧'}</small>
-    </div>}
+    {!showMobileScreen && micMeter}
     {liveCallText}
     {playbackNeedsGesture && <button type="button" className="voice-call-audio-enable" onClick={() => void enableAudioPlayback()}>点击启用语音播放</button>}
     {callError && <p className="voice-call-card-error" role="alert">{callError}</p>}

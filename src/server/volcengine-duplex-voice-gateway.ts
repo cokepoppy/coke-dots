@@ -33,7 +33,7 @@ export function isVolcengineFloat32Pcm(pcm: Uint8Array): boolean {
   return true;
 }
 
-export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: string, env: NodeJS.ProcessEnv = process.env) {
+export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: string, env: NodeJS.ProcessEnv = process.env, callId?: string) {
   const config = volcengineVoiceConfig(env);
   if (config.mode !== 'seedduplex') throw new VolcengineVoiceError('火山引擎 SeedDuplex API Key 未配置', 503);
   const requestId = randomUUID();
@@ -53,6 +53,17 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
   let muteBeforeReady: boolean | null = null;
   let transcript = '';
   let turnId: string = randomUUID();
+  let inputAudioFrames = 0;
+  let inputAudioBytes = 0;
+  let inputSamplesAboveNoiseFloor = 0;
+  let inputPeakPcm16 = 0;
+  let asrStarted = 0;
+  let asrInterim = 0;
+  let asrCompleted = 0;
+  let asrCompletedEmpty = 0;
+  let asrFailed = 0;
+  let providerErrors = 0;
+  let diagnosticsLogged = false;
   let startupTimer: NodeJS.Timeout | null = setTimeout(() => fail('火山实时语音初始化超时，请检查服务配置后重试。'), 20_000);
   let finishTimer: NodeJS.Timeout | null = null;
   let muteKeepAliveTimer: NodeJS.Timeout | null = null;
@@ -64,6 +75,27 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     if (upstream.readyState !== WebSocket.OPEN) throw new VolcengineVoiceError('火山实时语音连接尚未就绪', 503);
     upstream.send(JSON.stringify({ type, event_id: randomUUID(), ...payload }));
   };
+  const logDiagnostics = () => {
+    if (diagnosticsLogged) return;
+    diagnosticsLogged = true;
+    // Keep this useful for locating a dropped speech turn without persisting
+    // microphone audio or transcript text in service logs.
+    console.info(`seedduplex_voice_diagnostics ${JSON.stringify({
+      callId: callId || null,
+      requestId,
+      sessionReady,
+      inputAudioFrames,
+      inputAudioBytes,
+      inputSamplesAboveNoiseFloor,
+      inputPeakPcm16,
+      asrStarted,
+      asrInterim,
+      asrCompleted,
+      asrCompletedEmpty,
+      asrFailed,
+      providerErrors,
+    })}`);
+  };
   const finalize = (code = 1000, reason = 'call ended') => {
     if (finalized) return;
     finalized = true;
@@ -73,6 +105,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     startupTimer = null;
     finishTimer = null;
     muteKeepAliveTimer = null;
+    logDiagnostics();
     if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
       upstream.close(code, reason.slice(0, 120));
     }
@@ -119,7 +152,16 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
         fail('语音音频帧无效或会话尚未就绪。');
         return;
       }
-      try { sendUpstream('input_audio_buffer.append', { audio: pcm.toString('base64') }); }
+      try {
+        sendUpstream('input_audio_buffer.append', { audio: pcm.toString('base64') });
+        inputAudioFrames += 1;
+        inputAudioBytes += pcm.byteLength;
+        for (let offset = 0; offset < pcm.byteLength; offset += 2) {
+          const sample = Math.abs(pcm.readInt16LE(offset));
+          if (sample > inputPeakPcm16) inputPeakPcm16 = sample;
+          if (sample >= 64) inputSamplesAboveNoiseFloor += 1;
+        }
+      }
       catch { fail('语音音频未能发送，请稍后重试。'); }
       return;
     }
@@ -173,6 +215,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     if (typeof event.type !== 'string') { fail('火山实时语音响应缺少事件类型。'); return; }
 
     if (event.type === 'error') {
+      providerErrors += 1;
       // Provider messages may include request details. Keep them server-side and
       // return only a stable Chinese error to the browser.
       fail('火山实时语音服务暂不可用，请检查控制台配置后重试。');
@@ -194,12 +237,14 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
       return;
     }
     if (event.type === 'conversation.item.input_audio_transcription.started') {
+      asrStarted += 1;
       transcript = '';
       turnId = typeof event.item_id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(event.item_id) ? event.item_id : randomUUID();
       sendLocal({ type: 'speech-started' });
       return;
     }
     if (event.type === 'conversation.item.input_audio_transcription.delta' || event.type === 'conversation.item.input_audio_transcription.result') {
+      asrInterim += 1;
       const piece = typeof event.delta === 'string' ? event.delta : typeof event.transcript === 'string' ? event.transcript : typeof event.result === 'string' ? event.result : '';
       if (piece) transcript = updateVolcengineTranscriptSnapshot(transcript, piece);
       sendLocal({ type: 'asr', transcript, interim: true });
@@ -207,12 +252,15 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     }
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
       const finalTranscript = typeof event.transcript === 'string' ? event.transcript.trim() : transcript.trim();
+      asrCompleted += 1;
+      if (!finalTranscript) asrCompletedEmpty += 1;
       if (finalTranscript) sendLocal({ type: 'asr-final', transcript: finalTranscript, turnId });
       transcript = '';
       turnId = randomUUID();
       return;
     }
     if (event.type === 'conversation.item.input_audio_transcription.failed') {
+      asrFailed += 1;
       transcript = '';
       sendLocal({ type: 'error', error: '语音识别暂不可用，请再说一次。' });
       return;
