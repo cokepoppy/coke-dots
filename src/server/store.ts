@@ -1221,6 +1221,16 @@ export class Store {
     return row?.userId || null;
   }
 
+  actionAuthorizationInstructionForTask(id: string, tenantId: string, ownerUserId: string, fullInstruction: string): string {
+    const voiceTask = this.db.prepare('SELECT 1 FROM voice_call_turns WHERE tenant_id=? AND user_id=? AND task_id=? LIMIT 1')
+      .get(tenantId, ownerUserId, id);
+    if (!voiceTask) return fullInstruction;
+    const userEntries = this.db.prepare(`SELECT e.body FROM entries e JOIN tasks t ON t.tenant_id=e.tenant_id AND t.id=e.task_id
+      WHERE e.tenant_id=? AND e.task_id=? AND e.kind='user' AND t.created_by_user_id=? ORDER BY e.id ASC`)
+      .all(tenantId, id, ownerUserId) as { body: string }[];
+    return userEntries.map(entry => entry.body).join('\n');
+  }
+
   taskAutomationProfile(id: string, tenantId = 'legacy'): 'coke-agent-incident' | null {
     const row = this.db.prepare('SELECT automation_profile FROM tasks WHERE tenant_id=? AND id=?').get(tenantId, id) as { automation_profile: string | null } | undefined;
     return row?.automation_profile === 'coke-agent-incident' ? 'coke-agent-incident' : null;

@@ -238,8 +238,10 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
   let receivedBridge: { url: string; token: string; actions: Array<'search' | 'fetch' | 'create'> } | undefined;
   let receivedCalendarBridge: { url: string; token: string; actions: Array<'list' | 'create'> } | undefined;
   let receivedSecretaryBridge: { url: string; token: string; actions: Array<'todo-list' | 'todo-create' | 'cokeclaw-send'> } | undefined;
+  let receivedPrompt = '';
   const computer = {
-    async runAgentTask(input: { dingtalkDocumentsBridge?: typeof receivedBridge; dingtalkCalendarBridge?: typeof receivedCalendarBridge; dingtalkSecretaryBridge?: typeof receivedSecretaryBridge }) {
+    async runAgentTask(input: { prompt: string; dingtalkDocumentsBridge?: typeof receivedBridge; dingtalkCalendarBridge?: typeof receivedCalendarBridge; dingtalkSecretaryBridge?: typeof receivedSecretaryBridge }) {
+      receivedPrompt = input.prompt;
       receivedBridge = input.dingtalkDocumentsBridge;
       receivedCalendarBridge = input.dingtalkCalendarBridge;
       receivedSecretaryBridge = input.dingtalkSecretaryBridge;
@@ -304,6 +306,59 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     assert.equal(secretaryGrant?.tenantId, account.tenant.id);
     assert.equal(secretaryGrant?.userId, account.user.id);
     assert.equal(secretaryGrant?.taskId, secretaryTask.id);
+
+    const voiceCall = store.createVoiceCall(account.tenant.id, account.user.id);
+    const initialVoiceTask = store.submitVoiceTurn({
+      tenantId: account.tenant.id, userId: account.user.id, callId: voiceCall.id, turnId: 'voice-write-turn-0001',
+      transcript: '请创建钉钉日历会议、创建个人待办，并把报告发送到 cokeclaw 群。', engine: 'pi',
+    }).task;
+    await worker.tick();
+    const initialVoiceDeadline = Date.now() + 2_000;
+    while (Date.now() < initialVoiceDeadline && store.getTask(initialVoiceTask.id, account.tenant.id)?.status === 'working') await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(store.getTask(initialVoiceTask.id, account.tenant.id)?.status, 'done');
+    assert.deepEqual(receivedCalendarBridge?.actions, ['create']);
+    assert.deepEqual(receivedSecretaryBridge?.actions, ['todo-create', 'cokeclaw-send']);
+    store.updateTask(initialVoiceTask.id, { status: 'done', result: '会议准备任务已记录。' }, account.tenant.id);
+
+    const readFollowUp = store.submitVoiceTurn({
+      tenantId: account.tenant.id, userId: account.user.id, callId: voiceCall.id, turnId: 'voice-read-turn-0002',
+      transcript: '告诉我刚才那个会议的时间。', engine: 'pi',
+    }).task;
+    assert.match(readFollowUp.instruction, /Earlier turns from this voice call/);
+    assert.match(readFollowUp.instruction, /请创建钉钉日历会议、创建个人待办，并把报告发送到 cokeclaw 群/,
+      'The model still receives the complete prior-call context needed to resolve “that meeting”');
+    await worker.tick();
+    const readFollowUpDeadline = Date.now() + 2_000;
+    while (Date.now() < readFollowUpDeadline && store.getTask(readFollowUp.id, account.tenant.id)?.status === 'working') await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(store.getTask(readFollowUp.id, account.tenant.id)?.status, 'done');
+    assert.deepEqual(receivedCalendarBridge?.actions, ['list'], 'A read-only follow-up gets calendar read access, not the previous create grant');
+    assert.equal(receivedSecretaryBridge, undefined, 'A read-only follow-up must not inherit the earlier todo-create or group-send grant');
+    assert.match(receivedPrompt, /Earlier turns from this voice call/,
+      'Restricting tool grants must not remove call history from the Agent prompt');
+
+    const explicitWriteFollowUp = store.submitVoiceTurn({
+      tenantId: account.tenant.id, userId: account.user.id, callId: voiceCall.id, turnId: 'voice-write-turn-0003',
+      transcript: '请再创建一个钉钉日历会议。', engine: 'pi',
+    }).task;
+    await worker.tick();
+    const explicitWriteDeadline = Date.now() + 2_000;
+    while (Date.now() < explicitWriteDeadline && store.getTask(explicitWriteFollowUp.id, account.tenant.id)?.status === 'working') await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(store.getTask(explicitWriteFollowUp.id, account.tenant.id)?.status, 'done');
+    assert.deepEqual(receivedCalendarBridge?.actions, ['create'], 'An explicit current-turn create request still receives the required write action');
+    assert.equal(receivedSecretaryBridge, undefined, 'Unrelated earlier secretary actions do not leak into a new calendar write turn');
+
+    const clarificationTask = store.createTask('请为北交所规则评审创建一个钉钉日历会议。', null, 'pi', account.tenant.id, null, null, [], account.user.id);
+    store.updateTask(clarificationTask.id, { status: 'waiting', nextRunAt: null }, account.tenant.id);
+    const clarificationCall = store.createVoiceCall(account.tenant.id, account.user.id);
+    const clarifiedTask = store.submitVoiceTurn({
+      tenantId: account.tenant.id, userId: account.user.id, callId: clarificationCall.id, turnId: 'voice-clarify-turn-0001',
+      transcript: '安排在10月19日上午10点。', engine: 'pi', waitingTaskId: clarificationTask.id,
+    }).task;
+    await worker.tick();
+    const clarificationDeadline = Date.now() + 2_000;
+    while (Date.now() < clarificationDeadline && store.getTask(clarifiedTask.id, account.tenant.id)?.status === 'working') await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(store.getTask(clarifiedTask.id, account.tenant.id)?.status, 'done');
+    assert.deepEqual(receivedCalendarBridge?.actions, ['create'], 'A reply that answers an Agent clarification keeps the explicit write request in that same task');
   } finally {
     worker.stop();
     store.close();
