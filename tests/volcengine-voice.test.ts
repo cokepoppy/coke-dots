@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { decodeVolcengineFloat32Pcm } from '../src/shared/volcengine-audio.ts';
-import { isVolcengineFloat32Pcm, safeVolcengineProviderErrorCode, updateVolcengineTranscriptSnapshot } from '../src/server/volcengine-duplex-voice-gateway.ts';
+import { isVolcengineFloat32Pcm, safeVolcengineProviderErrorCode, safeVolcengineProviderLogId, updateVolcengineTranscriptSnapshot } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
@@ -41,6 +41,15 @@ test('SeedDuplex diagnostics retain only bounded numeric provider error codes', 
   assert.equal(safeVolcengineProviderErrorCode({ type: 'error', error: { code: 'secret-token', message: 'private' } }), null);
   assert.equal(safeVolcengineProviderErrorCode({ type: 'error', error: { message: 'private' } }), null);
   assert.equal(safeVolcengineProviderErrorCode(null), null);
+});
+
+test('SeedDuplex diagnostics retain only bounded safe provider Logids', () => {
+  assert.equal(safeVolcengineProviderLogId(' 2026101804071234ABCDEF '), '2026101804071234ABCDEF');
+  assert.equal(safeVolcengineProviderLogId(['2026101804071234ABCDEF', 'ignored']), '2026101804071234ABCDEF');
+  assert.equal(safeVolcengineProviderLogId('logid=secret-value'), null);
+  assert.equal(safeVolcengineProviderLogId('logid-with-newline\nprivate'), null);
+  assert.equal(safeVolcengineProviderLogId('x'.repeat(129)), null);
+  assert.equal(safeVolcengineProviderLogId(null), null);
 });
 
 test('SeedDuplex float32 PCM decodes little-endian samples and clamps invalid values', () => {

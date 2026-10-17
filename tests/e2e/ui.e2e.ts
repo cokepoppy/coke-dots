@@ -372,6 +372,7 @@ async function startMockVolcEngineProvider() {
 async function startMockVolcEngineDuplexProvider() {
   mockVolcEngineDuplexConnections = [];
   mockVolcEngineDuplexServer = new WebSocketServer({ port: 0, host: '127.0.0.1', maxPayload: 1024 * 1024, perMessageDeflate: false });
+  mockVolcEngineDuplexServer.on('headers', headers => headers.push('X-Tt-Logid: e2e-seedduplex-logid-123'));
   mockVolcEngineDuplexServer.on('connection', (socket, request) => {
     const initialTranscript = mockVolcEngineDuplexNextInitialTranscript;
     mockVolcEngineDuplexNextInitialTranscript = '请用中文整理本周人工智能产品更新的三个要点，并说明来源。';
@@ -3446,12 +3447,13 @@ try {
     const diagnosticLine = serverLogs.join('').split('\n').find(line => line.includes(diagnosticPrefix) && line.includes(activeCall.id));
     assert(diagnosticLine, 'The server must emit one content-free microphone/ASR diagnostic summary when the call closes');
     const diagnostic = JSON.parse(diagnosticLine.slice(diagnosticLine.indexOf(diagnosticPrefix) + diagnosticPrefix.length)) as {
-      callId: string; inputAudioFrames: number; inputAudioBytes: number; inputSamplesAboveNoiseFloor: number; asrStarted: number; asrCompleted: number; asrCompletedEmpty: number;
+      callId: string; inputAudioFrames: number; inputAudioBytes: number; inputSamplesAboveNoiseFloor: number; asrStarted: number; asrCompleted: number; asrCompletedEmpty: number; providerLogId: string | null;
     };
     assert.equal(diagnostic.callId, activeCall.id);
     assert(diagnostic.inputAudioFrames > 0 && diagnostic.inputAudioBytes > 0, 'The diagnostic must report forwarded mic frames');
     assert(diagnostic.inputSamplesAboveNoiseFloor > 0, 'The diagnostic must distinguish non-silent PCM from zero-filled packets');
     assert(diagnostic.asrStarted > 0 && diagnostic.asrCompleted > 0 && diagnostic.asrCompletedEmpty === 0, 'The diagnostic must distinguish provider ASR completion from transport-only success');
+    assert.equal(diagnostic.providerLogId, 'e2e-seedduplex-logid-123', 'The server must retain the provider response Logid for support diagnosis');
     assert.equal(diagnosticLine.includes(scheduleTranscript), false, 'The diagnostic must not retain the phone transcript');
   });
 

@@ -37,6 +37,13 @@ export function safeVolcengineProviderErrorCode(event: unknown): string | null {
   return null;
 }
 
+export function safeVolcengineProviderLogId(value: unknown): string | null {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  if (typeof candidate !== 'string') return null;
+  const logId = candidate.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(logId) ? logId : null;
+}
+
 export function isVolcengineFloat32Pcm(pcm: Uint8Array): boolean {
   if (!pcm.byteLength || pcm.byteLength % 4 !== 0) return false;
   const bytes = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
@@ -78,6 +85,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
   let asrFailed = 0;
   let providerErrors = 0;
   let providerErrorCode: string | null = null;
+  let providerLogId: string | null = null;
   let diagnosticsLogged = false;
   let startupTimer: NodeJS.Timeout | null = setTimeout(() => fail('火山实时语音初始化超时，请检查服务配置后重试。'), 20_000);
   let finishTimer: NodeJS.Timeout | null = null;
@@ -110,6 +118,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
       asrFailed,
       providerErrors,
       providerErrorCode,
+      providerLogId,
     })}`);
   };
   const finalize = (code = 1000, reason = 'call ended') => {
@@ -204,7 +213,11 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
     try { upstream.send(JSON.stringify(volcengineDuplexSessionPayload(dotName, randomUUID()))); }
     catch { fail('无法初始化火山实时语音连接。'); }
   });
+  upstream.on('upgrade', response => {
+    providerLogId = safeVolcengineProviderLogId(response.headers['x-tt-logid']);
+  });
   upstream.on('unexpected-response', (_request, response) => {
+    providerLogId = safeVolcengineProviderLogId(response.headers['x-tt-logid']);
     const bodyChunks: Buffer[] = [];
     let retainedBytes = 0;
     const maxDiagnosticBytes = 16 * 1024;
