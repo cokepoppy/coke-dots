@@ -941,7 +941,8 @@ function writeTaskArtifact(res: ServerResponse, artifact: { bytes: Buffer; media
 async function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string) {
   if (req.method !== 'GET') return reply(res, 405, { error: 'Method not allowed' });
   if (pathname.includes('..')) return reply(res, 404, { error: 'Not found' });
-  const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
+  const relativePath = pathname === '/' ? '' : pathname.slice(1);
+  const relative = !relativePath || relativePath.endsWith('/') ? `${relativePath}index.html` : relativePath;
   const file = join(resolve('./dist'), relative);
   try {
     const bytes = await readFile(file);

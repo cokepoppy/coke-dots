@@ -148,7 +148,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     return this.connection?.novncUrl ?? null;
   }
 
-  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; dingtalkDocumentsBridge?: { url: string; token: string; actions: Array<'search' | 'fetch' | 'create'> }; dingtalkCalendarBridge?: { url: string; token: string; actions: Array<'list'> }; signal?: AbortSignal }) {
+  async runAgentTask(input: { engine: string; taskId: string; prompt: string; sessionId: string | null; modelConfig?: { apiKey: string; baseUrl: string; model: string }; dingtalkDocumentsBridge?: { url: string; token: string; actions: Array<'search' | 'fetch' | 'create'> }; dingtalkCalendarBridge?: { url: string; token: string; actions: Array<'list'> }; incidentRemediation?: boolean; signal?: AbortSignal }) {
     await this.ensureConnection();
     const owner = await this.request('/v1/control');
     if (!owner.ok) await this.throwWorkerError(owner, `Linux 云电脑控制权读取失败（HTTP ${owner.status}）`);
@@ -159,7 +159,7 @@ export class LinuxDesktopComputer implements ComputerRuntime {
     const response = await fetch(url, {
       method: 'POST',
       headers: { authorization: `Bearer ${this.connection!.agentToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ engine: input.engine, taskId: input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, ...(input.modelConfig ? { modelConfig: input.modelConfig } : {}), ...(input.dingtalkDocumentsBridge ? { dingtalkDocumentsBridge: input.dingtalkDocumentsBridge } : {}), ...(input.dingtalkCalendarBridge ? { dingtalkCalendarBridge: input.dingtalkCalendarBridge } : {}), computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken, actions: ['inspect', 'navigate', 'click', 'fill', 'select', 'check', 'uncheck', 'press', 'open_artifact'] } }),
+      body: JSON.stringify({ engine: input.engine, taskId: input.taskId, prompt: input.prompt, sessionId: input.sessionId, cwd: `tasks/${input.taskId}`, ...(input.modelConfig ? { modelConfig: input.modelConfig } : {}), ...(input.dingtalkDocumentsBridge ? { dingtalkDocumentsBridge: input.dingtalkDocumentsBridge } : {}), ...(input.dingtalkCalendarBridge ? { dingtalkCalendarBridge: input.dingtalkCalendarBridge } : {}), ...(input.incidentRemediation ? { incidentRemediation: true } : {}), computer: { baseUrl: 'http://127.0.0.1:8082', workerToken: this.connection!.workerToken, actions: ['inspect', 'navigate', 'click', 'fill', 'select', 'check', 'uncheck', 'press', 'open_artifact'] } }),
       signal: input.signal ? AbortSignal.any([AbortSignal.timeout(15 * 60_000), input.signal]) : AbortSignal.timeout(15 * 60_000),
     });
     const result = await response.json().catch(() => ({})) as { error?: string; status?: string; message?: string; nextMinutes?: number; sessionId?: string; pageAction?: unknown; delegations?: unknown[]; pausedForControl?: boolean };
@@ -366,6 +366,8 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
   const agentEngines = process.env.DOTS_DESKTOP_AGENT_ADAPTERS?.trim() || Object.keys(kernels).join(',');
   const proxyConfig = resolveDesktopProxyConfig();
   const imageAnnotations = { 'coke-dots.io/desktop-image': image };
+  const incidentGitEnabled = process.env.DOTS_INCIDENT_GITHUB_TENANT_ID === tenantId;
+  const incidentGitSocket = '/run/incident-git-agent/credential.sock';
   const objects: Record<string, unknown>[] = [
     {
       apiVersion: 'v1', kind: 'Secret', metadata: { name: 'desktop-runtime', namespace }, type: 'Opaque',
@@ -404,6 +406,7 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
                 { name: 'COKE_DESKTOP_RESOLUTION', value: '1440x900' },
                 { name: 'COKE_DESKTOP_VNC_AUTH_MODE', value: 'gateway' },
                 { name: 'COKE_DESKTOP_CHROME_NO_SANDBOX', value: process.env.DOTS_LINUX_DESKTOP_CHROME_NO_SANDBOX === '1' ? '1' : '0' },
+                ...(incidentGitEnabled ? [{ name: 'DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET', value: incidentGitSocket }] : []),
                 { name: 'DOTS_DESKTOP_AGENT_ADAPTERS', value: agentEngines },
                 ...(Object.keys(kernels).length ? [{ name: 'DOTS_AGENT_KERNELS_JSON', value: JSON.stringify(kernels) }] : []),
                 ...(proxyConfig ? [
@@ -424,9 +427,32 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
               livenessProbe: { httpGet: { path: '/healthz', port: 'worker' }, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 3 },
               resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
               securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: ['ALL'] } },
-              volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'shm', mountPath: '/dev/shm' }, { name: 'tmp', mountPath: '/tmp' }],
-            }],
-            volumes: [{ name: 'workspace', persistentVolumeClaim: { claimName: 'desktop-data' } }, { name: 'shm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } }, { name: 'tmp', emptyDir: { sizeLimit: '512Mi' } }],
+              volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }, { name: 'shm', mountPath: '/dev/shm' }, { name: 'tmp', mountPath: '/tmp' }, ...(incidentGitEnabled ? [{ name: 'incident-git-agent', mountPath: '/run/incident-git-agent' }] : [])],
+            }, ...(incidentGitEnabled ? [{
+              name: 'incident-git-credential-broker', image, imagePullPolicy: pullPolicy,
+              command: ['node', '/opt/coke-dots/incident-git-credential-server.mjs'],
+              env: [
+                { name: 'DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET', value: incidentGitSocket },
+                { name: 'DOTS_INCIDENT_GITHUB_TOKEN_FILE', value: '/run/github-token/token' },
+              ],
+              readinessProbe: { exec: { command: ['/bin/sh', '-lc', `test -S ${incidentGitSocket}`] }, periodSeconds: 5, timeoutSeconds: 2, failureThreshold: 3 },
+              resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { cpu: '100m', memory: '128Mi' } },
+              securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
+              volumeMounts: [
+                { name: 'incident-git-agent', mountPath: '/run/incident-git-agent' },
+                { name: 'incident-github-token', mountPath: '/run/github-token', readOnly: true },
+                { name: 'tmp', mountPath: '/tmp' },
+              ],
+            }] : [])],
+            volumes: [
+              { name: 'workspace', persistentVolumeClaim: { claimName: 'desktop-data' } },
+              { name: 'shm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } },
+              { name: 'tmp', emptyDir: { sizeLimit: '512Mi' } },
+              ...(incidentGitEnabled ? [
+                { name: 'incident-git-agent', emptyDir: { medium: 'Memory', sizeLimit: '1Mi' } },
+                { name: 'incident-github-token', secret: { secretName: 'incident-github-credentials', defaultMode: 288, items: [{ key: 'token', path: 'token', mode: 288 }] } },
+              ] : []),
+            ],
           },
         },
       },

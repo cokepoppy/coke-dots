@@ -10,7 +10,7 @@ ENV LANG=en_US.UTF-8 \
     COKE_DESKTOP_START_URL=https://example.com
 
 RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-      ca-certificates chromium curl dbus-x11 fonts-dejavu-core fonts-noto-cjk locales \
+      ca-certificates chromium curl dbus-x11 fonts-dejavu-core fonts-noto-cjk git locales \
       novnc scrot tini util-linux websockify x11-utils x11vnc xdotool xfce4 xfce4-terminal xvfb \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
@@ -31,6 +31,8 @@ COPY --chmod=0644 deploy/linux-desktop/browser-context.mjs /opt/coke-dots/browse
 COPY --chmod=0644 deploy/linux-desktop/renderer-health.mjs /opt/coke-dots/renderer-health.mjs
 COPY --chmod=0644 deploy/linux-desktop/agent-runtime.mjs /opt/coke-dots/agent-runtime.mjs
 COPY --chmod=0644 deploy/linux-desktop/cloud-kernel-adapter.mjs /opt/coke-dots/cloud-kernel-adapter.mjs
+COPY --chmod=0755 deploy/linux-desktop/incident-git-credential-helper.mjs /opt/coke-dots/incident-git-credential-helper.mjs
+COPY --chmod=0644 deploy/linux-desktop/incident-git-credential-server.mjs /opt/coke-dots/incident-git-credential-server.mjs
 
 ARG COKE_DOTS_GIT_REVISION=unknown
 LABEL org.opencontainers.image.revision=$COKE_DOTS_GIT_REVISION

@@ -120,6 +120,57 @@ test('worker dispatches Pi to the cloud kernel when Pi is enabled by the default
   }
 });
 
+test('worker enables the Git credential broker only for an exact profiled DingTalk incident task', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-worker-incident-profile-'));
+  const keys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_PI_ENABLED', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_MODEL_SECRET_DIR', 'DOTS_TEST_MODEL_SECRET_SCOPE', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE'] as const;
+  const previous = new Map(keys.map(key => [key, process.env[key]]));
+  Object.assign(process.env, {
+    NODE_ENV: 'test', DOTS_E2E_AUTH: '1', DOTS_MODEL_BASE_URL: 'https://api.example.test/v1', DOTS_MODEL: 'incident-profile-model',
+    DOTS_MODEL_API_KEY: 'incident-profile-model-key', DOTS_COMPUTER_BACKEND: 'linux-desktop', DOTS_PI_ENABLED: '1',
+    DOTS_AGENT_KERNELS_JSON: JSON.stringify({ pi: { command: '/bin/false', args: [] } }),
+    DOTS_KEYCHAIN_SERVICE: `com.cokepoppy.coke-dots.incident-profile.${randomUUID()}`,
+    DOTS_TEST_MODEL_SECRET_DIR: join(directory, 'secrets'), DOTS_TEST_MODEL_SECRET_SCOPE: randomUUID(),
+  });
+  delete process.env.DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE;
+  const store = new Store(directory);
+  const account = store.signInGoogle({ subject: `incident-profile-${randomUUID()}`, email: 'incident-profile@example.test', name: 'Incident owner' });
+  store.setAppSetting('modelBaseUrl', 'https://api.example.test/v1');
+  store.setAppSetting('modelName', 'incident-profile-model');
+  store.replaceDingtalkGroupSelections(account.tenant.id, account.user.id, [{ conversationId: 'cokeclaw-id', name: 'cokeclaw' }], 'corp-one');
+  store.setDingtalkGroupMonitor(account.tenant.id, account.user.id, 'cokeclaw-id', true, 'corp-one', ['故障', 'Trace ID']);
+  const exact = store.ingestDingtalkMessage({
+    corpId: 'corp-one', conversationId: 'cokeclaw-id', messageId: 'worker-profiled-alert', senderId: 'alert-bot',
+    senderName: 'Alert Bot', text: 'service: coke-agent-web\nenvironment: production\nTrace ID: c7e2a195-4f93-4c60-8a27-b1d6e0f5a94c',
+  });
+  const nearMiss = store.ingestDingtalkMessage({
+    corpId: 'corp-one', conversationId: 'cokeclaw-id', messageId: 'worker-unprofiled-alert', senderId: 'alert-bot',
+    senderName: 'Alert Bot', text: 'service: coke-agent-web\nenvironment: production\nTrace ID: another-trace',
+  });
+  const received: Array<boolean | undefined> = [];
+  const computer = {
+    async runAgentTask(input: { incidentRemediation?: boolean }) {
+      received.push(input.incidentRemediation);
+      return { status: 'done', message: 'Alert analyzed.' };
+    },
+  } as unknown as ComputerRuntime;
+  const worker = new Worker(store, () => {}, join(directory, 'workspaces'), async () => {}, () => computer);
+  try {
+    assert.equal(exact.tasks.length, 1);
+    assert.equal(nearMiss.tasks.length, 1);
+    await worker.tick();
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && received.length < 2) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual(received, [true, undefined], 'Only the fixed service, environment, group, and Trace ID may receive the broker flag');
+  } finally {
+    worker.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('cloud Pi dispatch enables direct file and browser tools without a separate permission grant', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coke-dots-cloud-write-access-'));
   const envKeys = ['NODE_ENV', 'DOTS_E2E_AUTH', 'DOTS_MODEL_BASE_URL', 'DOTS_MODEL', 'DOTS_MODEL_API_KEY', 'DOTS_COMPUTER_BACKEND', 'DOTS_AGENT_KERNELS_JSON', 'DOTS_KEYCHAIN_SERVICE', 'DOTS_TEST_MODEL_SECRET_DIR', 'DOTS_TEST_MODEL_SECRET_SCOPE', 'DOTS_TEST_MODEL_SECRET_UNAVAILABLE_FILE'] as const;

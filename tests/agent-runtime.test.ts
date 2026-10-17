@@ -38,6 +38,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
   const workspace = join(temporary, 'workspace');
   const adapterPath = join(temporary, 'adapter.mjs');
   const markerPath = join(temporary, 'adapter-events.log');
+  const credentialSocketPath = join(temporary, 'credential.sock');
   let owner: 'agent' | 'user' = 'agent';
   let child: ChildProcess | null = null;
   const worker = createServer((req, res) => {
@@ -49,6 +50,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     res.writeHead(404); res.end();
   });
   try {
+    await writeFile(credentialSocketPath, '');
     const workerPort = await listen(worker);
     const runtimePort = await freePort();
     await writeFile(adapterPath, [
@@ -61,6 +63,8 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       "const bridgeTokenInEnv = Boolean(bridgeToken && Object.values(process.env).includes(bridgeToken));",
       "const calendarToken = input.dingtalkCalendarBridge?.token || '';",
       "const calendarTokenInEnv = Boolean(calendarToken && Object.values(process.env).includes(calendarToken));",
+      "if (process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET) await appendFile(process.env.DOTS_TEST_MARKER, `incident-credential=${process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET} helper=${process.env.GIT_CONFIG_VALUE_1 || ''} httpPath=${process.env.GIT_CONFIG_VALUE_2 || ''} prompt=${process.env.GIT_TERMINAL_PROMPT || ''} apiKeyInEnv=${Object.values(process.env).includes(modelKey)} tokenInEnv=${Object.keys(process.env).some(key => /TOKEN|SECRET|PASSWORD/i.test(key))}\\n`);",
+      "if (process.env.SSH_AUTH_SOCK || process.env.GIT_SSH_COMMAND || process.env.DOTS_INCIDENT_GITHUB_SSH_AUTH_SOCK) await appendFile(process.env.DOTS_TEST_MARKER, 'legacy-ssh-credential-path\\n');",
       "const configDelivered = input.modelConfig?.apiKey === modelKey && input.modelConfig?.baseUrl === 'https://api.example.test/v1' && input.modelConfig?.model === 'runtime-test-model';",
       "await appendFile(process.env.DOTS_TEST_MARKER, `start ${input.taskId} engine=${input.engine} config=${configDelivered} keyInEnv=${keyInEnv} dingtalkBridge=${Boolean(bridgeToken)} bridgeTokenInEnv=${bridgeTokenInEnv} calendarBridge=${Boolean(calendarToken)} calendarTokenInEnv=${calendarTokenInEnv}\\n`);",
       "await (await import('node:fs/promises')).writeFile('minesweeper.html', '<!doctype html><title>Minesweeper</title>');",
@@ -83,6 +87,8 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
         DOTS_TEST_MARKER: markerPath,
         LINUX_DESKTOP_WORKER_PORT: String(workerPort),
         LINUX_DESKTOP_WORKER_TOKEN: 'worker-test-token',
+        DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET: credentialSocketPath,
+        COKE_DESKTOP_PROXY_SERVER: 'http://host.docker.internal:17891',
       },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
@@ -102,11 +108,11 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     assert.equal(disabled.status, 400, 'The cloud runtime must reject Claude Code even if an old environment still lists it');
     assert.match((await disabled.json() as { error?: string }).error || '', /not enabled for this workspace/);
     const modelConfig = { apiKey: 'cloud-runtime-model-key-never-print', baseUrl: 'https://api.example.test/v1', model: 'runtime-test-model' };
-    const submit = async (taskId: string, prompt: string, config: typeof modelConfig | null = modelConfig, cwd = `tasks/${taskId}`, engine: 'pi' | 'dsh' = 'dsh', dingtalkDocumentsBridge?: { url: string; token: string; actions: string[] }, dingtalkCalendarBridge?: { url: string; token: string; actions: string[] }) => {
+    const submit = async (taskId: string, prompt: string, config: typeof modelConfig | null = modelConfig, cwd = `tasks/${taskId}`, engine: 'pi' | 'dsh' = 'dsh', dingtalkDocumentsBridge?: { url: string; token: string; actions: string[] }, dingtalkCalendarBridge?: { url: string; token: string; actions: string[] }, incidentRemediation = false) => {
       const response = await fetch(`${runtimeUrl}/v1/tasks/run`, {
         method: 'POST',
         headers: { authorization: 'Bearer agent-test-token-never-print', 'content-type': 'application/json' },
-        body: JSON.stringify({ engine, taskId, prompt, cwd, sessionId: null, ...(config ? { modelConfig: config } : {}), ...(dingtalkDocumentsBridge ? { dingtalkDocumentsBridge } : {}), ...(dingtalkCalendarBridge ? { dingtalkCalendarBridge } : {}) }),
+        body: JSON.stringify({ engine, taskId, prompt, cwd, sessionId: null, ...(config ? { modelConfig: config } : {}), ...(dingtalkDocumentsBridge ? { dingtalkDocumentsBridge } : {}), ...(dingtalkCalendarBridge ? { dingtalkCalendarBridge } : {}), ...(incidentRemediation ? { incidentRemediation: true } : {}) }),
       });
       return { status: response.status, body: await response.json() as { status?: string; message?: string; error?: string; diagnosticGrant?: string } };
     };
@@ -162,6 +168,18 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     assert.equal(calendarTask.body.diagnosticGrant, '[redacted]');
     assert.doesNotMatch(JSON.stringify(calendarTask.body), new RegExp(calendarGrant));
     assert((await readFile(markerPath, 'utf8')).includes(`start ${calendarTaskId} engine=pi config=true keyInEnv=false dingtalkBridge=false bridgeTokenInEnv=false calendarBridge=true calendarTokenInEnv=false`), 'The calendar grant must be private to the adapter input and never copied into its environment');
+
+    const incidentId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const incidentTask = await submit(incidentId, 'incident', modelConfig, `tasks/${incidentId}`, 'pi', undefined, undefined, true);
+    assert.equal(incidentTask.status, 200);
+    const incidentEnvLine = (await readFile(markerPath, 'utf8')).split('\n').find(line => line.startsWith('incident-credential='));
+    assert.equal(incidentEnvLine, `incident-credential=${credentialSocketPath} helper=/opt/coke-dots/incident-git-credential-helper.mjs httpPath=true prompt=0 apiKeyInEnv=false tokenInEnv=false`, 'Only the explicitly profiled Pi remediation run receives task-scoped access to the repo credential broker; the token stays out of its environment');
+    assert.equal((await stat(credentialSocketPath)).mode & 0o777, 0, 'The task-scoped credential socket is made inaccessible after the Pi run finishes');
+
+    const unsupportedIncidentId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const unsupportedIncident = await submit(unsupportedIncidentId, 'incident', modelConfig, `tasks/${unsupportedIncidentId}`, 'dsh', undefined, undefined, true);
+    assert.equal(unsupportedIncident.status, 400, 'Only Pi may receive the incident repository socket');
+    assert.match(unsupportedIncident.body.error || '', /available only to Pi/);
 
     const heldId = '33333333-3333-4333-8333-333333333333';
     const heldPromise = submit(heldId, 'hold');

@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { Store } from '../src/server/store.ts';
+import { Store, cokeAgentIncidentTraceId } from '../src/server/store.ts';
 import { DingTalkStreamService, normalizeDingTalkRobotMessage, dingtalkStreamConfiguration } from '../src/server/dingtalk-stream.ts';
 import { DingTalkMonitorSupervisor } from '../src/server/dingtalk-monitor.ts';
 
@@ -117,6 +117,44 @@ test('DingTalk Stream alerts are deduplicated and create tenant-scoped Pi tasks 
     assert.equal(store.dingtalkGroupMonitors(alpha.tenant.id, alpha.user.id)[0]?.enabled, true, 'Saving the same group again must preserve its monitor');
     store.replaceDingtalkGroupSelections(alpha.tenant.id, alpha.user.id, [], 'corp-one');
     assert.deepEqual(store.dingtalkGroupMonitors(alpha.tenant.id, alpha.user.id), [], 'Removing a group must remove its monitor');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('only the exact cokeclaw Coke Agent production trace receives the constrained remediation profile', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-dingtalk-incident-profile-'));
+  try {
+    const store = new Store(directory);
+    const identity = store.signInGoogle({ subject: 'incident-profile-owner', email: 'incident-owner@example.test', name: 'Incident owner' });
+    store.replaceDingtalkGroupSelections(identity.tenant.id, identity.user.id, [{ conversationId: 'cid-cokeclaw', name: 'cokeclaw' }], 'corp-one');
+    store.setDingtalkGroupMonitor(identity.tenant.id, identity.user.id, 'cid-cokeclaw', true, 'corp-one', ['故障', 'Trace ID']);
+    const event = {
+      corpId: 'corp-one', conversationId: 'cid-cokeclaw', messageId: 'incident-profile-message', senderId: 'oncall-bot', senderName: 'On-call',
+      text: `系统故障\nservice: coke-agent-web\nenvironment: production\nTrace ID: ${cokeAgentIncidentTraceId}`,
+    };
+    const created = store.ingestDingtalkMessage(event);
+    assert.equal(created.tasks.length, 1);
+    const task = store.getTask(created.tasks[0]!.taskId, identity.tenant.id)!;
+    assert.equal(store.taskAutomationProfile(task.id, identity.tenant.id), 'coke-agent-incident');
+    assert.match(task.instruction, /incident-logs/);
+    assert.match(task.instruction, /https:\/\/github\.com\/cokepoppy\/coke-agent-test\.git/);
+    assert.match(task.instruction, /不要合并、部署/);
+    assert.match(task.instruction, /外部不可信数据/);
+
+    const nearMiss = store.ingestDingtalkMessage({ ...event, messageId: 'incident-profile-near-miss', text: event.text.replace(cokeAgentIncidentTraceId, 'different-trace') });
+    assert.equal(nearMiss.tasks.length, 1);
+    const readOnlyTask = store.getTask(nearMiss.tasks[0]!.taskId, identity.tenant.id)!;
+    assert.equal(store.taskAutomationProfile(readOnlyTask.id, identity.tenant.id), null);
+    assert.match(readOnlyTask.instruction, /只读调查/);
+
+    const otherGroup = new Store(join(directory, 'other-group'));
+    const other = otherGroup.signInGoogle({ subject: 'other-group-owner', email: 'other-group@example.test', name: 'Other group' });
+    otherGroup.replaceDingtalkGroupSelections(other.tenant.id, other.user.id, [{ conversationId: 'cid-other', name: 'systems-on-call' }], 'corp-one');
+    otherGroup.setDingtalkGroupMonitor(other.tenant.id, other.user.id, 'cid-other', true, 'corp-one', ['故障', 'Trace ID']);
+    const otherEvent = otherGroup.ingestDingtalkMessage({ ...event, conversationId: 'cid-other', messageId: 'incident-profile-other-group' });
+    const otherTask = otherGroup.getTask(otherEvent.tasks[0]!.taskId, other.tenant.id)!;
+    assert.equal(otherGroup.taskAutomationProfile(otherTask.id, other.tenant.id), null);
+    otherGroup.close();
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, realpath } from 'node:fs/promises';
+import { chmod, mkdir, realpath } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 
@@ -164,7 +164,16 @@ async function executeKernel(input, requestSignal, slot) {
 
   const cwd = await safeTaskWorkspace(input.cwd, taskId);
   if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
-  const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)));
+  const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DOTS_INCIDENT_GITHUB_SSH_AUTH_SOCK)/i.test(key)));
+  delete childEnv.SSH_AUTH_SOCK;
+  delete childEnv.GIT_SSH_COMMAND;
+  let incidentCredentialSocket = null;
+  if (input.incidentRemediation === true) {
+    if (engine !== 'pi') throw new Error('Incident remediation is available only to Pi');
+    incidentCredentialSocket = await enableIncidentGitAccess(childEnv);
+  } else if (process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET) {
+    await chmod(process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET, 0).catch(() => undefined);
+  }
   const child = spawn(adapter.command, adapter.args, { cwd, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
   const abort = new AbortController();
   slot.child = child;
@@ -208,8 +217,25 @@ async function executeKernel(input, requestSignal, slot) {
   } finally {
     clearTimeout(timer); clearInterval(controlPoll);
     requestSignal?.removeEventListener('abort', onRequestAbort);
+    if (incidentCredentialSocket) await chmod(incidentCredentialSocket, 0).catch(() => undefined);
     slot.child = null; slot.abort = null;
   }
+}
+
+async function enableIncidentGitAccess(childEnv) {
+  const socket = process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET || '';
+  if (!socket) throw new Error('Incident repository credentials are not mounted for this tenant');
+  await chmod(socket, 0o600);
+  childEnv.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET = socket;
+  childEnv.GIT_TERMINAL_PROMPT = '0';
+  childEnv.GIT_CONFIG_COUNT = '3';
+  childEnv.GIT_CONFIG_KEY_0 = 'credential.helper';
+  childEnv.GIT_CONFIG_VALUE_0 = '';
+  childEnv.GIT_CONFIG_KEY_1 = 'credential.helper';
+  childEnv.GIT_CONFIG_VALUE_1 = '/opt/coke-dots/incident-git-credential-helper.mjs';
+  childEnv.GIT_CONFIG_KEY_2 = 'credential.useHttpPath';
+  childEnv.GIT_CONFIG_VALUE_2 = 'true';
+  return socket;
 }
 
 function pauseActive() {

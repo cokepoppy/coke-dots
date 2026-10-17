@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Coke Agent</title>
+  <style>
+    :root{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#20242b;background:#fff}*{box-sizing:border-box}body{margin:0;height:100vh;display:grid;grid-template-columns:232px 1fr}.sidebar{padding:18px 14px;border-right:1px solid #e9ebef;background:#fbfbfc}.brand{font-size:16px;font-weight:700;padding:5px 8px 22px}.new-chat{width:100%;border:1px solid #e2e5e9;border-radius:8px;background:white;text-align:left;padding:10px 12px;color:#343a43}.section{margin:25px 8px 9px;color:#9299a4;font-size:11px;font-weight:600;text-transform:uppercase}.nav-item{padding:9px;border-radius:7px;color:#4e5662}.nav-item.active{background:#f0f2f5;color:#252a31}.main{display:flex;flex-direction:column;min-width:0}.header{height:60px;border-bottom:1px solid #eff0f2;display:flex;align-items:center;padding:0 24px;font-weight:600}.status{margin-left:auto;font-size:12px;color:#727b88;font-weight:400}.content{flex:1;display:grid;place-items:center;padding:24px}.empty-state{text-align:center;color:#68717e}.empty-state h1{font-size:23px;color:#222831;font-weight:600;margin:0 0 8px}.empty-state p{margin:0}.error{position:fixed;top:76px;right:24px;max-width:420px;padding:11px 14px;border:1px solid #f2b8bb;border-radius:8px;background:#fff2f2;color:#a52a33;box-shadow:0 6px 22px #10182812}.composer{border:1px solid #e4e7eb;border-radius:14px;margin:0 auto 24px;width:min(760px,calc(100% - 48px));padding:14px;color:#a1a7b0}.message{max-width:680px;margin:12px auto;padding:12px 15px;background:#f1f2f4;border-radius:12px}
+  </style>
+</head>
+<body><aside class="sidebar"><div class="brand">Coke Agent</div><button class="new-chat">＋&nbsp; 新建对话</button><div class="section">Workspace</div><div class="nav-item active">你的 Dot</div><div class="section">Recent</div><div class="nav-item">项目周报</div><div class="nav-item">产品反馈分析</div></aside><main class="main"><header class="header">你的 Dot<span class="status">Workspace&nbsp; · &nbsp;Connected</span></header><div id="conversation" class="content"></div><div class="composer">给 Coke Agent 发送消息…</div></main><div id="error-banner" class="error" hidden></div><script type="module" src="./app.js"></script></body>
+</html>

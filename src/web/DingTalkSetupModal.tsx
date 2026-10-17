@@ -251,7 +251,7 @@ export function DingTalkSetupModal({ onClose, onOpenIncident }: { onClose: () =>
         .then(response => readJson<{ conversationId: string; enabled: boolean; keywords: string[] }>(response));
       setMonitors(current => current ? { ...current, groups: current.groups.map(item => item.conversationId === updated.conversationId ? { ...item, enabled: updated.enabled, keywords: updated.keywords } : item) } : current);
       setKeywordDrafts(current => ({ ...current, [updated.conversationId]: updated.keywords.join(', ') }));
-      setNotice(enabled ? '已开启此群监听；只有包含所设关键词的消息才会启动 Pi 只读排查。' : '已暂停此群监听。');
+      setNotice(enabled ? '已开启此群监听；匹配预设故障范围的告警会启动 Pi 修复任务，其他关键词告警只做只读排查。' : '已暂停此群监听。');
     } catch (reason) { setError(reason instanceof Error ? reason.message : '更新群监听失败。'); }
     finally { setWorking(false); }
   }
@@ -356,7 +356,7 @@ export function DingTalkSetupModal({ onClose, onOpenIncident }: { onClose: () =>
                 <span className="dingtalk-incident-chevron" aria-hidden="true">›</span>
               </button>)}</div> : <p className="dingtalk-incidents-empty" data-testid="dingtalk-incidents-empty">尚无命中规则的群消息。</p>}
             </div>
-            <p className="dingtalk-setup-footnote">只处理匹配条件的消息；收到后会在当前工作区创建 Pi 云电脑只读排查任务。不同工作区相互隔离；不会自动回复群聊。</p>
+            <p className="dingtalk-setup-footnote">只处理匹配条件的消息；告警会在当前工作区启动 Pi 云电脑任务。预先配置的 Coke Agent 故障范围可自动修复并创建 PR，其他告警保持只读。不同工作区相互隔离；不会自动回复群聊。</p>
           </div>}
           <button className="dingtalk-setup-secondary dingtalk-disconnect" type="button" disabled={working} onClick={() => void disconnect()}>断开钉钉账号</button>
         </div>}

@@ -58,6 +58,30 @@ test('Linux desktop deployments register the default Pi Agent adapter from the h
   }
 });
 
+test('repo-scoped Git credential broker and token Secret are mounted only for the configured incident tenant', () => {
+  const originalTenantId = process.env.DOTS_INCIDENT_GITHUB_TENANT_ID;
+  process.env.DOTS_INCIDENT_GITHUB_TENANT_ID = 'incident-owner-tenant';
+  try {
+    const forOwner = desktopResources('incident-owner-tenant', 'worker-secret', 'agent-secret')[1] as { items: Record<string, any>[] };
+    const ownerDeployment = forOwner.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { containers: any[]; volumes: any[] } } } };
+    assert.deepEqual(ownerDeployment.spec.template.spec.containers.map(container => container.name), ['desktop', 'incident-git-credential-broker']);
+    const broker = ownerDeployment.spec.template.spec.containers[1];
+    assert.equal(broker.volumeMounts.find((mount: any) => mount.name === 'incident-github-token').readOnly, true);
+    assert.equal(broker.env.find((entry: any) => entry.name === 'DOTS_INCIDENT_GITHUB_TOKEN_FILE').value, '/run/github-token/token');
+    assert.equal(ownerDeployment.spec.template.spec.containers[0].env.find((entry: any) => entry.name === 'DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET').value, '/run/incident-git-agent/credential.sock');
+    assert.equal(ownerDeployment.spec.template.spec.volumes.find((volume: any) => volume.name === 'incident-github-token').secret.secretName, 'incident-github-credentials');
+    assert.equal(JSON.stringify(forOwner).includes('token-material'), false);
+
+    const forOther = desktopResources('another-tenant', 'worker-secret', 'agent-secret')[1] as { items: Record<string, any>[] };
+    const otherDeployment = forOther.items.find(item => item.kind === 'Deployment') as { spec: { template: { spec: { containers: any[]; volumes: any[] } } } };
+    assert.deepEqual(otherDeployment.spec.template.spec.containers.map(container => container.name), ['desktop']);
+    assert.equal(otherDeployment.spec.template.spec.volumes.some((volume: any) => volume.name === 'incident-github-token'), false);
+  } finally {
+    if (originalTenantId === undefined) delete process.env.DOTS_INCIDENT_GITHUB_TENANT_ID;
+    else process.env.DOTS_INCIDENT_GITHUB_TENANT_ID = originalTenantId;
+  }
+});
+
 test('Linux desktop egress only adds the loopback Mac proxy bridge when explicitly enabled', () => {
   const keys = [
     'DOTS_LINUX_DESKTOP_PROXY_BRIDGE', 'DOTS_LINUX_DESKTOP_PROXY_UPSTREAM_HOST',

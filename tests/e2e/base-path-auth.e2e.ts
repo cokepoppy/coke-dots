@@ -455,6 +455,10 @@ async function main() {
   await page.unroute(`**${basePath}/api/computer/novnc/vnc_lite.html*`);
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByTestId('app-shell').waitFor({ state: 'visible' });
+  const incidentLogsResponse = await page.request.get(`${baseUrl}incident-logs/`);
+  assert.equal(incidentLogsResponse.status(), 200, 'The public-style incident log page must be served at its directory URL below the mount path');
+  assert.match(incidentLogsResponse.headers()['content-type'] || '', /text\/html/);
+  assert.match(await incidentLogsResponse.text(), /Coke Observability/);
 
   const mobileDotNav = page.getByTestId('mobile-dot-nav');
   if (await mobileDotNav.isVisible().catch(() => false)) await mobileDotNav.click();
