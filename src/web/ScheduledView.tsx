@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Task, Watch } from '../shared/types.ts';
+import type { ScheduleSpec, Task, Watch } from '../shared/types.ts';
 import { describeSchedule, scheduleForTask } from '../shared/scheduling.ts';
+import { RecurrenceEditor, type RecurrenceFrequency } from './RecurrenceEditor.tsx';
 
 type ScheduledItem =
   | { key: string; kind: 'task'; title: string; searchable: string; updatedAt: string; task: Task }
@@ -10,10 +11,15 @@ const statusText: Record<Task['status'], string> = {
   queued: 'Queued', working: 'Working', delegating: 'Parallel work', waiting: 'Needs you', scheduled: 'Monitoring', done: 'Complete', failed: 'Failed', paused: 'Paused', stopped: 'Stopped',
 };
 
-export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onOpenTask, onNewTask, onAddWatch }: {
+function canManageSchedule(task: Task): boolean {
+  return ['scheduled', 'paused', 'failed'].includes(task.status)
+    || (task.status === 'queued' && Boolean(task.nextRunAt) && Date.parse(task.nextRunAt!) > Date.now());
+}
+
+export function ScheduledView({ tasks, watches, onScheduleAction, onWatchAction, onOpenTask, onNewTask, onAddWatch }: {
   tasks: Task[];
   watches: Watch[];
-  onCancelTask: (task: Task) => void;
+  onScheduleAction: (task: Task, action: 'cancelSchedule' | 'pauseSchedule' | 'resumeSchedule' | 'updateSchedule', scheduleSpec?: ScheduleSpec) => Promise<void>;
   onWatchAction: (watch: Watch, action: 'pause' | 'resume') => void;
   onOpenTask: (task: Task) => void;
   onNewTask: () => void;
@@ -26,6 +32,15 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
   const [watchMinutes, setWatchMinutes] = useState(60);
   const [watchBusy, setWatchBusy] = useState(false);
   const [watchError, setWatchError] = useState('');
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
+  const [scheduleFrequency, setScheduleFrequency] = useState<RecurrenceFrequency>('interval');
+  const [scheduleMinutes, setScheduleMinutes] = useState(60);
+  const [scheduleTime, setScheduleTime] = useState('09:00');
+  const [scheduleTimeZone, setScheduleTimeZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  const [scheduleWeekdays, setScheduleWeekdays] = useState<number[]>([]);
+  const [scheduleEndDate, setScheduleEndDate] = useState('');
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduleActionError, setScheduleActionError] = useState('');
 
   const items = useMemo<ScheduledItem[]>(() => [
     ...tasks.filter(task => scheduleForTask(task.scheduleSpec, task.scheduleMinutes) !== null).map(task => ({
@@ -58,6 +73,42 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
     } catch (error) {
       setWatchError(error instanceof Error ? error.message : String(error));
     } finally { setWatchBusy(false); }
+  }
+
+  function beginScheduleEdit(task: Task) {
+    const spec = scheduleForTask(task.scheduleSpec, task.scheduleMinutes);
+    if (!spec) return;
+    setScheduleFrequency(spec.frequency);
+    setScheduleMinutes(spec.frequency === 'interval' ? spec.intervalMinutes : 60);
+    setScheduleTime(spec.frequency === 'interval' ? '09:00' : spec.time);
+    setScheduleTimeZone(spec.frequency === 'interval' ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' : spec.timeZone);
+    setScheduleWeekdays(spec.frequency === 'weekly' ? spec.weekdays : []);
+    setScheduleEndDate(spec.frequency === 'interval' ? '' : spec.endDate || '');
+    setScheduleActionError('');
+    setEditingScheduleId(task.id);
+  }
+
+  async function submitScheduleEdit(task: Task) {
+    if (scheduleBusy) return;
+    const scheduleSpec: ScheduleSpec = scheduleFrequency === 'interval'
+      ? { frequency: 'interval', intervalMinutes: scheduleMinutes }
+      : scheduleFrequency === 'daily'
+        ? { frequency: 'daily', time: scheduleTime, timeZone: scheduleTimeZone, endDate: scheduleEndDate || null }
+        : { frequency: 'weekly', weekdays: scheduleWeekdays, time: scheduleTime, timeZone: scheduleTimeZone, endDate: scheduleEndDate || null };
+    setScheduleBusy(true); setScheduleActionError('');
+    try {
+      await onScheduleAction(task, 'updateSchedule', scheduleSpec);
+      setEditingScheduleId(null);
+    } catch (error) { setScheduleActionError(error instanceof Error ? error.message : String(error)); }
+    finally { setScheduleBusy(false); }
+  }
+
+  async function runScheduleAction(task: Task, action: 'cancelSchedule' | 'pauseSchedule' | 'resumeSchedule') {
+    if (scheduleBusy) return;
+    setScheduleBusy(true); setScheduleActionError('');
+    try { await onScheduleAction(task, action); }
+    catch (error) { setScheduleActionError(error instanceof Error ? error.message : String(error)); }
+    finally { setScheduleBusy(false); }
   }
 
   return <section className="scheduled-hub" aria-label="Scheduled workspace" data-testid="scheduled-hub">
@@ -100,11 +151,20 @@ export function ScheduledView({ tasks, watches, onCancelTask, onWatchAction, onO
         <div className="scheduled-detail-meta"><span>{describeSchedule(scheduleForTask(selected.task.scheduleSpec, selected.task.scheduleMinutes)!)}</span><span>Next run: {['failed', 'paused', 'waiting'].includes(selected.task.status) ? 'Not scheduled' : selected.task.nextRunAt ? new Date(selected.task.nextRunAt).toLocaleString() : 'Not scheduled'}</span></div>
         {selected.task.error && <p className="scheduled-detail-error" role="alert">{selected.task.error}</p>}
         {selected.task.result && <div className="scheduled-result"><span>Latest result</span><p>{selected.task.result}</p></div>}
+        {editingScheduleId === selected.task.id && <div className="scheduled-editor" data-testid="scheduled-task-editor">
+          <RecurrenceEditor frequency={scheduleFrequency} setFrequency={setScheduleFrequency} minutes={scheduleMinutes} setMinutes={setScheduleMinutes} time={scheduleTime} setTime={setScheduleTime} timeZone={scheduleTimeZone} setTimeZone={setScheduleTimeZone} weekdays={scheduleWeekdays} setWeekdays={setScheduleWeekdays} endDate={scheduleEndDate} setEndDate={setScheduleEndDate} />
+          {scheduleActionError && <p className="scheduled-detail-error" role="alert">{scheduleActionError}</p>}
+          <div className="scheduled-detail-actions"><button className="scheduled-primary" type="button" disabled={scheduleBusy} onClick={() => void submitScheduleEdit(selected.task)}>{scheduleBusy ? 'Saving…' : 'Save schedule'}</button><button type="button" disabled={scheduleBusy} onClick={() => { setEditingScheduleId(null); setScheduleActionError(''); }}>Cancel editing</button></div>
+        </div>}
         <div className="scheduled-detail-actions">
           <button onClick={() => onOpenTask(selected.task)}>Open conversation</button>
-          {selected.task.status === 'paused'
-            ? <button className="scheduled-primary" onClick={() => onCancelTask(selected.task)}>Remove schedule</button>
-            : <button className="scheduled-danger" onClick={() => onCancelTask(selected.task)}>Cancel schedule</button>}
+          {editingScheduleId !== selected.task.id && canManageSchedule(selected.task) && <button type="button" onClick={() => beginScheduleEdit(selected.task)}>Edit schedule</button>}
+          {canManageSchedule(selected.task) && <>
+            {selected.task.status === 'scheduled' || selected.task.status === 'queued'
+              ? <button type="button" disabled={scheduleBusy} onClick={() => void runScheduleAction(selected.task, 'pauseSchedule')}>Pause schedule</button>
+              : <button className="scheduled-primary" type="button" disabled={scheduleBusy} onClick={() => void runScheduleAction(selected.task, 'resumeSchedule')}>Resume schedule</button>}
+            <button className="scheduled-danger" type="button" disabled={scheduleBusy} onClick={() => void runScheduleAction(selected.task, 'cancelSchedule')}>{selected.task.status === 'paused' ? 'Remove schedule' : 'Cancel schedule'}</button>
+          </>}
         </div>
       </article>}
       {selected?.kind === 'watch' && <article className="scheduled-detail" data-testid="scheduled-detail" data-item-id={selected.watch.id}>

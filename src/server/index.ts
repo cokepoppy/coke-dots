@@ -807,7 +807,35 @@ const server = createServer(async (req, res) => {
       if (!old) return reply(res, 404, { error: 'Task not found' });
       const action = String(body.action || '');
       if (old.status === 'stopped') return reply(res, 409, { error: '这项工作已停止，不能继续或修改' });
-      if (action === 'pause') {
+      if (action === 'updateSchedule') {
+        const pendingInitialRun = old.status === 'queued' && old.nextRunAt !== null && Date.parse(old.nextRunAt) > Date.now();
+        if (!scheduleForTask(old.scheduleSpec, old.scheduleMinutes) || (!['scheduled', 'paused', 'failed'].includes(old.status) && !pendingInitialRun)) return reply(res, 409, { error: 'Only a paused, failed, or not-yet-running recurring task can be edited' });
+        let scheduleSpec: ScheduleSpec;
+        try { scheduleSpec = validateScheduleSpec(body.scheduleSpec); }
+        catch (error) { return reply(res, 400, { error: error instanceof Error ? error.message : 'Invalid schedule' }); }
+        const nextRunAt = nextScheduleOccurrence(scheduleSpec, new Date());
+        if (old.status !== 'paused' && !nextRunAt) return reply(res, 409, { error: 'No future run falls on or before the schedule end date' });
+        store.updateTask(old.id, {
+          scheduleSpec,
+          scheduleMinutes: scheduleSpec.frequency === 'interval' ? scheduleSpec.intervalMinutes : null,
+          status: old.status === 'paused' ? 'paused' : 'scheduled',
+          nextRunAt: old.status === 'paused' ? null : nextRunAt,
+          error: null,
+        }, session.tenant.id);
+      }
+      else if (action === 'pauseSchedule') {
+        const pendingInitialRun = old.status === 'queued' && old.nextRunAt !== null && Date.parse(old.nextRunAt) > Date.now();
+        if (!scheduleForTask(old.scheduleSpec, old.scheduleMinutes) || (old.status !== 'scheduled' && !pendingInitialRun)) return reply(res, 409, { error: 'Only an active recurring task can be paused' });
+        store.updateTask(old.id, { status: 'paused', nextRunAt: null }, session.tenant.id);
+      }
+      else if (action === 'resumeSchedule') {
+        const recurrence = scheduleForTask(old.scheduleSpec, old.scheduleMinutes);
+        if (!recurrence || !['paused', 'failed'].includes(old.status)) return reply(res, 409, { error: 'Only a paused or failed recurring task can be resumed' });
+        const nextRunAt = nextScheduleOccurrence(recurrence, new Date());
+        if (!nextRunAt) return reply(res, 409, { error: 'No future run falls on or before the schedule end date' });
+        store.updateTask(old.id, { status: 'scheduled', nextRunAt, error: null }, session.tenant.id);
+      }
+      else if (action === 'pause') {
         if (scheduleForTask(old.scheduleSpec, old.scheduleMinutes)) return reply(res, 409, { error: '周期任务请在 Scheduled 中结束，以保留后续运行。' });
         worker.pauseTask(old.id);
         store.updateTask(old.id, { status: 'paused', nextRunAt: null }, session.tenant.id);
