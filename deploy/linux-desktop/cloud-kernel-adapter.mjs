@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import path from 'node:path';
 import { Type } from 'typebox';
 
@@ -56,19 +57,22 @@ async function runPi(input, cwd, config, injectedSdk) {
   const sessionManager = selected
     ? sdk.SessionManager.open(await checkedChildPath(sessionDirectory, selected.path), sessionDirectory, cwd)
     : sdk.SessionManager.create(cwd, sessionDirectory);
-  const bashTool = await createPiBashTool(sdk, cwd);
+  const incidentGitSocket = process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET;
+  const incidentGitEnabled = isIncidentGitSocket(incidentGitSocket);
+  const bashTool = await createPiBashTool(sdk, cwd, incidentGitEnabled);
   const computerTool = computerBrowserTool(input.computer, input.taskId);
   const browserTool = publicPageTool(input.computer);
+  const incidentPullRequest = incidentPullRequestTool(incidentGitSocket);
   const dingtalkTools = dingtalkDocumentTools(input.dingtalkDocumentsBridge);
   const dingtalkCalendarToolsList = dingtalkCalendarTools(input.dingtalkCalendarBridge);
-  const customTools = [bashTool, computerTool, browserTool, ...dingtalkTools, ...dingtalkCalendarToolsList].filter(Boolean);
+  const customTools = [bashTool, computerTool, browserTool, incidentPullRequest, ...dingtalkTools, ...dingtalkCalendarToolsList].filter(Boolean);
   const { session } = await sdk.createAgentSession({
     cwd,
     agentDir: await createPrivateDirectory(cwd, '.coke-dots-agent-runtime/pi'),
     authStorage,
     modelRegistry,
     model: selectedModel,
-    tools: [...piTools, ...(computerTool ? [computerTool.name] : []), ...(browserTool ? ['open_public_page'] : []), ...dingtalkTools.map(tool => tool.name), ...dingtalkCalendarToolsList.map(tool => tool.name)],
+    tools: [...piTools, ...(computerTool ? [computerTool.name] : []), ...(browserTool ? ['open_public_page'] : []), ...(incidentPullRequest ? [incidentPullRequest.name] : []), ...dingtalkTools.map(tool => tool.name), ...dingtalkCalendarToolsList.map(tool => tool.name)],
     ...(customTools.length ? { customTools } : {}),
     sessionManager,
   });
@@ -90,13 +94,95 @@ async function runPi(input, cwd, config, injectedSdk) {
   }
 }
 
-async function createPiBashTool(sdk, cwd) {
+function incidentPullRequestTool(socketValue) {
+  const socketPath = typeof socketValue === 'string' ? socketValue : '';
+  if (!isIncidentGitSocket(socketPath)) return null;
+  return {
+    name: 'create_incident_pull_request',
+    label: '创建排障修复 PR',
+    description: 'Create or find the open pull request for the fixed Coke Agent incident branch. This tool is available only during the authorized incident-remediation task; it never merges or deploys.',
+    promptSnippet: 'After the fix is tested and pushed, create the incident pull request and verify its returned URL and open status.',
+    promptGuidelines: [
+      'Only call this after the fixed incident branch has been pushed and tests pass.',
+      'The PR title and body, repository, head branch, and base branch are fixed by the broker. The caller cannot provide PR text or redirect the operation.',
+      'This creates or reuses an open PR; it cannot merge, deploy, or access another repository.',
+    ],
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_id, params, signal) {
+      if (signal?.aborted) throw signal.reason || new Error('Task was stopped');
+      const result = await requestIncidentBroker(socketPath, {}, signal);
+      if (!result || result.state !== 'open' || result.merged !== false) throw new Error('The incident pull request could not be verified as open');
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        details: { number: result.number, url: result.url, state: result.state },
+      };
+    },
+  };
+}
+
+function isIncidentGitSocket(value) {
+  if (value === '/run/incident-git-agent/credential.sock') return true;
+  return process.env.NODE_ENV === 'test' && typeof value === 'string' && /^\/tmp\/coke-dots-pr-\d+\.sock$/.test(value);
+}
+
+function requestIncidentBroker(socketPath, payload, signal) {
+  const body = JSON.stringify(payload);
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      socketPath,
+      path: '/pull-request',
+      method: 'POST',
+      timeout: 25_000,
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+    }, response => {
+      const chunks = [];
+      let size = 0;
+      response.on('data', chunk => {
+        size += chunk.length;
+        if (size > 4096) request.destroy(new Error('Incident pull request broker response exceeded its size limit'));
+        else chunks.push(chunk);
+      });
+      response.on('end', () => {
+        if (response.statusCode !== 200 && response.statusCode !== 201) {
+          let message = 'Incident pull request creation failed';
+          try {
+            const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            if (typeof value.error === 'string' && value.error.length <= 200) message = value.error;
+          } catch { /* keep the safe generic error */ }
+          return reject(new Error(message));
+        }
+        try {
+          const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          if (!Number.isInteger(value.number) || value.number < 1 || typeof value.url !== 'string'
+              || !/^https:\/\/github\.com\/cokepoppy\/coke-agent-test\/pull\/\d+$/.test(value.url)
+              || value.head !== 'fix/coke-agent-empty-conversation-c7e2a195' || value.base !== 'main') {
+            return reject(new Error('Incident pull request broker returned an invalid response'));
+          }
+          resolve(value);
+        } catch { reject(new Error('Incident pull request broker returned invalid JSON')); }
+      });
+    });
+    request.once('error', reject);
+    request.once('timeout', () => request.destroy(new Error('Incident pull request broker timed out')));
+    if (signal) {
+      const abort = () => request.destroy(signal.reason || new Error('Task was stopped'));
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+      request.once('close', () => signal.removeEventListener('abort', abort));
+    }
+    request.end(body);
+  });
+}
+
+async function createPiBashTool(sdk, cwd, incidentGitEnabled = false) {
   const createBashTool = sdk.createBashTool || (await import('@mariozechner/pi-coding-agent')).createBashTool;
   if (typeof createBashTool !== 'function') throw new Error('Pi bash tool is unavailable in this Agent image');
   return createBashTool(cwd, {
     spawnHook: context => ({
       ...context,
-      env: Object.fromEntries(Object.entries(context.env || {}).filter(([name]) => !secretEnvironmentName.test(name))),
+      env: Object.fromEntries(Object.entries(context.env || {}).filter(([name]) =>
+        !secretEnvironmentName.test(name)
+        || (incidentGitEnabled && name === 'DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET' && isIncidentGitSocket(context.env[name])))),
     }),
   });
 }

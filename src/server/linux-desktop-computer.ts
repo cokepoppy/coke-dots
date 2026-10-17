@@ -434,6 +434,16 @@ export function desktopResources(tenantId: string, workerToken: string, agentTok
               env: [
                 { name: 'DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET', value: incidentGitSocket },
                 { name: 'DOTS_INCIDENT_GITHUB_TOKEN_FILE', value: '/run/github-token/token' },
+                ...(proxyConfig ? [
+                  { name: 'HTTP_PROXY', value: proxyConfig.serverUrl },
+                  { name: 'HTTPS_PROXY', value: proxyConfig.serverUrl },
+                  { name: 'ALL_PROXY', value: proxyConfig.serverUrl },
+                  { name: 'http_proxy', value: proxyConfig.serverUrl },
+                  { name: 'https_proxy', value: proxyConfig.serverUrl },
+                  { name: 'all_proxy', value: proxyConfig.serverUrl },
+                  { name: 'NO_PROXY', value: 'localhost,127.0.0.1,::1,.svc,.cluster.local' },
+                  { name: 'no_proxy', value: 'localhost,127.0.0.1,::1,.svc,.cluster.local' },
+                ] : []),
               ],
               readinessProbe: { exec: { command: ['/bin/sh', '-lc', `test -S ${incidentGitSocket}`] }, periodSeconds: 5, timeoutSeconds: 2, failureThreshold: 3 },
               resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { cpu: '100m', memory: '128Mi' } },

@@ -54,12 +54,65 @@ test('Pi cloud kernel enables the full coding toolset and keeps runtime secrets 
     const childEnvironment = bashSpawnHook({ command: '/bin/true', args: [], cwd: task, env: {
       PATH: '/usr/bin:/bin', SAFE_TEST_VALUE: 'preserved', DEEPSEEK_API_KEY: 'model-secret',
       LINUX_DESKTOP_WORKER_TOKEN: 'worker-secret', DOTS_AGENT_RUNTIME_TOKEN: 'runtime-secret',
+      DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET: '/run/incident-git-agent/credential.sock',
     } }).env;
     assert.deepEqual(childEnvironment, { PATH: '/usr/bin:/bin', SAFE_TEST_VALUE: 'preserved' }, 'Bash can run commands without inheriting model or service credentials');
     assert(sessionDirectory.startsWith(await realpath(task)), 'The Pi session directory belongs to the task workspace');
     assert(capturedOptions.value?.agentDir.includes('/.coke-dots-agent-runtime/pi'));
     await stat(sessionDirectory);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Pi exposes the PR broker only to the incident task and its Bash child', async () => {
+  const { root, task } = await makeWorkspace();
+  const socketPath = `/tmp/coke-dots-pr-${process.pid}.sock`;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalSocket = process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET;
+  process.env.NODE_ENV = 'test';
+  process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET = socketPath;
+  let bashSpawnHook: ((context: Record<string, any>) => Record<string, any>) | undefined;
+  let toolOutput: any;
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    assert.equal(request.url, '/pull-request');
+    assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString('utf8')), {});
+    response.writeHead(201, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ number: 7, url: 'https://github.com/cokepoppy/coke-agent-test/pull/7', state: 'open', head: 'fix/coke-agent-empty-conversation-c7e2a195', base: 'main', merged: false }));
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    const sdk = {
+      AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+      ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+      SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-incident-session' }), open: () => { throw new Error('unexpected'); } },
+      createBashTool: (_cwd: string, options: Record<string, any>) => {
+        bashSpawnHook = options.spawnHook;
+        return { name: 'bash', label: 'Run command', description: 'Run a command', parameters: {}, execute: async () => ({ content: [{ type: 'text', text: 'ok' }] }) };
+      },
+      createAgentSession: async (options: Record<string, any>) => {
+        assert(options.tools.includes('create_incident_pull_request'));
+        const tool = options.customTools.find((item: { name: string }) => item.name === 'create_incident_pull_request');
+        assert(tool);
+        toolOutput = await tool.execute('pr-1', {});
+        return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
+      },
+    };
+    await runCloudKernel({ engine: 'pi', prompt: 'Finish the incident fix.', cwd: task, workspace: root, taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig }, { piSdk: sdk });
+    assert.deepEqual(toolOutput.details, { number: 7, url: 'https://github.com/cokepoppy/coke-agent-test/pull/7', state: 'open' });
+    assert(bashSpawnHook);
+    const withSocket = bashSpawnHook({ command: '/bin/true', args: [], cwd: task, env: { PATH: '/usr/bin:/bin', DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET: socketPath, DOTS_AGENT_RUNTIME_TOKEN: 'secret' } }).env;
+    assert.deepEqual(withSocket, { PATH: '/usr/bin:/bin', DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET: socketPath });
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = originalNodeEnv;
+    if (originalSocket === undefined) delete process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET; else process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET = originalSocket;
+    await rm(socketPath, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('Pi exposes one task-scoped read-only DingTalk calendar tool and sends only the bounded list request', async () => {
