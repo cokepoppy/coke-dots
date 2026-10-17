@@ -152,3 +152,46 @@ test('voice follow-ups retain bounded context within one call and across an expl
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('a spoken progress question during an active task carries its live status, then later carries the completed result', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-voice-progress-'));
+  try {
+    const store = new Store(directory);
+    const user = store.signInGoogle({ subject: 'voice-progress-user', email: 'voice-progress@example.test', name: 'Voice User' });
+    const call = store.createVoiceCall(user.tenant.id, user.user.id, '2026-10-17T01:00:00.000Z');
+    const original = store.submitVoiceTurn({
+      tenantId: user.tenant.id, userId: user.user.id, callId: call.id, turnId: 'progress-turn-1',
+      transcript: '查北交所公告，更新交易页面并跑完测试', engine: 'pi',
+    }).task;
+    store.updateTask(original.id, { status: 'working', nextRunAt: null }, user.tenant.id);
+
+    const progressQuestion = store.submitVoiceTurn({
+      tenantId: user.tenant.id, userId: user.user.id, callId: call.id, turnId: 'progress-turn-2',
+      transcript: '刚才那件事做好了吗？', engine: 'pi',
+    }).task;
+    assert.match(progressQuestion.instruction, /User said: 查北交所公告，更新交易页面并跑完测试/,
+      'A progress question during the same call must retain the original spoken goal');
+    assert.match(progressQuestion.instruction, /Related task: 查北交所公告，更新交易页面并跑完测试/);
+    assert.match(progressQuestion.instruction, /Task status: working/,
+      'The follow-up prompt must report that the original Pi task is still working');
+    assert.match(progressQuestion.instruction, /still in progress or no result yet/,
+      'An unfinished task must not be presented as complete');
+
+    store.updateTask(original.id, {
+      status: 'done', nextRunAt: null, result: '规则影响已修复，移动页面回归测试通过，PR #12 已创建。',
+    }, user.tenant.id);
+    const completedQuestion = store.submitVoiceTurn({
+      tenantId: user.tenant.id, userId: user.user.id, callId: call.id, turnId: 'progress-turn-3',
+      transcript: '那修复和 PR 结果是什么？', engine: 'pi',
+    }).task;
+    assert.match(completedQuestion.instruction, /User said: 刚才那件事做好了吗？/,
+      'Every spoken turn must remain in context, including progress checks');
+    assert.match(completedQuestion.instruction, /Task status: done/);
+    assert.match(completedQuestion.instruction, /移动页面回归测试通过，PR #12 已创建/,
+      'A later reference must include the original task result after it completes');
+    const savedTurns = store.db.prepare('SELECT COUNT(*) AS count FROM voice_call_turns WHERE call_id=?')
+      .get(call.id) as { count: number };
+    assert.equal(savedTurns.count, 3, 'The active call must durably retain the complete three-turn exchange');
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
