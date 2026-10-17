@@ -13,6 +13,7 @@ import {
 import { createDwsAuthorizationManager } from './lib/dws-authorization-manager.mjs';
 import { createDwsDocumentOperations } from './lib/dws-documents.mjs';
 import { createDwsCalendarOperations } from './lib/dws-calendar.mjs';
+import { createDwsSecretaryOperations } from './lib/dws-secretary.mjs';
 
 const encryptedMagic = Buffer.from('CDWS1');
 const maxArchiveBytes = 32 * 1024 * 1024;
@@ -38,6 +39,12 @@ const allowedErrors = new Set([
   'DWS_DOC_UPDATE_COMMAND_INVALID', 'DWS_DOC_REQUEST_ID_INVALID', 'DWS_DOC_REQUEST_CONFLICT',
   'DWS_DOC_OPERATION_STORAGE_FAILED', 'DINGTALK_REQUEST_TOO_LARGE',
   'DWS_CALENDAR_RANGE_INVALID', 'DWS_CALENDAR_CURSOR_INVALID', 'DWS_CALENDAR_LIST_FAILED',
+  'DWS_CALENDAR_TITLE_INVALID', 'DWS_CALENDAR_CONFIRMATION_REQUIRED', 'DWS_CALENDAR_REQUEST_ID_INVALID',
+  'DWS_CALENDAR_CREATE_FAILED', 'DWS_CALENDAR_CREATE_UNVERIFIED',
+  'DWS_TODO_TITLE_INVALID', 'DWS_TODO_EXECUTOR_INVALID', 'DWS_TODO_PRIORITY_INVALID',
+  'DWS_TODO_CONFIRMATION_REQUIRED', 'DWS_TODO_REQUEST_ID_INVALID', 'DWS_TODO_CREATE_FAILED', 'DWS_TODO_CREATE_UNVERIFIED',
+  'DWS_CHAT_CONTENT_INVALID', 'DWS_CHAT_CONFIRMATION_REQUIRED', 'DWS_CHAT_REQUEST_ID_INVALID',
+  'DWS_CHAT_SEND_FAILED', 'DWS_CHAT_SEND_UNVERIFIED', 'DWS_SECRETARY_RUNTIME_REQUIRED',
   'DWS_HOST_PROFILE_USER_NOT_ALLOWED',
   'CONNECTOR_AUTHORIZATION_NOT_FOUND', 'CONNECTOR_IDENTITY_READBACK_FAILED',
 ]);
@@ -514,9 +521,9 @@ async function syncDirectory(directory) {
   finally { await handle?.close().catch(() => undefined); }
 }
 
-function createDocumentWriteOnce(storageRoot) {
+function createDocumentWriteOnce(storageRoot, namespace = 'document') {
   return async ({ ownerKey, requestId, operation, input, work }) => {
-    const ownerDirectory = path.join(storageRoot, '.document-operations', ownerKey);
+    const ownerDirectory = path.join(storageRoot, `.${namespace}-operations`, ownerKey);
     await ensurePrivateDirectory(path.dirname(ownerDirectory));
     await ensurePrivateDirectory(ownerDirectory);
     const requestHash = createHash('sha256').update(requestId).digest('hex');
@@ -605,12 +612,11 @@ export function createDingtalkConnectorGateway({
   const flows = new Map();
   const locks = new Map();
   const activeMonitors = new Map();
-  const documents = createDwsDocumentOperations({
-    withAuthenticatedProfile: async (principal, work) => {
+  const withAuthenticatedDwsProfile = suffix => async (principal, work) => {
       if (process.platform !== 'linux' && !(process.platform === 'darwin' && allowMacRuntime)) throw new Error('DWS_GATEWAY_REQUIRES_LINUX');
       const ownerKey = principalKey(principal);
       return withOwnerLock(dwsLockKey(ownerKey), async () => {
-        const workspace = await createPrincipalProfileWorkspace(principal, 'documents');
+        const workspace = await createPrincipalProfileWorkspace(principal, suffix);
         let restored = false;
         try {
           restored = await restorePrincipalProfile(ownerKey, workspace);
@@ -631,36 +637,15 @@ export function createDingtalkConnectorGateway({
           await rm(workspace.root, { recursive: true, force: true });
         }
       });
-    },
+  };
+  const documents = createDwsDocumentOperations({
+    withAuthenticatedProfile: withAuthenticatedDwsProfile('documents'),
     writeOnce: createDocumentWriteOnce(storageRoot),
   });
-  const calendar = createDwsCalendarOperations({
-    withAuthenticatedProfile: async (principal, work) => {
-      if (process.platform !== 'linux' && !(process.platform === 'darwin' && allowMacRuntime)) throw new Error('DWS_GATEWAY_REQUIRES_LINUX');
-      const ownerKey = principalKey(principal);
-      return withOwnerLock(dwsLockKey(ownerKey), async () => {
-        const workspace = await createPrincipalProfileWorkspace(principal, 'calendar');
-        let restored = false;
-        try {
-          restored = await restorePrincipalProfile(ownerKey, workspace);
-          if (!restored) throw new Error('DWS_PROFILE_NOT_INSTALLED');
-          await verifyBinary(binary);
-          const owner = await prepareProfileRoot(workspace.root, principal);
-          const env = dwsEnvironment(owner);
-          const call = (args, options = {}) => runDws(binary, [...args, '--format', 'json'], {
-            cwd: owner, env, timeoutMs: 60_000, maxBytes: 1024 * 1024, parseJsonOnFailure: true, ...options,
-          });
-          const profile = selectCurrentProfile(await call(['profile', 'list']));
-          if (!profile) throw new Error('DWS_PROFILE_SELECTION_REQUIRED');
-          const authStatus = parseAuthStatus(await call(['auth', 'status', '--profile', profile.selector]), profile);
-          if (!authStatus.authenticated) throw new Error('DWS_DOC_AUTHORIZATION_REQUIRED');
-          return await work({ call, profile, ownerKey });
-        } finally {
-          if (restored && !hostProfile) await persistPrincipalProfile(ownerKey, workspace).catch(() => undefined);
-          await rm(workspace.root, { recursive: true, force: true });
-        }
-      });
-    },
+  const calendar = createDwsCalendarOperations({ withAuthenticatedProfile: withAuthenticatedDwsProfile('calendar') });
+  const secretary = createDwsSecretaryOperations({
+    withAuthenticatedProfile: withAuthenticatedDwsProfile('secretary'),
+    writeOnce: createDocumentWriteOnce(storageRoot, 'secretary'),
   });
 
   async function initialize() {
@@ -1190,6 +1175,17 @@ export function createDingtalkConnectorGateway({
       if (req.method === 'POST' && url.pathname === '/v1/calendar/events') {
         const body = await readBody(req, 16 * 1024);
         return send(200, { ok: true, data: await calendar.listEvents(ownerPrincipal(ticket), body) });
+      }
+      const secretaryRoute = url.pathname.match(/^\/v1\/secretary\/(calendar-create|todo-create|cokeclaw-send)$/);
+      if (req.method === 'POST' && secretaryRoute) {
+        const body = await readBody(req, 16 * 1024);
+        const principal = ownerPrincipal(ticket);
+        const operation = {
+          'calendar-create': secretary.createCalendarEvent,
+          'todo-create': secretary.createPersonalTodo,
+          'cokeclaw-send': secretary.sendCokeclawReport,
+        }[secretaryRoute[1]];
+        return send(200, { ok: true, data: await operation(principal, body) });
       }
       if (req.method === 'POST' && url.pathname === '/v1/monitors/events') return await streamGroupMessages(ticket, await readBody(req), req, res);
       if (req.method === 'DELETE' && url.pathname === '/v1/account') return send(200, { ok: true, data: await disconnect(ticket) });

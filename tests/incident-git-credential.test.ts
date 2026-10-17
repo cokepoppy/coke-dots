@@ -14,10 +14,13 @@ const helperPath = join(root, 'deploy/linux-desktop/incident-git-credential-help
 async function waitForSocket(socketPath: string, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    try { if ((await stat(socketPath)).isSocket()) return; } catch { /* not ready */ }
+    try {
+      const socket = await stat(socketPath);
+      if (socket.isSocket() && (socket.mode & 0o777) === 0) return;
+    } catch { /* not ready */ }
     await new Promise(resolvePromise => setTimeout(resolvePromise, 25));
   }
-  throw new Error('Git credential broker did not create its Unix socket');
+  throw new Error('Git credential broker did not create its inaccessible Unix socket');
 }
 
 async function runHelper(socketPath: string, action: string, input: string) {

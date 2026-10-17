@@ -93,3 +93,34 @@ test('a repeated voice reply resumes a waiting task exactly once', () => {
     store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('voice follow-ups retain bounded context within one call and across an explicit follow-up call only', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coke-dots-voice-follow-up-'));
+  try {
+    const store = new Store(directory);
+    const alpha = store.signInGoogle({ subject: 'voice-context-alpha', email: 'voice-context-alpha@example.test', name: 'Alpha' });
+    const beta = store.signInGoogle({ subject: 'voice-context-beta', email: 'voice-context-beta@example.test', name: 'Beta' });
+    const firstCall = store.createVoiceCall(alpha.tenant.id, alpha.user.id, '2026-10-17T00:00:00.000Z');
+    const first = store.submitVoiceTurn({ tenantId: alpha.tenant.id, userId: alpha.user.id, callId: firstCall.id, turnId: 'context-turn-1', transcript: '请准备北交所规则会议资料', engine: 'pi' });
+    store.updateTask(first.task.id, { status: 'done', result: '会议资料文档已创建，日程待确认。' }, alpha.tenant.id);
+    const second = store.submitVoiceTurn({ tenantId: alpha.tenant.id, userId: alpha.user.id, callId: firstCall.id, turnId: 'context-turn-2', transcript: '把日程也安排上', engine: 'pi' });
+    assert.match(second.task.instruction, /Recent voice-task context/);
+    assert.match(second.task.instruction, /会议资料文档已创建/);
+
+    store.endVoiceCall(alpha.tenant.id, alpha.user.id, firstCall.id, 30, '2026-10-17T00:01:00.000Z');
+    const followUpCall = store.createVoiceCall(alpha.tenant.id, alpha.user.id, '2026-10-17T00:10:00.000Z');
+    const followUp = store.submitVoiceTurn({ tenantId: alpha.tenant.id, userId: alpha.user.id, callId: followUpCall.id, turnId: 'context-turn-3', transcript: '那个会议准备资料处理好了吗？', engine: 'pi' });
+    assert.match(followUp.task.instruction, /Recent voice-task context/);
+    assert.match(followUp.task.instruction, /会议资料文档已创建/);
+
+    store.endVoiceCall(alpha.tenant.id, alpha.user.id, followUpCall.id, 20, '2026-10-17T00:11:00.000Z');
+    const unrelatedCall = store.createVoiceCall(alpha.tenant.id, alpha.user.id, '2026-10-17T00:20:00.000Z');
+    const unrelated = store.submitVoiceTurn({ tenantId: alpha.tenant.id, userId: alpha.user.id, callId: unrelatedCall.id, turnId: 'context-turn-4', transcript: '今天天气怎么样', engine: 'pi' });
+    assert.doesNotMatch(unrelated.task.instruction, /Recent voice-task context/);
+
+    const betaCall = store.createVoiceCall(beta.tenant.id, beta.user.id, '2026-10-17T00:30:00.000Z');
+    const betaTask = store.submitVoiceTurn({ tenantId: beta.tenant.id, userId: beta.user.id, callId: betaCall.id, turnId: 'context-turn-5', transcript: '继续之前那个任务', engine: 'pi' });
+    assert.doesNotMatch(betaTask.task.instruction, /会议资料文档已创建/);
+    store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

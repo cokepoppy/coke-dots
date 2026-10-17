@@ -158,6 +158,61 @@ test('Pi exposes one task-scoped read-only DingTalk calendar tool and sends only
   }
 });
 
+test('Pi exposes only the task-granted calendar creation, self-todo, and fixed cokeclaw report tools', async () => {
+  const { root, task } = await makeWorkspace();
+  const requests: Array<Record<string, unknown>> = [];
+  const captured: { names: string[]; calendarCreate: any; todo: any; report: any } = { names: [], calendarCreate: null, todo: null, report: null };
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ ok: true, data: { verified: true } }));
+  });
+  await new Promise<void>((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const sdk = {
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+    ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+    SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-secretary-session' }), open: () => { throw new Error('unexpected'); } },
+    createAgentSession: async (options: Record<string, any>) => {
+      captured.names = options.tools;
+      captured.calendarCreate = options.customTools.find((tool: { name: string }) => tool.name === 'create_dingtalk_calendar_event');
+      captured.todo = options.customTools.find((tool: { name: string }) => tool.name === 'create_dingtalk_personal_todo');
+      captured.report = options.customTools.find((tool: { name: string }) => tool.name === 'send_cokeclaw_group_report');
+      return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
+    },
+  };
+  const bridgeUrl = `http://127.0.0.1:${address.port}/api/agent/dingtalk/secretary`;
+  const token = 'task-scoped-secretary-token-never-in-environment';
+  try {
+    await runCloudKernel({
+      engine: 'pi', prompt: '创建会议和个人待办，把最终报告发到 cokeclaw', cwd: task, workspace: root,
+      taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
+      dingtalkCalendarBridge: { url: `http://127.0.0.1:${address.port}/api/agent/dingtalk/calendar`, token, actions: ['create'] },
+      dingtalkSecretaryBridge: { url: bridgeUrl, token, actions: ['todo-create', 'cokeclaw-send'] },
+    }, { piSdk: sdk });
+    assert.equal(captured.names.includes('create_dingtalk_calendar_event'), true);
+    assert.equal(captured.names.includes('list_dingtalk_calendar_events'), false, 'A create-only grant must not expose calendar reads');
+    assert.equal(captured.names.includes('create_dingtalk_personal_todo'), true);
+    assert.equal(captured.names.includes('send_cokeclaw_group_report'), true);
+    assert.equal(captured.report.parameters.properties.group, undefined, 'The Agent cannot choose a group');
+    const meeting = await captured.calendarCreate.execute('meeting-1', { title: '北交所准备会', start: '2026-10-19T10:00:00+08:00', end: '2026-10-19T10:45:00+08:00' });
+    const todo = await captured.todo.execute('todo-1', { title: '核验规则', due: '2026-10-20T17:00:00+08:00', priority: 30 });
+    const report = await captured.report.execute('report-1', { content: '报告已完成' });
+    assert.match(meeting.content[0].text, /verified/);
+    assert.match(todo.content[0].text, /verified/);
+    assert.match(report.content[0].text, /verified/);
+    assert.deepEqual(requests.map(item => item.action), ['create', 'todo-create', 'cokeclaw-send']);
+    assert.equal(requests[2].group, undefined, 'Group routing remains fixed in the server');
+    assert(requests.every(item => !JSON.stringify(item).includes(token)));
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Pi cloud tasks expose standard read, write, edit, and Bash tools without a legacy approval flag', async () => {
   const { root, task } = await makeWorkspace();
   const captured: { tools: string[]; customTools: Array<{ name: string }> } = { tools: [], customTools: [] };
@@ -428,7 +483,7 @@ test('DeepSeek Harness exposes a temporary read-only DingTalk calendar tool for 
     assert.equal(captured.envHasToken, false);
     assert.match(captured.plugin, /list_dingtalk_calendar_events/);
     assert.match(captured.plugin, /Read-only/);
-    assert.doesNotMatch(captured.plugin, /create_dingtalk_calendar|update_dingtalk_calendar|cancel_dingtalk_calendar/);
+    assert.match(captured.plugin, /if \(bridge\.actions\.includes\('create'\)\)/, 'The create tool is runtime-gated by the task grant and is not available to a list-only capability');
     assert.match(captured.plugin, new RegExp(token));
     assert.equal((await readdir(join(await realpath(task), '.coke-dots-agent-runtime', 'dsh-home'))).some(name => name.endsWith('-dingtalk-calendar.mjs')), false);
   } finally { await rm(root, { recursive: true, force: true }); }

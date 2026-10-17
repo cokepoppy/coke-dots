@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import type { AuthSession } from './store.ts';
 import { createDingTalkAgentBridge, deterministicDingTalkCreateRequestId, verifyDingTalkAgentGrant, type DingTalkAgentGrant, type DingTalkAgentBridge } from './dingtalk-agent-bridge.ts';
 import { createDingTalkCalendarAgentBridge, verifyDingTalkCalendarAgentGrant, type DingTalkCalendarAgentGrant, type DingTalkCalendarAgentBridge } from './dingtalk-calendar-agent-bridge.ts';
+import { createDingTalkSecretaryAgentBridge, deterministicDingTalkSecretaryRequestId, verifyDingTalkSecretaryAgentGrant, type DingTalkSecretaryAgentGrant, type DingTalkSecretaryAgentBridge } from './dingtalk-secretary-agent-bridge.ts';
 
 interface DingTalkGatewayResponse<T> { ok: boolean; data?: T; error?: string }
 
@@ -90,6 +91,23 @@ const publicErrors: Record<string, string> = {
   DWS_CALENDAR_RANGE_INVALID: '日程查询时间范围无效；请提供带时区的 ISO 时间，范围最多 31 天。',
   DWS_CALENDAR_CURSOR_INVALID: '日程分页游标无效。',
   DWS_CALENDAR_LIST_FAILED: '钉钉日历没有返回可验证的日程列表。',
+  DWS_CALENDAR_TITLE_INVALID: '钉钉日程标题无效。',
+  DWS_CALENDAR_CONFIRMATION_REQUIRED: '创建钉钉日程需要在当前任务中明确请求。',
+  DWS_CALENDAR_REQUEST_ID_INVALID: '钉钉日程请求缺少有效的幂等标识。',
+  DWS_CALENDAR_CREATE_FAILED: '钉钉日程创建未能完成。',
+  DWS_CALENDAR_CREATE_UNVERIFIED: '钉钉日程创建结果无法验证；请先检查日历，不要直接重试。',
+  DWS_TODO_TITLE_INVALID: '钉钉待办标题无效。',
+  DWS_TODO_EXECUTOR_INVALID: '钉钉待办执行人无效。',
+  DWS_TODO_PRIORITY_INVALID: '钉钉待办优先级无效。',
+  DWS_TODO_CONFIRMATION_REQUIRED: '创建钉钉待办需要在当前任务中明确请求。',
+  DWS_TODO_REQUEST_ID_INVALID: '钉钉待办请求缺少有效的幂等标识。',
+  DWS_TODO_CREATE_FAILED: '钉钉待办创建未能完成。',
+  DWS_TODO_CREATE_UNVERIFIED: '钉钉待办创建结果无法验证；请先检查待办，不要直接重试。',
+  DWS_CHAT_CONTENT_INVALID: '钉钉群消息内容无效。',
+  DWS_CHAT_CONFIRMATION_REQUIRED: '发送钉钉群消息需要在当前任务中明确请求。',
+  DWS_CHAT_REQUEST_ID_INVALID: '钉钉群消息缺少有效的幂等标识。',
+  DWS_CHAT_SEND_FAILED: '钉钉群消息未能完成发送。',
+  DWS_CHAT_SEND_UNVERIFIED: '钉钉群消息发送结果无法验证；请先检查群聊，不要直接重试。',
 };
 
 export class DingTalkService {
@@ -135,6 +153,14 @@ export class DingTalkService {
     });
   }
 
+  agentSecretaryBridge(tenantId: string, userId: string, taskId: string, instruction: string): DingTalkSecretaryAgentBridge | null {
+    if (!this.configured() || (!this.ticketSecret && !this.e2eMock)) return null;
+    return createDingTalkSecretaryAgentBridge({
+      tenantId, userId, taskId, instruction, publicOrigin: this.publicOrigin, basePath: this.basePath,
+      secret: this.ticketSecret || 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes',
+    });
+  }
+
   verifyAgentDocumentGrant(token: string): DingTalkAgentGrant | null {
     if (!this.configured()) return null;
     return verifyDingTalkAgentGrant(token, this.ticketSecret || (this.e2eMock ? 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes' : ''));
@@ -145,24 +171,68 @@ export class DingTalkService {
     return verifyDingTalkCalendarAgentGrant(token, this.ticketSecret || (this.e2eMock ? 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes' : ''));
   }
 
+  verifyAgentSecretaryGrant(token: string): DingTalkSecretaryAgentGrant | null {
+    if (!this.configured()) return null;
+    return verifyDingTalkSecretaryAgentGrant(token, this.ticketSecret || (this.e2eMock ? 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes' : ''));
+  }
+
   async runAgentCalendarOperation(grant: DingTalkCalendarAgentGrant, input: unknown) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('钉钉 Agent 日历请求无效');
     const body = input as Record<string, unknown>;
-    if (body.action !== 'list' || !grant.actions.includes('list')) throw new Error('当前任务没有此钉钉日历操作权限');
+    const action = String(body.action || '');
+    if (!grant.actions.includes(action as 'list' | 'create')) throw new Error('当前任务没有此钉钉日历操作权限');
     const session: AuthSession = {
       tokenHash: '',
       user: { id: grant.userId, email: '', name: '' },
       tenant: { id: grant.tenantId, name: '', role: 'member', kind: 'workspace' },
       expiresAt: new Date(grant.expiresAt * 1000).toISOString(),
     };
-    const range = validateCalendarQuery(body);
     if (this.e2eMock) {
       requireMockDingTalkIdentity(this.mockAccounts, session);
-      return { events: [], count: 0, complete: true, start: range.start, end: range.end, testOnly: true };
+      if (action === 'list') {
+        const range = validateCalendarQuery(body);
+        return { events: [], count: 0, complete: true, start: range.start, end: range.end, testOnly: true };
+      }
+      const create = validateCalendarCreate(body, grant, this.ticketSecret || 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes');
+      return { eventId: `e2e-event-${create.requestId}`, title: create.title, start: create.start, end: create.end, verified: true, testOnly: true };
     }
     this.requireConfigured();
-    try { return await this.call(session, '/v1/calendar/events', 'POST', range); }
+    try {
+      if (action === 'list') return await this.call(session, '/v1/calendar/events', 'POST', validateCalendarQuery(body));
+      const create = validateCalendarCreate(body, grant, this.ticketSecret);
+      return await this.call(session, '/v1/secretary/calendar-create', 'POST', { ...create, confirmed: true });
+    }
     catch (error) { throw serviceError(error); }
+  }
+
+  async runAgentSecretaryOperation(grant: DingTalkSecretaryAgentGrant, input: unknown) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('钉钉个人助理请求无效');
+    const body = input as Record<string, unknown>;
+    const action = String(body.action || '');
+    if (!grant.actions.includes(action as 'todo-create' | 'cokeclaw-send')) throw new Error('当前任务没有此钉钉个人助理操作权限');
+    const session: AuthSession = {
+      tokenHash: '', user: { id: grant.userId, email: '', name: '' },
+      tenant: { id: grant.tenantId, name: '', role: 'member', kind: 'workspace' },
+      expiresAt: new Date(grant.expiresAt * 1000).toISOString(),
+    };
+    if (this.e2eMock) {
+      requireMockDingTalkIdentity(this.mockAccounts, session);
+      if (action === 'todo-create') {
+        const todo = validateTodoCreate(body, grant, this.ticketSecret || 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes');
+        return { taskId: `e2e-todo-${todo.requestId}`, title: todo.title, due: todo.due, verified: true, testOnly: true };
+      }
+      const report = validateCokeclawMessage(body, grant, this.ticketSecret || 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes');
+      return { group: 'cokeclaw', messageId: `e2e-message-${report.requestId}`, sent: true, testOnly: true };
+    }
+    this.requireConfigured();
+    try {
+      if (action === 'todo-create') {
+        const todo = validateTodoCreate(body, grant, this.ticketSecret);
+        return await this.call(session, '/v1/secretary/todo-create', 'POST', { ...todo, confirmed: true });
+      }
+      const report = validateCokeclawMessage(body, grant, this.ticketSecret);
+      return await this.call(session, '/v1/secretary/cokeclaw-send', 'POST', { ...report, confirmed: true });
+    } catch (error) { throw serviceError(error); }
   }
 
   async runAgentDocumentOperation(grant: DingTalkAgentGrant, input: unknown) {
@@ -521,6 +591,43 @@ function validateCalendarQuery(body: Record<string, unknown>) {
   const cursor = body.cursor === undefined ? '' : String(body.cursor);
   if (cursor.length > 2048 || cursor.includes('\0')) throw new Error(publicErrors.DWS_CALENDAR_CURSOR_INVALID);
   return { start: new Date(start).toISOString(), end: new Date(end).toISOString(), ...(cursor ? { cursor } : {}) };
+}
+
+function taskScopedRequestId(taskId: string, action: string, secret: string) {
+  const hex = createHmac('sha256', secret).update(`dingtalk-agent-write-v1\0${taskId}\0${action}`).digest('hex').slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function validateCalendarCreate(body: Record<string, unknown>, grant: DingTalkCalendarAgentGrant, secret: string) {
+  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  if (!title || title.length > 200) throw new Error(publicErrors.DWS_CALENDAR_TITLE_INVALID);
+  if (typeof body.start !== 'string' || typeof body.end !== 'string') throw new Error(publicErrors.DWS_CALENDAR_RANGE_INVALID);
+  const start = parseCalendarTimestamp(body.start);
+  const end = parseCalendarTimestamp(body.end);
+  if (end <= start || end - start > 4 * 60 * 60_000) throw new Error(publicErrors.DWS_CALENDAR_RANGE_INVALID);
+  const description = typeof body.description === 'string' ? body.description.trim() : '';
+  if (description.length > 1000 || description.includes('\0')) throw new Error(publicErrors.DWS_CALENDAR_RANGE_INVALID);
+  return { requestId: taskScopedRequestId(grant.taskId, 'calendar-create', secret), title, start: body.start, end: body.end, ...(description ? { description } : {}) };
+}
+
+function validateTodoCreate(body: Record<string, unknown>, grant: DingTalkSecretaryAgentGrant, secret: string) {
+  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  if (!title || title.length > 200) throw new Error(publicErrors.DWS_TODO_TITLE_INVALID);
+  if (body.executorId !== undefined && body.executorId !== grant.userId) throw new Error(publicErrors.DWS_TODO_EXECUTOR_INVALID);
+  if (typeof body.due !== 'string') throw new Error(publicErrors.DWS_CALENDAR_RANGE_INVALID);
+  const due = parseCalendarTimestamp(body.due);
+  const now = Date.now();
+  if (due <= now || due - now > 90 * 24 * 60 * 60_000) throw new Error(publicErrors.DWS_CALENDAR_RANGE_INVALID);
+  const priority = body.priority === undefined ? 20 : body.priority;
+  if (![10, 20, 30, 40].includes(priority as number)) throw new Error(publicErrors.DWS_TODO_PRIORITY_INVALID);
+  return { requestId: deterministicDingTalkSecretaryRequestId(grant.taskId, 'todo-create', secret), title, executorId: grant.userId, due: body.due, priority };
+}
+
+function validateCokeclawMessage(body: Record<string, unknown>, grant: DingTalkSecretaryAgentGrant, secret: string) {
+  const content = typeof body.content === 'string' ? body.content.trim() : '';
+  if (!content || content.length > 4000) throw new Error(publicErrors.DWS_CHAT_CONTENT_INVALID);
+  if (body.group !== undefined && body.group !== 'cokeclaw') throw new Error(publicErrors.DWS_CHAT_CONTENT_INVALID);
+  return { requestId: deterministicDingTalkSecretaryRequestId(grant.taskId, 'cokeclaw-send', secret), content };
 }
 
 function parseCalendarTimestamp(value: unknown) {

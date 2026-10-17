@@ -125,8 +125,11 @@ export class Worker {
       const dingtalkCalendarBridge = useDesktopRuntime && taskOwnerUserId && !task.parentTaskId
         ? this.dingtalk?.agentCalendarBridge(task.tenantId, taskOwnerUserId, task.id, task.instruction) || undefined
         : undefined;
+      const dingtalkSecretaryBridge = useDesktopRuntime && taskOwnerUserId && !task.parentTaskId
+        ? this.dingtalk?.agentSecretaryBridge(task.tenantId, taskOwnerUserId, task.id, task.instruction) || undefined
+        : undefined;
       const decision = useDesktopRuntime
-        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, ...(dingtalkDocumentsBridge ? { dingtalkDocumentsBridge } : {}), ...(dingtalkCalendarBridge ? { dingtalkCalendarBridge } : {}), ...(incidentRemediation ? { incidentRemediation: true } : {}), signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines, allowDotMemoryUpdates, dotMemoryIds: dotMemories.map(memory => memory.id) })
+        ? parseDecision(JSON.stringify(await computer!.runAgentTask!({ engine: task.engine, taskId: task.id, prompt: formatAgentPrompt(input), sessionId: task.agentSessionId, modelConfig: modelConfig || undefined, ...(dingtalkDocumentsBridge ? { dingtalkDocumentsBridge } : {}), ...(dingtalkCalendarBridge ? { dingtalkCalendarBridge } : {}), ...(dingtalkSecretaryBridge ? { dingtalkSecretaryBridge } : {}), ...(incidentRemediation ? { incidentRemediation: true } : {}), signal })), task.agentSessionId || undefined, { allowDelegation: input.allowDelegation, availableEngines, allowDotMemoryUpdates, dotMemoryIds: dotMemories.map(memory => memory.id) })
         : await adapter.run(input);
       const current = this.store.getTask(task.id, task.tenantId);
       if (!current || current.status !== 'working') return;

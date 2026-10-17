@@ -1,10 +1,12 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
+export type DingTalkCalendarAction = 'list' | 'create';
+
 export interface DingTalkCalendarAgentGrant {
   tenantId: string;
   userId: string;
   taskId: string;
-  actions: ['list'];
+  actions: DingTalkCalendarAction[];
   expiresAt: number;
   nonce: string;
 }
@@ -12,19 +14,33 @@ export interface DingTalkCalendarAgentGrant {
 export interface DingTalkCalendarAgentBridge {
   url: string;
   token: string;
-  actions: ['list'];
+  actions: DingTalkCalendarAction[];
 }
 
 const audience = 'coke-dots-dingtalk-calendar-v1';
 const grantLifetimeSeconds = 15 * 60;
 const calendarIntent = /(?:日程|日历|会议|calendar|agenda|my\s+schedule)/i;
 const readIntent = /(?:查|查看|看看|列出|读取|获取|总结|准备|梳理|read|list|what(?:'s| is)|upcoming|prepare|prep(?:are)?|agenda)/i;
+const createIntent = /(?:创建|安排|新增|预约|订一个|添加|create|schedule|book|set\s+up)/i;
+const destructiveIntent = /(?:取消|删除|修改|更新|移除|cancel|delete|update|change|remove)/i;
 const documentCalendarInstructionsIntent = /(?:文档|知识库|钉盘|document|knowledge\s?base|drive).{0,20}(?:里|中|about|containing).{0,20}(?:日程|日历|会议|calendar|agenda)/i;
 
 export function requestsDingTalkCalendarRead(instruction: string): boolean {
   // The grant is always list-only, so a separate document-output request may still
   // need the calendar as input for meeting preparation.
   return calendarIntent.test(instruction) && readIntent.test(instruction) && !documentCalendarInstructionsIntent.test(instruction);
+}
+
+export function requestsDingTalkCalendarCreate(instruction: string): boolean {
+  return calendarIntent.test(instruction) && createIntent.test(instruction) && !destructiveIntent.test(instruction);
+}
+
+function actionsForInstruction(instruction: string): DingTalkCalendarAction[] {
+  if (destructiveIntent.test(instruction)) return [];
+  const actions: DingTalkCalendarAction[] = [];
+  if (requestsDingTalkCalendarRead(instruction)) actions.push('list');
+  if (requestsDingTalkCalendarCreate(instruction)) actions.push('create');
+  return actions;
 }
 
 export function createDingTalkCalendarAgentBridge(input: {
@@ -37,7 +53,8 @@ export function createDingTalkCalendarAgentBridge(input: {
   secret: string;
   now?: number;
 }): DingTalkCalendarAgentBridge | null {
-  if (!requestsDingTalkCalendarRead(input.instruction) || input.secret.length < 32) return null;
+  const actions = actionsForInstruction(input.instruction);
+  if (!actions.length || input.secret.length < 32) return null;
   const origin = parsePublicOrigin(input.publicOrigin);
   const basePath = normalizeBasePath(input.basePath || '');
   if (!origin || basePath === null || !validIdentity(input.tenantId) || !validIdentity(input.userId) || !validTaskId(input.taskId)) return null;
@@ -46,7 +63,7 @@ export function createDingTalkCalendarAgentBridge(input: {
     tenantId: input.tenantId,
     userId: input.userId,
     taskId: input.taskId,
-    actions: ['list'],
+    actions,
     expiresAt: Math.floor(now / 1000) + grantLifetimeSeconds,
     nonce: randomUUID(),
   };
@@ -72,8 +89,10 @@ export function verifyDingTalkCalendarAgentGrant(token: string, secret: string, 
   if (row.aud !== audience || !validIdentity(row.tenantId) || !validIdentity(row.userId) || !validTaskId(row.taskId)
       || !Number.isInteger(row.expiresAt) || Number(row.expiresAt) < nowSeconds || Number(row.expiresAt) > nowSeconds + grantLifetimeSeconds
       || typeof row.nonce !== 'string' || !/^[a-f0-9-]{36}$/i.test(row.nonce)
-      || !Array.isArray(row.actions) || row.actions.length !== 1 || row.actions[0] !== 'list') return null;
-  return { tenantId: row.tenantId, userId: row.userId, taskId: row.taskId, actions: ['list'], expiresAt: Number(row.expiresAt), nonce: row.nonce };
+      || !Array.isArray(row.actions) || !row.actions.length || row.actions.length > 2
+      || row.actions.some(action => action !== 'list' && action !== 'create')) return null;
+  const actions = [...new Set(row.actions as DingTalkCalendarAction[])];
+  return { tenantId: row.tenantId, userId: row.userId, taskId: row.taskId, actions, expiresAt: Number(row.expiresAt), nonce: row.nonce };
 }
 
 function validIdentity(value: unknown): value is string {
