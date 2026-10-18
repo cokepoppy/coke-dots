@@ -36,8 +36,9 @@ export function requestsDingTalkCalendarCreate(instruction: string): boolean {
 }
 
 function actionsForInstruction(instruction: string): DingTalkCalendarAction[] {
-  if (destructiveIntent.test(instruction)) return [];
   const actions: DingTalkCalendarAction[] = [];
+  // A prohibition such as "不要创建或修改记录" must not suppress an explicitly
+  // requested read-only list. Destructive intent only blocks the write grant.
   if (requestsDingTalkCalendarRead(instruction)) actions.push('list');
   if (requestsDingTalkCalendarCreate(instruction)) actions.push('create');
   return actions;
