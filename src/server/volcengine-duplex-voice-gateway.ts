@@ -37,6 +37,13 @@ export function safeVolcengineProviderErrorCode(event: unknown): string | null {
   return null;
 }
 
+export function volcengineDuplexProviderErrorMessage(event: unknown): string {
+  if (safeVolcengineProviderErrorCode(event) === '55000000') {
+    return '火山实时语音服务暂时异常，当前通话无法继续，请稍后重新拨打。';
+  }
+  return '火山实时语音服务暂不可用，请检查控制台配置后重试。';
+}
+
 export function safeVolcengineProviderLogId(value: unknown): string | null {
   const candidate = Array.isArray(value) ? value[0] : value;
   if (typeof candidate !== 'string') return null;
@@ -249,7 +256,7 @@ export function bridgeVolcengineDuplexVoiceCall(client: WebSocket, dotName: stri
       // return only a stable Chinese error to the browser. The diagnostic summary
       // retains only a bounded numeric code, never the provider message.
       providerErrorCode = safeVolcengineProviderErrorCode(event);
-      fail('火山实时语音服务暂不可用，请检查控制台配置后重试。');
+      fail(volcengineDuplexProviderErrorMessage(event));
       return;
     }
     if (event.type === 'session.created') {

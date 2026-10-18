@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { decodeVolcengineFloat32Pcm } from '../src/shared/volcengine-audio.ts';
-import { isVolcengineFloat32Pcm, safeVolcengineProviderErrorCode, safeVolcengineProviderLogId, updateVolcengineTranscriptSnapshot } from '../src/server/volcengine-duplex-voice-gateway.ts';
+import { isVolcengineFloat32Pcm, safeVolcengineProviderErrorCode, safeVolcengineProviderLogId, updateVolcengineTranscriptSnapshot, volcengineDuplexProviderErrorMessage } from '../src/server/volcengine-duplex-voice-gateway.ts';
 import {
   VOLCENGINE_DUPLEX_MODEL_VERSION,
   decodeVolcengineFrame,
@@ -41,6 +41,17 @@ test('SeedDuplex diagnostics retain only bounded numeric provider error codes', 
   assert.equal(safeVolcengineProviderErrorCode({ type: 'error', error: { code: 'secret-token', message: 'private' } }), null);
   assert.equal(safeVolcengineProviderErrorCode({ type: 'error', error: { message: 'private' } }), null);
   assert.equal(safeVolcengineProviderErrorCode(null), null);
+});
+
+test('SeedDuplex transient 55000000 is described as a provider outage without leaking provider details', () => {
+  assert.equal(
+    volcengineDuplexProviderErrorMessage({ type: 'error', error: { code: '55000000', message: 'private upstream payload' } }),
+    '火山实时语音服务暂时异常，当前通话无法继续，请稍后重新拨打。',
+  );
+  assert.equal(
+    volcengineDuplexProviderErrorMessage({ type: 'error', error: { code: '55000001', message: 'private upstream payload' } }),
+    '火山实时语音服务暂不可用，请检查控制台配置后重试。',
+  );
 });
 
 test('SeedDuplex diagnostics retain only bounded safe provider Logids', () => {

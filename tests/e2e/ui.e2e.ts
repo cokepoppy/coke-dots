@@ -415,7 +415,7 @@ async function startMockVolcEngineDuplexProvider() {
           sentTranscript = true;
           if (mockVolcEngineDuplexFailOnInput) {
             mockVolcEngineDuplexFailOnInput = false;
-            socket.send(JSON.stringify({ type: 'error', error: { code: 50000001, message: 'private provider diagnostic payload' } }));
+            socket.send(JSON.stringify({ type: 'error', error: { code: 55000000, message: 'private provider diagnostic payload' } }));
           } else if (initialTranscript) connection.sendTranscript(initialTranscript, 'duplex-e2e-turn-0001');
         }
       } else if (type === 'input_audio_mute.commit' || type === 'input_audio_unmute.commit') {
@@ -3480,7 +3480,7 @@ try {
     assert.equal(diagnosticLine.includes(scheduleTranscript), false, 'The diagnostic must not retain the phone transcript');
   });
 
-  await recordStep('Mobile SeedDuplex provider errors stop microphone capture and close the persisted call', async () => {
+  await recordStep('Mobile SeedDuplex 55000000 explains the temporary provider failure and closes the persisted call', async () => {
     mockVolcEngineDuplexFailOnInput = true;
     mockVolcEngineDuplexNextInitialTranscript = '';
     const existingCallIds = await mobilePage!.evaluate(async () => (await fetch('/api/voice-calls').then(response => response.json()) as { id: string }[]).map(item => item.id));
@@ -3488,7 +3488,7 @@ try {
     await mobileCallButton.click();
     const call = mobilePage!.getByTestId('voice-call');
     await call.waitFor({ state: 'visible' });
-    await call.getByRole('alert').filter({ hasText: '火山实时语音服务暂不可用' }).waitFor({ state: 'visible', timeout: 20_000 });
+    await call.getByRole('alert').filter({ hasText: '火山实时语音服务暂时异常' }).waitFor({ state: 'visible', timeout: 20_000 });
     await mobilePage!.waitForFunction(() => document.querySelector('[data-testid="voice-call"]')?.getAttribute('data-voice-mic-state') === 'failed', null, { timeout: 10_000 });
     assert.equal(await mobilePage!.evaluate(() => (window as unknown as { __dotsVolcDuplexTrack: MediaStreamTrack }).__dotsVolcDuplexTrack.readyState), 'ended', 'An upstream provider error must stop the mobile microphone immediately');
     const failedCall = await mobilePage!.evaluate(async (previousIds: string[]) => {
@@ -3502,7 +3502,7 @@ try {
     const diagnosticPrefix = 'seedduplex_voice_diagnostics ';
     await waitFor(() => serverLogs.join('').split('\n').some(line => line.includes(diagnosticPrefix) && line.includes(failedCall.id)), 5_000);
     const diagnosticLine = serverLogs.join('').split('\n').find(line => line.includes(diagnosticPrefix) && line.includes(failedCall.id));
-    assert(diagnosticLine?.includes('"providerErrorCode":"50000001"'), 'The safe numeric provider error code must be available for diagnosis');
+    assert(diagnosticLine?.includes('"providerErrorCode":"55000000"'), 'The safe numeric provider error code must be available for diagnosis');
     assert.equal(diagnosticLine?.includes('private provider diagnostic payload'), false, 'Provider error messages must not leak into logs');
     await call.getByRole('button', { name: '结束通话' }).click();
     await call.waitFor({ state: 'detached' });
