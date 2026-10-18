@@ -15,6 +15,9 @@ test('calendar capability is read-only, explicit-intent, short-lived, and bound 
   assert.equal(requestsDingTalkCalendarRead('帮我准备今天的会议'), true);
   assert.equal(requestsDingTalkCalendarRead('我明天有哪些日程和待办？'), true, 'The mobile secretary request for upcoming calendar events must receive a list-only grant');
   assert.equal(requestsDingTalkCalendarRead('告诉我接下来有什么会议安排'), true, 'Natural spoken questions about upcoming meetings must grant calendar read access');
+  const spokenCallTranscript = 'Duck，帮我指读查一下明天北交所交易规则评审的安排，并告诉我两条相关待办的截止时间。';
+  assert.equal(requestsDingTalkCalendarRead(spokenCallTranscript), true, 'A date-bound spoken request for an event schedule must grant calendar list access even when ASR omits the word 日程');
+  assert.deepEqual(createDingTalkCalendarAgentBridge({ ...baseInput, instruction: spokenCallTranscript })?.actions, ['list'], 'The spoken calendar intent must never grant calendar writes');
   assert.equal(requestsDingTalkCalendarRead('读取明天的会议日程并写一份钉钉会议准备文档'), true, 'Calendar reads must remain available when the requested output is a document');
   const readOnlyInstruction = '请只读查看我2026年10月19日的北交所交易规则变更评审日程、相关AI听记和现有待办。不要创建或修改钉钉记录、文件、代码或交易数据。';
   assert.deepEqual(createDingTalkCalendarAgentBridge({ ...baseInput, instruction: readOnlyInstruction })?.actions, ['list'], 'Negative write constraints must preserve the explicitly requested read-only calendar capability');
