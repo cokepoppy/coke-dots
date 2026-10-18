@@ -13,6 +13,7 @@ import {
 import { createDwsAuthorizationManager } from './lib/dws-authorization-manager.mjs';
 import { createDwsDocumentOperations } from './lib/dws-documents.mjs';
 import { createDwsCalendarOperations } from './lib/dws-calendar.mjs';
+import { createDwsMinutesOperations } from './lib/dws-minutes.mjs';
 import { createDwsSecretaryOperations } from './lib/dws-secretary.mjs';
 
 const encryptedMagic = Buffer.from('CDWS1');
@@ -644,6 +645,7 @@ export function createDingtalkConnectorGateway({
     writeOnce: createDocumentWriteOnce(storageRoot),
   });
   const calendar = createDwsCalendarOperations({ withAuthenticatedProfile: withAuthenticatedDwsProfile('calendar') });
+  const minutes = createDwsMinutesOperations({ withAuthenticatedProfile: withAuthenticatedDwsProfile('minutes') });
   const secretary = createDwsSecretaryOperations({
     withAuthenticatedProfile: withAuthenticatedDwsProfile('secretary'),
     writeOnce: createDocumentWriteOnce(storageRoot, 'secretary'),
@@ -1176,6 +1178,14 @@ export function createDingtalkConnectorGateway({
       if (req.method === 'POST' && url.pathname === '/v1/calendar/events') {
         const body = await readBody(req, 16 * 1024);
         return send(200, { ok: true, data: await calendar.listEvents(ownerPrincipal(ticket), body) });
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/minutes/search') {
+        const body = await readBody(req, 16 * 1024);
+        return send(200, { ok: true, data: await minutes.search(ownerPrincipal(ticket), body) });
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/minutes/detail') {
+        const body = await readBody(req, 16 * 1024);
+        return send(200, { ok: true, data: await minutes.detail(ownerPrincipal(ticket), body) });
       }
       const secretaryRoute = url.pathname.match(/^\/v1\/secretary\/(calendar-create|todo-list|todo-create|cokeclaw-send)$/);
       if (req.method === 'POST' && secretaryRoute) {

@@ -237,13 +237,15 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
   const task = store.createTask('请把这次排障报告写入钉钉文档', null, 'pi', account.tenant.id, null, null, [], account.user.id);
   let receivedBridge: { url: string; token: string; actions: Array<'search' | 'fetch' | 'create'> } | undefined;
   let receivedCalendarBridge: { url: string; token: string; actions: Array<'list' | 'create'> } | undefined;
+  let receivedMinutesBridge: { url: string; token: string; actions: Array<'search' | 'detail'> } | undefined;
   let receivedSecretaryBridge: { url: string; token: string; actions: Array<'todo-list' | 'todo-create' | 'cokeclaw-send'> } | undefined;
   let receivedPrompt = '';
   const computer = {
-    async runAgentTask(input: { prompt: string; dingtalkDocumentsBridge?: typeof receivedBridge; dingtalkCalendarBridge?: typeof receivedCalendarBridge; dingtalkSecretaryBridge?: typeof receivedSecretaryBridge }) {
+    async runAgentTask(input: { prompt: string; dingtalkDocumentsBridge?: typeof receivedBridge; dingtalkCalendarBridge?: typeof receivedCalendarBridge; dingtalkMinutesBridge?: typeof receivedMinutesBridge; dingtalkSecretaryBridge?: typeof receivedSecretaryBridge }) {
       receivedPrompt = input.prompt;
       receivedBridge = input.dingtalkDocumentsBridge;
       receivedCalendarBridge = input.dingtalkCalendarBridge;
+      receivedMinutesBridge = input.dingtalkMinutesBridge;
       receivedSecretaryBridge = input.dingtalkSecretaryBridge;
       return { status: 'done', message: 'Task completed.' };
     },
@@ -272,7 +274,7 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     const calendarCall = store.createVoiceCall(account.tenant.id, account.user.id);
     const calendarTask = store.submitVoiceTurn({
       tenantId: account.tenant.id, userId: account.user.id, callId: calendarCall.id,
-      turnId: 'voice-read-schedule-todos-0001', transcript: '我下周一有哪些北交所规则评审相关的日程和待办？', engine: 'pi',
+      turnId: 'voice-read-schedule-minutes-todos-0001', transcript: '我下周一有哪些北交所规则评审相关的日程、AI听记和待办？', engine: 'pi',
     }).task;
     await worker.tick();
     const calendarDeadline = Date.now() + 2_000;
@@ -281,6 +283,13 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     assert(receivedCalendarBridge);
     assert.equal(receivedCalendarBridge.url, 'https://dots.example.test/dots-demo/api/agent/dingtalk/calendar');
     assert.deepEqual(receivedCalendarBridge.actions, ['list']);
+    assert(receivedMinutesBridge, 'A spoken request to read meeting minutes must receive the task-bound read-only minutes bridge');
+    assert.equal(receivedMinutesBridge.url, 'https://dots.example.test/dots-demo/api/agent/dingtalk/minutes');
+    assert.deepEqual(receivedMinutesBridge.actions, ['search', 'detail']);
+    const minutesGrant = service.verifyAgentMinutesGrant(receivedMinutesBridge.token);
+    assert.equal(minutesGrant?.tenantId, account.tenant.id);
+    assert.equal(minutesGrant?.userId, account.user.id);
+    assert.equal(minutesGrant?.taskId, calendarTask.id);
     const calendarGrant = service.verifyAgentCalendarGrant(receivedCalendarBridge.token);
     assert.equal(calendarGrant?.tenantId, account.tenant.id);
     assert.equal(calendarGrant?.userId, account.user.id);
@@ -318,6 +327,7 @@ test('cloud Agent receives a tenant/user/task-scoped DingTalk bridge only for an
     assert.equal(store.getTask(initialVoiceTask.id, account.tenant.id)?.status, 'done');
     assert.deepEqual(receivedCalendarBridge?.actions, ['create']);
     assert.deepEqual(receivedSecretaryBridge?.actions, ['todo-create', 'cokeclaw-send']);
+    assert.equal(receivedMinutesBridge, undefined, 'A write request without a minutes read must not receive the minutes capability');
     store.updateTask(initialVoiceTask.id, { status: 'done', result: '会议准备任务已记录。' }, account.tenant.id);
 
     const readFollowUp = store.submitVoiceTurn({

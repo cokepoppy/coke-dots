@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import type { AuthSession } from './store.ts';
 import { createDingTalkAgentBridge, deterministicDingTalkCreateRequestId, verifyDingTalkAgentGrant, type DingTalkAgentGrant, type DingTalkAgentBridge } from './dingtalk-agent-bridge.ts';
 import { createDingTalkCalendarAgentBridge, verifyDingTalkCalendarAgentGrant, type DingTalkCalendarAgentGrant, type DingTalkCalendarAgentBridge } from './dingtalk-calendar-agent-bridge.ts';
+import { createDingTalkMinutesAgentBridge, verifyDingTalkMinutesAgentGrant, type DingTalkMinutesAgentGrant, type DingTalkMinutesAgentBridge } from './dingtalk-minutes-agent-bridge.ts';
 import { createDingTalkSecretaryAgentBridge, deterministicDingTalkSecretaryRequestId, verifyDingTalkSecretaryAgentGrant, type DingTalkSecretaryAgentGrant, type DingTalkSecretaryAgentBridge } from './dingtalk-secretary-agent-bridge.ts';
 
 interface DingTalkGatewayResponse<T> { ok: boolean; data?: T; error?: string }
@@ -91,6 +92,10 @@ const publicErrors: Record<string, string> = {
   DWS_CALENDAR_RANGE_INVALID: '日程查询时间范围无效；请提供带时区的 ISO 时间，范围最多 31 天。',
   DWS_CALENDAR_CURSOR_INVALID: '日程分页游标无效。',
   DWS_CALENDAR_LIST_FAILED: '钉钉日历没有返回可验证的日程列表。',
+  DWS_MINUTES_QUERY_INVALID: '钉钉听记搜索参数无效。',
+  DWS_MINUTES_ID_INVALID: '钉钉听记 ID 无效。',
+  DWS_MINUTES_SEARCH_FAILED: '钉钉听记搜索结果不完整或无法验证。',
+  DWS_MINUTES_DETAIL_FAILED: '钉钉听记详情无法验证。',
   DWS_CALENDAR_TITLE_INVALID: '钉钉日程标题无效。',
   DWS_CALENDAR_CONFIRMATION_REQUIRED: '创建钉钉日程需要在当前任务中明确请求。',
   DWS_CALENDAR_REQUEST_ID_INVALID: '钉钉日程请求缺少有效的幂等标识。',
@@ -154,6 +159,14 @@ export class DingTalkService {
     });
   }
 
+  agentMinutesBridge(tenantId: string, userId: string, taskId: string, instruction: string): DingTalkMinutesAgentBridge | null {
+    if (!this.configured() || (!this.ticketSecret && !this.e2eMock)) return null;
+    return createDingTalkMinutesAgentBridge({
+      tenantId, userId, taskId, instruction, publicOrigin: this.publicOrigin, basePath: this.basePath,
+      secret: this.ticketSecret || 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes',
+    });
+  }
+
   agentSecretaryBridge(tenantId: string, userId: string, taskId: string, instruction: string): DingTalkSecretaryAgentBridge | null {
     if (!this.configured() || (!this.ticketSecret && !this.e2eMock)) return null;
     return createDingTalkSecretaryAgentBridge({
@@ -170,6 +183,47 @@ export class DingTalkService {
   verifyAgentCalendarGrant(token: string): DingTalkCalendarAgentGrant | null {
     if (!this.configured()) return null;
     return verifyDingTalkCalendarAgentGrant(token, this.ticketSecret || (this.e2eMock ? 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes' : ''));
+  }
+
+  verifyAgentMinutesGrant(token: string): DingTalkMinutesAgentGrant | null {
+    if (!this.configured()) return null;
+    return verifyDingTalkMinutesAgentGrant(token, this.ticketSecret || (this.e2eMock ? 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes' : ''));
+  }
+
+  async runAgentMinutesOperation(grant: DingTalkMinutesAgentGrant, input: unknown) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('钉钉 Agent 听记请求无效');
+    const body = input as Record<string, unknown>;
+    const action = String(body.action || '');
+    if (!grant.actions.includes(action as 'search' | 'detail')) throw new Error('当前任务没有此钉钉听记操作权限');
+    const session: AuthSession = {
+      tokenHash: '', user: { id: grant.userId, email: '', name: '' },
+      tenant: { id: grant.tenantId, name: '', role: 'member', kind: 'workspace' },
+      expiresAt: new Date(grant.expiresAt * 1000).toISOString(),
+    };
+    if (this.e2eMock) {
+      requireMockDingTalkIdentity(this.mockAccounts, session);
+      if (action === 'search') {
+        const query = typeof body.query === 'string' ? body.query.trim() : '';
+        const scope = body.scope === undefined ? 'all' : String(body.scope);
+        if (query.length < 2 || query.length > 200 || !['mine', 'shared', 'all'].includes(scope)) throw new Error(publicErrors.DWS_MINUTES_QUERY_INVALID);
+        return { scope, query, count: 0, minutes: [], complete: true, testOnly: true };
+      }
+      const taskUuid = typeof body.taskUuid === 'string' ? body.taskUuid : '';
+      if (!/^[A-Za-z0-9._~-]{1,512}$/.test(taskUuid)) throw new Error(publicErrors.DWS_MINUTES_ID_INVALID);
+      return { taskUuid, complete: false, failureCount: 1, testOnly: true };
+    }
+    this.requireConfigured();
+    try {
+      if (action === 'search') {
+        const query = typeof body.query === 'string' ? body.query.trim() : '';
+        const scope = body.scope === undefined ? 'all' : String(body.scope);
+        if (query.length < 2 || query.length > 200 || !['mine', 'shared', 'all'].includes(scope)) throw new Error(publicErrors.DWS_MINUTES_QUERY_INVALID);
+        return await this.call(session, '/v1/minutes/search', 'POST', { query, scope });
+      }
+      const taskUuid = typeof body.taskUuid === 'string' ? body.taskUuid : '';
+      if (!/^[A-Za-z0-9._~-]{1,512}$/.test(taskUuid)) throw new Error(publicErrors.DWS_MINUTES_ID_INVALID);
+      return await this.call(session, '/v1/minutes/detail', 'POST', { taskUuid });
+    } catch (error) { throw serviceError(error); }
   }
 
   verifyAgentSecretaryGrant(token: string): DingTalkSecretaryAgentGrant | null {

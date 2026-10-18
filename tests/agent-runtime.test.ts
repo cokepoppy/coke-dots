@@ -64,6 +64,9 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       "const bridgeTokenInEnv = Boolean(bridgeToken && Object.values(process.env).includes(bridgeToken));",
       "const calendarToken = input.dingtalkCalendarBridge?.token || '';",
       "const calendarTokenInEnv = Boolean(calendarToken && Object.values(process.env).includes(calendarToken));",
+      "const minutesToken = input.dingtalkMinutesBridge?.token || '';",
+      "const minutesTokenInEnv = Boolean(minutesToken && Object.values(process.env).includes(minutesToken));",
+      "if (minutesToken) await appendFile(process.env.DOTS_TEST_MARKER, `minutesBridge=true minutesTokenInEnv=${minutesTokenInEnv}\\n`);",
       "const secretaryToken = input.dingtalkSecretaryBridge?.token || '';",
       "const secretaryTokenInEnv = Boolean(secretaryToken && Object.values(process.env).includes(secretaryToken));",
       "if (process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET) await appendFile(process.env.DOTS_TEST_MARKER, `incident-credential=${process.env.DOTS_INCIDENT_GITHUB_CREDENTIAL_SOCKET} helper=${process.env.GIT_CONFIG_VALUE_1 || ''} httpPath=${process.env.GIT_CONFIG_VALUE_2 || ''} prompt=${process.env.GIT_TERMINAL_PROMPT || ''} apiKeyInEnv=${Object.values(process.env).includes(modelKey)} tokenInEnv=${Object.keys(process.env).some(key => /TOKEN|SECRET|PASSWORD/i.test(key))}\\n`);",
@@ -74,7 +77,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       "if (input.prompt === 'hold') await new Promise(resolve => setTimeout(resolve, 30000));",
       'await new Promise(resolve => setTimeout(resolve, 80));',
       "await appendFile(process.env.DOTS_TEST_MARKER, `end ${input.taskId}\\n`);",
-      "process.stdout.write(JSON.stringify({ status: 'done', message: configDelivered && !keyInEnv && !process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'shared model config delivered via stdin; runtime token isolated' : 'shared model config missing', diagnostic: input.modelConfig?.apiKey, diagnosticGrant: bridgeToken || calendarToken || secretaryToken }));",
+      "process.stdout.write(JSON.stringify({ status: 'done', message: configDelivered && !keyInEnv && !process.env.DOTS_AGENT_RUNTIME_TOKEN ? 'shared model config delivered via stdin; runtime token isolated' : 'shared model config missing', diagnostic: input.modelConfig?.apiKey, diagnosticGrant: bridgeToken || calendarToken || minutesToken || secretaryToken }));",
       '',
     ].join('\n'));
     child = spawn(process.execPath, [runtimePath], {
@@ -111,11 +114,11 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     assert.equal(disabled.status, 400, 'The cloud runtime must reject Claude Code even if an old environment still lists it');
     assert.match((await disabled.json() as { error?: string }).error || '', /not enabled for this workspace/);
     const modelConfig = { apiKey: 'cloud-runtime-model-key-never-print', baseUrl: 'https://api.example.test/v1', model: 'runtime-test-model' };
-    const submit = async (taskId: string, prompt: string, config: typeof modelConfig | null = modelConfig, cwd = `tasks/${taskId}`, engine: 'pi' | 'dsh' = 'dsh', dingtalkDocumentsBridge?: { url: string; token: string; actions: string[] }, dingtalkCalendarBridge?: { url: string; token: string; actions: string[] }, incidentRemediation = false, dingtalkSecretaryBridge?: { url: string; token: string; actions: string[] }) => {
+    const submit = async (taskId: string, prompt: string, config: typeof modelConfig | null = modelConfig, cwd = `tasks/${taskId}`, engine: 'pi' | 'dsh' = 'dsh', dingtalkDocumentsBridge?: { url: string; token: string; actions: string[] }, dingtalkCalendarBridge?: { url: string; token: string; actions: string[] }, incidentRemediation = false, dingtalkSecretaryBridge?: { url: string; token: string; actions: string[] }, dingtalkMinutesBridge?: { url: string; token: string; actions: string[] }) => {
       const response = await fetch(`${runtimeUrl}/v1/tasks/run`, {
         method: 'POST',
         headers: { authorization: 'Bearer agent-test-token-never-print', 'content-type': 'application/json' },
-        body: JSON.stringify({ engine, taskId, prompt, cwd, sessionId: null, ...(config ? { modelConfig: config } : {}), ...(dingtalkDocumentsBridge ? { dingtalkDocumentsBridge } : {}), ...(dingtalkCalendarBridge ? { dingtalkCalendarBridge } : {}), ...(dingtalkSecretaryBridge ? { dingtalkSecretaryBridge } : {}), ...(incidentRemediation ? { incidentRemediation: true } : {}) }),
+        body: JSON.stringify({ engine, taskId, prompt, cwd, sessionId: null, ...(config ? { modelConfig: config } : {}), ...(dingtalkDocumentsBridge ? { dingtalkDocumentsBridge } : {}), ...(dingtalkCalendarBridge ? { dingtalkCalendarBridge } : {}), ...(dingtalkMinutesBridge ? { dingtalkMinutesBridge } : {}), ...(dingtalkSecretaryBridge ? { dingtalkSecretaryBridge } : {}), ...(incidentRemediation ? { incidentRemediation: true } : {}) }),
       });
       return { status: response.status, body: await response.json() as { status?: string; message?: string; error?: string; diagnosticGrant?: string } };
     };
@@ -171,6 +174,19 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     assert.equal(calendarTask.body.diagnosticGrant, '[redacted]');
     assert.doesNotMatch(JSON.stringify(calendarTask.body), new RegExp(calendarGrant));
     assert((await readFile(markerPath, 'utf8')).includes(`start ${calendarTaskId} engine=pi config=true keyInEnv=false dingtalkBridge=false bridgeTokenInEnv=false calendarBridge=true calendarTokenInEnv=false secretaryBridge=false secretaryTokenInEnv=false`), 'The calendar grant must be private to the adapter input and never copied into its environment');
+
+    const minutesTaskId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const minutesGrant = 'task-scoped-minutes-grant-never-print';
+    const minutesTask = await submit(minutesTaskId, 'Read the DingTalk AI meeting minutes', modelConfig, `tasks/${minutesTaskId}`, 'pi', undefined, undefined, false, undefined, { url: 'https://dots.example.test/dots-demo/api/agent/dingtalk/minutes', token: minutesGrant, actions: ['search', 'detail'] });
+    assert.equal(minutesTask.status, 200);
+    assert.equal(minutesTask.body.diagnosticGrant, '[redacted]', 'An echoed minutes grant must be redacted from task output');
+    assert.doesNotMatch(JSON.stringify(minutesTask.body), new RegExp(minutesGrant));
+    assert((await readFile(markerPath, 'utf8')).includes('minutesBridge=true minutesTokenInEnv=false'), 'The minutes grant stays in private adapter input and never enters the environment');
+
+    const invalidMinutesId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const invalidMinutes = await submit(invalidMinutesId, 'Read minutes', modelConfig, `tasks/${invalidMinutesId}`, 'pi', undefined, undefined, false, undefined, { url: 'https://dots.example.test/dots-demo/api/agent/dingtalk/calendar', token: minutesGrant, actions: ['search', 'detail'] });
+    assert.equal(invalidMinutes.status, 400, 'A minutes grant cannot be redirected to a different internal route');
+    assert.match(invalidMinutes.body.error || '', /minutes bridge URL is invalid/);
 
     const diagnosticTaskId = '99999999-9999-4999-8999-999999999998';
     const diagnosticGrant = 'task-scoped-calendar-grant-secret-never-print';

@@ -163,6 +163,62 @@ test('Pi exposes one task-scoped read-only DingTalk calendar tool and sends only
   }
 });
 
+test('Pi exposes task-scoped read-only DingTalk minutes search and exact-summary tools', async () => {
+  const { root, task } = await makeWorkspace();
+  const requests: Array<Record<string, unknown>> = [];
+  let searchTool: any;
+  let detailTool: any;
+  let receivedPrompt = '';
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+    requests.push(payload);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ ok: true, data: payload.action === 'search'
+      ? { complete: true, count: 1, minutes: [{ taskUuid: 'minutes_uuid_1', title: '评审听记' }] }
+      : { taskUuid: 'minutes_uuid_1', title: '评审听记', summary: '会议确认行动项', complete: true, failureCount: 0 } }));
+  });
+  await new Promise<void>((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert(address && typeof address !== 'string');
+  const token = 'task-scoped-minutes-token-never-in-env';
+  const sdk = {
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey: () => undefined }) },
+    ModelRegistry: { inMemory: () => ({ registerProvider: () => undefined, find: () => ({ id: modelConfig.model }) }) },
+    SessionManager: { list: async () => [], create: () => ({ appendMessage: () => '', getEntries: () => [], getSessionFile: () => undefined, getSessionId: () => 'pi-minutes-session' }), open: () => { throw new Error('unexpected'); } },
+    createAgentSession: async (options: Record<string, any>) => {
+      assert(options.tools.includes('search_dingtalk_minutes'));
+      assert(options.tools.includes('read_dingtalk_minutes_summary'));
+      assert.equal(options.tools.some((name: string) => /upload|record|share|update/.test(name)), false);
+      searchTool = options.customTools.find((tool: { name: string }) => tool.name === 'search_dingtalk_minutes');
+      detailTool = options.customTools.find((tool: { name: string }) => tool.name === 'read_dingtalk_minutes_summary');
+      return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async (prompt: string) => { receivedPrompt = prompt; }, dispose: () => undefined } };
+    },
+  };
+  try {
+    await runCloudKernel({
+      engine: 'pi', prompt: '查找北交所评审的 AI 听记并总结', cwd: task, workspace: root,
+      taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
+      dingtalkMinutesBridge: { url: `http://127.0.0.1:${address.port}/api/agent/dingtalk/minutes`, token, actions: ['search', 'detail'] },
+    }, { piSdk: sdk });
+    assert.match(receivedPrompt, /search_dingtalk_minutes/);
+    assert.match(receivedPrompt, /read_dingtalk_minutes_summary/);
+    assert.match(receivedPrompt, /meeting minutes/);
+    assert.match(receivedPrompt, /Do not use Bash, curl, wget/);
+    assert.doesNotMatch(receivedPrompt, new RegExp(token));
+    const search = await searchTool.execute('minutes-search-1', { query: '北交所评审', scope: 'all' });
+    const detail = await detailTool.execute('minutes-detail-1', { taskUuid: 'minutes_uuid_1' });
+    assert.match(search.content[0].text, /minutes_uuid_1/);
+    assert.match(detail.content[0].text, /会议确认行动项/);
+    assert.deepEqual(requests.map(item => item.action), ['search', 'detail']);
+    assert(requests.every(item => !JSON.stringify(item).includes(token)));
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Pi exposes only the task-granted DingTalk calendar, todo, and fixed cokeclaw report tools', async () => {
   const { root, task } = await makeWorkspace();
   const requests: Array<Record<string, unknown>> = [];
@@ -495,6 +551,39 @@ test('DeepSeek Harness exposes a temporary read-only DingTalk calendar tool for 
     assert.match(captured.plugin, /if \(bridge\.actions\.includes\('create'\)\)/, 'The create tool is runtime-gated by the task grant and is not available to a list-only capability');
     assert.match(captured.plugin, new RegExp(token));
     assert.equal((await readdir(join(await realpath(task), '.coke-dots-agent-runtime', 'dsh-home'))).some(name => name.endsWith('-dingtalk-calendar.mjs')), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('DeepSeek Harness exposes temporary read-only DingTalk minutes search and detail tools', async () => {
+  const { root, task } = await makeWorkspace();
+  const token = 'task-scoped-minutes-grant-never-in-env';
+  const captured: { launch: Record<string, any> | null; plugin: string; envHasToken: boolean } = { launch: null, plugin: '', envHasToken: false };
+  const sdk = {
+    DeepSeekHarness: class {
+      constructor(options: Record<string, any>) { captured.launch = options.launch; }
+      async run() {
+        const launch = captured.launch!;
+        const pluginName = (await readdir(launch.env.DSH_HOME)).find(name => name.endsWith('-dingtalk-minutes.mjs'));
+        assert(pluginName);
+        captured.plugin = await readFile(join(launch.env.DSH_HOME, pluginName), 'utf8');
+        captured.envHasToken = Object.values(launch.env).includes(token);
+        return { finalResponse: decision, sessionId: 'dsh-minutes-session' };
+      }
+      async close() {}
+    },
+  };
+  try {
+    await runCloudKernel({
+      engine: 'dsh', prompt: '读取北交所评审 AI 听记', cwd: task, workspace: root,
+      taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
+      dingtalkMinutesBridge: { url: 'https://dots.example.test/dots-demo/api/agent/dingtalk/minutes', token, actions: ['search', 'detail'] },
+    }, { dshSdk: sdk });
+    assert.equal(captured.envHasToken, false);
+    assert.match(captured.plugin, /search_dingtalk_minutes/);
+    assert.match(captured.plugin, /read_dingtalk_minutes_summary/);
+    assert.match(captured.plugin, /Read-only/);
+    assert.match(captured.plugin, new RegExp(token));
+    assert.equal((await readdir(join(await realpath(task), '.coke-dots-agent-runtime', 'dsh-home'))).some(name => name.endsWith('-dingtalk-minutes.mjs')), false, 'The temporary minutes capability plugin is removed after the task returns');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
