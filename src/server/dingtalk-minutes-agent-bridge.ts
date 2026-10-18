@@ -20,7 +20,7 @@ export interface DingTalkMinutesAgentBridge {
 const audience = 'coke-dots-dingtalk-minutes-v1';
 const grantLifetimeSeconds = 15 * 60;
 const minutesObject = /(?:AI\s*听记|听记|会议纪要|会议记录|会议转写|会议录音纪要|transcripts?|meeting\s+minutes|meeting\s+notes)/i;
-const readIntent = /(?:查|查看|找|搜索|读取|总结|汇总|提取|梳理|核对|有哪些|有什么|read|find|search|summari[sz]e|review|show|list)/i;
+const readIntent = /(?:查|查看|找|搜索|读取|总结|汇总|提取|梳理|核对|补充|继续|剩余|详细|要点|清单|内容|列举|有哪些|有什么|read|find|search|summari[sz]e|review|show|list|detail|continue|remaining|more)/i;
 
 export function requestsDingTalkMinutesRead(instruction: string): boolean {
   return minutesObject.test(instruction) && readIntent.test(instruction);

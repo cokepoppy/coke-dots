@@ -18,6 +18,12 @@ test('minutes read intent produces only short-lived search and detail tools', ()
   assert.equal(verifyDingTalkMinutesAgentGrant(bridge.token, secret, baseInput.now + 16 * 60_000), null);
 });
 
+test('minutes follow-up requests retain short-lived read access for remaining details', () => {
+  const instruction = '请补充简短清单：会前听记剩余要点，以及两条相关待办的标题、当前状态和截止时间。只读，不修改钉钉记录。';
+  assert.equal(requestsDingTalkMinutesRead(instruction), true);
+  assert.deepEqual(createDingTalkMinutesAgentBridge({ ...baseInput, instruction })?.actions, ['search', 'detail']);
+});
+
 test('minutes bridge does not grant writes or activate for unrelated todo/calendar requests', () => {
   assert.equal(createDingTalkMinutesAgentBridge({ ...baseInput, instruction: '告诉我明天有哪些钉钉日程和待办' }), null);
   assert.equal(createDingTalkMinutesAgentBridge({ ...baseInput, instruction: '上传一段会议录音并生成AI听记' }), null);
