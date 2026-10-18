@@ -123,7 +123,14 @@ export function createDwsSecretaryOperations({ withAuthenticatedProfile, writeOn
         : scope === 'due-today' ? ['todo', '+due-today'] : ['todo', '+overdue'];
       args.push('--profile', profile.selector);
       const payload = await call(args, { timeoutMs: 60_000, maxBytes: 1024 * 1024 });
-      return { scope, ...todoListResult(payload) };
+      return {
+        scope,
+        ...(scope === 'related' ? {
+          taskStatusFilter: 'incomplete',
+          taskStatusExplanation: 'The DWS request filters with status=false, so every task in this result is incomplete. The complete field describes list pagination only.',
+        } : {}),
+        ...todoListResult(payload),
+      };
     });
   }
 

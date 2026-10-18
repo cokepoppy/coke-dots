@@ -48,3 +48,22 @@ test('DWS secretary validates write confirmations, self-only todo, safe time ran
   assert.equal(calls, 0, 'Invalid requests must stop before the DWS CLI is invoked');
 });
 
+test('related todo reads expose their incomplete-status filter separately from pagination completeness', async () => {
+  const calls = [];
+  const operations = createDwsSecretaryOperations({
+    withAuthenticatedProfile: async (_principal, work) => work({ call: async args => {
+      calls.push(args);
+      return { ok: true, outcome: 'success', data: { count: 2, tasks: [{ taskId: 'todo-1' }, { taskId: 'todo-2' }], complete: true } };
+    }, profile: { selector: 'cms-user' }, ownerKey: 'tenant-a:user-a' }),
+    writeOnce: async () => { throw new Error('read-only todo lookup must not enter write flow'); },
+  });
+
+  const result = await operations.listPersonalTodos(principal, { scope: 'related' });
+  assert.equal(result.taskStatusFilter, 'incomplete');
+  assert.match(result.taskStatusExplanation, /status=false.*every task.*incomplete/);
+  assert.match(result.taskStatusExplanation, /complete field.*pagination only/);
+  assert.equal(result.complete, true, 'complete describes pagination, not todo completion');
+  assert.deepEqual(result.tasks, [{ taskId: 'todo-1' }, { taskId: 'todo-2' }]);
+  assert.deepEqual(calls[0].slice(0, 4), ['todo', '+get-related-tasks', '--status', 'false']);
+});
+
