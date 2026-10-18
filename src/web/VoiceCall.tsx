@@ -872,7 +872,7 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
   const micMeter = voiceProvider === 'volcengine' && <div className="voice-call-card-mic" data-testid="voice-call-mic-meter" data-mic-state={micCaptureState} aria-label={`麦克风输入音量 ${micLevelPercent}%`}>
     <span>麦克风</span><div role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={micLevelPercent}><i style={{ width: `${micLevelPercent}%` }} /></div><small>{micStatusText}</small>
   </div>;
-  return <section className={`voice-call-card${showMobileScreen ? ' voice-call-card-mobile' : ''}${callVariant === 'mobile-minimized' ? ' voice-call-card-mobile-minimized' : ''}`} role="dialog" aria-modal={showMobileScreen} aria-label="语音通话" data-testid="voice-call" data-variant={callVariant} data-voice-provider={voiceProvider} data-voice-model={voiceModel} data-voice-mic-state={micCaptureState} data-voice-mic-level={micLevelPercent}>
+  return <section className={`voice-call-card${callVariant === 'desktop' ? ' voice-call-card-desktop-toolbar' : ''}${showMobileScreen ? ' voice-call-card-mobile' : ''}${callVariant === 'mobile-minimized' ? ' voice-call-card-mobile-minimized' : ''}`} role={callVariant === 'desktop' ? 'region' : 'dialog'} aria-modal={showMobileScreen} aria-label="语音通话" data-testid="voice-call" data-variant={callVariant} data-voice-provider={voiceProvider} data-voice-model={voiceModel} data-voice-mic-state={micCaptureState} data-voice-mic-level={micLevelPercent}>
     {showMobileScreen ? <div className="voice-call-mobile-screen" data-testid="voice-call-mobile-screen">
       <button type="button" className="voice-call-mobile-return" data-testid="voice-call-minimize" aria-label="返回聊天" title="返回聊天并保持通话" onClick={() => setMobileMinimized(true)}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14M5 8l5-5M5 8l5 5M19 16H5m14 0-5-5m5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -894,7 +894,19 @@ export function VoiceCall({ dotName, appearance, initialAudioContext, onTranscri
         <div className="voice-call-mobile-control">{muteButton}<small>{muted ? '取消静音' : '静音'}</small></div>
       </div>
       {accessibleCallText}
-    </div> : <>
+    </div> : callVariant === 'desktop' ? <>
+    <div className="voice-call-toolbar" data-testid="voice-call-toolbar" aria-label="通话控制">
+      <span className={`voice-call-toolbar-status${callError ? ' has-error' : ''}`} data-testid="voice-call-status" title={callError || status}>
+        <i className={callError ? 'has-error' : ''} aria-hidden="true" />
+        <span>{callError ? '通话遇到问题' : status}</span>
+      </span>
+      <time className="voice-call-toolbar-timer" data-testid="voice-call-timer">{Number(minutes)}:{seconds}</time>
+      {muteButton}{endButton}
+    </div>
+    {playbackNeedsGesture && <button type="button" className="voice-call-audio-enable voice-call-toolbar-recovery" onClick={() => void enableAudioPlayback()}>启用语音播放</button>}
+    {callError && <p className="voice-call-card-error voice-call-toolbar-error" role="alert">{callError}</p>}
+    {accessibleCallText}
+    </> : <>
     <div className="voice-call-card-heading">
       <DotAvatar appearance={appearance} small className="voice-call-card-avatar" />
       <div className="voice-call-card-identity"><strong>{dotName}</strong><span className="voice-call-card-status"><i className={callError ? 'has-error' : ''} />{callError ? '通话遇到问题' : status}</span></div>

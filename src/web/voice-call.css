@@ -1,5 +1,18 @@
-/* Browser call UI: a compact floating control card, independent of viewport size. */
+/* Mobile call UI and minimized desktop-free fallback. */
 .voice-call-card{position:fixed;z-index:130;top:64px;right:18px;width:min(320px,calc(100vw - 28px));box-sizing:border-box;padding:13px 14px 12px;border:1px solid #e7e5e8;border-radius:15px;background:#fff;color:#302e35;box-shadow:0 10px 32px #211b2b22,0 2px 5px #211b2b0d;font-family:inherit}
+.voice-call-card-desktop-toolbar{position:static;z-index:auto;width:auto;max-width:100%;display:flex;align-items:center;box-sizing:border-box;padding:0;border:0;border-radius:0;background:transparent;color:inherit;box-shadow:none}
+.voice-call-toolbar{min-width:0;display:flex;align-items:center;gap:5px}
+.voice-call-toolbar-status{min-width:0;max-width:130px;display:flex;align-items:center;gap:6px;overflow:hidden;color:#77747c;font-size:10px;line-height:14px;white-space:nowrap}
+.voice-call-toolbar-status>i{width:7px;height:7px;flex:none;border-radius:50%;background:#60a77a;box-shadow:0 0 0 3px #60a77a1a}
+.voice-call-toolbar-status>i.has-error{background:#d7645e;box-shadow:0 0 0 3px #d7645e1a}
+.voice-call-toolbar-status>span{overflow:hidden;text-overflow:ellipsis}
+.voice-call-toolbar-timer{color:#77747c;font-size:10px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.voice-call-card-desktop-toolbar .voice-call-card-secondary{width:28px;height:28px}
+.voice-call-card-desktop-toolbar .voice-call-card-secondary svg{width:15px;height:15px}
+.voice-call-card-desktop-toolbar .voice-call-card-end{width:28px;min-width:28px;height:28px;display:grid;place-items:center;margin:0;padding:0;border-radius:50%}
+.voice-call-card-desktop-toolbar .voice-call-card-end svg{width:14px;height:14px}
+.voice-call-toolbar-recovery{min-height:28px;margin:0 0 0 4px;padding:0 8px;font-size:10px}
+.voice-call-toolbar-error{position:absolute;top:36px;right:0;z-index:8;width:min(290px,calc(100vw - 28px));box-sizing:border-box}
 .voice-call-card-heading{display:flex;align-items:center;min-width:0;gap:10px}
 .voice-call-card .voice-call-card-avatar{width:38px;height:38px;flex:none;filter:drop-shadow(0 2px 5px #7d65a52b)}
 .voice-call-card-identity{display:grid;min-width:0;gap:4px}
@@ -30,6 +43,8 @@
 .voice-call-launch{width:32px;height:32px;border:0;border-radius:50%;background:transparent;color:#706c75;font-size:17px;cursor:pointer}.voice-call-launch:hover{background:#eeebf2;color:#403a49}.voice-call-launch:focus-visible{outline:2px solid #8d75b7;outline-offset:2px}.dots-dark .voice-call-launch{color:#d3ced8}.dots-dark .voice-call-launch:hover{background:#35303b;color:#f1edf4}
 .dictation-button{width:30px;height:30px;flex:none;display:grid;place-items:center;padding:0;border:0;border-radius:50%;background:transparent;color:#77747d;cursor:pointer}.dictation-button:hover{background:#f0eff2;color:#39363f}.dictation-button:focus-visible{outline:2px solid #8d75b7;outline-offset:2px}.dictation-button.listening{background:#fff0ef;color:#c84942;box-shadow:0 0 0 2px #c8494230}.dictation-button:disabled{cursor:wait;opacity:.65}.home-mode .dictation-button{width:26px;height:26px}.dot-chat-mode:not(.home-mode) .dictation-button{width:28px;height:28px}.dots-dark .dictation-button{color:#d3ced8}.dots-dark .dictation-button:hover{background:#35303b;color:#f1edf4}.dots-dark .dictation-button.listening{background:#3b2525;color:#f18b82;box-shadow:0 0 0 2px #f18b8230}.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
 .dots-dark .voice-call-card{border-color:#39363d;background:#242227;color:#efedf2;box-shadow:0 10px 32px #0008,0 2px 5px #0005}
+.dots-dark .voice-call-card-desktop-toolbar{border:0;background:transparent;color:inherit;box-shadow:none}
+.dots-dark .voice-call-toolbar-status,.dots-dark .voice-call-toolbar-timer{color:#b1adb7}
 .dots-dark .voice-call-card-identity>strong{color:#efedf2}
 .dots-dark .voice-call-card-status,.dots-dark .voice-call-card-timer{color:#b1adb7}
 .dots-dark .voice-call-card-mic{color:#b1adb7}.dots-dark .voice-call-card-mic>div{background:#48434c}.dots-dark .voice-call-card-mic>small{color:#b1adb7}

@@ -1967,8 +1967,15 @@ try {
     assert.equal(await profileCall.getAttribute('data-variant'), 'desktop', 'A call launched from the Dot profile on a desktop viewport must use the compact desktop UI');
     assert.equal(await profileCall.locator('.voice-call-screen').count(), 0, 'Desktop profile calls must not render the handset UI');
     const desktopCallBox = await profileCall.boundingBox();
-    assert(desktopCallBox && desktopCallBox.width < 350 && desktopCallBox.height < 220,
-      'The desktop call must render as a compact floating card');
+    const desktopActionsBox = await alphaPage!.getByTestId('conversation-actions').boundingBox();
+    assert(desktopCallBox && desktopActionsBox && desktopCallBox.x >= desktopActionsBox.x && desktopCallBox.y >= desktopActionsBox.y
+      && desktopCallBox.x + desktopCallBox.width <= desktopActionsBox.x + desktopActionsBox.width + 1
+      && desktopCallBox.y + desktopCallBox.height <= desktopActionsBox.y + desktopActionsBox.height + 1,
+    'Desktop call controls must live inside the conversation header actions');
+    assert.equal(await profileCall.evaluate(element => getComputedStyle(element).position), 'static',
+      'Desktop call controls must not float over the conversation or Dot details panel');
+    assert.equal(await profileCall.getByRole('button', { name: /扬声器/ }).count(), 0,
+      'The compact desktop header exposes microphone and hang-up controls only');
     assert.equal(await profileCall.locator('.voice-call-card-end').count(), 1, 'The active outgoing call must have exactly one red hang-up action');
     assert.equal(await profileCall.getByRole('button', { name: /接听|回答/ }).count(), 0, 'An active outgoing call must not offer an answer action');
     await waitFor(async () => {
@@ -1979,7 +1986,7 @@ try {
     const desktopGreetingSequence = await alphaPage!.evaluate(() => (window as unknown as { __dotsVoiceEvents: string[] }).__dotsVoiceEvents.slice(0, 2));
     assert.deepEqual(desktopGreetingSequence, ['spoken:你好，我是 dot，有什么我可以帮你？', 'listening'],
       'The call must play a Chinese greeting before opening the browser microphone input');
-    await screenshot(alphaPage!, 'voice-call-compact-desktop');
+    await screenshot(alphaPage!, 'voice-call-header-toolbar-desktop');
     await profileCall.getByRole('button', { name: '结束通话' }).click();
     await profileCall.waitFor({ state: 'hidden' });
 
@@ -2000,10 +2007,21 @@ try {
     assert.equal(crossTenantRealtimeStatus, 404, 'A different tenant cannot negotiate against another user’s active call');
     assert.equal(await profileCall.getAttribute('data-variant'), 'desktop', 'Every browser viewport must use the compact desktop call card');
     const profileCallBox = await profileCall.boundingBox();
-    assert(profileCallBox && profileCallBox.width < 350 && profileCallBox.height < 220,
-      'The active call must stay a small floating card rather than expanding into a phone screen');
-    assert(profileCallBox && profileCallBox.x >= 0 && profileCallBox.y >= 0 && profileCallBox.x + profileCallBox.width <= 690 && profileCallBox.y + profileCallBox.height <= 930,
-      'The compact call card must fit the 690×930 browser viewport');
+    const profileActionsBox = await alphaPage!.getByTestId('conversation-actions').boundingBox();
+    assert(profileCallBox && profileActionsBox && profileCallBox.x >= profileActionsBox.x && profileCallBox.y >= profileActionsBox.y
+      && profileCallBox.x + profileCallBox.width <= profileActionsBox.x + profileActionsBox.width + 1
+      && profileCallBox.y + profileCallBox.height <= profileActionsBox.y + profileActionsBox.height + 1,
+    'The active call toolbar must remain anchored to the conversation header at tablet-width desktop');
+    assert.equal(await profileCall.evaluate(element => getComputedStyle(element).position), 'static');
+    const detailsPanel = alphaPage!.locator('.dot-context-panel');
+    if (await detailsPanel.isVisible()) {
+      const panelBox = await detailsPanel.boundingBox();
+      const overlapsPanel = Boolean(panelBox && profileCallBox
+        && profileCallBox.x < panelBox.x + panelBox.width && profileCallBox.x + profileCallBox.width > panelBox.x
+        && profileCallBox.y < panelBox.y + panelBox.height && profileCallBox.y + profileCallBox.height > panelBox.y);
+      assert.equal(overlapsPanel, false,
+        'The active call controls must not cover the Dot details panel');
+    }
     assert.equal(await profileCall.locator('.voice-call-card-end').count(), 1, 'The outgoing call must have one red hang-up action');
     assert.equal(await profileCall.getByRole('button', { name: /接听|回答/ }).count(), 0, 'An already-connected outgoing call must not show an answer button');
     assert.equal(await profileCall.locator('.voice-call-screen').count(), 0, 'Web calls must never render the mobile handset frame');
@@ -2018,15 +2036,12 @@ try {
     const greetingSequence = await alphaPage!.evaluate(() => (window as unknown as { __dotsVoiceEvents: string[] }).__dotsVoiceEvents.slice(-2));
     assert.deepEqual(greetingSequence, ['spoken:你好，我是 dot，有什么我可以帮你？', 'listening'],
       'The call must play its Chinese greeting before starting browser speech recognition');
-    await screenshot(alphaPage!, 'voice-call-compact-690');
-    await profileCall.screenshot({ path: join(screenshotsDir, 'voice-call-compact-690.png') });
-    screenshotNames.push('voice-call-compact-690.png');
+    await screenshot(alphaPage!, 'voice-call-header-toolbar-690');
+    await profileCall.screenshot({ path: join(screenshotsDir, 'voice-call-header-toolbar-690.png') });
+    screenshotNames.push('voice-call-header-toolbar-690.png');
     await profileCall.getByRole('button', { name: '静音' }).click();
     assert.equal(await profileCall.getByRole('button', { name: '取消静音' }).getAttribute('aria-pressed'), 'true');
     await profileCall.getByRole('button', { name: '取消静音' }).click();
-    await profileCall.getByRole('button', { name: '关闭扬声器' }).click();
-    assert.equal(await profileCall.getByRole('button', { name: '打开扬声器' }).getAttribute('aria-pressed'), 'false');
-    await profileCall.getByRole('button', { name: '打开扬声器' }).click();
     await delay(1100);
     assert.notEqual(await profileCall.getByTestId('voice-call-timer').innerText(), '0:00');
     await profileCall.getByRole('button', { name: '结束通话' }).click();
@@ -2150,8 +2165,16 @@ try {
     assert.equal(await call.getAttribute('data-variant'), 'desktop');
     assert.equal(await call.locator('.voice-call-screen').count(), 0, 'Desktop chat calls should use the compact V2 controls, not the handset surface');
     const inlineBox = await call.boundingBox();
-    assert(inlineBox && inlineBox.x > desktopViewport.width * .5 && inlineBox.x + inlineBox.width <= desktopViewport.width && inlineBox.y >= 0,
-      'The active call card should float on the right side of the browser without leaving the viewport');
+    const inlineHeaderBox = await alphaPage!.getByTestId('conversation-actions').boundingBox();
+    assert(inlineBox && inlineHeaderBox && inlineBox.x >= inlineHeaderBox.x && inlineBox.y >= inlineHeaderBox.y
+      && inlineBox.x + inlineBox.width <= inlineHeaderBox.x + inlineHeaderBox.width + 1,
+    'The active call toolbar should remain in the conversation header beside the Dot context panel');
+    assert.equal(await call.evaluate(element => getComputedStyle(element).position), 'static');
+    const contextBox = await alphaPage!.locator('.dot-context-panel').boundingBox();
+    const overlapsContext = Boolean(contextBox && inlineBox
+      && inlineBox.x < contextBox.x + contextBox.width && inlineBox.x + inlineBox.width > contextBox.x
+      && inlineBox.y < contextBox.y + contextBox.height && inlineBox.y + inlineBox.height > contextBox.y);
+    assert.equal(overlapsContext, false, 'The active call toolbar must not cover the Dot details panel');
     assert.equal(await call.locator('.voice-call-card-end').count(), 1, 'The card should expose one red hang-up action');
     assert.notEqual(await call.getByRole('button', { name: '静音' }).evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(40, 116, 95)',
       'The microphone control must remain a neutral toggle, not an answer button');
