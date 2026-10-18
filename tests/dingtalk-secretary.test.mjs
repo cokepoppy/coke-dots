@@ -67,3 +67,46 @@ test('related todo reads expose their incomplete-status filter separately from p
   assert.deepEqual(calls[0].slice(0, 4), ['todo', '+get-related-tasks', '--status', 'false']);
 });
 
+test('todo detail is read-only, verifies current-user membership, and returns only explicit safe fields', async () => {
+  const calls = [];
+  const operations = createDwsSecretaryOperations({
+    withAuthenticatedProfile: async (_principal, work) => work({ call: async args => {
+      calls.push(args);
+      if (args[1] === '+get-related-tasks') return { ok: true, outcome: 'success', data: { count: 2, tasks: [
+        { taskId: 'todo-123', title: '核验交易规则' }, { taskId: 'todo-no-status', title: '核对公告' },
+      ], complete: true } };
+      if (args[1] === '+get') return { ok: true, outcome: 'success', data: args[3] === 'todo-no-status'
+        ? { taskId: 'todo-no-status', subject: '核对公告' }
+        : {
+          taskId: 'todo-123', subject: '核验交易规则', isDone: false,
+          dueTime: '2026-10-20T17:00:00+08:00', finishTime: null, priority: 30,
+          description: 'must-not-escape', accessToken: 'must-not-escape',
+        } };
+      throw new Error(`unexpected command ${args[1]}`);
+    }, profile: { selector: 'cms-user' }, ownerKey: 'tenant-a:user-a' }),
+    writeOnce: async () => { throw new Error('todo detail must not enter a write flow'); },
+  });
+
+  const detail = await operations.getPersonalTodo(principal, { taskId: 'todo-123' });
+  assert.deepEqual(detail, {
+    taskId: 'todo-123', title: '核验交易规则', statusAvailable: true, isDone: false,
+    dueTime: '2026-10-20T17:00:00+08:00', finishTime: null, priority: 30,
+  });
+  assert.deepEqual(calls.map(args => args.slice(0, 4)), [
+    ['todo', '+get-related-tasks', '--status', 'false'],
+    ['todo', '+get', '--task-id', 'todo-123'],
+  ]);
+  assert(calls.every(args => args.includes('--profile') && args.includes('cms-user')));
+  assert(calls.every(args => !args.includes('--yes')));
+
+  calls.length = 0;
+  const missingStatus = await operations.getPersonalTodo(principal, { taskId: 'todo-no-status' });
+  assert.deepEqual(missingStatus, { taskId: 'todo-no-status', statusAvailable: false, title: '核对公告' },
+    'Missing completion state must remain explicitly unavailable and must not be inferred from list pagination or filters');
+
+  calls.length = 0;
+  await assert.rejects(operations.getPersonalTodo(principal, { taskId: 'todo-other-user' }), /DWS_TODO_DETAIL_NOT_FOUND/);
+  assert.equal(calls.length, 1, 'A task outside the current user’s related open list must never reach +get');
+  await assert.rejects(operations.getPersonalTodo(principal, { taskId: 'bad/id' }), /DWS_TODO_DETAIL_ID_INVALID/);
+});
+

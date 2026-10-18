@@ -103,6 +103,9 @@ const publicErrors: Record<string, string> = {
   DWS_CALENDAR_CREATE_UNVERIFIED: '钉钉日程创建结果无法验证；请先检查日历，不要直接重试。',
   DWS_TODO_TITLE_INVALID: '钉钉待办标题无效。',
   DWS_TODO_LIST_FAILED: '钉钉待办列表未能完整读取。',
+  DWS_TODO_DETAIL_ID_INVALID: '钉钉待办 ID 无效。',
+  DWS_TODO_DETAIL_NOT_FOUND: '该待办不在当前账号可读取的未完成待办范围内。',
+  DWS_TODO_DETAIL_FAILED: '钉钉待办详情无法验证。',
   DWS_TODO_EXECUTOR_INVALID: '钉钉待办执行人无效。',
   DWS_TODO_PRIORITY_INVALID: '钉钉待办优先级无效。',
   DWS_TODO_CONFIRMATION_REQUIRED: '创建钉钉待办需要在当前任务中明确请求。',
@@ -264,7 +267,9 @@ export class DingTalkService {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('钉钉个人助理请求无效');
     const body = input as Record<string, unknown>;
     const action = String(body.action || '');
-    if (!grant.actions.includes(action as 'todo-list' | 'todo-create' | 'cokeclaw-send')) throw new Error('当前任务没有此钉钉个人助理操作权限');
+    const hasActionGrant = action === 'todo-detail' ? grant.actions.includes('todo-list')
+      : grant.actions.includes(action as 'todo-list' | 'todo-create' | 'cokeclaw-send');
+    if (!hasActionGrant) throw new Error('当前任务没有此钉钉个人助理操作权限');
     const session: AuthSession = {
       tokenHash: '', user: { id: grant.userId, email: '', name: '' },
       tenant: { id: grant.tenantId, name: '', role: 'member', kind: 'workspace' },
@@ -276,6 +281,10 @@ export class DingTalkService {
         const scope = body.scope === undefined ? 'related' : String(body.scope);
         if (!['related', 'due-today', 'overdue'].includes(scope)) throw new Error(publicErrors.DWS_TODO_LIST_FAILED);
         return { scope, count: 0, tasks: [], complete: true, testOnly: true };
+      }
+      if (action === 'todo-detail') {
+        const taskId = validateTodoDetailId(body);
+        return { taskId, statusAvailable: true, isDone: false, testOnly: true };
       }
       if (action === 'todo-create') {
         const todo = validateTodoCreate(body, grant, this.ticketSecret || 'dots-e2e-only-dingtalk-agent-grant-secret-32-bytes');
@@ -290,6 +299,10 @@ export class DingTalkService {
         const scope = body.scope === undefined ? 'related' : String(body.scope);
         if (!['related', 'due-today', 'overdue'].includes(scope)) throw new Error(publicErrors.DWS_TODO_LIST_FAILED);
         return await this.call(session, '/v1/secretary/todo-list', 'POST', { scope });
+      }
+      if (action === 'todo-detail') {
+        const taskId = validateTodoDetailId(body);
+        return await this.call(session, '/v1/secretary/todo-detail', 'POST', { taskId });
       }
       if (action === 'todo-create') {
         const todo = validateTodoCreate(body, grant, this.ticketSecret);
@@ -686,6 +699,12 @@ function validateTodoCreate(body: Record<string, unknown>, grant: DingTalkSecret
   const priority = body.priority === undefined ? 20 : body.priority;
   if (![10, 20, 30, 40].includes(priority as number)) throw new Error(publicErrors.DWS_TODO_PRIORITY_INVALID);
   return { requestId: deterministicDingTalkSecretaryRequestId(grant.taskId, 'todo-create', secret), title, executorId: grant.userId, due: body.due, priority };
+}
+
+function validateTodoDetailId(body: Record<string, unknown>) {
+  const taskId = typeof body.taskId === 'string' ? body.taskId.trim() : '';
+  if (!taskId || taskId.length > 512 || !/^[A-Za-z0-9._~-]+$/.test(taskId)) throw new Error(publicErrors.DWS_TODO_DETAIL_ID_INVALID);
+  return taskId;
 }
 
 function validateCokeclawMessage(body: Record<string, unknown>, grant: DingTalkSecretaryAgentGrant, secret: string) {

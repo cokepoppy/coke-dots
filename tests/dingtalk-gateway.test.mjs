@@ -100,6 +100,12 @@ test('local host-profile gateway binds the existing DWS identity to one Dots use
           tasks: [{ taskId: 'todo-test', title: '核对实施安排', accessToken: 'must-not-leak' }],
         },
       };
+      if (args[0] === 'todo' && args[1] === '+get-related-tasks') return {
+        ok: true, outcome: 'success', data: { count: 1, hasMore: false, complete: true, tasks: [{ taskId: 'todo-test', title: '核对实施安排' }] },
+      };
+      if (args[0] === 'todo' && args[1] === '+get') return {
+        ok: true, outcome: 'success', data: { taskId: 'todo-test', subject: '核对实施安排', isDone: false, dueTime: '2026-10-20T17:00:00+08:00' },
+      };
       throw new Error('unexpected fake DWS command');
     },
   });
@@ -142,6 +148,21 @@ test('local host-profile gateway binds the existing DWS identity to one Dots use
     assert(todoCommand.args.includes('--profile') && todoCommand.args.includes('corp-test:dws-user'));
     assert.equal(inspectCalls.length, 2, 'Read-only secretary operations do not re-inspect or mutate profile identity');
     assert.equal(JSON.stringify(todoResult).includes('must-not-leak'), false);
+
+    const todoDetailResponse = await call('/v1/secretary/todo-detail', { method: 'POST', body: { taskId: 'todo-test' } });
+    assert.equal(todoDetailResponse.status, 200);
+    const todoDetail = (await todoDetailResponse.json()).data;
+    assert.deepEqual(todoDetail, {
+      taskId: 'todo-test', title: '核对实施安排', statusAvailable: true, isDone: false, dueTime: '2026-10-20T17:00:00+08:00',
+    });
+    assert.equal(calls.filter(item => item.args[0] === 'todo' && item.args[1] === '+get').length, 1);
+    assert.equal(calls.find(item => item.args[0] === 'todo' && item.args[1] === '+get')?.args.includes('--yes'), false);
+
+    const outsideTodoDetail = await call('/v1/secretary/todo-detail', { method: 'POST', body: { taskId: 'todo-other-user' } });
+    assert.equal(outsideTodoDetail.status, 404);
+    assert.equal((await outsideTodoDetail.json()).error, 'DWS_TODO_DETAIL_NOT_FOUND');
+    assert.equal(calls.filter(item => item.args[0] === 'todo' && item.args[1] === '+get').length, 1,
+      'A task that is not in the signed-in user’s related list must not reach the detail command');
 
     const invalidTodoScope = await call('/v1/secretary/todo-list', { method: 'POST', body: { scope: 'all-organization-tasks' } });
     assert.equal(invalidTodoScope.status, 400);

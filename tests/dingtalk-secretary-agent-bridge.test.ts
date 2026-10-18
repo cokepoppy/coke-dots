@@ -55,5 +55,10 @@ test('secretary write requests are task-bound, self-only, fixed-group, and idemp
   assert(readGrant);
   const listed = await service.runAgentSecretaryOperation(readGrant, { action: 'todo-list', scope: 'due-today' }) as { scope: string; count: number; tasks: unknown[]; complete: boolean; testOnly: boolean };
   assert.deepEqual(listed, { scope: 'due-today', count: 0, tasks: [], complete: true, testOnly: true });
+  const detail = await service.runAgentSecretaryOperation(readGrant, { action: 'todo-detail', taskId: 'todo-123' }) as { taskId: string; statusAvailable: boolean; isDone: boolean; testOnly: boolean };
+  assert.deepEqual(detail, { taskId: 'todo-123', statusAvailable: true, isDone: false, testOnly: true });
+  await assert.rejects(service.runAgentSecretaryOperation(readGrant, { action: 'todo-detail', taskId: 'bad/id' }), /无效/);
   await assert.rejects(service.runAgentSecretaryOperation(readGrant, { action: 'todo-create', title: '没有写权限', due: '2026-10-20T17:00:00+08:00' }), /没有此钉钉个人助理操作权限/);
+  await assert.rejects(service.runAgentSecretaryOperation(grant, { action: 'todo-detail', taskId: 'todo-123' }), /没有此钉钉个人助理操作权限/,
+    'Create and group-send grants do not imply todo read access');
 });

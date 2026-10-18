@@ -43,7 +43,7 @@ const allowedErrors = new Set([
   'DWS_CALENDAR_TITLE_INVALID', 'DWS_CALENDAR_CONFIRMATION_REQUIRED', 'DWS_CALENDAR_REQUEST_ID_INVALID',
   'DWS_CALENDAR_CREATE_FAILED', 'DWS_CALENDAR_CREATE_UNVERIFIED',
   'DWS_TODO_TITLE_INVALID', 'DWS_TODO_EXECUTOR_INVALID', 'DWS_TODO_PRIORITY_INVALID',
-  'DWS_TODO_LIST_FAILED',
+  'DWS_TODO_LIST_FAILED', 'DWS_TODO_DETAIL_ID_INVALID', 'DWS_TODO_DETAIL_NOT_FOUND', 'DWS_TODO_DETAIL_FAILED',
   'DWS_TODO_CONFIRMATION_REQUIRED', 'DWS_TODO_REQUEST_ID_INVALID', 'DWS_TODO_CREATE_FAILED', 'DWS_TODO_CREATE_UNVERIFIED',
   'DWS_CHAT_CONTENT_INVALID', 'DWS_CHAT_CONFIRMATION_REQUIRED', 'DWS_CHAT_REQUEST_ID_INVALID',
   'DWS_CHAT_SEND_FAILED', 'DWS_CHAT_SEND_UNVERIFIED', 'DWS_SECRETARY_RUNTIME_REQUIRED',
@@ -411,7 +411,7 @@ function sanitizeGroupList(payload) {
 
 function publicError(error) {
   const code = typeof error?.message === 'string' && allowedErrors.has(error.message) ? error.message : 'DINGTALK_CONNECTOR_REQUEST_FAILED';
-  const status = code === 'CONNECTOR_AUTHORIZATION_NOT_FOUND' ? 404 :
+  const status = ['CONNECTOR_AUTHORIZATION_NOT_FOUND', 'DWS_TODO_DETAIL_NOT_FOUND'].includes(code) ? 404 :
     ['DWS_DOC_AUTHORIZATION_REQUIRED', 'DWS_HOST_PROFILE_USER_NOT_ALLOWED'].includes(code) ? 403 :
       ['DWS_DOC_CONTENT_TOO_LARGE', 'DINGTALK_REQUEST_TOO_LARGE'].includes(code) ? 413 :
         ['DWS_PROFILE_BUSY', 'DWS_MONITOR_ALREADY_ACTIVE', 'DWS_DOC_PARTIAL_SUCCESS', 'DWS_DOC_COMMIT_UNKNOWN', 'DWS_DOC_REQUEST_CONFLICT'].includes(code) ? 409 :
@@ -1187,13 +1187,14 @@ export function createDingtalkConnectorGateway({
         const body = await readBody(req, 16 * 1024);
         return send(200, { ok: true, data: await minutes.detail(ownerPrincipal(ticket), body) });
       }
-      const secretaryRoute = url.pathname.match(/^\/v1\/secretary\/(calendar-create|todo-list|todo-create|cokeclaw-send)$/);
+      const secretaryRoute = url.pathname.match(/^\/v1\/secretary\/(calendar-create|todo-list|todo-detail|todo-create|cokeclaw-send)$/);
       if (req.method === 'POST' && secretaryRoute) {
         const body = await readBody(req, 16 * 1024);
         const principal = ownerPrincipal(ticket);
         const operation = {
           'calendar-create': secretary.createCalendarEvent,
           'todo-list': secretary.listPersonalTodos,
+          'todo-detail': secretary.getPersonalTodo,
           'todo-create': secretary.createPersonalTodo,
           'cokeclaw-send': secretary.sendCokeclawReport,
         }[secretaryRoute[1]];

@@ -77,6 +77,28 @@ function todoListResult(payload) {
   };
 }
 
+function todoDetailResult(payload, requestedTaskId) {
+  const data = extractSuccess(payload, 'DWS_TODO_DETAIL_FAILED');
+  const detail = data.todo && typeof data.todo === 'object' && !Array.isArray(data.todo) ? data.todo
+    : data.task && typeof data.task === 'object' && !Array.isArray(data.task) ? data.task : data;
+  const returnedId = [detail.taskId, detail.id].find(value => typeof value === 'string');
+  if (returnedId !== undefined && returnedId !== requestedTaskId) fail('DWS_TODO_DETAIL_FAILED');
+  const titleValue = typeof detail.subject === 'string' ? detail.subject : typeof detail.title === 'string' ? detail.title : undefined;
+  const result = {
+    taskId: requestedTaskId,
+    statusAvailable: typeof detail.isDone === 'boolean',
+    ...(typeof detail.isDone === 'boolean' ? { isDone: detail.isDone } : {}),
+  };
+  if (typeof titleValue === 'string' && !titleValue.includes('\0')) result.title = titleValue.trim().slice(0, 200);
+  for (const field of ['dueTime', 'planFinishDate', 'finishTime']) {
+    const value = detail[field];
+    if (typeof value === 'string' && value.length <= 100 && !value.includes('\0')) result[field] = value;
+    else if (value === null && field === 'finishTime') result[field] = null;
+  }
+  if (typeof detail.priority === 'number' && Number.isFinite(detail.priority)) result.priority = detail.priority;
+  return result;
+}
+
 function parseTimestamp(value) {
   if (typeof value !== 'string' || value.length > 64 || !rfc3339.test(value) || !Number.isFinite(Date.parse(value))) fail('DWS_CALENDAR_RANGE_INVALID');
   return new Date(value).toISOString();
@@ -134,6 +156,18 @@ export function createDwsSecretaryOperations({ withAuthenticatedProfile, writeOn
     });
   }
 
+  async function getPersonalTodo(principal, input = {}) {
+    const taskId = requiredText(input.taskId, 'DWS_TODO_DETAIL_ID_INVALID', 512);
+    if (!stableId.test(taskId)) fail('DWS_TODO_DETAIL_ID_INVALID');
+    return withAuthenticatedProfile(principal, async ({ call, profile }) => {
+      const relatedPayload = await call(['todo', '+get-related-tasks', '--status', 'false', '--profile', profile.selector], { timeoutMs: 60_000, maxBytes: 1024 * 1024 });
+      const related = todoListResult(relatedPayload);
+      if (!related.tasks.some(task => task.taskId === taskId)) fail('DWS_TODO_DETAIL_NOT_FOUND');
+      const payload = await call(['todo', '+get', '--task-id', taskId, '--profile', profile.selector], { timeoutMs: 60_000, maxBytes: 256 * 1024 });
+      return todoDetailResult(payload, taskId);
+    });
+  }
+
   async function sendCokeclawReport(principal, input = {}) {
     const content = requiredText(input.content, 'DWS_CHAT_CONTENT_INVALID', 4000);
     const requestId = assertRequest(input, 'DWS_CHAT_CONFIRMATION_REQUIRED', 'DWS_CHAT_REQUEST_ID_INVALID');
@@ -144,5 +178,5 @@ export function createDwsSecretaryOperations({ withAuthenticatedProfile, writeOn
     } }));
   }
 
-  return { createCalendarEvent, createPersonalTodo, listPersonalTodos, sendCokeclawReport };
+  return { createCalendarEvent, createPersonalTodo, listPersonalTodos, getPersonalTodo, sendCokeclawReport };
 }
