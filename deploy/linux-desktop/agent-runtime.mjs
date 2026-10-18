@@ -127,6 +127,20 @@ function redactSecret(value, secret) {
   return value;
 }
 
+function sanitizeAdapterDiagnostic(value, secrets = []) {
+  let diagnostic = String(value || '');
+  for (const secret of secrets) {
+    if (typeof secret === 'string' && secret.length >= 4) diagnostic = diagnostic.split(secret).join('[redacted]');
+  }
+  diagnostic = diagnostic
+    .replace(/\b(?:sk|ark)-[A-Za-z0-9_-]{8,}\b/g, '[redacted-api-key]')
+    .replace(/(authorization\s*:\s*bearer\s+)\S+/ig, '$1[redacted]')
+    .replace(/((?:api[_-]?key|token|secret|password)\s*["']?\s*[:=]\s*["']?)[^"'\s,;}]+/ig, '$1[redacted]')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .trim();
+  return diagnostic.slice(-1_200);
+}
+
 function runKernel(input, requestSignal) {
   return new Promise((resolve, reject) => {
     if (requestSignal?.aborted) return reject(new Error('Agent task was cancelled'));
@@ -191,8 +205,9 @@ async function executeKernel(input, requestSignal, slot) {
   slot.child = child;
   slot.abort = abort;
   let stdout = '';
+  let stderr = '';
   child.stdout.on('data', chunk => { stdout = (stdout + chunk.toString()).slice(-500_000); });
-  child.stderr.on('data', () => undefined);
+  child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8_000); });
   child.stdin.end(JSON.stringify({
     engine, prompt, cwd, workspace, taskId,
     sessionId: typeof input.sessionId === 'string' ? input.sessionId : null,
@@ -218,7 +233,19 @@ async function executeKernel(input, requestSignal, slot) {
     });
     if (requestSignal?.aborted) throw new Error('Agent task was cancelled');
     if (slot.interruptedByUser) return { taskId, status: 'waiting', pausedForControl: true, message: '我已暂停当前操作，因为你正在接管电脑。交还电脑后，请告诉我继续。', engine, sessionId: typeof input.sessionId === 'string' ? input.sessionId : null };
-    if (code !== 0) throw new Error(`Agent adapter exited with code ${code}`);
+    if (code !== 0) {
+      const diagnostic = sanitizeAdapterDiagnostic(stderr, [
+        modelConfig.apiKey,
+        process.env.DOTS_AGENT_RUNTIME_TOKEN,
+        process.env.LINUX_DESKTOP_WORKER_TOKEN,
+        input.computer?.workerToken,
+        input.computer?.openPublicPageToken,
+        dingtalkDocumentsBridge?.token,
+        dingtalkCalendarBridge?.token,
+        dingtalkSecretaryBridge?.token,
+      ]);
+      throw new Error(`Agent adapter exited with code ${code}${diagnostic ? `: ${diagnostic}` : ''}`);
+    }
     let result;
     try {
       result = redactSecret(JSON.parse(stdout), modelConfig.apiKey);

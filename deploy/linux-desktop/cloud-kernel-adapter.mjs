@@ -67,6 +67,12 @@ async function runPi(input, cwd, config, injectedSdk) {
   const dingtalkCalendarToolsList = dingtalkCalendarTools(input.dingtalkCalendarBridge);
   const dingtalkSecretaryToolsList = dingtalkSecretaryTools(input.dingtalkSecretaryBridge);
   const customTools = [bashTool, computerTool, browserTool, incidentPullRequest, ...dingtalkTools, ...dingtalkCalendarToolsList, ...dingtalkSecretaryToolsList].filter(Boolean);
+  const dingtalkToolNames = customTools
+    .map(tool => tool?.name)
+    .filter(name => typeof name === 'string' && /^(?:search_dingtalk_documents|fetch_dingtalk_document|create_dingtalk_document|list_dingtalk_calendar_events|create_dingtalk_calendar_event|list_dingtalk_personal_todos|create_dingtalk_personal_todo|send_cokeclaw_group_report)$/.test(name));
+  const scopedPrompt = dingtalkToolNames.length
+    ? `${input.prompt}\n\nTask-scoped DingTalk access policy: Use only these authorized tools for DingTalk: ${dingtalkToolNames.join(', ')}. Do not use Bash, curl, wget, browser navigation, or direct HTTP calls to access Dots internal DingTalk endpoints or reconstruct a grant. If an authorized tool reports an access error or the needed capability is missing, stop and report that limitation without trying another route.`
+    : input.prompt;
   const { session } = await sdk.createAgentSession({
     cwd,
     agentDir: await createPrivateDirectory(cwd, '.coke-dots-agent-runtime/pi'),
@@ -82,7 +88,7 @@ async function runPi(input, cwd, config, injectedSdk) {
   else input.signal?.addEventListener('abort', abortSession, { once: true });
   try {
     if (input.signal?.aborted) throw input.signal.reason || new Error('Task stopped');
-    await session.prompt(input.prompt);
+    await session.prompt(scopedPrompt);
     const assistant = [...session.messages].reverse().find(row => row?.role === 'assistant');
     if (assistant?.stopReason === 'length') {
       throw new Error('Pi 的回复达到 8192 token 输出上限，未生成完整任务结果。请先检查任务目录是否已产生文件，再决定是否重试。');

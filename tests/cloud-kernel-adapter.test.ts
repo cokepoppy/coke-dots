@@ -119,6 +119,7 @@ test('Pi exposes one task-scoped read-only DingTalk calendar tool and sends only
   const { root, task } = await makeWorkspace();
   const captured: { payload: Record<string, unknown> | null } = { payload: null };
   let calendarTool: any;
+  let receivedPrompt = '';
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -138,7 +139,7 @@ test('Pi exposes one task-scoped read-only DingTalk calendar tool and sends only
       assert(options.tools.includes('list_dingtalk_calendar_events'));
       assert.equal(options.tools.some((name: string) => /create|update|cancel.*calendar/i.test(name)), false);
       calendarTool = options.customTools.find((tool: { name: string }) => tool.name === 'list_dingtalk_calendar_events');
-      return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async () => undefined, dispose: () => undefined } };
+      return { session: { messages: [{ role: 'assistant', content: [{ type: 'text', text: decision }] }], prompt: async (prompt: string) => { receivedPrompt = prompt; }, dispose: () => undefined } };
     },
   };
   try {
@@ -147,6 +148,10 @@ test('Pi exposes one task-scoped read-only DingTalk calendar tool and sends only
       taskId: '11111111-1111-4111-8111-111111111111', sessionId: null, modelConfig,
       dingtalkCalendarBridge: { url: `http://127.0.0.1:${address.port}/api/agent/dingtalk/calendar`, token, actions: ['list'] },
     }, { piSdk: sdk });
+    assert.match(receivedPrompt, /Task-scoped DingTalk access policy/);
+    assert.match(receivedPrompt, /list_dingtalk_calendar_events/);
+    assert.match(receivedPrompt, /Do not use Bash, curl, wget/);
+    assert.doesNotMatch(receivedPrompt, /create_dingtalk_calendar_event/);
     const result = await calendarTool.execute('calendar-1', {});
     assert.match(result.content[0].text, /"events":\[\]/);
     assert.equal(captured.payload?.action, 'list');

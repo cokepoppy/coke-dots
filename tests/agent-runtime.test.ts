@@ -57,6 +57,7 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
       "import { appendFile } from 'node:fs/promises';",
       "let raw = ''; for await (const chunk of process.stdin) raw += chunk;",
       'const input = JSON.parse(raw);',
+      "if (input.prompt === 'stderr failure') { process.stderr.write(`adapter fixture failed apiKey=${input.modelConfig?.apiKey} token=${input.dingtalkCalendarBridge?.token} Authorization: Bearer fixture-bearer-secret-never-print\\n`); process.exit(1); }",
       "const modelKey = 'cloud-runtime-model-key-never-print';",
       "const keyInEnv = Object.values(process.env).includes(modelKey) || Boolean(process.env.DOTS_AGENT_RUNTIME_TOKEN) || Boolean(process.env.LINUX_DESKTOP_WORKER_TOKEN);",
       "const bridgeToken = input.dingtalkDocumentsBridge?.token || '';",
@@ -170,6 +171,18 @@ test('cloud Agent runtime serializes desktop access, isolates runtime credential
     assert.equal(calendarTask.body.diagnosticGrant, '[redacted]');
     assert.doesNotMatch(JSON.stringify(calendarTask.body), new RegExp(calendarGrant));
     assert((await readFile(markerPath, 'utf8')).includes(`start ${calendarTaskId} engine=pi config=true keyInEnv=false dingtalkBridge=false bridgeTokenInEnv=false calendarBridge=true calendarTokenInEnv=false secretaryBridge=false secretaryTokenInEnv=false`), 'The calendar grant must be private to the adapter input and never copied into its environment');
+
+    const diagnosticTaskId = '99999999-9999-4999-8999-999999999998';
+    const diagnosticGrant = 'task-scoped-calendar-grant-secret-never-print';
+    const diagnosticTask = await submit(diagnosticTaskId, 'stderr failure', modelConfig, `tasks/${diagnosticTaskId}`, 'pi', undefined, { url: 'https://dots.example.test/dots-demo/api/agent/dingtalk/calendar', token: diagnosticGrant, actions: ['list'] });
+    assert.equal(diagnosticTask.status, 400);
+    assert.match(diagnosticTask.body.error || '', /Agent adapter exited with code 1: adapter fixture failed/);
+    assert.match(diagnosticTask.body.error || '', /apiKey=\[redacted\]/);
+    assert.match(diagnosticTask.body.error || '', /token=\[redacted\]/);
+    assert.match(diagnosticTask.body.error || '', /Authorization: Bearer \[redacted\]/);
+    assert.doesNotMatch(diagnosticTask.body.error || '', /never-print/);
+    assert.doesNotMatch(diagnosticTask.body.error || '', new RegExp(modelConfig.apiKey));
+    assert.doesNotMatch(diagnosticTask.body.error || '', new RegExp(diagnosticGrant));
 
     const secretaryTaskId = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
     const secretaryGrant = 'task-scoped-dingtalk-secretary-grant-never-return';
