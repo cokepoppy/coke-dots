@@ -185,6 +185,10 @@
     margin-left: auto;
   }
 
+  .dot-onboarding-mode:not(.voice-call-active-mode) .dot-conversation-actions {
+    display: flex;
+  }
+
   .dot-chat-mode .conversation-call-launch {
     width: 44px;
     height: 44px;
