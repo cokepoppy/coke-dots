@@ -16,7 +16,9 @@
 - Coke Dots 当前已集成 Minutes 后续请求分类修复，代码基线为 `43d41009574da4f81f1184887e561435035414b1`。2026-10-19 隧道恢复后，已登录公网 Chrome 新建一次只读任务，明确选择 Pi；任务完成并读回更新后的日程、既有会后听记六条要点和两条未完成待办及截止时间，明确未写入钉钉。Dot's computer 状态为 Connected。该结果是公网 Pi/DingTalk 只读链路证据，不等于实体手机通话或完整代码修复流程验收。
 - 2026-10-19 09:46（Asia/Shanghai）复核时，公网隧道已恢复：Mac Dots 仍在 `127.0.0.1:14318` 监听，当前 LaunchAgent SSH PID 与 VPS:22 保持 ESTABLISHED，并有经隧道连到本机 14318 的活动连接；连续三次公网 GET 均返回 200。已登录 Chrome 能加载会话列表，进入“电脑”后能看到租户 Debian Chromium 桌面，状态为 `Dot has control`。这证明当前公网控制面和桌面画面通路可用；尚未证明通话、Pi 派工或整段演示通过。
 - 2026-10-19 10:09（Asia/Shanghai）再次检查：Mac `127.0.0.1:14318` 返回 200；LaunchAgent 当前只有一个 `ssh` 隧道进程，VPS 上 `sshd` 正在监听 `127.0.0.1:14317`，且该 SSH 会话有到 Mac 14318 的活动转发通道。VPS `sshd -T` 显示 `AllowTcpForwarding yes`、`DisableForwarding no`、`PermitListen any`、`GatewayPorts no`，因此不是 sshd 转发策略拒绝。LaunchAgent 错误日志最后修改于 09:29:18，当前成功的 SSH 会话于 09:29:28 启动；与已有 `KeepAlive` 在远端绑定失败后重试并成功相符。三次公网 HTTPS GET 均返回 200；新 Chrome 标签真实打开公网 Dots，进入“电脑”后看见租户 Debian Chromium 中的 Coke Securities 页面和 `Dot has control`。这证明隧道和云电脑画面当前可用；失败时的旧监听 PID 已消失，历史占用者无法追溯，瞬时远端端口冲突是最可能原因但不是已证实的具体进程。没有重启隧道或改 VPS 配置。
+- 2026-10-19 10:43（Asia/Shanghai）复核用户反馈的公网超时：Mac `127.0.0.1:14318/dots-demo/` 返回 200（0.003 秒），公网 `https://codex.cokeagent.com/dots-demo/` 连续五次返回 200（0.07–0.20 秒）；登录态 Chrome 当前可加载 Dots 并显示租户电脑 Connected。LaunchAgent 持续运行一个带 `-R` 转发 `14317 → 14318` 的 SSH 进程，超过 1 小时。`launchctl` 的 255 是历史退出码，不能据此判断当前断线。现象已恢复，未重启隧道或修改 VPS/Nginx/K3D；原始失败时的 VPS 端口占用者仍无法证明。若再次发生，先只读确认 `127.0.0.1:14317` 的监听者和 Mac 活跃隧道，勿同时启动第二个转发进程。
 - 2026-10-19 公网 Pi 云电脑验收任务 `8f732465-e967-402b-8c9c-e8084c7b79d9` 克隆 `coke-agent-test-stock-app` 的 `feature/bse-post-review-validation`，HEAD 为 `c5d66b1a398d6f30253709083f649ad814cf7148`。云电脑内 `npm ci` 成功、`npm test` 12/12、`CHROME_PATH=/usr/bin/chromium npm run test:e2e` 通过。Chrome 中验证 19.99 被 17.90–19.12 价格带拦截，18.74 通过本地校验；界面明确未提交交易系统。任务目录内保留测试日志和进程文件。端口 4178 被前序任务进程占用，未停止该进程；本轮服务使用 4179，并通过任务内回环桥接在云电脑 Chrome 展示。该项证明云电脑 Pi 的克隆、测试和可见页面链路，不代表用户已验收或证券业务真实交易。
+- 2026-10-19 新公网 Pi 演练任务 `9c7be94e-06f3-4c4e-837a-634fd5564de6` 报告从干净的股票仓库 `origin/main=adcbde2958d419e1b3cea95b401bde1b727e1c50` 创建 `feature/bse-rule-drill-9c7be94e-06f3-4c4e-837a-634fd5564de6`，本地提交 `1b3a0391472f718bb943306d7963851d5cf65d18`；改动覆盖同一组 7 个规则、页面和测试文件。Pi 报告 `npm ci`、`npm test` 12/12、`CHROME_PATH=/usr/bin/chromium npm run test:e2e` 通过，并在云电脑 Chromium `127.0.0.1:4180` 展示价格带与 100,000 股示例；任务没有推送、建 PR 或合并。登录态公网 Chrome 的 Dots Activity 显示任务完成、Pi 已选、Dot's computer Connected。Mac 股票仓库目前存在远端 `feature/bse-post-review-validation`（`c5d66b1`），同样改动这 7 个路径；Pi 云电脑分支内容尚未带回本机做逐行比较，因此不要为两份可能重叠的实现创建第二个 PR。用户尚未确认页面与测试结果；验收前不推送该演练分支。
 
 ## 演示目标
 
@@ -110,7 +112,7 @@ Dot 的首轮答复建议控制在 20–30 秒，不逐条朗读整份速记。�
 5. 股票仓库 `origin/main` 与本机基线一致；单测与 Chrome 页面测试通过；该次会议确有未实现需求时才允许出现代码差异与 PR。
 6. 记录每个阶段公网 Chrome 截图、任务/Activity、云电脑页面、测试结果和 PR；保存带通话音轨的 MP4 主成片，完整解码并确认语音清楚、页面有连续变化；可另附静音 WebP 预览。录屏保持正常可读速度、去掉纯静止等待，输出到工程目录。不要把文件放在 `/tmp`。
 
-当前状态（2026-10-19 10:09）：公网隧道和租户云电脑页面已在签入态 Chrome 验证可用；ssh 转发策略已核实允许，先前的远端绑定失败最可能是瞬时端口冲突，失败当时的监听者无法回溯。会议资料的公网 Pi 只读读取、证券页面分支在云电脑内的测试和 Chromium 展示已完成。尚未完成用户手机通话实测、用户对证券页面和测试结果的验收、经用户验收后创建未合并 PR、DWS Gateway 当前进程/路由复核，以及包含完整可见流程的录屏；因此整段演示仍未验收完成。
+当前状态（2026-10-19 10:43）：公网隧道已在 Mac 本机探测和已登录 Chrome 中恢复；连续五次公网 HTTPS GET 成功。证券页面 Pi 演练任务完成并在公网 Dots Activity 可见，云电脑 Chromium 的 4180 页面由任务报告验证。证券仓库另有一个与演练分支改动路径重叠的既有远端 feature 分支，需先取得并比较 Pi 工作区提交，再决定唯一 PR；不重复推送/开 PR。仍未完成用户实体手机通话实测、用户对证券页面和测试结果的验收、验收后的未合并 PR、DWS Gateway 当前进程/路由复核，以及包含手机语音与云电脑流程的完整录屏；因此整段演示仍未验收。
 
 ## 本次起始证据
 
