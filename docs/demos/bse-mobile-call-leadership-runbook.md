@@ -12,7 +12,7 @@
 - 当前两条相关待办均未完成：
   - “复核北交所规则变更对交易终端的影响”，截止 2026-10-20 17:00。
   - “验证规则生效日期和移动交易页提示”，截止 2026-10-21 17:00。
-- `coke-agent-test-stock-app` 的 `main`（上次复核为 `adcbde2`）已经实现北交所无涨跌幅限制股票大宗交易规则页面，包括 70%/130% 实时均价边界、已成交价极值约束、10 万股或 100 万元门槛以及移动页提示。复核时 `npm test` 9/9、`npm run test:e2e` 均通过。会议结论若没有新的未实现要求，就不造重复改动、不建空 PR；正式实施前仍需重新 fetch 并对照当时的 `origin/main`。
+- 2026-10-19 12:43 重新 fetch 后，`coke-agent-test-stock-app` 的 `origin/main` 仍为 `adcbde2958d419e1b3cea95b401bde1b727e1c50`。主线已有 70%/130% 价格带、已成交价极值约束、10 万股或 100 万元门槛；尚需核验的缺口是行情不可用、当日无成交、行情日期过期/生效日未到时 fail closed。两个本机历史候选 `c5d66b1` 与 `14911b8` 不是同一补丁，当前没有开放 PR；现场 Pi 必须重新核对最新 main，只在缺口仍存在时新建唯一分支，不把候选分支冒充现场结果。
 - 2026-10-18 的历史公网 Chrome 390×844 移动模拟在同一通话完成三轮连续中文语音对话，每轮各完成一个任务，查询了日程与待办；它不是实体手机测试，也不是 Minutes 分类修复后的通话回归。
 - 同次历史测试用 Mac 内置麦克风录到默认扬声器回放 31.85 秒；FFmpeg 测得平均电平 -25.8 dBFS、峰值 -2.6 dBFS，证明有非静音房间声学输出，但不证明语音可懂度或实体手机麦克风/扬声器效果。录音副本在 `artifacts/demo/mobile-secretary-bse/2026-10-18-public-chrome/03-public-call-speaker-capture.wav`。
 - Coke Dots 当前已集成 Minutes 后续请求分类修复，代码基线为 `43d41009574da4f81f1184887e561435035414b1`。2026-10-19 隧道恢复后，已登录公网 Chrome 新建一次只读任务，明确选择 Pi；任务完成并读回更新后的日程、既有会后听记六条要点和两条未完成待办及截止时间，明确未写入钉钉。Dot's computer 状态为 Connected。该结果是公网 Pi/DingTalk 只读链路证据，不等于实体手机通话或完整代码修复流程验收。
@@ -115,9 +115,11 @@ Dot 的首轮答复建议控制在 20–30 秒，不逐条朗读整份速记。�
 5. 股票仓库 `origin/main` 与本机基线一致；单测与 Chrome 页面测试通过；该次会议确有未实现需求时才允许出现代码差异与 PR。
 6. 记录每个阶段公网 Chrome 截图、任务/Activity、云电脑页面、测试结果和 PR；保存带通话音轨的 MP4 主成片，完整解码并确认语音清楚、页面有连续变化；可另附静音 WebP 预览。录屏保持正常可读速度、去掉纯静止等待，输出到工程目录。不要把文件放在 `/tmp`。
 
-当前状态（2026-10-19 11:18，Asia/Shanghai）：本机页面 `127.0.0.1:14318`、VPS 反向监听 `127.0.0.1:14317`、公网域名均返回 HTTP 200；三处首页 SHA-256 相同，公网连续五次请求成功。最新隧道复核确认 Mac LaunchAgent 的单一 SSH 进程 PID 77913 自 09:29:28 起持续连接，VPS 的 `127.0.0.1:14317` 由对应 SSHD 会话持有；日志中的 `remote port forwarding failed` 和连接超时属于此前失败尝试，现有 `KeepAlive` 自动重试后恢复。失败时的旧监听者没有留存，不能断言具体冲突 PID。没有再次重启隧道或修改 VPS/Nginx/K3D。已登录公网 Chrome 当前在 Dots 会话和云电脑界面；VNC 显示 `You have control`，因此没有代替用户操作。对租户 Debian Chromium 的只读页面列表显示当前页 `http://127.0.0.1:4180/`、标题 `Coke Securities · 交易`；该页与健康检查均返回 200，证明 9c Pi 新任务页已在 Chromium 中打开，取代 10:47 的旧页观察。与此同时，当前 CUA 外层 Chrome 截图呈白屏，未取得可用于验收的证券页面画面；用户仍需实际查看并验收。证券仓库两个候选补丁 `c5d66b1` 与 `1b3a039` 同基于最新 `main=adcbde2`、测试报告均通过，但内容不同；1b3 另覆盖零成交量拒绝。已按北交所公告核验规则。尚未完成实体手机通话反馈、用户页面/测试验收、验收后的未合并 PR、DWS Gateway 当前进程/路由复核、完整通话录屏和验收截图钉钉推送；整段演示未验收。
+当前状态（2026-10-19 12:45，Asia/Shanghai）：本机 `127.0.0.1:14318` 返回 200；VPS `127.0.0.1:14317` 由当前隧道 sshd 子进程 PID 1343757 监听；公网 `https://codex.cokeagent.com/dots-demo/` 连续 10 次返回 200，已登录 Chrome 显示 Dots 页面及账号 `sgch2023@gmail.com`。隧道故障根因已由 VPS `/var/log/auth.log` 证实：09:24–09:29 的 SSH 转发尝试反复因 `bind [127.0.0.1]:14317: Address already in use` 失败；旧 SSH 会话于 09:29:22 结束，Mac LaunchAgent 的新 SSH 会话于 09:29:28 启动并成功占用端口。历史占用 socket 的具体 PID 未保留，不对其身份作推断。当前 LaunchAgent 仅有 SSH PID 77913；KeepAlive 重试已恢复服务。本次没有重启服务、改 Mac 隧道配置、VPS/Nginx/K3D 或其他 VPS 服务。
 
-## 本次起始证据
+Dots 最新代码基线为本次 fetch 得到的 `origin/main=e9e4551e555cccb70e20a197c104d1a0e7a96a43`；本手册所在分支 `feature/mobile-bse-call-demo-script-20261019` 从该提交创建，主 checkout 的未提交用户改动保持原样。股票仓库最新 `origin/main=adcbde2958d419e1b3cea95b401bde1b727e1c50`；没有开放 PR。当前没有新拨打电话、没有启动新的 Pi 股票修复任务，也没有用户验收、录屏或钉钉截图推送。完整目标仍待实体手机语音测试反馈、现场 Pi 从最新 main 核对并完成必要改动、云 Chromium 页面验收、验收后 PR、全程录制和最终截图推送。
+
+## 历史验收证据（不代表当前轮已验收）
 
 - Coke Dots 代码基线：`43d41009574da4f81f1184887e561435035414b1`，本次文档分支 `feature/bse-demo-reused-meeting-record` 从 2026-10-19 已验证的 `origin/main=f4ccb9b98a5aba2025d69026506e68bf660779df` 创建。
 - Coke Dots 后续 `origin/main`：`5a0b1ecaa4a973c41f42890b17c5f0d9408077d1`。2026-10-18 从该最新提交新建 `feature/mobile-secretary-public-task-isolation-20261018`，只更新本手册中的公网任务隔离证据。
