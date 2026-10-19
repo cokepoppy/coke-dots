@@ -24,6 +24,17 @@ test('minutes follow-up requests retain short-lived read access for remaining de
   assert.deepEqual(createDingTalkMinutesAgentBridge({ ...baseInput, instruction })?.actions, ['search', 'detail']);
 });
 
+test('minutes read intent recognizes natural and ASR-shortened DingTalk meeting requests', () => {
+  const searchRequest = '你帮我找一下最近的钉钉会议的 AI 数据。';
+  assert.equal(requestsDingTalkMinutesRead(searchRequest), true);
+  assert.deepEqual(createDingTalkMinutesAgentBridge({ ...baseInput, instruction: searchRequest })?.actions, ['search', 'detail']);
+
+  const voiceFollowUp = '是 AI 厅计啊。';
+  assert.equal(requestsDingTalkMinutesRead(voiceFollowUp), true, 'A compact ASR follow-up should receive a read-only grant without requiring a repeated verb');
+  assert.deepEqual(createDingTalkMinutesAgentBridge({ ...baseInput, instruction: voiceFollowUp })?.actions, ['search', 'detail']);
+  assert.equal(requestsDingTalkMinutesRead('是 AI 数据分析啊。'), false, 'Unrelated AI data requests must not open the Minutes bridge');
+});
+
 test('minutes bridge does not grant writes or activate for unrelated todo/calendar requests', () => {
   assert.equal(createDingTalkMinutesAgentBridge({ ...baseInput, instruction: '告诉我明天有哪些钉钉日程和待办' }), null);
   assert.equal(createDingTalkMinutesAgentBridge({ ...baseInput, instruction: '上传一段会议录音并生成AI听记' }), null);

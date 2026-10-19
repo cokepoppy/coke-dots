@@ -19,11 +19,13 @@ export interface DingTalkMinutesAgentBridge {
 
 const audience = 'coke-dots-dingtalk-minutes-v1';
 const grantLifetimeSeconds = 15 * 60;
-const minutesObject = /(?:AI\s*听记|听记|会议纪要|会议记录|会议转写|会议录音纪要|transcripts?|meeting\s+minutes|meeting\s+notes)/i;
-const readIntent = /(?:查|查看|找|搜索|读取|总结|汇总|提取|梳理|核对|补充|继续|剩余|详细|要点|清单|内容|列举|有哪些|有什么|read|find|search|summari[sz]e|review|show|list|detail|continue|remaining|more)/i;
+const minutesObject = /(?:AI\s*(?:听记|厅记|厅计|听计|纪要|记录)|会议.{0,16}AI\s*(?:数据|纪要|记录)|听记|会议纪要|会议记录|会议转写|会议录音纪要|transcripts?|meeting\s+minutes|meeting\s+notes)/i;
+const readIntent = /(?:查|查看|找|搜索|读取|总结|汇总|提取|梳理|核对|补充|继续|剩余|详细|要点|清单|内容|列举|有哪些|有什么|最近|最新|read|find|search|summari[sz]e|review|show|list|detail|continue|remaining|more|recent|latest)/i;
+const compactMinutesReadIntent = /^(?:是\s*)?(?:(?:我(?:的|之前的|最近的)?|最近的?|最新的?|今天(?:的)?|昨天(?:的)?|接下来(?:的)?|之前的|会后的?|钉钉(?:会议)?(?:的)?|my\s+|recent\s+|latest\s+))*(?:钉钉(?:会议)?(?:的)?\s*)?(?:AI\s*(?:听记|厅记|厅计|听计|纪要|记录)|(?:会议)?(?:听记|纪要|记录|转写))(?:呢|吗|啊|呀|吧)?$/i;
 
 export function requestsDingTalkMinutesRead(instruction: string): boolean {
-  return minutesObject.test(instruction) && readIntent.test(instruction);
+  const compactRequest = instruction.trim().replace(/[。！？!?]+$/u, '').trim();
+  return (minutesObject.test(instruction) && readIntent.test(instruction)) || compactMinutesReadIntent.test(compactRequest);
 }
 
 export function createDingTalkMinutesAgentBridge(input: {
