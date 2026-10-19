@@ -52,6 +52,7 @@ const statusText: Record<TaskStatus, string> = {
 const engineText: Record<TaskEngine, string> = { model: '模型 API', claude: 'Claude Code（已停用）', pi: 'Pi', dsh: 'DeepSeek Harness' };
 const buildDefaultEngine = import.meta.env.VITE_DOTS_DEFAULT_ENGINE;
 const defaultEngine: Engine = buildDefaultEngine === 'pi' || buildDefaultEngine === 'dsh' || buildDefaultEngine === 'model' ? buildDefaultEngine : 'model';
+const serviceConnectionLostMessage = '与本机服务的连接已断开，正在重连。';
 
 async function request(path: string, method: 'POST' | 'PATCH', body: object) {
   const response = await appFetch(`/api${path}`, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -216,9 +217,13 @@ function App() {
     if (!authContext) return;
     setStateLoaded(false);
     const stream = new EventSource(appPath('/api/events'));
-    stream.onmessage = event => { setState(JSON.parse(event.data)); setStateLoaded(true); };
+    stream.onmessage = event => {
+      setState(JSON.parse(event.data));
+      setStateLoaded(true);
+      setError(current => current === serviceConnectionLostMessage ? '' : current);
+    };
     stream.onerror = () => {
-      setError('与本机服务的连接已断开，正在重连。');
+      setError(current => current || serviceConnectionLostMessage);
       void appFetch('/api/auth/me').then(response => response.ok ? response.json() as Promise<AuthContext> : null).then(next => { if (!next) setAuthContext(null); }).catch(() => setAuthContext(null));
     };
     return () => stream.close();

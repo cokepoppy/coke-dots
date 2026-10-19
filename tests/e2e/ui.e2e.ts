@@ -678,26 +678,53 @@ async function taskNavigationItem(page: Page, title: string) {
   return page.locator('.task-links button').filter({ hasText: title }).first();
 }
 
-async function signIn(page: Page, email: string) {
-  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await page.locator('#e2e-email').fill(email);
-  const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15_000 });
-  await page.getByTestId('e2e-sign-in').click();
-  await navigation;
-  await page.getByTestId('app-shell').waitFor({ state: 'visible', timeout: 15_000 });
-  await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
-  const profileEmail = page.locator('.profile-link small').filter({ hasText: email });
-  if (await profileEmail.isVisible()) return;
-  const mobileDotNav = page.getByTestId('mobile-dot-nav');
-  if (await mobileDotNav.isVisible()) {
-    await mobileDotNav.click();
-    await page.getByTestId('mobile-chat-menu-toggle').click();
-    const mobileNavigation = page.getByTestId('mobile-navigation');
-    await mobileNavigation.locator('.mobile-navigation-account small').filter({ hasText: email }).waitFor({ state: 'visible' });
-    await mobileNavigation.locator('.mobile-navigation-panel').getByRole('button', { name: '关闭导航菜单' }).click();
-    return;
+async function signIn(page: Page, email: string, options: { exerciseEventStreamRecovery?: boolean } = {}) {
+  const eventStreamRoute = '**/api/events';
+  let releaseRecovery: () => void = () => undefined;
+  let recoveryAllowed = new Promise<void>(resolvePromise => { releaseRecovery = resolvePromise; });
+  if (options.exerciseEventStreamRecovery) {
+    let attempts = 0;
+    await page.route(eventStreamRoute, async route => {
+      attempts += 1;
+      if (attempts === 1) return route.abort('failed');
+      await recoveryAllowed;
+      return route.continue();
+    });
   }
-  await profileEmail.waitFor({ state: 'visible' });
+  try {
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    await page.locator('#e2e-email').fill(email);
+    const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15_000 });
+    await page.getByTestId('e2e-sign-in').click();
+    await navigation;
+    await page.getByTestId('app-shell').waitFor({ state: 'visible', timeout: 15_000 });
+    if (options.exerciseEventStreamRecovery) {
+      const connectionAlert = page.locator('.error-banner').filter({ hasText: '与本机服务的连接已断开，正在重连。' });
+      await connectionAlert.waitFor({ state: 'visible', timeout: 10_000 });
+      releaseRecovery();
+      await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+      await connectionAlert.waitFor({ state: 'hidden', timeout: 5_000 });
+    } else {
+      await page.waitForFunction(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-state-loaded') === 'true', null, { timeout: 10_000 });
+    }
+    const profileEmail = page.locator('.profile-link small').filter({ hasText: email });
+    if (await profileEmail.isVisible()) return;
+    const mobileDotNav = page.getByTestId('mobile-dot-nav');
+    if (await mobileDotNav.isVisible()) {
+      await mobileDotNav.click();
+      await page.getByTestId('mobile-chat-menu-toggle').click();
+      const mobileNavigation = page.getByTestId('mobile-navigation');
+      await mobileNavigation.locator('.mobile-navigation-account small').filter({ hasText: email }).waitFor({ state: 'visible' });
+      await mobileNavigation.locator('.mobile-navigation-panel').getByRole('button', { name: '关闭导航菜单' }).click();
+      return;
+    }
+    await profileEmail.waitFor({ state: 'visible' });
+  } finally {
+    if (options.exerciseEventStreamRecovery) {
+      releaseRecovery();
+      await page.unroute(eventStreamRoute).catch(() => undefined);
+    }
+  }
 }
 
 async function createTask(page: Page, instruction: string, scheduled = false) {
@@ -786,8 +813,8 @@ try {
     await screenshot(alphaPage!, '01-login');
   });
 
-  await recordStep('Google-style tenant Alpha signs in through the rendered page', async () => {
-    await signIn(alphaPage!, 'alpha@example.test');
+  await recordStep('Google-style tenant Alpha signs in and clears the SSE disconnect banner after recovery', async () => {
+    await signIn(alphaPage!, 'alpha@example.test', { exerciseEventStreamRecovery: true });
     await alphaPage!.getByTestId('app-shell').waitFor();
     await alphaPage!.getByTestId('chat-home').getByRole('heading', { name: "What's on your mind today?" }).waitFor({ state: 'visible' });
     assert.equal(await alphaPage!.locator('.icon-rail').evaluate(element => Math.round(element.getBoundingClientRect().width)), 44);
