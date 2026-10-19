@@ -19,9 +19,10 @@ export interface DingTalkCalendarAgentBridge {
 
 const audience = 'coke-dots-dingtalk-calendar-v1';
 const grantLifetimeSeconds = 15 * 60;
-const calendarIntent = /(?:日程|日历|会议|calendar|agenda|my\s+schedule)/i;
+const calendarIntent = /(?:日程|日历|会议|calendar|agenda|(?:my\s+)?(?:meeting\s+)?schedule)/i;
 const datedScheduleIntent = /(?:今天|明天|后天|本周|这周|下周|周[一二三四五六日天]|today|tomorrow|this week|next week).{0,48}(?:安排|schedule|agenda)/i;
 const readIntent = /(?:查|查看|看看|列出|读取|获取|告诉我|有哪些|有什么|有没有|总结|准备|梳理|read|list|what(?:'s| is)|upcoming|prepare|prep(?:are)?|agenda)/i;
+const compactCalendarReadIntent = /^(?:(?:我的|今天(?:的)?|明天(?:的)?|本周(?:的)?|接下来(?:的)?|my\s+))?(?:(?:(?:钉钉(?:的)?)?(?:会议日程|会议安排|日程(?:安排|列表)?|日历(?:安排|列表)?))|(?:meeting\s+)?schedule|calendar)(?:呢|吗|呀|吧)?$/i;
 const createIntent = /(?:创建|安排|新增|预约|订一个|添加|create|schedule|book|set\s+up)/i;
 const destructiveIntent = /(?:取消|删除|修改|更新|移除|cancel|delete|update|change|remove)/i;
 const documentCalendarInstructionsIntent = /(?:文档|知识库|钉盘|document|knowledge\s?base|drive).{0,20}(?:里|中|about|containing).{0,20}(?:日程|日历|会议|calendar|agenda)/i;
@@ -29,8 +30,12 @@ const documentCalendarInstructionsIntent = /(?:文档|知识库|钉盘|document|
 export function requestsDingTalkCalendarRead(instruction: string): boolean {
   // The grant is always list-only, so a separate document-output request may still
   // need the calendar as input for meeting preparation.
+  // Voice ASR often reduces a follow-up to a short noun phrase (for example,
+  // "会议日程"). Treat only these bounded schedule phrases as read intent; do not
+  // infer permission from earlier turns or broaden the grant beyond list-only.
+  const compactRequest = instruction.trim().replace(/[。！？!?]+$/u, '').trim();
   return (calendarIntent.test(instruction) || datedScheduleIntent.test(instruction))
-    && readIntent.test(instruction)
+    && (readIntent.test(instruction) || compactCalendarReadIntent.test(compactRequest))
     && !documentCalendarInstructionsIntent.test(instruction);
 }
 
