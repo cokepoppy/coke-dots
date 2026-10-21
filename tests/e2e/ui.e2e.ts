@@ -1585,6 +1585,51 @@ try {
     assert.match(await weeklyDetail.innerText(), new RegExp(`until ${scheduleEndDate}`));
     await screenshot(alphaPage!, '07c-weekly-scheduled');
     await weeklyDetail.getByRole('button', { name: 'Cancel schedule' }).click();
+
+    const editableTask = 'E2E editable schedule — send a morning summary';
+    await clickNav(alphaPage!, '你的 dot');
+    await createTask(alphaPage!, editableTask, true);
+    await clickNav(alphaPage!, 'Scheduled');
+    const editableDetail = alphaPage!.getByTestId('scheduled-detail');
+    await alphaPage!.locator('.scheduled-item').filter({ hasText: editableTask }).click();
+    await editableDetail.getByText('Failed', { exact: true }).waitFor({ state: 'visible' });
+    const editableTaskId = await editableDetail.getAttribute('data-item-id');
+    assert(editableTaskId, 'Scheduled detail must identify the tenant task');
+    const foreignUpdateStatus = await betaPage!.evaluate(async ({ id, scheduleSpec }) => (await fetch(`/api/tasks/${id}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'updateSchedule', scheduleSpec }),
+    })).status, { id: editableTaskId, scheduleSpec: { frequency: 'interval', intervalMinutes: 15 } });
+    assert.equal(foreignUpdateStatus, 404, 'Another tenant must not edit this schedule');
+
+    await editableDetail.getByRole('button', { name: 'Edit schedule' }).click();
+    const editor = editableDetail.getByTestId('scheduled-task-editor');
+    await editor.getByLabel('重复频率').selectOption('daily');
+    await editor.getByLabel('定时时间').fill('23:59');
+    await editor.getByLabel('时区').selectOption('Asia/Shanghai');
+    const editEndDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    await editor.getByLabel('结束日期').fill(editEndDate);
+    await editor.getByRole('button', { name: 'Save schedule' }).click();
+    await editableDetail.getByText('Monitoring', { exact: true }).waitFor({ state: 'visible' });
+    await editableDetail.getByText('Daily at 23:59 (Asia/Shanghai)', { exact: false }).waitFor({ state: 'visible' });
+    assert.match(await editableDetail.innerText(), new RegExp(`until ${editEndDate}`));
+    await screenshot(alphaPage!, '07d-edited-daily-schedule');
+
+    await editableDetail.getByRole('button', { name: 'Pause schedule' }).click();
+    await editableDetail.getByText('Paused', { exact: true }).waitFor({ state: 'visible' });
+    assert.match(await editableDetail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
+    await editableDetail.getByRole('button', { name: 'Edit schedule' }).click();
+    const pausedEditor = editableDetail.getByTestId('scheduled-task-editor');
+    await pausedEditor.getByLabel('重复频率').selectOption('interval');
+    await pausedEditor.getByLabel('间隔分钟数').fill('120');
+    await pausedEditor.getByRole('button', { name: 'Save schedule' }).click();
+    await editableDetail.getByText('Paused', { exact: true }).waitFor({ state: 'visible' });
+    await editableDetail.getByText('Every 120 minutes', { exact: true }).waitFor({ state: 'visible' });
+    assert.match(await editableDetail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
+
+    await editableDetail.getByRole('button', { name: 'Resume schedule' }).click();
+    await editableDetail.getByText('Monitoring', { exact: true }).waitFor({ state: 'visible' });
+    assert.doesNotMatch(await editableDetail.locator('.scheduled-detail-meta').innerText(), /Next run: Not scheduled/);
+    await editableDetail.getByRole('button', { name: 'Cancel schedule' }).click();
+    await alphaPage!.locator('.scheduled-item').filter({ hasText: editableTask }).waitFor({ state: 'detached' });
   });
 
   await recordStep('Alpha configures one shared Model API and Beta can read but cannot edit it', async () => {

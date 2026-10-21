@@ -21,6 +21,7 @@ import { SlackSetupModal } from './SlackSetupModal.tsx';
 import { DingTalkSetupModal } from './DingTalkSetupModal.tsx';
 import { appPath } from './api.ts';
 import { ScheduledView } from './ScheduledView.tsx';
+import { RecurrenceEditor } from './RecurrenceEditor.tsx';
 import { PagePane, PagesView, ScratchpadNavigationPane } from './Pages.tsx';
 import { PermissionRules } from './PermissionRules.tsx';
 import { DotOnboarding } from './DotOnboarding.tsx';
@@ -349,6 +350,17 @@ function App() {
     catch (e) { setError(String(e)); }
   }
 
+  async function updateScheduledTask(task: Task, action: 'cancelSchedule' | 'pauseSchedule' | 'resumeSchedule' | 'updateSchedule', scheduleSpec?: ScheduleSpec) {
+    try {
+      setError('');
+      const updated = await request(`/tasks/${task.id}`, 'PATCH', { action, ...(scheduleSpec ? { scheduleSpec } : {}) }) as Task;
+      setState(current => ({ ...current, tasks: current.tasks.map(item => item.id === updated.id ? updated : item) }));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  }
+
   async function submitVoiceTranscript(instruction: string, waitingTaskId: string | undefined, callId: string, turnId: string) {
     return await request(`/voice-calls/${callId}/turns`, 'POST', { transcript: instruction, turnId, waitingTaskId, engine }) as Task;
   }
@@ -477,7 +489,7 @@ function App() {
       {view === 'pages' && (selectedPageId ? <PagePane pageId={selectedPageId} tenantId={authContext.tenant.id} full onBack={() => setSelectedPageId(null)} onPageUpdated={() => setPageIndexVersion(version => version + 1)} /> : <PagesView tenantId={authContext.tenant.id} onOpen={id => setSelectedPageId(id)} />)}
       {view === 'activity' && <ActivityView tenantId={authContext.tenant.id} profileName={state.profile.name} state={state} stateLoaded={stateLoaded} onSelectTask={taskId => { setSelected(taskId); setView('chat'); }} onOpenPage={openPage} />}
       {view === 'scheduled' && <ScheduledView tasks={state.tasks} watches={state.watches}
-        onCancelTask={task => void act(task, 'cancelSchedule')}
+        onScheduleAction={updateScheduledTask}
         onWatchAction={(watch, action) => void actWatch(watch.id, action)}
         onOpenTask={task => { setSelected(task.id); setView('chat'); }}
         onNewTask={() => { setSchedule(true); setView('chat'); requestAnimationFrame(() => composerRef.current?.focus()); }}
@@ -654,31 +666,6 @@ function WorkspaceSwitcher({ auth, onSwitch, onCreate, onError }: { auth: AuthCo
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
   return <div className="workspace-switcher"><label><span>工作区</span><select value={auth.tenant.id} onChange={event => void onSwitch(event.target.value)}>{auth.tenants.map(tenant => <option key={tenant.id} value={tenant.id}>{tenant.name} · {tenant.role}</option>)}</select></label>{creating ? <form onSubmit={event => { event.preventDefault(); void onCreate(name.trim()).then(() => { setName(''); setCreating(false); }).catch(error => onError(String(error))); }}><input aria-label="新工作区名称" autoFocus maxLength={60} value={name} onChange={event => setName(event.target.value)} placeholder="工作区名称" /><button disabled={!name.trim()}>创建</button><button type="button" onClick={() => setCreating(false)}>取消</button></form> : <button className="new-workspace" onClick={() => setCreating(true)}>＋ 新建工作区</button>}</div>;
-}
-
-function RecurrenceEditor({ frequency, setFrequency, minutes, setMinutes, time, setTime, timeZone, setTimeZone, weekdays, setWeekdays, endDate, setEndDate }: {
-  frequency: 'interval' | 'daily' | 'weekly';
-  setFrequency: React.Dispatch<React.SetStateAction<'interval' | 'daily' | 'weekly'>>;
-  minutes: number; setMinutes: React.Dispatch<React.SetStateAction<number>>;
-  time: string; setTime: React.Dispatch<React.SetStateAction<string>>;
-  timeZone: string; setTimeZone: React.Dispatch<React.SetStateAction<string>>;
-  weekdays: number[]; setWeekdays: React.Dispatch<React.SetStateAction<number[]>>;
-  endDate: string; setEndDate: React.Dispatch<React.SetStateAction<string>>;
-}) {
-  const zones = useMemo(() => {
-    const supported = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
-    return [...new Set(['UTC', timeZone, ...supported])].sort();
-  }, [timeZone]);
-  const dayLabels = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
-  return <div className="schedule-details" data-testid="schedule-details">
-    <label>频率<select aria-label="重复频率" value={frequency} onChange={event => setFrequency(event.target.value as 'interval' | 'daily' | 'weekly')}><option value="interval">按间隔</option><option value="daily">每天</option><option value="weekly">每周</option></select></label>
-    {frequency === 'interval' ? <label>每 <input aria-label="间隔分钟数" className="minutes" type="number" min="1" max="10080" value={minutes} onChange={event => setMinutes(Number(event.target.value))} /> 分钟</label> : <>
-      <label>时间<input aria-label="定时时间" type="time" value={time} onChange={event => setTime(event.target.value)} /></label>
-      <label>时区<select aria-label="时区" value={timeZone} onChange={event => setTimeZone(event.target.value)}>{zones.map(zone => <option key={zone} value={zone}>{zone}</option>)}</select></label>
-      {frequency === 'weekly' && <fieldset className="schedule-weekdays"><legend>重复日</legend>{dayLabels.map((label, day) => <label key={day}><input aria-label={label} type="checkbox" checked={weekdays.includes(day)} onChange={event => setWeekdays(current => event.target.checked ? [...current, day] : current.filter(value => value !== day))} />{label.slice(2)}</label>)}</fieldset>}
-      <label>结束日期（可选）<input aria-label="结束日期" type="date" value={endDate} onChange={event => setEndDate(event.target.value)} /></label>
-    </>}
-  </div>;
 }
 
 function TaskControls({ task, act, compact = false }: { task: Task; act: (task: Task, action: string, extra?: object) => Promise<void>; compact?: boolean }) {
